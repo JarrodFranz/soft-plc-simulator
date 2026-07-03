@@ -22,6 +22,7 @@ class HmiDashboardBuilderScreen extends StatefulWidget {
 class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
   bool isEditMode = false;
   bool isPaletteVisible = true;
+  int? _hoveredTargetIndex;
 
   // Component Library Palette Templates
   final List<HmiComponent> _paletteTemplates = [
@@ -159,7 +160,7 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
     );
   }
 
-  void _addDroppedTemplate(HmiComponent tmpl) {
+  void _addDroppedTemplate(HmiComponent tmpl, [int? targetIndex]) {
     final defaultTag = widget.currentProject.tags.isNotEmpty ? widget.currentProject.tags.first.name : '';
     final newComp = HmiComponent(
       id: 'comp_${DateTime.now().millisecondsSinceEpoch}',
@@ -171,12 +172,25 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
     );
 
     setState(() {
-      widget.hmiScreen.components.add(newComp);
+      if (targetIndex != null && targetIndex >= 0 && targetIndex <= widget.hmiScreen.components.length) {
+        widget.hmiScreen.components.insert(targetIndex, newComp);
+      } else {
+        widget.hmiScreen.components.add(newComp);
+      }
     });
     widget.onProjectUpdated();
 
-    // Automatically open configuration dialog to link tag
     _showAddComponentDialog(newComp);
+  }
+
+  void _reorderComponents(int oldIndex, int newIndex) {
+    if (oldIndex == newIndex) return;
+    setState(() {
+      final item = widget.hmiScreen.components.removeAt(oldIndex);
+      final adjustedNewIndex = newIndex > oldIndex ? newIndex - 1 : newIndex;
+      widget.hmiScreen.components.insert(adjustedNewIndex, item);
+    });
+    widget.onProjectUpdated();
   }
 
   PlcTag? _getBoundTag(String tagName) {
@@ -275,11 +289,14 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
       ),
       body: Row(
         children: [
-          // CENTER WORKSPACE: Grid DragTarget Canvas
+          // CENTER WORKSPACE: Interactive Drag and Drop Grid Canvas
           Expanded(
-            child: DragTarget<HmiComponent>(
+            child: DragTarget<Map<String, dynamic>>(
               onAcceptWithDetails: (details) {
-                _addDroppedTemplate(details.data);
+                final data = details.data;
+                if (data['source'] == 'PALETTE') {
+                  _addDroppedTemplate(data['component'] as HmiComponent);
+                }
               },
               builder: (context, candidateData, rejectedData) {
                 final isDragHover = candidateData.isNotEmpty;
@@ -319,115 +336,182 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
                               final comp = components[index];
                               final boundTag = _getBoundTag(comp.tagBinding);
                               final double cardWidth = (MediaQuery.of(context).size.width - 320 - 48) * (comp.gridSpanWidth / 4.0);
+                              final double actualWidth = cardWidth < 220 ? 220 : cardWidth;
 
-                              return SizedBox(
-                                width: cardWidth < 220 ? 220 : cardWidth,
-                                child: Card(
-                                  color: const Color(0xFF1E293B),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(8),
-                                    side: BorderSide(
-                                      color: isEditMode ? Colors.amber : Colors.white12,
-                                      width: isEditMode ? 1.5 : 1,
+                              // Target slot for Drag and Drop placement on the grid
+                              return DragTarget<Map<String, dynamic>>(
+                                onWillAcceptWithDetails: (details) {
+                                  setState(() => _hoveredTargetIndex = index);
+                                  return true;
+                                },
+                                onLeave: (_) {
+                                  if (_hoveredTargetIndex == index) {
+                                    setState(() => _hoveredTargetIndex = null);
+                                  }
+                                },
+                                onAcceptWithDetails: (details) {
+                                  final data = details.data;
+                                  setState(() => _hoveredTargetIndex = null);
+
+                                  if (data['source'] == 'PALETTE') {
+                                    _addDroppedTemplate(data['component'] as HmiComponent, index);
+                                  } else if (data['source'] == 'GRID') {
+                                    final oldIdx = data['index'] as int;
+                                    _reorderComponents(oldIdx, index);
+                                  }
+                                },
+                                builder: (ctx, candidateItems, rejectedItems) {
+                                  final isSlotHovered = _hoveredTargetIndex == index || candidateItems.isNotEmpty;
+
+                                  final cardWidget = Container(
+                                    width: actualWidth,
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: isSlotHovered ? Border.all(color: Colors.cyanAccent, width: 3) : null,
                                     ),
-                                  ),
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(14.0),
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        // Header Bar with Title, Snap Resizer, Gear Config, & Delete Icon in Edit Mode
-                                        Row(
+                                    child: Card(
+                                      color: const Color(0xFF1E293B),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(8),
+                                        side: BorderSide(
+                                          color: isSlotHovered
+                                              ? Colors.cyanAccent
+                                              : (isEditMode ? Colors.amber : Colors.white12),
+                                          width: isSlotHovered ? 2.5 : (isEditMode ? 1.5 : 1),
+                                        ),
+                                      ),
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(14.0),
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
                                           children: [
-                                            Icon(_getIconForComponent(comp.type), size: 16, color: _getColor(comp.accentColor)),
-                                            const SizedBox(width: 6),
-                                            Expanded(
-                                              child: Text(
-                                                comp.title,
-                                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
+                                            // Header Bar with Grab Drag Handle, Title, Snap Resizer, Gear Config, & Delete Icon
+                                            Row(
+                                              children: [
+                                                if (isEditMode) ...[
+                                                  const Icon(Icons.drag_indicator, size: 20, color: Colors.amber),
+                                                  const SizedBox(width: 6),
+                                                ],
+                                                Icon(_getIconForComponent(comp.type), size: 16, color: _getColor(comp.accentColor)),
+                                                const SizedBox(width: 6),
+                                                Expanded(
+                                                  child: Text(
+                                                    comp.title,
+                                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                                    overflow: TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+
+                                                if (isEditMode) ...[
+                                                  // Snap Grid Resizer Controls ([–] 1..4 Col [+])
+                                                  IconButton(
+                                                    icon: const Icon(Icons.remove, size: 14, color: Colors.amber),
+                                                    padding: EdgeInsets.zero,
+                                                    constraints: const BoxConstraints(),
+                                                    tooltip: 'Decrease Grid Width',
+                                                    onPressed: comp.gridSpanWidth > 1
+                                                        ? () {
+                                                            setState(() => comp.gridSpanWidth--);
+                                                            widget.onProjectUpdated();
+                                                          }
+                                                        : null,
+                                                  ),
+                                                  Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                    decoration: BoxDecoration(
+                                                      color: Colors.amber.withValues(alpha: 0.2),
+                                                      borderRadius: BorderRadius.circular(4),
+                                                    ),
+                                                    child: Text('${comp.gridSpanWidth} Col', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.amber)),
+                                                  ),
+                                                  IconButton(
+                                                    icon: const Icon(Icons.add, size: 14, color: Colors.amber),
+                                                    padding: EdgeInsets.zero,
+                                                    constraints: const BoxConstraints(),
+                                                    tooltip: 'Increase Grid Width',
+                                                    onPressed: comp.gridSpanWidth < 4
+                                                        ? () {
+                                                            setState(() => comp.gridSpanWidth++);
+                                                            widget.onProjectUpdated();
+                                                          }
+                                                        : null,
+                                                  ),
+
+                                                  const SizedBox(width: 6),
+
+                                                  // Reconfigure Settings (Gear)
+                                                  IconButton(
+                                                    icon: const Icon(Icons.settings, size: 16, color: Colors.cyan),
+                                                    padding: EdgeInsets.zero,
+                                                    constraints: const BoxConstraints(),
+                                                    tooltip: 'Reconfigure Component',
+                                                    onPressed: () => _showAddComponentDialog(comp),
+                                                  ),
+                                                  const SizedBox(width: 6),
+
+                                                  // Delete Component
+                                                  IconButton(
+                                                    icon: const Icon(Icons.delete, size: 16, color: Colors.redAccent),
+                                                    padding: EdgeInsets.zero,
+                                                    constraints: const BoxConstraints(),
+                                                    tooltip: 'Delete Component',
+                                                    onPressed: () {
+                                                      setState(() {
+                                                        components.removeAt(index);
+                                                      });
+                                                      widget.onProjectUpdated();
+                                                    },
+                                                  ),
+                                                ],
+                                              ],
                                             ),
 
-                                            if (isEditMode) ...[
-                                              // Snap Grid Resizer Controls ([–] 1..4 Col [+])
-                                              IconButton(
-                                                icon: const Icon(Icons.remove, size: 14, color: Colors.amber),
-                                                padding: EdgeInsets.zero,
-                                                constraints: const BoxConstraints(),
-                                                tooltip: 'Decrease Grid Width',
-                                                onPressed: comp.gridSpanWidth > 1
-                                                    ? () {
-                                                        setState(() => comp.gridSpanWidth--);
-                                                        widget.onProjectUpdated();
-                                                      }
-                                                    : null,
-                                              ),
-                                              Container(
-                                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                decoration: BoxDecoration(
-                                                  color: Colors.amber.withValues(alpha: 0.2),
-                                                  borderRadius: BorderRadius.circular(4),
+                                            if (comp.tagBinding.isNotEmpty)
+                                              Padding(
+                                                padding: const EdgeInsets.only(top: 2, bottom: 10),
+                                                child: Text(
+                                                  'Linked Tag: ${comp.tagBinding}',
+                                                  style: const TextStyle(fontSize: 10, color: Colors.grey, fontFamily: 'monospace'),
                                                 ),
-                                                child: Text('${comp.gridSpanWidth} Col', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.amber)),
-                                              ),
-                                              IconButton(
-                                                icon: const Icon(Icons.add, size: 14, color: Colors.amber),
-                                                padding: EdgeInsets.zero,
-                                                constraints: const BoxConstraints(),
-                                                tooltip: 'Increase Grid Width',
-                                                onPressed: comp.gridSpanWidth < 4
-                                                    ? () {
-                                                        setState(() => comp.gridSpanWidth++);
-                                                        widget.onProjectUpdated();
-                                                      }
-                                                    : null,
                                               ),
 
-                                              const SizedBox(width: 6),
-
-                                              // Reconfigure Settings (Gear)
-                                              IconButton(
-                                                icon: const Icon(Icons.settings, size: 16, color: Colors.cyan),
-                                                padding: EdgeInsets.zero,
-                                                constraints: const BoxConstraints(),
-                                                tooltip: 'Reconfigure Component',
-                                                onPressed: () => _showAddComponentDialog(comp),
-                                              ),
-                                              const SizedBox(width: 6),
-
-                                              // Delete Component
-                                              IconButton(
-                                                icon: const Icon(Icons.delete, size: 16, color: Colors.redAccent),
-                                                padding: EdgeInsets.zero,
-                                                constraints: const BoxConstraints(),
-                                                tooltip: 'Delete Component',
-                                                onPressed: () {
-                                                  setState(() {
-                                                    components.removeAt(index);
-                                                  });
-                                                  widget.onProjectUpdated();
-                                                },
-                                              ),
-                                            ],
+                                            // Render Component Widget
+                                            _renderComponentWidget(comp, boundTag),
                                           ],
                                         ),
-
-                                        if (comp.tagBinding.isNotEmpty)
-                                          Padding(
-                                            padding: const EdgeInsets.only(top: 2, bottom: 10),
-                                            child: Text(
-                                              'Linked Tag: ${comp.tagBinding}',
-                                              style: const TextStyle(fontSize: 10, color: Colors.grey, fontFamily: 'monospace'),
-                                            ),
-                                          ),
-
-                                        // Render Component Widget
-                                        _renderComponentWidget(comp, boundTag),
-                                      ],
+                                      ),
                                     ),
-                                  ),
-                                ),
+                                  );
+
+                                  if (!isEditMode) return cardWidget;
+
+                                  // Draggable Grid Component in Edit Mode
+                                  return Draggable<Map<String, dynamic>>(
+                                    data: {'source': 'GRID', 'index': index, 'component': comp},
+                                    feedback: Material(
+                                      elevation: 10,
+                                      color: const Color(0xFF1E293B),
+                                      borderRadius: BorderRadius.circular(8),
+                                      child: Container(
+                                        width: actualWidth,
+                                        padding: const EdgeInsets.all(12),
+                                        decoration: BoxDecoration(
+                                          borderRadius: BorderRadius.circular(8),
+                                          border: Border.all(color: Colors.amberAccent, width: 3),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            const Icon(Icons.drag_indicator, color: Colors.amberAccent),
+                                            const SizedBox(width: 8),
+                                            Text(comp.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                    childWhenDragging: Opacity(opacity: 0.3, child: cardWidget),
+                                    child: cardWidget,
+                                  );
+                                },
                               );
                             }),
                           ),
@@ -484,8 +568,8 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
               itemBuilder: (context, index) {
                 final tmpl = _paletteTemplates[index];
 
-                return Draggable<HmiComponent>(
-                  data: tmpl,
+                return Draggable<Map<String, dynamic>>(
+                  data: {'source': 'PALETTE', 'component': tmpl},
                   feedback: Material(
                     elevation: 8,
                     color: const Color(0xFF1E293B),
