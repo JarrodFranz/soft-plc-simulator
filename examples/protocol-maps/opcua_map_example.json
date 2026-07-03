@@ -1,0 +1,10 @@
+{
+  "opcua_map": {
+    "namespace_uri": "urn:softplc:motor-example",
+    "nodes": [
+      { "node_id": "ns=1;s=Inputs.Start_PB", "tag": "Start_PB", "access": "ReadWrite" },
+      { "node_id": "ns=1;s=Inputs.Stop_PB", "tag": "Stop_PB", "access": "ReadWrite" },
+      { "node_id": "ns=1;s=Outputs.Motor_Run", "tag": "Motor_Run", "access": "ReadOnly" }
+    ]
+  }
+}

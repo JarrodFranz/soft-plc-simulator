@@ -1,0 +1,48 @@
+{
+  "project": {
+    "name": "Tank Level Simulation",
+    "version": "1.0.0",
+    "description": "On/off tank level control with high/low level alarm indicators",
+    "controller": {
+      "name": "PLC_02",
+      "scan_period_ms": 100
+    },
+    "tags": [
+      {
+        "name": "Level_PV",
+        "path": "Inputs/Level_PV",
+        "data_type": "FLOAT64",
+        "initial_value": 50.0,
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Tank Level Process Variable",
+        "engineering_units": "%",
+        "io_type": "SimulatedInput"
+      },
+      {
+        "name": "Fill_Pump",
+        "path": "Outputs/Fill_Pump",
+        "data_type": "BOOL",
+        "initial_value": false,
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Tank Fill Pump Contactor",
+        "engineering_units": "",
+        "io_type": "SimulatedOutput"
+      },
+      {
+        "name": "High_Alarm",
+        "path": "Outputs/High_Alarm",
+        "data_type": "BOOL",
+        "initial_value": false,
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "High Tank Level Alarm Light",
+        "engineering_units": "",
+        "io_type": "SimulatedOutput"
+      }
+    ],
+    "programs": [],
+    "tasks": []
+  }
+}

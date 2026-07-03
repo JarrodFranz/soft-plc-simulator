@@ -1,0 +1,16 @@
+{
+  "dnp3_map": {
+    "outstation_address": 10,
+    "master_address": 1,
+    "binary_inputs": [
+      { "index": 0, "tag": "Start_PB", "description": "Start pushbutton" },
+      { "index": 1, "tag": "EStop_OK", "description": "E-Stop healthy" }
+    ],
+    "binary_outputs": [
+      { "index": 0, "tag": "Motor_Run", "description": "Motor contactor output" }
+    ],
+    "analog_inputs": [],
+    "analog_outputs": [],
+    "counters": []
+  }
+}

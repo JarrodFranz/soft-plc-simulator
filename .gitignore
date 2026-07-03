@@ -1,0 +1,53 @@
+# Rust
+/runtime/target/
+/gateway/target/
+**/*.rs.bk
+Cargo.lock
+
+# Flutter/Dart
+/mobile/.dart_tool/
+/mobile/.packages
+/mobile/build/
+/mobile/.flutter-plugins
+/mobile/.flutter-plugins-dependencies
+/mobile/ios/Pods/
+/mobile/ios/.symlinks/
+/mobile/android/.gradle/
+/mobile/android/local.properties
+/mobile/android/app/debug/
+/mobile/android/app/profile/
+/mobile/android/app/release/
+*.class
+*.jar
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Secrets - NEVER commit these
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+
+# OS
+desktop.ini
+.Spotlight-V100
+.Trashes
+
+# Generated
+*.generated.dart
+*.g.dart
+*.freezed.dart

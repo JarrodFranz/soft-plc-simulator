@@ -1,0 +1,117 @@
+{
+  "project": {
+    "name": "Basic Motor Start Stop",
+    "version": "1.0.0",
+    "description": "Motor start/stop circuit with seal-in latch and E-Stop / Overload permissives",
+    "controller": {
+      "name": "PLC_01",
+      "scan_period_ms": 100
+    },
+    "tags": [
+      {
+        "name": "Start_PB",
+        "path": "Inputs/Start_PB",
+        "data_type": "BOOL",
+        "initial_value": false,
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Start pushbutton - momentary NO",
+        "engineering_units": "",
+        "io_type": "SimulatedInput"
+      },
+      {
+        "name": "Stop_PB",
+        "path": "Inputs/Stop_PB",
+        "data_type": "BOOL",
+        "initial_value": false,
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Stop pushbutton - momentary NC in field, represented logic NC",
+        "engineering_units": "",
+        "io_type": "SimulatedInput"
+      },
+      {
+        "name": "EStop_OK",
+        "path": "Inputs/EStop_OK",
+        "data_type": "BOOL",
+        "initial_value": true,
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Emergency Stop Healthy",
+        "engineering_units": "",
+        "io_type": "SimulatedInput"
+      },
+      {
+        "name": "Overload_OK",
+        "path": "Inputs/Overload_OK",
+        "data_type": "BOOL",
+        "initial_value": true,
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Thermal Overload Healthy",
+        "engineering_units": "",
+        "io_type": "SimulatedInput"
+      },
+      {
+        "name": "Motor_Latch",
+        "path": "Internal/Motor_Latch",
+        "data_type": "BOOL",
+        "initial_value": false,
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Internal seal-in relay latch",
+        "engineering_units": "",
+        "io_type": "Internal"
+      },
+      {
+        "name": "Motor_Run",
+        "path": "Outputs/Motor_Run",
+        "data_type": "BOOL",
+        "initial_value": false,
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Motor Contactor Coil Output",
+        "engineering_units": "",
+        "io_type": "SimulatedOutput"
+      }
+    ],
+    "programs": [
+      {
+        "name": "MotorControl",
+        "language": "LadderLogic",
+        "description": "Motor start/stop control logic",
+        "rungs": [
+          {
+            "comment": "Motor latch rung: Start_PB OR Motor_Latch seal-in branch AND NOT Stop_PB AND EStop_OK AND Overload_OK -> Motor_Latch",
+            "instructions": [
+              { "type": "BranchStart" },
+              { "type": "ExamineOpen", "tag": "Start_PB" },
+              { "type": "BranchNext" },
+              { "type": "ExamineOpen", "tag": "Motor_Latch" },
+              { "type": "BranchEnd" },
+              { "type": "ExamineClosed", "tag": "Stop_PB" },
+              { "type": "ExamineOpen", "tag": "EStop_OK" },
+              { "type": "ExamineOpen", "tag": "Overload_OK" },
+              { "type": "OutputCoil", "tag": "Motor_Latch" }
+            ]
+          },
+          {
+            "comment": "Motor output contactor rung: Motor_Latch -> Motor_Run",
+            "instructions": [
+              { "type": "ExamineOpen", "tag": "Motor_Latch" },
+              { "type": "OutputCoil", "tag": "Motor_Run" }
+            ]
+          }
+        ]
+      }
+    ],
+    "tasks": [
+      {
+        "name": "MainTask",
+        "type": "Continuous",
+        "period_ms": 100,
+        "programs": ["MotorControl"]
+      }
+    ]
+  }
+}

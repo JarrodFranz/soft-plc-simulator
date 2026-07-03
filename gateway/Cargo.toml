@@ -1,0 +1,13 @@
+[package]
+name = "soft-plc-gateway"
+version = "0.1.0"
+edition = "2024"
+description = "Companion Gateway process exposing industrial protocols (OPC UA, Modbus TCP, MQTT, DNP3)"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+soft-plc-runtime = { path = "../runtime" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"

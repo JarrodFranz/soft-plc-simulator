@@ -1,0 +1,12 @@
+{
+  "mqtt_map": {
+    "broker": "mqtt://localhost:1883",
+    "base_topic": "softplc/PLC_01",
+    "publish": [
+      { "topic": "tags/Motor_Run", "tag": "Motor_Run", "qos": 1, "retained": true }
+    ],
+    "subscribe": [
+      { "topic": "tags/Start_PB/set", "tag": "Start_PB", "qos": 1 }
+    ]
+  }
+}

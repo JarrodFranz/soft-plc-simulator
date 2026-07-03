@@ -1,0 +1,18 @@
+{
+  "modbus_map": {
+    "unit_id": 1,
+    "description": "Modbus TCP register map for Motor Control",
+    "coils": [
+      { "address": 0, "tag": "Motor_Run", "description": "Motor running status" },
+      { "address": 1, "tag": "Motor_Latch", "description": "Internal latch status" }
+    ],
+    "discrete_inputs": [
+      { "address": 0, "tag": "Start_PB", "description": "Start pushbutton" },
+      { "address": 1, "tag": "Stop_PB", "description": "Stop pushbutton" },
+      { "address": 2, "tag": "EStop_OK", "description": "E-Stop healthy" },
+      { "address": 3, "tag": "Overload_OK", "description": "Overload healthy" }
+    ],
+    "holding_registers": [],
+    "input_registers": []
+  }
+}
