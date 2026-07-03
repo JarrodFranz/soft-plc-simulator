@@ -16,7 +16,7 @@ The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators
 
 - **ALL IEC 61131-3 Programming Languages Supported**:
   - **Structured Text (ST)**: Textual IDE with live autocomplete suggestions (`IF`, `WHILE`, `FOR`, `TON`), code templates, AST compilation, and real-time AST interpreter.
-  - **Ladder Logic (LD)**: Graphical Rung Diagram Editor with power rails (`L1`/`L2`), contacts (`XIC`/`XIO`), coils (`OTE`/`OTL`/`OTU`), timers, and live tag autocomplete palette.
+  - **Ladder Logic (LD)**: Reverse-engineered from OpenPLC v3 & OpenPLC Editor standards (`/Source/Examples/OpenPLC_v3` and `/Source/Examples/OpenPLC_Editor`). Features power rails (`L1`/`L2`), OpenPLC grid rung matrix, IEC 61131-3 timer blocks (`IN`, `Q`, `PT`, `ET`), parallel branch lines, and live tag autocomplete palette.
   - **Function Block Diagram (FBD)**: Graphical Signal Flow Diagram Editor with drag-and-drop block placement (`AND`, `OR`, `NOT`, `TON`, `LIMIT`, `TAG_INPUT`, `TAG_OUTPUT`), signal wires, and FBD block autocomplete palette.
   - **Sequential Function Chart (SFC)**: State Machine Chart Editor with Initial Steps, Steps, Transitions, ST Actions, and Condition Autocomplete Palette.
 - **Categorized Tasks & Multi-Program Architecture**:

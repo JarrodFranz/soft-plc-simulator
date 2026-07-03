@@ -31,19 +31,19 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       widget.program.rungs.addAll([
         LdRung(
           rungIndex: 0,
-          comment: 'Rung 0: Motor Start/Stop Control with Seal-In Branch',
+          comment: 'OpenPLC Rung 0: Motor Start/Stop Seal-In Circuit',
           inputInstructions: [
-            LdInstruction(type: 'XIC', operandTag: 'Start_PB', comment: 'Start Pushbutton (NO)'),
-            LdInstruction(type: 'XIO', operandTag: 'Stop_PB', comment: 'Stop Pushbutton (NC)'),
-            LdInstruction(type: 'XIO', operandTag: 'Overload_OK', comment: 'Thermal Overload'),
+            LdInstruction(type: 'XIC', operandTag: 'Start_PB', comment: 'Start Pushbutton'),
+            LdInstruction(type: 'XIO', operandTag: 'Stop_PB', comment: 'Stop Pushbutton'),
+            LdInstruction(type: 'XIO', operandTag: 'Overload_OK', comment: 'Overload Thermal Relay'),
           ],
           outputInstructions: [
-            LdInstruction(type: 'OTE', operandTag: 'Motor_Run', comment: 'Motor Contactor Coil'),
+            LdInstruction(type: 'OTE', operandTag: 'Motor_Run', comment: 'Motor Starter Solenoid Coil'),
           ],
           parallelBranches: [
             LdBranch(
               inputInstructions: [
-                LdInstruction(type: 'XIC', operandTag: 'Motor_Run', comment: 'Motor Seal-In Contact'),
+                LdInstruction(type: 'XIC', operandTag: 'Motor_Run', comment: 'Motor Seal-In Auxiliary Contact'),
               ],
               outputInstructions: [],
             ),
@@ -51,21 +51,21 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
         ),
         LdRung(
           rungIndex: 1,
-          comment: 'Rung 1: RSLogix / Do-more Style TON Timer with (EN) and (DN) Wire Pins',
+          comment: 'OpenPLC Rung 1: IEC 61131-3 Standard TON Timer Block (IN, Q, PT, ET)',
           inputInstructions: [
-            LdInstruction(type: 'XIO', operandTag: 'TONTimer.DN', comment: 'NC Timer Done Bit'),
+            LdInstruction(type: 'XIO', operandTag: 'TONTimer.DN', comment: 'Timer Done NC Contact'),
             LdInstruction(type: 'TON', operandTag: 'TONTimer', presetMs: 5000, comment: '5 Second TON Timer'),
           ],
           outputInstructions: [
-            LdInstruction(type: 'OTE', operandTag: 'MixerMotor', comment: 'Mixer Motor Output'),
+            LdInstruction(type: 'OTE', operandTag: 'MixerMotor', comment: 'Mixer Motor Coil'),
           ],
           parallelBranches: [
             LdBranch(
               inputInstructions: [
-                LdInstruction(type: 'XIC', operandTag: 'TONTimer.DN', comment: 'Timer Done Contact'),
+                LdInstruction(type: 'XIC', operandTag: 'TONTimer.DN', comment: 'Timer Done NO Contact'),
               ],
               outputInstructions: [
-                LdInstruction(type: 'OTE', operandTag: 'Arbor1Oiler', comment: 'Oiler Solenoid Coil'),
+                LdInstruction(type: 'OTE', operandTag: 'Arbor1Oiler', comment: 'Arbor Oiler Coil'),
               ],
             ),
           ],
@@ -78,7 +78,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     setState(() {
       final newRung = LdRung(
         rungIndex: insertAt ?? widget.program.rungs.length,
-        comment: 'Rung ${widget.program.rungs.length}: Straight Wire Connection',
+        comment: 'OpenPLC Rung ${widget.program.rungs.length}: Rail-to-Rail Continuous Wire Rung',
         inputInstructions: [],
         outputInstructions: [LdInstruction(type: 'OTE', operandTag: 'Motor_Run')],
       );
@@ -125,7 +125,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     widget.onProgramUpdated();
   }
 
-  void _showAddInstructionDialog(LdRung rung, bool isInput, [LdBranch? targetBranch]) {
+  void _showAddInstructionDialog(LdRung rung, bool isInput, [LdBranch? targetBranch, int? insertIndex]) {
     String type = isInput ? 'XIC' : 'OTE';
     String tag = widget.currentProject.tags.isNotEmpty ? widget.currentProject.tags.first.name : 'Start_PB';
     final commentCtrl = TextEditingController();
@@ -134,8 +134,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     final inputTypes = [
       {'type': 'XIC', 'label': 'XIC — Examine if Closed (-| |-)'},
       {'type': 'XIO', 'label': 'XIO — Examine if Open (-|/|-)'},
-      {'type': 'TON', 'label': 'TON — RSLogix Style Timer On Delay Box'},
-      {'type': 'TOF', 'label': 'TOF — RSLogix Style Timer Off Delay Box'},
+      {'type': 'TON', 'label': 'TON — IEC 61131-3 Timer On Delay Block'},
+      {'type': 'TOF', 'label': 'TOF — IEC 61131-3 Timer Off Delay Block'},
     ];
 
     final outputTypes = [
@@ -149,7 +149,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       builder: (ctx) {
         return StatefulBuilder(
           builder: (context, setDlgState) => AlertDialog(
-            title: Text(isInput ? 'Insert Component onto Wire Line' : 'Add Output Coil to Wire Line'),
+            title: Text(isInput ? 'OpenPLC Grid: Insert Contact / Block' : 'OpenPLC Grid: Add Output Coil'),
             content: SizedBox(
               width: 440,
               child: Column(
@@ -184,7 +184,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                       controller: TextEditingController(text: presetMs.toString()),
                       keyboardType: TextInputType.number,
                       onChanged: (v) => presetMs = int.tryParse(v) ?? 5000,
-                      decoration: const InputDecoration(labelText: 'Timer Preset Time (PRE) in ms'),
+                      decoration: const InputDecoration(labelText: 'Timer Preset Time (PT) in ms'),
                     ),
                     const SizedBox(height: 12),
                   ],
@@ -200,18 +200,14 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                   final inst = LdInstruction(type: type, operandTag: tag, presetMs: presetMs, comment: commentCtrl.text);
 
                   setState(() {
-                    if (targetBranch != null) {
-                      if (isInput) {
-                        targetBranch.inputInstructions.add(inst);
-                      } else {
-                        targetBranch.outputInstructions.add(inst);
-                      }
+                    final targetList = targetBranch != null
+                        ? (isInput ? targetBranch.inputInstructions : targetBranch.outputInstructions)
+                        : (isInput ? rung.inputInstructions : rung.outputInstructions);
+
+                    if (insertIndex != null && insertIndex >= 0 && insertIndex <= targetList.length) {
+                      targetList.insert(insertIndex, inst);
                     } else {
-                      if (isInput) {
-                        rung.inputInstructions.add(inst);
-                      } else {
-                        rung.outputInstructions.add(inst);
-                      }
+                      targetList.add(inst);
                     }
                   });
                   widget.onProgramUpdated();
@@ -242,7 +238,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
             }).toList();
 
             return AlertDialog(
-              title: Text('Edit Component: ${inst.type} (${inst.operandTag})'),
+              title: Text('Edit OpenPLC Component: ${inst.type} (${inst.operandTag})'),
               content: SizedBox(
                 width: 440,
                 child: Column(
@@ -259,8 +255,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                         DropdownMenuItem(value: 'OTE', child: Text('OTE — Output Coil (-( )-)')),
                         DropdownMenuItem(value: 'OTL', child: Text('OTL — Output Latch (-(L)-)')),
                         DropdownMenuItem(value: 'OTU', child: Text('OTU — Output Unlatch (-(U)-)')),
-                        DropdownMenuItem(value: 'TON', child: Text('TON — RSLogix Style Timer On Delay Box')),
-                        DropdownMenuItem(value: 'TOF', child: Text('TOF — RSLogix Style Timer Off Delay Box')),
+                        DropdownMenuItem(value: 'TON', child: Text('TON — IEC 61131-3 Timer On Delay Block')),
+                        DropdownMenuItem(value: 'TOF', child: Text('TOF — IEC 61131-3 Timer Off Delay Block')),
                       ],
                       onChanged: (val) => setDlgState(() => selectedType = val!),
                     ),
@@ -305,7 +301,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                       TextField(
                         controller: presetCtrl,
                         keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(labelText: 'Timer Preset Time (PRE) in ms'),
+                        decoration: const InputDecoration(labelText: 'Timer Preset Time (PT) in ms'),
                       ),
                     ],
 
@@ -350,7 +346,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('${widget.program.name} — Do-more PLC Style Ladder Diagram Editor'),
+        title: Text('${widget.program.name} — OpenPLC Engine Ladder Diagram (LD) Editor'),
         backgroundColor: const Color(0xFF1E293B),
         actions: [
           ElevatedButton.icon(
@@ -364,7 +360,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       ),
       body: Row(
         children: [
-          // CENTER WORKSPACE: Continuous Circuit Ladder Rung Diagram
+          // CENTER WORKSPACE: OpenPLC Grid Matrix Rung Canvas
           Expanded(
             child: Container(
               color: const Color(0xFF0F172A),
@@ -373,7 +369,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 itemCount: widget.program.rungs.length,
                 itemBuilder: (context, index) {
                   final rung = widget.program.rungs[index];
-                  return _buildRungCard(rung, index);
+                  return _buildOpenPlcRungCard(rung, index);
                 },
               ),
             ),
@@ -394,7 +390,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('TAG & INSTRUCTION AUTOCOMPLETE', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.cyanAccent)),
+                      const Text('OPENPLC TAG & INSTRUCTION PALETTE', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.cyanAccent)),
                       const SizedBox(height: 8),
                       TextField(
                         onChanged: (v) => setState(() => _tagSearchQuery = v),
@@ -446,7 +442,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     );
   }
 
-  Widget _buildRungCard(LdRung rung, int index) {
+  Widget _buildOpenPlcRungCard(LdRung rung, int index) {
     return Card(
       color: const Color(0xFF1E293B),
       margin: const EdgeInsets.only(bottom: 16),
@@ -462,7 +458,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(color: Colors.cyan.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
-                  child: Text('RUNG $index', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.cyanAccent, fontSize: 11)),
+                  child: Text('OPENPLC RUNG $index', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.cyanAccent, fontSize: 11)),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
@@ -515,9 +511,9 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
             const SizedBox(height: 12),
 
-            // Continuous Wire Canvas Container
+            // OpenPLC Grid Matrix Rung Container with Rail-to-Rail Wire Pass
             Container(
-              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+              padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
               decoration: BoxDecoration(
                 color: const Color(0xFF0F172A),
                 borderRadius: BorderRadius.circular(6),
@@ -527,23 +523,23 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // Main Rung Line
-                  _buildContinuousWireRungLine(rung, rung.inputInstructions, rung.outputInstructions, null),
+                  _buildOpenPlcGridRungLine(rung, rung.inputInstructions, rung.outputInstructions, null),
 
-                  // Parallel Branches (OR Frames with Delete Button)
+                  // Parallel Branches (OR Branch Lines)
                   ...List.generate(rung.parallelBranches.length, (bIdx) {
                     final branch = rung.parallelBranches[bIdx];
 
                     return Padding(
-                      padding: const EdgeInsets.only(top: 8),
+                      padding: const EdgeInsets.only(top: 12),
                       child: Row(
                         children: [
                           const SizedBox(width: 14),
                           // Drop line from main branch
-                          Container(width: 3, height: 60, color: Colors.greenAccent),
+                          Container(width: 3, height: 65, color: Colors.greenAccent),
                           Expanded(
                             child: Row(
                               children: [
-                                Expanded(child: _buildContinuousWireRungLine(rung, branch.inputInstructions, branch.outputInstructions, branch)),
+                                Expanded(child: _buildOpenPlcGridRungLine(rung, branch.inputInstructions, branch.outputInstructions, branch)),
                                 IconButton(
                                   icon: const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
                                   tooltip: 'Delete Parallel Branch',
@@ -553,7 +549,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                             ),
                           ),
                           // Rise line back to main rail
-                          Container(width: 3, height: 60, color: Colors.blueAccent),
+                          Container(width: 3, height: 65, color: Colors.blueAccent),
                           const SizedBox(width: 14),
                         ],
                       ),
@@ -568,99 +564,109 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     );
   }
 
-  Widget _buildContinuousWireRungLine(LdRung rung, List<LdInstruction> inputs, List<LdInstruction> outputs, LdBranch? branch) {
-    return Stack(
-      alignment: Alignment.center,
+  Widget _buildOpenPlcGridRungLine(LdRung rung, List<LdInstruction> inputs, List<LdInstruction> outputs, LdBranch? branch) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        // Center Unbroken Wire Line passing through exact vertical center of contacts and coils
-        Positioned(
-          left: 6,
-          right: 6,
-          child: Container(
-            height: 3,
-            color: Colors.greenAccent,
+        // Left Power Rail (L1 - 24VDC)
+        Column(
+          children: [
+            Container(width: 6, height: 80, color: Colors.greenAccent),
+            const Text('L1', style: TextStyle(fontSize: 8, color: Colors.greenAccent, fontWeight: FontWeight.bold)),
+          ],
+        ),
+
+        // Wire trace from L1 to first cell
+        Container(width: 16, height: 3, color: Colors.greenAccent),
+
+        // Input Contacts & Functions Grid Cells
+        Expanded(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                if (inputs.isEmpty)
+                  // OpenPLC Blank Wire Line Cell (Clickable to Insert Component)
+                  InkWell(
+                    onTap: () => _showAddInstructionDialog(rung, true, branch, 0),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: Colors.cyan.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: Colors.cyanAccent, width: 1.5),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.add, size: 14, color: Colors.cyanAccent),
+                          SizedBox(width: 6),
+                          Text('OpenPLC Wire Line — Click to Insert Contact / Timer', style: TextStyle(fontSize: 11, color: Colors.cyanAccent, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ),
+                  )
+                else
+                  ...List.generate(inputs.length, (idx) {
+                    final inst = inputs[idx];
+                    return Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _buildOpenPlcInstructionGraphic(inst, rung),
+                        // Wire segment connecting to next cell
+                        Container(width: 20, height: 3, color: Colors.greenAccent),
+                      ],
+                    );
+                  }),
+
+                IconButton(
+                  icon: const Icon(Icons.add_box, color: Colors.cyanAccent, size: 22),
+                  tooltip: 'Insert Contact onto Wire Grid',
+                  onPressed: () => _showAddInstructionDialog(rung, true, branch),
+                ),
+              ],
+            ),
           ),
         ),
 
-        // Component & Rail Content Layer
-        Row(
+        // Unbroken Horizontal Main Circuit Wire passing across to Coil
+        Expanded(
+          child: Container(height: 3, color: Colors.greenAccent),
+        ),
+
+        // Output Coils Grid Cells
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              ...outputs.map((inst) => _buildOpenPlcInstructionGraphic(inst, rung)),
+            ],
+          ),
+        ),
+
+        // Wire trace to L2 rail
+        Container(width: 16, height: 3, color: Colors.blueAccent),
+
+        // Right Power Rail (L2 - Neutral / 0V)
+        Column(
           children: [
-            // Left Power Rail (L1)
-            Container(width: 6, height: 110, color: Colors.greenAccent),
-            Container(width: 16, height: 3, color: Colors.greenAccent),
-
-            // Input Contacts & Components on Wire Line
-            Expanded(
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    if (inputs.isEmpty)
-                      // Blank Wire Line Segment (Clickable to Add Component)
-                      InkWell(
-                        onTap: () => _showAddInstructionDialog(rung, true, branch),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: Colors.cyan.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(4),
-                            border: Border.all(color: Colors.cyanAccent, width: 1.5),
-                          ),
-                          child: const Row(
-                            children: [
-                              Icon(Icons.add, size: 14, color: Colors.cyanAccent),
-                              SizedBox(width: 4),
-                              Text('Click Wire Line to Add Contact / Timer', style: TextStyle(fontSize: 10, color: Colors.cyanAccent, fontWeight: FontWeight.bold)),
-                            ],
-                          ),
-                        ),
-                      )
-                    else
-                      ...inputs.map((inst) => _buildInstructionGraphic(inst, rung, true)),
-
-                    IconButton(
-                      icon: const Icon(Icons.add_box, color: Colors.cyanAccent, size: 20),
-                      tooltip: 'Insert Contact onto Wire Line',
-                      onPressed: () => _showAddInstructionDialog(rung, true, branch),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-            // Middle Space for Wire Line to pass across to Output Coils
-            const Spacer(),
-
-            // Output Coils on Right Rail
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  ...outputs.map((inst) => _buildInstructionGraphic(inst, rung, false)),
-                ],
-              ),
-            ),
-
-            // Right Power Rail (L2 - Neutral / 0V)
-            Container(width: 16, height: 3, color: Colors.blueAccent),
-            Container(width: 6, height: 110, color: Colors.blueAccent),
+            Container(width: 6, height: 80, color: Colors.blueAccent),
+            const Text('L2', style: TextStyle(fontSize: 8, color: Colors.blueAccent, fontWeight: FontWeight.bold)),
           ],
         ),
       ],
     );
   }
 
-  Widget _buildInstructionGraphic(LdInstruction inst, LdRung rung, bool isInput) {
+  Widget _buildOpenPlcInstructionGraphic(LdInstruction inst, LdRung rung) {
     final bool isTimer = inst.type == 'TON' || inst.type == 'TOF';
 
     if (isTimer) {
-      // Render Exact RSLogix / Do-more Style TON Timer Box without vertical overflow
+      // OpenPLC IEC 61131-3 Standard Timer Block (IN, Q, PT, ET)
       return InkWell(
         onTap: () => _showClickToEditTagDialog(inst),
         child: Container(
-          margin: const EdgeInsets.symmetric(horizontal: 6),
-          width: 180,
-          height: 100,
+          margin: const EdgeInsets.symmetric(horizontal: 4),
+          width: 175,
           decoration: BoxDecoration(
             color: const Color(0xFF1E293B),
             borderRadius: BorderRadius.circular(4),
@@ -671,50 +677,48 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // OpenPLC Block Header
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 color: const Color(0xFF334155),
                 child: Text(
-                  inst.type,
+                  '${inst.type} (${inst.operandTag})',
                   style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.white, fontFamily: 'monospace'),
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
 
+              // OpenPLC Block Pins: IN (Input), Q (Done output), PT (Preset), ET (Elapsed)
               Padding(
                 padding: const EdgeInsets.all(6.0),
                 child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Expanded(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('Timer: ${inst.operandTag}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Colors.white, fontFamily: 'monospace'), overflow: TextOverflow.ellipsis),
-                          Text('Preset: ${inst.presetMs}', style: const TextStyle(fontSize: 10, color: Colors.cyanAccent, fontFamily: 'monospace')),
-                          const Text('Accum: 0', style: TextStyle(fontSize: 10, color: Colors.cyanAccent, fontFamily: 'monospace')),
-                        ],
-                      ),
-                    ),
-
-                    // RSLogix Output Pins extending out right side of Timer Box: -(EN)- and -(DN)-
-                    Column(
-                      mainAxisSize: MainAxisSize.min,
+                    // Left Input Pins
+                    const Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Row(
-                          children: [
-                            Container(width: 6, height: 2, color: Colors.greenAccent),
-                            const Text('-(EN)-', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 9, color: Colors.greenAccent, fontFamily: 'monospace')),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Container(width: 6, height: 2, color: Colors.grey),
-                            const Text('-(DN)-', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 9, color: Colors.grey, fontFamily: 'monospace')),
-                          ],
-                        ),
+                        Text('IN', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Colors.greenAccent, fontFamily: 'monospace')),
+                        Text('PT', style: TextStyle(fontSize: 10, color: Colors.grey, fontFamily: 'monospace')),
+                      ],
+                    ),
+
+                    // Center Values
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Text('PT: ${inst.presetMs}ms', style: const TextStyle(fontSize: 9, color: Colors.cyanAccent)),
+                        const Text('ET: 0ms', style: TextStyle(fontSize: 9, color: Colors.cyanAccent)),
+                      ],
+                    ),
+
+                    // Right Output Pins (Q, ET)
+                    const Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text('Q', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Colors.greenAccent, fontFamily: 'monospace')),
+                        Text('ET', style: TextStyle(fontSize: 10, color: Colors.grey, fontFamily: 'monospace')),
                       ],
                     ),
                   ],
@@ -738,7 +742,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     return InkWell(
       onTap: () => _showClickToEditTagDialog(inst),
       child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 6),
+        margin: const EdgeInsets.symmetric(horizontal: 4),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         decoration: BoxDecoration(
           color: const Color(0xFF1E293B),
