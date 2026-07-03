@@ -31,21 +31,41 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       widget.program.rungs.addAll([
         LdRung(
           rungIndex: 0,
-          comment: 'Rung 0: RSLogix Style Timer On Delay (TON) with Parallel Branch',
+          comment: 'Rung 0: Motor 1 Start/Stop Control with Seal-In Branch & Interlocking',
           inputInstructions: [
-            LdInstruction(type: 'XIO', operandTag: 'TONTimer.DN', comment: 'Normally Closed Timer Done Bit'),
-            LdInstruction(type: 'TON', operandTag: 'TONTimer', presetMs: 5000, comment: '5 Second TON Timer'),
+            LdInstruction(type: 'XIC', operandTag: 'Start_PB', comment: 'Start Pushbutton (NO)'),
+            LdInstruction(type: 'XIO', operandTag: 'Stop_PB', comment: 'Stop Pushbutton (NC)'),
+            LdInstruction(type: 'XIO', operandTag: 'Overload_OK', comment: 'Thermal Overload'),
           ],
           outputInstructions: [
-            LdInstruction(type: 'OTE', operandTag: 'MainContactor', comment: 'Main Motor Contactor'),
+            LdInstruction(type: 'OTE', operandTag: 'Motor_Run', comment: 'Motor Contactor Coil'),
           ],
           parallelBranches: [
             LdBranch(
               inputInstructions: [
-                LdInstruction(type: 'XIC', operandTag: 'TONTimer.DN', comment: 'Examine if Timer Done'),
+                LdInstruction(type: 'XIC', operandTag: 'Motor_Run', comment: 'Motor Seal-In Contact'),
+              ],
+              outputInstructions: [],
+            ),
+          ],
+        ),
+        LdRung(
+          rungIndex: 1,
+          comment: 'Rung 1: RSLogix Style TON Timer with Dual (EN) and (DN) Output Pins',
+          inputInstructions: [
+            LdInstruction(type: 'XIO', operandTag: 'TONTimer.DN', comment: 'NC Timer Done Bit'),
+            LdInstruction(type: 'TON', operandTag: 'TONTimer', presetMs: 5000, comment: '5 Second TON Timer'),
+          ],
+          outputInstructions: [
+            LdInstruction(type: 'OTE', operandTag: 'MixerMotor', comment: 'Mixer Motor Output'),
+          ],
+          parallelBranches: [
+            LdBranch(
+              inputInstructions: [
+                LdInstruction(type: 'XIC', operandTag: 'TONTimer.DN', comment: 'Timer Done Contact'),
               ],
               outputInstructions: [
-                LdInstruction(type: 'OTE', operandTag: 'Arbor1Oiler', comment: 'Arbor 1 Oiler Solenoid Coil'),
+                LdInstruction(type: 'OTE', operandTag: 'Arbor1Oiler', comment: 'Oiler Solenoid Coil'),
               ],
             ),
           ],
@@ -53,7 +73,6 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       ]);
     }
 
-    // Auto register TONTimer tags
     _registerTimerTags('TONTimer', 5000);
   }
 
@@ -104,9 +123,16 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
   void _addParallelBranch(LdRung rung) {
     setState(() {
       rung.parallelBranches.add(LdBranch(
-        inputInstructions: [LdInstruction(type: 'XIC', operandTag: 'TONTimer.DN')],
-        outputInstructions: [LdInstruction(type: 'OTE', operandTag: 'Arbor1Oiler')],
+        inputInstructions: [LdInstruction(type: 'XIC', operandTag: 'Motor_Run')],
+        outputInstructions: [],
       ));
+    });
+    widget.onProgramUpdated();
+  }
+
+  void _deleteParallelBranch(LdRung rung, int branchIndex) {
+    setState(() {
+      rung.parallelBranches.removeAt(branchIndex);
     });
     widget.onProgramUpdated();
   }
@@ -131,16 +157,16 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     int presetMs = 5000;
 
     final inputTypes = [
-      {'type': 'XIC', 'label': 'XIC — Examine if Closed (-| |-) [NO Contact]'},
-      {'type': 'XIO', 'label': 'XIO — Examine if Open (-|/|-) [NC Contact]'},
-      {'type': 'TON', 'label': 'TON — RSLogix Style Timer On Delay Box (EN, DN Out Pins)'},
-      {'type': 'TOF', 'label': 'TOF — RSLogix Style Timer Off Delay Box (EN, DN Out Pins)'},
+      {'type': 'XIC', 'label': 'XIC — Examine if Closed (-| |-)'},
+      {'type': 'XIO', 'label': 'XIO — Examine if Open (-|/|-)'},
+      {'type': 'TON', 'label': 'TON — RSLogix Style Timer On Delay Box'},
+      {'type': 'TOF', 'label': 'TOF — RSLogix Style Timer Off Delay Box'},
     ];
 
     final outputTypes = [
-      {'type': 'OTE', 'label': 'OTE — Output Coil (-( )-) [Standard]' },
-      {'type': 'OTL', 'label': 'OTL — Output Latch (-(L)-) [Set]' },
-      {'type': 'OTU', 'label': 'OTU — Output Unlatch (-(U)-) [Reset]' },
+      {'type': 'OTE', 'label': 'OTE — Output Coil (-( )-)' },
+      {'type': 'OTL', 'label': 'OTL — Output Latch (-(L)-)' },
+      {'type': 'OTU', 'label': 'OTU — Output Unlatch (-(U)-)' },
     ];
 
     showDialog(
@@ -155,22 +181,24 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   DropdownButtonFormField<String>(
-                    value: type,
+                    initialValue: type,
+                    isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Instruction Type'),
                     items: (isInput ? inputTypes : outputTypes).map((t) => DropdownMenuItem(
                       value: t['type'],
-                      child: Text(t['label']!),
+                      child: Text(t['label']!, overflow: TextOverflow.ellipsis),
                     )).toList(),
                     onChanged: (val) => setDlgState(() => type = val!),
                   ),
                   const SizedBox(height: 12),
 
                   DropdownButtonFormField<String>(
-                    value: widget.currentProject.tags.any((t) => t.name == tag) ? tag : null,
-                    decoration: const InputDecoration(labelText: 'Operand Tag / Timer Structure Binding'),
+                    initialValue: widget.currentProject.tags.any((t) => t.name == tag) ? tag : null,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Operand Tag / Parameter'),
                     items: widget.currentProject.tags.map((t) => DropdownMenuItem(
                       value: t.name,
-                      child: Text('${t.name} [${t.dataType}] — ${t.path}'),
+                      child: Text('${t.name} [${t.dataType}]', overflow: TextOverflow.ellipsis),
                     )).toList(),
                     onChanged: (val) => setDlgState(() => tag = val!),
                   ),
@@ -251,7 +279,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     DropdownButtonFormField<String>(
-                      value: selectedType,
+                      initialValue: selectedType,
+                      isExpanded: true,
                       decoration: const InputDecoration(labelText: 'Instruction Type'),
                       items: const [
                         DropdownMenuItem(value: 'XIC', child: Text('XIC — Examine Closed (-| |-)')),
@@ -278,7 +307,6 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     ),
                     const SizedBox(height: 8),
 
-                    // Quick Autocomplete Tag Selection Chips
                     const Text('AUTOCOMPLETE TAG SUGGESTIONS:', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey)),
                     const SizedBox(height: 4),
                     SizedBox(
@@ -291,8 +319,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                             dense: true,
                             contentPadding: EdgeInsets.zero,
                             leading: Icon(Icons.label_important, size: 14, color: t.name.contains('.DN') ? Colors.amberAccent : Colors.cyanAccent),
-                            title: Text(t.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                            subtitle: Text('${t.path} [${t.dataType}]', style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                            title: Text(t.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12), overflow: TextOverflow.ellipsis),
+                            subtitle: Text('${t.path} [${t.dataType}]', style: const TextStyle(fontSize: 10, color: Colors.grey), overflow: TextOverflow.ellipsis),
                             onTap: () {
                               setDlgState(() => tagCtrl.text = t.name);
                             },
@@ -355,7 +383,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('${widget.program.name} — RSLogix Style Ladder Logic (LD) Editor'),
+        title: Text('${widget.program.name} — Ladder Logic (LD) Editor'),
         backgroundColor: const Color(0xFF1E293B),
         actions: [
           ElevatedButton.icon(
@@ -369,7 +397,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       ),
       body: Row(
         children: [
-          // CENTER WORKSPACE: Visual Rung Diagram Canvas with RSLogix Timers & Parallel Branches
+          // CENTER WORKSPACE: Visual Rung Diagram Canvas with Continuous Wires & Parallel Branching
           Expanded(
             child: Container(
               color: const Color(0xFF0F172A),
@@ -435,8 +463,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                                   ? Colors.amberAccent
                                   : (tag.ioType == 'SimulatedInput' ? Colors.greenAccent : Colors.cyanAccent),
                             ),
-                            title: Text(tag.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                            subtitle: Text('${tag.path} [${tag.dataType}]', style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                            title: Text(tag.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12), overflow: TextOverflow.ellipsis),
+                            subtitle: Text('${tag.path} [${tag.dataType}]', style: const TextStyle(fontSize: 10, color: Colors.grey), overflow: TextOverflow.ellipsis),
                           ),
                         ),
                       )),
@@ -520,7 +548,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
             const SizedBox(height: 12),
 
-            // Rung Graphical Power Rail Line Canvas
+            // Rung Graphical Power Rail Line Canvas (Continuous Circuit Wiring)
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -534,20 +562,31 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                   // Main Rung Line
                   _buildSingleRungLine(rung, rung.inputInstructions, rung.outputInstructions, null),
 
-                  // Parallel Branches (OR Frames)
-                  ...rung.parallelBranches.map((branch) {
+                  // Parallel Branches (OR Frames with Delete Button)
+                  ...List.generate(rung.parallelBranches.length, (bIdx) {
+                    final branch = rung.parallelBranches[bIdx];
+
                     return Padding(
                       padding: const EdgeInsets.only(top: 8),
                       child: Row(
                         children: [
                           const SizedBox(width: 22),
                           // Drop line from main branch
-                          Container(width: 3, height: 40, color: Colors.greenAccent),
+                          Container(width: 3, height: 50, color: Colors.greenAccent),
                           Expanded(
-                            child: _buildSingleRungLine(rung, branch.inputInstructions, branch.outputInstructions, branch),
+                            child: Row(
+                              children: [
+                                Expanded(child: _buildSingleRungLine(rung, branch.inputInstructions, branch.outputInstructions, branch)),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
+                                  tooltip: 'Delete Parallel Branch',
+                                  onPressed: () => _deleteParallelBranch(rung, bIdx),
+                                ),
+                              ],
+                            ),
                           ),
                           // Rise line back to main rail
-                          Container(width: 3, height: 40, color: Colors.blueAccent),
+                          Container(width: 3, height: 50, color: Colors.blueAccent),
                           const SizedBox(width: 22),
                         ],
                       ),
@@ -574,13 +613,16 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
         ),
         Container(width: 16, height: 3, color: Colors.greenAccent),
 
-        // Input Contacts Flow
+        // Input Contacts Flow with Continuous Circuit Wire Lines
         Expanded(
           child: SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                ...inputs.map((inst) => _buildInstructionGraphic(inst, rung, true)),
+                ...inputs.expand((inst) => [
+                  _buildInstructionGraphic(inst, rung, true),
+                  Container(width: 16, height: 3, color: Colors.greenAccent), // Continuous wire line between contacts
+                ]),
                 IconButton(
                   icon: const Icon(Icons.add_box, color: Colors.cyanAccent, size: 22),
                   tooltip: 'Add Contact / Timer',
@@ -591,20 +633,24 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           ),
         ),
 
-        // Wire Line across to Output Coils
+        // Continuous Main Circuit Wire Line across to Output Coils
         Expanded(child: Container(height: 3, color: Colors.greenAccent)),
 
-        // Output Coils Flow
+        // Output Coils Flow with Continuous Circuit Wire Lines
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: Row(
             children: [
-              ...outputs.map((inst) => _buildInstructionGraphic(inst, rung, false)),
-              IconButton(
-                icon: const Icon(Icons.add_box, color: Colors.amberAccent, size: 22),
-                tooltip: 'Add Output Coil',
-                onPressed: () => _showAddInstructionDialog(rung, false, branch),
-              ),
+              ...outputs.expand((inst) => [
+                _buildInstructionGraphic(inst, rung, false),
+                Container(width: 16, height: 3, color: Colors.greenAccent), // Continuous wire line between coils
+              ]),
+              if (outputs.isEmpty)
+                IconButton(
+                  icon: const Icon(Icons.add_box, color: Colors.amberAccent, size: 22),
+                  tooltip: 'Add Output Coil',
+                  onPressed: () => _showAddInstructionDialog(rung, false, branch),
+                ),
             ],
           ),
         ),
@@ -629,7 +675,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       return InkWell(
         onTap: () => _showClickToEditTagDialog(inst),
         child: Container(
-          margin: const EdgeInsets.symmetric(horizontal: 6),
+          margin: const EdgeInsets.symmetric(horizontal: 4),
           decoration: BoxDecoration(
             color: const Color(0xFF1E293B),
             borderRadius: BorderRadius.circular(4),
@@ -724,7 +770,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     return InkWell(
       onTap: () => _showClickToEditTagDialog(inst),
       child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 6),
+        margin: const EdgeInsets.symmetric(horizontal: 4),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         decoration: BoxDecoration(
           color: const Color(0xFF1E293B),
