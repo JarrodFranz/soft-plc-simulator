@@ -12,23 +12,25 @@ The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators
 
 ---
 
-## ✨ Features & Progress (Phase 2 Active)
+## ✨ Features & Progress (Phase 3 Active — ALL IEC 61131-3 Languages)
 
-- **IEC 61131-3 Control Logic Execution**:
-  - **Structured Text (ST) Engine & Live IDE (Phase 2)**: Lexer, recursive-descent parser, AST compiler, and real-time AST interpreter (`IF/THEN/ELSIF/ELSE`, `WHILE`, `REPEAT`, `FOR`, `TON` timers, boolean/numeric math).
-  - **Live Autocomplete Palette**: Code completion for global tags, Data Blocks (`DB_Motor1.Run`), Structs (DUT), built-in function blocks (`TON`, `TOF`, `TP`, `CTU`, `CTD`), math utilities (`LIMIT`, `SEL`, `ABS`, `SQRT`), and control keywords.
-  - **Ladder Logic (LD) ISA (Phase 1)**: Internal Instruction Set Architecture (`XIC`, `XIO`, `OTE`, `OTL`, `OTU`, nested parallel branch OR logic, `TON`/`TOF` timers).
+- **ALL IEC 61131-3 Programming Languages Supported**:
+  - **Structured Text (ST)**: Textual IDE with live autocomplete suggestions (`IF`, `WHILE`, `FOR`, `TON`), code templates, AST compilation, and real-time AST interpreter.
+  - **Ladder Logic (LD)**: Graphical Rung Diagram Editor with power rails (`L1`/`L2`), contacts (`XIC`/`XIO`), coils (`OTE`/`OTL`/`OTU`), timers, and live tag autocomplete palette.
+  - **Function Block Diagram (FBD)**: Graphical Signal Flow Diagram Editor with drag-and-drop block placement (`AND`, `OR`, `NOT`, `TON`, `LIMIT`, `TAG_INPUT`, `TAG_OUTPUT`), signal wires, and FBD block autocomplete palette.
+  - **Sequential Function Chart (SFC)**: State Machine Chart Editor with Initial Steps, Steps, Transitions, ST Actions, and Condition Autocomplete Palette.
 - **Categorized Tasks & Multi-Program Architecture**:
-  - Task organization under **`Startup Tasks`**, **`Continuous Tasks`**, **`Periodic Tasks`**, and **`Event Tasks`** with program counts and language badges (`ST`, `LD`).
+  - Task organization under **`Startup Tasks`**, **`Continuous Tasks`**, **`Periodic Tasks`**, and **`Event Tasks`** with program counts and language badges (`ST`, `LD`, `FBD`, `SFC`).
 - **Memory & Data Storage Manager**:
   - **Global Tags**: Fully typed tags (`BOOL`, `INT16/32/64`, `REAL/LREAL`, `STRING`).
   - **Struct Definitions (DUT)**: User Defined Types with custom fields and defaults.
   - **Data Blocks (DB)**: Structured data blocks instantiated from Struct definitions.
 - **Custom Grid HMI Dashboard Builder**:
   - **`RUN MODE`**: Interactive operation surface linked to live PLC tags.
-  - **`EDIT BUILDER MODE`**: Drag-and-drop / grid layout component builder.
+  - **`EDIT BUILDER MODE`**: Component Drag-and-Drop Palette dock + Direct Grid Drag & Place positioning.
   - **Input Components**: `PushbuttonSwitch` (BOOL), `ToggleSwitch` (BOOL), `NumericSliderInput` (INT/FLOAT), `TextInputField` (STRING/NUM).
   - **Output & Display Components**: `LedIndicatorLight` (BOOL pilot lights), `DigitalGaugeDisplay` (progress gauges), `StatusPillDisplay` (value pills), `TankGraphicDisplay` (vessel liquid level graphics).
+  - **Grid Column Resizer**: Snap width controls (`1 Col`, `2 Col`, `3 Col`, `4 Col`).
 - **Toggleable Side Dock Tag Inspector**:
   - Searchable tag matrix with live values, quality flags, engineering units, and manual value forcing controls accessible right on the HMI screen.
 - **Configurable Scan Cycle Engine & Debugging**:
@@ -42,8 +44,9 @@ The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators
   ┌────────────────────────────────────────────────────────┐
   │         Mobile / Desktop UI (Flutter & Dart)           │
   │  - Left Project Tree Explorer   - ST IDE & Autocomplete│
-  │  - Grid HMI Dashboard Builder   - Memory Manager (DUT) │
-  │  - Side Dock Tag Inspector      - Scan Speed Controller│
+  │  - Ladder Logic (LD) Editor     - FBD Diagram Editor   │
+  │  - SFC Chart Editor             - Memory Manager (DUT) │
+  │  - Grid HMI Dashboard Builder   - Scan Speed Controller│
   └───────────────────────────┬────────────────────────────┘
                               │ Native FFI (Local) / WebSocket (Gateway)
   ┌───────────────────────────┴────────────────────────────┐
@@ -170,14 +173,14 @@ flutter analyze
 |-------|-------------|--------|
 | **Phase 0** | Project Scaffold, Architecture & Schemas | ✅ Completed |
 | **Phase 1** | Tag Database, Scan Engine & Ladder Logic ISA | ✅ Completed |
-| **Phase 2** | Structured Text (ST) Engine, ST Autocomplete IDE, Memory Manager & Custom HMI Builder | 🔄 **ACTIVE / IN PROGRESS** |
-| **Phase 3** | Ladder Logic (LD) Visual Rung Renderer & Editor in Flutter | ⏳ Planned |
-| **Phase 4** | OPC UA Server Adapter in Gateway | ⏳ Planned |
-| **Phase 5** | Modbus TCP Server Adapter in Gateway | ⏳ Planned |
+| **Phase 2** | Structured Text (ST) Engine, ST Autocomplete IDE, Memory Manager & Custom HMI Builder | ✅ Completed |
+| **Phase 3** | Complete IEC 61131-3 Languages (ST, LD, FBD, SFC) with Autocomplete Palettes | 🔄 **ACTIVE / IN PROGRESS** |
+| **Phase 4** | Industrial OPC UA Server Adapter | ⏳ Planned |
+| **Phase 5** | Modbus TCP Server Adapter | ⏳ Planned |
 | **Phase 6** | MQTT Client / Sparkplug B Publisher | ⏳ Planned |
 | **Phase 7** | Touch HMI Controls & Mobile UI Polish | ⏳ Planned |
 | **Phase 8** | DNP3 Outstation Protocol Adapter | ⏳ Planned |
-| **Phase 9** | FBD, SFC & Process Simulation Engine | ⏳ Planned |
+| **Phase 9** | Advanced Process Simulation Engine | ⏳ Planned |
 | **Phase 10** | Release Packaging, Installers & Examples | ⏳ Planned |
 
 ---

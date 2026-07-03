@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../widgets/tag_inspector_dock.dart';
 import 'st_editor_screen.dart';
+import 'ld_editor_screen.dart';
+import 'fbd_editor_screen.dart';
+import 'sfc_editor_screen.dart';
 import 'memory_manager_screen.dart';
 import 'hmi_dashboard_builder_screen.dart';
 
@@ -79,9 +82,14 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
           description: 'Motor start/stop with permissives in ST',
           stSource: '// Structured Text Motor Control\nIF (Start_PB OR Motor_Latch) AND NOT Stop_PB AND EStop_OK AND Overload_OK THEN\n    Motor_Latch := TRUE;\nELSE\n    Motor_Latch := FALSE;\nEND_IF;\nMotor_Run := Motor_Latch AND EStop_OK AND Overload_OK;',
         ),
+        PlcProgram(
+          name: 'MotorControl_LD',
+          language: 'LadderLogic',
+          description: 'Motor start/stop Rungs in Ladder Logic (LD)',
+        ),
       ],
       tasks: [
-        PlcTask(name: 'MainContinuousTask', type: 'Continuous', periodMs: 100, programNames: ['MotorControl_ST']),
+        PlcTask(name: 'MainContinuousTask', type: 'Continuous', periodMs: 100, programNames: ['MotorControl_ST', 'MotorControl_LD']),
       ],
       hmis: [
         HmiScreenDef(
@@ -123,9 +131,19 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
           description: 'On/Off Tank Level Fill/Drain Control',
           stSource: '// Tank Level Fill/Drain Logic\nIF Auto_Mode THEN\n    IF Level_PV < (Level_SP - 5.0) THEN\n        Fill_Valve := TRUE;\n        Drain_Valve := FALSE;\n    ELSIF Level_PV > (Level_SP + 5.0) THEN\n        Fill_Valve := FALSE;\n        Drain_Valve := TRUE;\n    ELSE\n        Fill_Valve := FALSE;\n        Drain_Valve := FALSE;\n    END_IF;\nEND_IF;\nHigh_Alarm := Level_PV > 85.0;',
         ),
+        PlcProgram(
+          name: 'TankLevel_FBD',
+          language: 'FunctionBlockDiagram',
+          description: 'Tank Level Signal Flow Gate Diagram',
+        ),
+        PlcProgram(
+          name: 'TankSequence_SFC',
+          language: 'SequentialFunctionChart',
+          description: 'Tank Fill/Drain Sequence State Machine',
+        ),
       ],
       tasks: [
-        PlcTask(name: 'ProcessLoopTask', type: 'Continuous', periodMs: 100, programNames: ['TankLevelControl_ST']),
+        PlcTask(name: 'ProcessLoopTask', type: 'Continuous', periodMs: 100, programNames: ['TankLevelControl_ST', 'TankLevel_FBD', 'TankSequence_SFC']),
       ],
       hmis: [
         HmiScreenDef(
@@ -425,7 +443,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
 
                 const VerticalDivider(width: 1, color: Colors.white12),
 
-                // CENTER WORKSPACE: Active View (HMI, ST Editor, or Memory Manager)
+                // CENTER WORKSPACE: Active View (HMI, Language Editors, or Memory Manager)
                 Expanded(
                   child: _buildCenterWorkspace(),
                 ),
@@ -572,8 +590,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
 
                 const SizedBox(height: 12),
 
-                // SECTION 3: Tasks & Programs Classified by Task Type
-                _buildTreeFolderHeader('TASKS & CONTROL LOGIC', Icons.folder_special_outlined),
+                // SECTION 3: Tasks & Programs Classified by Task Type & Language
+                _buildTreeFolderHeader('TASKS & IEC 61131-3 LOGIC', Icons.folder_special_outlined),
 
                 _buildTaskCategoryFolder('Startup Tasks', Icons.play_arrow, 'Startup'),
                 _buildTaskCategoryFolder('Continuous Tasks', Icons.loop, 'Continuous'),
@@ -615,7 +633,6 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   }
 
   Widget _buildTaskCategoryFolder(String title, IconData icon, String taskType) {
-    // Count total programs assigned to tasks of this taskType
     final programsInTaskType = <String>[];
     for (var task in _activeProject.tasks.where((t) => t.type == taskType)) {
       programsInTaskType.addAll(task.programNames);
@@ -644,6 +661,12 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
               final prog = _activeProject.programs.firstWhere((p) => p.name == progName, orElse: () => PlcProgram(name: progName, language: 'StructuredText'));
               final isSelected = _activeViewId == 'PROGRAM:$progName';
 
+              String badgeText = 'ST';
+              Color badgeColor = Colors.blue;
+              if (prog.language == 'LadderLogic') { badgeText = 'LD'; badgeColor = Colors.orange; }
+              if (prog.language == 'FunctionBlockDiagram') { badgeText = 'FBD'; badgeColor = Colors.teal; }
+              if (prog.language == 'SequentialFunctionChart') { badgeText = 'SFC'; badgeColor = Colors.purple; }
+
               return Container(
                 margin: const EdgeInsets.only(left: 20, top: 2),
                 decoration: BoxDecoration(
@@ -658,10 +681,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                     leading: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                       decoration: BoxDecoration(
-                        color: prog.language == 'StructuredText' ? Colors.blue.withValues(alpha: 0.3) : Colors.orange.withValues(alpha: 0.3),
+                        color: badgeColor.withValues(alpha: 0.3),
                         borderRadius: BorderRadius.circular(3),
                       ),
-                      child: Text(prog.language == 'StructuredText' ? 'ST' : 'LD', style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white)),
+                      child: Text(badgeText, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white)),
                     ),
                     title: Text(prog.name, style: TextStyle(fontSize: 11, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
                     trailing: IconButton(
@@ -688,7 +711,6 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         final nameCtrl = TextEditingController(text: 'NewProgram');
         String language = 'StructuredText';
 
-        // Ensure at least 1 task exists
         if (_activeProject.tasks.isEmpty) {
           _activeProject.tasks.add(PlcTask(name: 'MainTask', type: 'Continuous', periodMs: 100, programNames: []));
         }
@@ -708,6 +730,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                   items: const [
                     DropdownMenuItem(value: 'StructuredText', child: Text('Structured Text (ST)')),
                     DropdownMenuItem(value: 'LadderLogic', child: Text('Ladder Logic (LD)')),
+                    DropdownMenuItem(value: 'FunctionBlockDiagram', child: Text('Function Block Diagram (FBD)')),
+                    DropdownMenuItem(value: 'SequentialFunctionChart', child: Text('Sequential Function Chart (SFC)')),
                   ],
                   onChanged: (val) => setDlgState(() => language = val!),
                 ),
@@ -766,17 +790,39 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     } else if (_activeViewId.startsWith('PROGRAM:')) {
       final progName = _activeViewId.replaceFirst('PROGRAM:', '');
       final prog = _activeProject.programs.firstWhere((p) => p.name == progName, orElse: () => _activeProject.programs.first);
-      return StEditorScreen(
-        currentProject: _activeProject,
-        onSaveProgram: (updated) {
-          setState(() {
-            final idx = _activeProject.programs.indexWhere((p) => p.name == updated.name);
-            if (idx != -1) {
-              _activeProject.programs[idx] = updated;
-            }
-          });
-        },
-      );
+
+      // Render Editor according to IEC Language
+      if (prog.language == 'LadderLogic') {
+        return LdEditorScreen(
+          currentProject: _activeProject,
+          program: prog,
+          onProgramUpdated: () => setState(() {}),
+        );
+      } else if (prog.language == 'FunctionBlockDiagram') {
+        return FbdEditorScreen(
+          currentProject: _activeProject,
+          program: prog,
+          onProgramUpdated: () => setState(() {}),
+        );
+      } else if (prog.language == 'SequentialFunctionChart') {
+        return SfcEditorScreen(
+          currentProject: _activeProject,
+          program: prog,
+          onProgramUpdated: () => setState(() {}),
+        );
+      } else {
+        return StEditorScreen(
+          currentProject: _activeProject,
+          onSaveProgram: (updated) {
+            setState(() {
+              final idx = _activeProject.programs.indexWhere((p) => p.name == updated.name);
+              if (idx != -1) {
+                _activeProject.programs[idx] = updated;
+              }
+            });
+          },
+        );
+      }
     }
     return const Center(child: Text('Select an HMI, Memory, or Program from the Left Dock'));
   }

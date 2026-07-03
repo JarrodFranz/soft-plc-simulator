@@ -1,0 +1,227 @@
+import 'package:flutter/material.dart';
+import '../models/project_model.dart';
+
+class SfcEditorScreen extends StatefulWidget {
+  final PlcProject currentProject;
+  final PlcProgram program;
+  final VoidCallback onProgramUpdated;
+
+  const SfcEditorScreen({
+    super.key,
+    required this.currentProject,
+    required this.program,
+    required this.onProgramUpdated,
+  });
+
+  @override
+  State<SfcEditorScreen> createState() => _SfcEditorScreenState();
+}
+
+class _SfcEditorScreenState extends State<SfcEditorScreen> {
+  @override
+  void initState() {
+    super.initState();
+    _ensureDefaultSfc();
+  }
+
+  void _ensureDefaultSfc() {
+    if (widget.program.sfcSteps.isEmpty) {
+      widget.program.sfcSteps.addAll([
+        SfcStep(id: 's0', name: 'Step_0_Init', isInitial: true, actionSt: 'Fill_Valve := FALSE; Drain_Valve := FALSE;'),
+        SfcStep(id: 's1', name: 'Step_1_Filling', actionSt: 'Fill_Valve := TRUE;'),
+        SfcStep(id: 's2', name: 'Step_2_Draining', actionSt: 'Drain_Valve := TRUE;'),
+      ]);
+
+      widget.program.sfcTransitions.addAll([
+        SfcTransition(id: 't0', fromStepId: 's0', toStepId: 's1', conditionSt: 'Start_PB AND Level_PV < 10.0'),
+        SfcTransition(id: 't1', fromStepId: 's1', toStepId: 's2', conditionSt: 'Level_PV >= Level_SP'),
+        SfcTransition(id: 't2', fromStepId: 's2', toStepId: 's0', conditionSt: 'Level_PV <= 10.0'),
+      ]);
+    }
+  }
+
+  void _addNewStep() {
+    final idx = widget.program.sfcSteps.length;
+    final newStep = SfcStep(
+      id: 's_$idx',
+      name: 'Step_$idx',
+      actionSt: '// ST Action for Step_$idx\n',
+    );
+
+    setState(() {
+      widget.program.sfcSteps.add(newStep);
+    });
+    widget.onProgramUpdated();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('${widget.program.name} — Sequential Function Chart (SFC) Editor'),
+        backgroundColor: const Color(0xFF1E293B),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.add_circle, color: Colors.purpleAccent),
+            tooltip: 'Add SFC Step',
+            onPressed: _addNewStep,
+          ),
+          const SizedBox(width: 12),
+        ],
+      ),
+      body: Row(
+        children: [
+          // CENTER WORKSPACE: Visual SFC Step Transition Chart
+          Expanded(
+            child: Container(
+              color: const Color(0xFF0F172A),
+              child: ListView.builder(
+                padding: const EdgeInsets.all(24),
+                itemCount: widget.program.sfcSteps.length,
+                itemBuilder: (context, index) {
+                  final step = widget.program.sfcSteps[index];
+                  final transition = index < widget.program.sfcTransitions.length ? widget.program.sfcTransitions[index] : null;
+
+                  return Column(
+                    children: [
+                      _buildSfcStepCard(step, index),
+                      if (transition != null) _buildSfcTransitionGraphic(transition),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ),
+
+          const VerticalDivider(width: 1, color: Colors.white12),
+
+          // RIGHT DOCK: Action & Condition Tag Autocomplete Palette
+          Container(
+            width: 260,
+            color: const Color(0xFF0F172A),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  color: const Color(0xFF1E293B),
+                  child: const Text('SFC TAG & CONDITION AUTOCOMPLETE', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.purpleAccent)),
+                ),
+                Expanded(
+                  child: ListView(
+                    padding: const EdgeInsets.all(8),
+                    children: widget.currentProject.tags.map((tag) => Card(
+                      color: const Color(0xFF1E293B),
+                      margin: const EdgeInsets.only(bottom: 6),
+                      child: Material(
+                        color: Colors.transparent,
+                        child: ListTile(
+                          dense: true,
+                          leading: const Icon(Icons.label_important, color: Colors.purpleAccent, size: 16),
+                          title: Text(tag.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                          subtitle: Text('${tag.path} [${tag.dataType}]', style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                        ),
+                      ),
+                    )).toList(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSfcStepCard(SfcStep step, int index) {
+    return Container(
+      width: 450,
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: step.isInitial ? Colors.greenAccent : Colors.purpleAccent, width: 2),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: (step.isInitial ? Colors.green : Colors.purple).withValues(alpha: 0.3),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    step.isInitial ? 'INITIAL STEP' : 'STEP',
+                    style: TextStyle(fontWeight: FontWeight.bold, color: step.isInitial ? Colors.greenAccent : Colors.purpleAccent, fontSize: 10),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(child: Text(step.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14))),
+                IconButton(
+                  icon: const Icon(Icons.delete, size: 16, color: Colors.redAccent),
+                  onPressed: () {
+                    setState(() {
+                      widget.program.sfcSteps.removeAt(index);
+                    });
+                    widget.onProgramUpdated();
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text('N (Non-Stored Action Logic):', style: const TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            TextField(
+              controller: TextEditingController(text: step.actionSt),
+              maxLines: 2,
+              onSubmitted: (val) {
+                step.actionSt = val;
+                widget.onProgramUpdated();
+              },
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: Colors.cyanAccent),
+              decoration: const InputDecoration(isDense: true, border: OutlineInputBorder(), hintText: 'Enter ST Action statements...'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSfcTransitionGraphic(SfcTransition transition) {
+    return Container(
+      width: 450,
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        children: [
+          Container(width: 3, height: 16, color: Colors.purpleAccent),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(width: 20, height: 4, color: Colors.amberAccent),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextField(
+                  controller: TextEditingController(text: transition.conditionSt),
+                  onSubmitted: (val) {
+                    transition.conditionSt = val;
+                    widget.onProgramUpdated();
+                  },
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: Colors.amberAccent, fontWeight: FontWeight.bold),
+                  decoration: const InputDecoration(isDense: true, border: OutlineInputBorder(), labelText: 'Transition Condition (BOOL ST Expression)'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(width: 20, height: 4, color: Colors.amberAccent),
+            ],
+          ),
+          Container(width: 3, height: 16, color: Colors.purpleAccent),
+        ],
+      ),
+    );
+  }
+}

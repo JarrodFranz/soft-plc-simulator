@@ -91,11 +91,109 @@ class PlcDataBlock {
   });
 }
 
+// -------------------------------------------------------------
+// LADDER LOGIC (LD) MODELS
+// -------------------------------------------------------------
+class LdInstruction {
+  String type; // 'XIC', 'XIO', 'OTE', 'OTL', 'OTU', 'TON', 'TOF', 'EQU', 'GRT', 'LES'
+  String operandTag;
+  String comment;
+  int presetMs; // For TON/TOF timers
+
+  LdInstruction({
+    required this.type,
+    required this.operandTag,
+    this.comment = '',
+    this.presetMs = 1000,
+  });
+}
+
+class LdRung {
+  int rungIndex;
+  String comment;
+  List<LdInstruction> inputInstructions; // Contacts / Timers / Comparisons
+  List<LdInstruction> outputInstructions; // Coils / Latches
+
+  LdRung({
+    required this.rungIndex,
+    this.comment = '',
+    required this.inputInstructions,
+    required this.outputInstructions,
+  });
+}
+
+// -------------------------------------------------------------
+// FUNCTION BLOCK DIAGRAM (FBD) MODELS
+// -------------------------------------------------------------
+class FbdBlock {
+  String id;
+  String type; // 'AND', 'OR', 'NOT', 'ADD', 'SUB', 'TON', 'LIMIT', 'TAG_INPUT', 'TAG_OUTPUT'
+  String title;
+  String tagBinding;
+  double x;
+  double y;
+
+  FbdBlock({
+    required this.id,
+    required this.type,
+    required this.title,
+    this.tagBinding = '',
+    this.x = 100,
+    this.y = 100,
+  });
+}
+
+class FbdWire {
+  String fromBlockId;
+  String toBlockId;
+
+  FbdWire({
+    required this.fromBlockId,
+    required this.toBlockId,
+  });
+}
+
+// -------------------------------------------------------------
+// SEQUENTIAL FUNCTION CHART (SFC) MODELS
+// -------------------------------------------------------------
+class SfcStep {
+  String id;
+  String name;
+  bool isInitial;
+  String actionSt; // ST Logic executed while step is active
+
+  SfcStep({
+    required this.id,
+    required this.name,
+    this.isInitial = false,
+    this.actionSt = '',
+  });
+}
+
+class SfcTransition {
+  String id;
+  String fromStepId;
+  String toStepId;
+  String conditionSt; // ST Boolean expression for step transition
+
+  SfcTransition({
+    required this.id,
+    required this.fromStepId,
+    required this.toStepId,
+    required this.conditionSt,
+  });
+}
+
 class PlcProgram {
   String name;
-  String language;
+  String language; // 'StructuredText', 'LadderLogic', 'FunctionBlockDiagram', 'SequentialFunctionChart'
   String description;
   String stSource;
+  List<LdRung> rungs;
+  List<FbdBlock> fbdBlocks;
+  List<FbdWire> fbdWires;
+  List<SfcStep> sfcSteps;
+  List<SfcTransition> sfcTransitions;
   bool enabled;
 
   PlcProgram({
@@ -103,8 +201,17 @@ class PlcProgram {
     required this.language,
     this.description = '',
     this.stSource = '',
+    List<LdRung>? rungs,
+    List<FbdBlock>? fbdBlocks,
+    List<FbdWire>? fbdWires,
+    List<SfcStep>? sfcSteps,
+    List<SfcTransition>? sfcTransitions,
     this.enabled = true,
-  });
+  })  : rungs = rungs ?? [],
+        fbdBlocks = fbdBlocks ?? [],
+        fbdWires = fbdWires ?? [],
+        sfcSteps = sfcSteps ?? [],
+        sfcTransitions = sfcTransitions ?? [];
 
   factory PlcProgram.fromJson(Map<String, dynamic> json) {
     return PlcProgram(
@@ -158,17 +265,13 @@ class PlcTask {
   };
 }
 
-/// Dynamic Dashboard Component for HMI Screens
 class HmiComponent {
   String id;
   String title;
   String type;
-  // Component Types:
-  // - INPUTS: 'PushbuttonSwitch' (BOOL), 'ToggleSwitch' (BOOL), 'NumericSliderInput' (INT/FLOAT), 'TextInputField' (STRING/NUM)
-  // - OUTPUTS & DISPLAY: 'LedIndicatorLight' (BOOL), 'DigitalGaugeDisplay' (NUM), 'StatusPillDisplay' (ANY), 'TankGraphicDisplay' (NUM)
   String tagBinding;
-  int gridSpanWidth; // 1 to 4 grid columns
-  String accentColor; // 'green', 'red', 'cyan', 'amber', 'teal', 'blue'
+  int gridSpanWidth;
+  String accentColor;
 
   HmiComponent({
     required this.id,
@@ -203,7 +306,7 @@ class HmiComponent {
 class HmiScreenDef {
   String id;
   String title;
-  String layoutType; // 'GridDashboard', 'MotorControlPreset', 'TankLevelPreset'
+  String layoutType;
   List<HmiComponent> components;
 
   HmiScreenDef({
