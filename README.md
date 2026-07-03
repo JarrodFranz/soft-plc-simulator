@@ -8,23 +8,31 @@
 
 ## 🚀 Overview
 
-The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators, students, and system developers to execute IEC 61131-3 style control logic on portable mobile devices (Android/iOS) and desktop platforms. It provides a real-time scan cycle engine, tag database, simulated field I/O, and industrial protocol adapters to expose virtual PLCs to SCADA systems like Ignition, Kepware, UAExpert, MQTT brokers, Modbus clients, and DNP3 masters.
+The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators, students, and system developers to execute IEC 61131-3 style control logic on portable mobile devices (Android/iOS) and desktop platforms. It provides a real-time scan cycle engine, tag database, simulated field I/O, user-defined Structs (DUT) and Data Blocks (DB), custom HMI dashboard builders, and industrial protocol adapters to expose virtual PLCs to SCADA systems like Ignition, Kepware, UAExpert, MQTT brokers, Modbus clients, and DNP3 masters.
 
 ---
 
-## ✨ Features & Progress
+## ✨ Features & Progress (Phase 2 Active)
 
 - **IEC 61131-3 Control Logic Execution**:
-  - **Structured Text (ST) MVP (Completed - Phase 2)**: Lexer, recursive-descent parser, AST compiler, and real-time AST interpreter (`IF/THEN/ELSIF/ELSE`, `WHILE`, `REPEAT`, `FOR`, `TON` timers, boolean/numeric math).
-  - **Ladder Logic (LD) MVP (Completed - Phase 1)**: Internal Instruction Set Architecture (`XIC`, `XIO`, `OTE`, `OTL`, `OTU`, nested parallel branch OR logic, `TON`/`TOF` timers).
-- **In-Memory Tag Database & I/O Image**:
-  - Fully typed tags (`BOOL`, `INT16/32/64`, `REAL/LREAL`, `STRING`).
-  - Quality flags (`Good`, `Bad`, `Uncertain`), UTC timestamps, engineering units, manual forcing, and retentive flags.
-- **Configurable Scan Cycle Engine**:
-  - Deterministic scan loop with real-time performance diagnostics (scan count, scan time, min/max/avg timing, overrun detection).
-- **Dual Operating Modes**:
-  - **Mode A (Local Mobile Simulator)**: Standalone execution directly on mobile/desktop devices via native FFI bindings or embedded engine.
-  - **Mode B (Companion Gateway Mode)**: Mobile app acts as HMI/Controller while a companion desktop/server process hosts industrial protocol servers.
+  - **Structured Text (ST) Engine & Live IDE (Phase 2)**: Lexer, recursive-descent parser, AST compiler, and real-time AST interpreter (`IF/THEN/ELSIF/ELSE`, `WHILE`, `REPEAT`, `FOR`, `TON` timers, boolean/numeric math).
+  - **Live Autocomplete Palette**: Code completion for global tags, Data Blocks (`DB_Motor1.Run`), Structs (DUT), built-in function blocks (`TON`, `TOF`, `TP`, `CTU`, `CTD`), math utilities (`LIMIT`, `SEL`, `ABS`, `SQRT`), and control keywords.
+  - **Ladder Logic (LD) ISA (Phase 1)**: Internal Instruction Set Architecture (`XIC`, `XIO`, `OTE`, `OTL`, `OTU`, nested parallel branch OR logic, `TON`/`TOF` timers).
+- **Categorized Tasks & Multi-Program Architecture**:
+  - Task organization under **`Startup Tasks`**, **`Continuous Tasks`**, **`Periodic Tasks`**, and **`Event Tasks`** with program counts and language badges (`ST`, `LD`).
+- **Memory & Data Storage Manager**:
+  - **Global Tags**: Fully typed tags (`BOOL`, `INT16/32/64`, `REAL/LREAL`, `STRING`).
+  - **Struct Definitions (DUT)**: User Defined Types with custom fields and defaults.
+  - **Data Blocks (DB)**: Structured data blocks instantiated from Struct definitions.
+- **Custom Grid HMI Dashboard Builder**:
+  - **`RUN MODE`**: Interactive operation surface linked to live PLC tags.
+  - **`EDIT BUILDER MODE`**: Drag-and-drop / grid layout component builder.
+  - **Input Components**: `PushbuttonSwitch` (BOOL), `ToggleSwitch` (BOOL), `NumericSliderInput` (INT/FLOAT), `TextInputField` (STRING/NUM).
+  - **Output & Display Components**: `LedIndicatorLight` (BOOL pilot lights), `DigitalGaugeDisplay` (progress gauges), `StatusPillDisplay` (value pills), `TankGraphicDisplay` (vessel liquid level graphics).
+- **Toggleable Side Dock Tag Inspector**:
+  - Searchable tag matrix with live values, quality flags, engineering units, and manual value forcing controls accessible right on the HMI screen.
+- **Configurable Scan Cycle Engine & Debugging**:
+  - Deterministic scan loop with **Scan Loop Speed Slider** (`50ms` Full Speed down to `2000ms` Slow Motion step debugging), Pause control (`⏸ / ▶`), and **Step Scan** (`⏭`) single-cycle execution.
 
 ---
 
@@ -33,12 +41,15 @@ The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators
 ```
   ┌────────────────────────────────────────────────────────┐
   │         Mobile / Desktop UI (Flutter & Dart)           │
+  │  - Left Project Tree Explorer   - ST IDE & Autocomplete│
+  │  - Grid HMI Dashboard Builder   - Memory Manager (DUT) │
+  │  - Side Dock Tag Inspector      - Scan Speed Controller│
   └───────────────────────────┬────────────────────────────┘
                               │ Native FFI (Local) / WebSocket (Gateway)
   ┌───────────────────────────┴────────────────────────────┐
   │             Soft PLC Runtime Core (Rust)               │
   ├────────────────────────────────────────────────────────┤
-  │             Tag Database & I/O Image                   │
+  │       Tag Database, Structs (DUT) & Data Blocks (DB)   │
   ├────────────────────────────────────────────────────────┤
   │          Simulated Process & Field I/O Engine          │
   ├────────────────────────────────────────────────────────┤
@@ -145,7 +156,7 @@ cd runtime
 cargo test
 ```
 
-#### Run Flutter UI Linter & Code Analysis
+#### Run Flutter UI Linter & Code Analysis (0 Errors)
 ```bash
 cd mobile
 flutter analyze
@@ -159,8 +170,8 @@ flutter analyze
 |-------|-------------|--------|
 | **Phase 0** | Project Scaffold, Architecture & Schemas | ✅ Completed |
 | **Phase 1** | Tag Database, Scan Engine & Ladder Logic ISA | ✅ Completed |
-| **Phase 2** | Structured Text (ST) Lexer, Parser & Interpreter | ✅ Completed |
-| **Phase 3** | Ladder Logic (LD) Visual Renderer in Flutter | 🔄 In Progress |
+| **Phase 2** | Structured Text (ST) Engine, ST Autocomplete IDE, Memory Manager & Custom HMI Builder | 🔄 **ACTIVE / IN PROGRESS** |
+| **Phase 3** | Ladder Logic (LD) Visual Rung Renderer & Editor in Flutter | ⏳ Planned |
 | **Phase 4** | OPC UA Server Adapter in Gateway | ⏳ Planned |
 | **Phase 5** | Modbus TCP Server Adapter in Gateway | ⏳ Planned |
 | **Phase 6** | MQTT Client / Sparkplug B Publisher | ⏳ Planned |
