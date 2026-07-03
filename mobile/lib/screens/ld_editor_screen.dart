@@ -134,8 +134,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     final inputTypes = [
       {'type': 'XIC', 'label': 'XIC — Examine if Closed (-| |-)'},
       {'type': 'XIO', 'label': 'XIO — Examine if Open (-|/|-)'},
-      {'type': 'TON', 'label': 'TON — Timer On Delay Box'},
-      {'type': 'TOF', 'label': 'TOF — Timer Off Delay Box'},
+      {'type': 'TON', 'label': 'TON — RSLogix Style Timer On Delay Box'},
+      {'type': 'TOF', 'label': 'TOF — RSLogix Style Timer Off Delay Box'},
     ];
 
     final outputTypes = [
@@ -259,8 +259,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                         DropdownMenuItem(value: 'OTE', child: Text('OTE — Output Coil (-( )-)')),
                         DropdownMenuItem(value: 'OTL', child: Text('OTL — Output Latch (-(L)-)')),
                         DropdownMenuItem(value: 'OTU', child: Text('OTU — Output Unlatch (-(U)-)')),
-                        DropdownMenuItem(value: 'TON', child: Text('TON — Timer On Delay Box')),
-                        DropdownMenuItem(value: 'TOF', child: Text('TOF — Timer Off Delay Box')),
+                        DropdownMenuItem(value: 'TON', child: Text('TON — RSLogix Style Timer On Delay Box')),
+                        DropdownMenuItem(value: 'TOF', child: Text('TOF — RSLogix Style Timer Off Delay Box')),
                       ],
                       onChanged: (val) => setDlgState(() => selectedType = val!),
                     ),
@@ -515,9 +515,9 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
             const SizedBox(height: 12),
 
-            // Continuous Wire Canvas for Rung
+            // Continuous Wire Canvas Container
             Container(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
               decoration: BoxDecoration(
                 color: const Color(0xFF0F172A),
                 borderRadius: BorderRadius.circular(6),
@@ -526,7 +526,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Main Rung Rail-to-Rail Continuous Line
+                  // Main Rung Line
                   _buildContinuousWireRungLine(rung, rung.inputInstructions, rung.outputInstructions, null),
 
                   // Parallel Branches (OR Frames with Delete Button)
@@ -539,7 +539,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                         children: [
                           const SizedBox(width: 14),
                           // Drop line from main branch
-                          Container(width: 3, height: 50, color: Colors.greenAccent),
+                          Container(width: 3, height: 60, color: Colors.greenAccent),
                           Expanded(
                             child: Row(
                               children: [
@@ -553,7 +553,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                             ),
                           ),
                           // Rise line back to main rail
-                          Container(width: 3, height: 50, color: Colors.blueAccent),
+                          Container(width: 3, height: 60, color: Colors.blueAccent),
                           const SizedBox(width: 14),
                         ],
                       ),
@@ -569,87 +569,84 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
   }
 
   Widget _buildContinuousWireRungLine(LdRung rung, List<LdInstruction> inputs, List<LdInstruction> outputs, LdBranch? branch) {
-    return Container(
-      height: 90,
-      decoration: const BoxDecoration(
-        border: Border(
-          top: BorderSide(color: Colors.greenAccent, width: 2), // Top continuous wire line trace
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        // Center Unbroken Wire Line passing through exact vertical center of contacts and coils
+        Positioned(
+          left: 6,
+          right: 6,
+          child: Container(
+            height: 3,
+            color: Colors.greenAccent,
+          ),
         ),
-      ),
-      child: Row(
-        children: [
-          // Left Power Rail (L1)
-          Container(width: 6, height: double.infinity, color: Colors.greenAccent),
 
-          // Wire Trace to First Contact
-          Container(width: 16, height: 3, color: Colors.greenAccent),
+        // Component & Rail Content Layer
+        Row(
+          children: [
+            // Left Power Rail (L1)
+            Container(width: 6, height: 110, color: Colors.greenAccent),
+            Container(width: 16, height: 3, color: Colors.greenAccent),
 
-          // Input Contacts & Components on Wire Line
-          Expanded(
-            child: SingleChildScrollView(
+            // Input Contacts & Components on Wire Line
+            Expanded(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    if (inputs.isEmpty)
+                      // Blank Wire Line Segment (Clickable to Add Component)
+                      InkWell(
+                        onTap: () => _showAddInstructionDialog(rung, true, branch),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.cyan.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: Colors.cyanAccent, width: 1.5),
+                          ),
+                          child: const Row(
+                            children: [
+                              Icon(Icons.add, size: 14, color: Colors.cyanAccent),
+                              SizedBox(width: 4),
+                              Text('Click Wire Line to Add Contact / Timer', style: TextStyle(fontSize: 10, color: Colors.cyanAccent, fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                        ),
+                      )
+                    else
+                      ...inputs.map((inst) => _buildInstructionGraphic(inst, rung, true)),
+
+                    IconButton(
+                      icon: const Icon(Icons.add_box, color: Colors.cyanAccent, size: 20),
+                      tooltip: 'Insert Contact onto Wire Line',
+                      onPressed: () => _showAddInstructionDialog(rung, true, branch),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            // Middle Space for Wire Line to pass across to Output Coils
+            const Spacer(),
+
+            // Output Coils on Right Rail
+            SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(
                 children: [
-                  if (inputs.isEmpty)
-                    // Blank Wire Line Segment (Clickable to Add Component)
-                    InkWell(
-                      onTap: () => _showAddInstructionDialog(rung, true, branch),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: Colors.cyan.withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(4),
-                          border: Border.all(color: Colors.cyanAccent, width: 1),
-                        ),
-                        child: const Row(
-                          children: [
-                            Icon(Icons.add, size: 14, color: Colors.cyanAccent),
-                            SizedBox(width: 4),
-                            Text('Click Wire Line to Add Contact / Timer', style: TextStyle(fontSize: 10, color: Colors.cyanAccent, fontWeight: FontWeight.bold)),
-                          ],
-                        ),
-                      ),
-                    )
-                  else
-                    ...inputs.expand((inst) => [
-                      _buildInstructionGraphic(inst, rung, true),
-                      // Continuous unbroken wire line between contacts
-                      Container(width: 24, height: 3, color: Colors.greenAccent),
-                    ]),
-
-                  IconButton(
-                    icon: const Icon(Icons.add_box, color: Colors.cyanAccent, size: 20),
-                    tooltip: 'Insert Contact onto Wire Line',
-                    onPressed: () => _showAddInstructionDialog(rung, true, branch),
-                  ),
+                  ...outputs.map((inst) => _buildInstructionGraphic(inst, rung, false)),
                 ],
               ),
             ),
-          ),
 
-          // Unbroken Horizontal Wire Line spanning across to Coil
-          Expanded(
-            child: Container(height: 3, color: Colors.greenAccent),
-          ),
-
-          // Output Coils on Right Rail
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                ...outputs.expand((inst) => [
-                  _buildInstructionGraphic(inst, rung, false),
-                  Container(width: 16, height: 3, color: Colors.greenAccent),
-                ]),
-              ],
-            ),
-          ),
-
-          // Right Power Rail (L2 - Neutral / 0V)
-          Container(width: 16, height: 3, color: Colors.blueAccent),
-          Container(width: 6, height: double.infinity, color: Colors.blueAccent),
-        ],
-      ),
+            // Right Power Rail (L2 - Neutral / 0V)
+            Container(width: 16, height: 3, color: Colors.blueAccent),
+            Container(width: 6, height: 110, color: Colors.blueAccent),
+          ],
+        ),
+      ],
     );
   }
 
@@ -657,11 +654,13 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     final bool isTimer = inst.type == 'TON' || inst.type == 'TOF';
 
     if (isTimer) {
-      // Render Exact RSLogix / Do-more Style TON Timer Box with (EN) and (DN) Output Wire Pins
+      // Render Exact RSLogix / Do-more Style TON Timer Box without vertical overflow
       return InkWell(
         onTap: () => _showClickToEditTagDialog(inst),
         child: Container(
-          margin: const EdgeInsets.symmetric(horizontal: 4),
+          margin: const EdgeInsets.symmetric(horizontal: 6),
+          width: 180,
+          height: 100,
           decoration: BoxDecoration(
             color: const Color(0xFF1E293B),
             borderRadius: BorderRadius.circular(4),
@@ -669,66 +668,51 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
             boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 4)],
           ),
           child: Column(
+            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
-                width: 170,
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 color: const Color(0xFF334155),
                 child: Text(
                   inst.type,
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.white, fontFamily: 'monospace'),
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.white, fontFamily: 'monospace'),
                 ),
               ),
 
               Padding(
-                padding: const EdgeInsets.all(8.0),
+                padding: const EdgeInsets.all(6.0),
                 child: Row(
                   children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            const Text('Timer', style: TextStyle(fontSize: 11, color: Colors.grey)),
-                            const SizedBox(width: 12),
-                            Text(inst.operandTag, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.white, fontFamily: 'monospace')),
-                          ],
-                        ),
-                        Row(
-                          children: [
-                            const Text('Preset', style: TextStyle(fontSize: 11, color: Colors.grey)),
-                            const SizedBox(width: 12),
-                            Text('${inst.presetMs}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.cyanAccent, fontFamily: 'monospace')),
-                          ],
-                        ),
-                        const Row(
-                          children: [
-                            Text('Accum', style: TextStyle(fontSize: 11, color: Colors.grey)),
-                            SizedBox(width: 12),
-                            Text('0', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.cyanAccent, fontFamily: 'monospace')),
-                          ],
-                        ),
-                      ],
+                    Expanded(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Timer: ${inst.operandTag}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Colors.white, fontFamily: 'monospace'), overflow: TextOverflow.ellipsis),
+                          Text('Preset: ${inst.presetMs}', style: const TextStyle(fontSize: 10, color: Colors.cyanAccent, fontFamily: 'monospace')),
+                          const Text('Accum: 0', style: TextStyle(fontSize: 10, color: Colors.cyanAccent, fontFamily: 'monospace')),
+                        ],
+                      ),
                     ),
-
-                    const SizedBox(width: 12),
 
                     // RSLogix Output Pins extending out right side of Timer Box: -(EN)- and -(DN)-
                     Column(
+                      mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(
                           children: [
-                            Container(width: 8, height: 2, color: Colors.greenAccent),
-                            const Text('-(EN)-', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Colors.greenAccent, fontFamily: 'monospace')),
+                            Container(width: 6, height: 2, color: Colors.greenAccent),
+                            const Text('-(EN)-', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 9, color: Colors.greenAccent, fontFamily: 'monospace')),
                           ],
                         ),
-                        const SizedBox(height: 6),
+                        const SizedBox(height: 4),
                         Row(
                           children: [
-                            Container(width: 8, height: 2, color: Colors.grey),
-                            const Text('-(DN)-', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Colors.grey, fontFamily: 'monospace')),
+                            Container(width: 6, height: 2, color: Colors.grey),
+                            const Text('-(DN)-', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 9, color: Colors.grey, fontFamily: 'monospace')),
                           ],
                         ),
                       ],
@@ -754,7 +738,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     return InkWell(
       onTap: () => _showClickToEditTagDialog(inst),
       child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 4),
+        margin: const EdgeInsets.symmetric(horizontal: 6),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         decoration: BoxDecoration(
           color: const Color(0xFF1E293B),
@@ -762,6 +746,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           border: Border.all(color: color),
         ),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             Text(inst.operandTag, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: color, fontFamily: 'monospace')),
             const SizedBox(height: 4),
