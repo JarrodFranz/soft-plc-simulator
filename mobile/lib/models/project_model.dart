@@ -3,7 +3,7 @@ import 'dart:convert';
 class PlcTag {
   String name;
   String path;
-  String dataType; // 'BOOL', 'INT16', 'INT32', 'FLOAT64', 'STRING', or Struct Name
+  String dataType; // 'BOOL', 'INT16', 'INT32', 'FLOAT64', 'STRING'
   dynamic value;
   String quality;
   String access;
@@ -59,7 +59,7 @@ class PlcTag {
 
 class StructFieldDef {
   String name;
-  String dataType; // 'BOOL', 'INT32', 'FLOAT64', 'STRING'
+  String dataType;
   dynamic defaultValue;
 
   StructFieldDef({
@@ -70,7 +70,7 @@ class StructFieldDef {
 }
 
 class PlcStructDef {
-  String name; // e.g. 'Motor_DUT'
+  String name;
   List<StructFieldDef> fields;
 
   PlcStructDef({
@@ -80,8 +80,8 @@ class PlcStructDef {
 }
 
 class PlcDataBlock {
-  String name; // e.g. 'DB_MotorData'
-  String structTypeName; // Name of Struct instantiation
+  String name;
+  String structTypeName;
   Map<String, dynamic> fieldValues;
 
   PlcDataBlock({
@@ -93,7 +93,7 @@ class PlcDataBlock {
 
 class PlcProgram {
   String name;
-  String language; // 'StructuredText', 'LadderLogic', 'FunctionBlockDiagram', 'SequentialFunctionChart'
+  String language;
   String description;
   String stSource;
   bool enabled;
@@ -158,16 +158,76 @@ class PlcTask {
   };
 }
 
+/// Dynamic Dashboard Component for HMI Screens
+class HmiComponent {
+  String id;
+  String title;
+  String type;
+  // Component Types:
+  // - INPUTS: 'PushbuttonSwitch' (BOOL), 'ToggleSwitch' (BOOL), 'NumericSliderInput' (INT/FLOAT), 'TextInputField' (STRING/NUM)
+  // - OUTPUTS & DISPLAY: 'LedIndicatorLight' (BOOL), 'DigitalGaugeDisplay' (NUM), 'StatusPillDisplay' (ANY), 'TankGraphicDisplay' (NUM)
+  String tagBinding;
+  int gridSpanWidth; // 1 to 4 grid columns
+  String accentColor; // 'green', 'red', 'cyan', 'amber', 'teal', 'blue'
+
+  HmiComponent({
+    required this.id,
+    required this.title,
+    required this.type,
+    required this.tagBinding,
+    this.gridSpanWidth = 1,
+    this.accentColor = 'cyan',
+  });
+
+  factory HmiComponent.fromJson(Map<String, dynamic> json) {
+    return HmiComponent(
+      id: json['id'] ?? 'comp_01',
+      title: json['title'] ?? 'Component',
+      type: json['type'] ?? 'PushbuttonSwitch',
+      tagBinding: json['tag_binding'] ?? '',
+      gridSpanWidth: json['grid_span_width'] ?? 1,
+      accentColor: json['accent_color'] ?? 'cyan',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'title': title,
+    'type': type,
+    'tag_binding': tagBinding,
+    'grid_span_width': gridSpanWidth,
+    'accent_color': accentColor,
+  };
+}
+
 class HmiScreenDef {
   String id;
   String title;
-  String type; // 'MotorControl', 'TankLevel', 'GenericTagDashboard'
+  String layoutType; // 'GridDashboard', 'MotorControlPreset', 'TankLevelPreset'
+  List<HmiComponent> components;
 
   HmiScreenDef({
     required this.id,
     required this.title,
-    required this.type,
+    this.layoutType = 'GridDashboard',
+    required this.components,
   });
+
+  factory HmiScreenDef.fromJson(Map<String, dynamic> json) {
+    return HmiScreenDef(
+      id: json['id'] ?? 'hmi_01',
+      title: json['title'] ?? 'HMI Dashboard',
+      layoutType: json['layout_type'] ?? 'GridDashboard',
+      components: (json['components'] as List? ?? []).map((c) => HmiComponent.fromJson(c)).toList(),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'title': title,
+    'layout_type': layoutType,
+    'components': components.map((c) => c.toJson()).toList(),
+  };
 }
 
 class PlcProject {
@@ -214,9 +274,7 @@ class PlcProject {
       dataBlocks: [],
       programs: (proj['programs'] as List? ?? []).map((p) => PlcProgram.fromJson(p)).toList(),
       tasks: (proj['tasks'] as List? ?? []).map((tk) => PlcTask.fromJson(tk)).toList(),
-      hmis: [
-        HmiScreenDef(id: 'hmi_1', title: 'Default HMI Dashboard', type: 'GenericTagDashboard'),
-      ],
+      hmis: (proj['hmis'] as List? ?? []).map((h) => HmiScreenDef.fromJson(h)).toList(),
     );
   }
 
@@ -233,6 +291,7 @@ class PlcProject {
       'tags': tags.map((t) => t.toJson()).toList(),
       'programs': programs.map((p) => p.toJson()).toList(),
       'tasks': tasks.map((tk) => tk.toJson()).toList(),
+      'hmis': hmis.map((h) => h.toJson()).toList(),
     }
   };
 

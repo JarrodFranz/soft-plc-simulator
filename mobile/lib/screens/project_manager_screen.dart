@@ -57,7 +57,7 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
           PlcTask(name: 'MainTask', type: 'Continuous', periodMs: 100, programNames: ['StMotorControl']),
         ],
         hmis: [
-          HmiScreenDef(id: 'hmi_motor', title: 'Motor Control HMI', type: 'MotorControl'),
+          HmiScreenDef(id: 'hmi_motor', title: 'Motor Control HMI', layoutType: 'GridDashboard', components: []),
         ],
       );
       widget.onLoadProject(proj);
@@ -88,7 +88,7 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
           PlcTask(name: 'MainTask', type: 'Continuous', periodMs: 100, programNames: ['StTankControl']),
         ],
         hmis: [
-          HmiScreenDef(id: 'hmi_tank', title: 'Tank Level HMI', type: 'TankLevel'),
+          HmiScreenDef(id: 'hmi_tank', title: 'Tank Level HMI', layoutType: 'GridDashboard', components: []),
         ],
       );
       widget.onLoadProject(proj);

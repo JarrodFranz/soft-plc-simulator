@@ -4,6 +4,7 @@ import '../models/project_model.dart';
 import '../widgets/tag_inspector_dock.dart';
 import 'st_editor_screen.dart';
 import 'memory_manager_screen.dart';
+import 'hmi_dashboard_builder_screen.dart';
 
 class WorkspaceShell extends StatefulWidget {
   const WorkspaceShell({super.key});
@@ -44,7 +45,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   }
 
   void _initProjects() {
-    // 1. Basic Motor Start Stop
+    // 1. Basic Motor Start Stop Project
     final motorProj = PlcProject(
       id: 'proj_motor',
       name: 'Basic Motor Start Stop',
@@ -83,11 +84,23 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         PlcTask(name: 'MainContinuousTask', type: 'Continuous', periodMs: 100, programNames: ['MotorControl_ST']),
       ],
       hmis: [
-        HmiScreenDef(id: 'hmi_motor', title: 'Motor Control HMI Panel', type: 'MotorControl'),
+        HmiScreenDef(
+          id: 'hmi_motor',
+          title: 'Motor Control HMI Dashboard',
+          layoutType: 'GridDashboard',
+          components: [
+            HmiComponent(id: 'c1', title: 'START Motor (NO)', type: 'PushbuttonSwitch', tagBinding: 'Start_PB', gridSpanWidth: 1, accentColor: 'green'),
+            HmiComponent(id: 'c2', title: 'STOP Motor (NC)', type: 'PushbuttonSwitch', tagBinding: 'Stop_PB', gridSpanWidth: 1, accentColor: 'red'),
+            HmiComponent(id: 'c3', title: 'Motor Running LED', type: 'LedIndicatorLight', tagBinding: 'Motor_Run', gridSpanWidth: 1, accentColor: 'green'),
+            HmiComponent(id: 'c4', title: 'E-Stop Healthy Switch', type: 'ToggleSwitch', tagBinding: 'EStop_OK', gridSpanWidth: 1, accentColor: 'cyan'),
+            HmiComponent(id: 'c5', title: 'Overload Healthy Switch', type: 'ToggleSwitch', tagBinding: 'Overload_OK', gridSpanWidth: 1, accentColor: 'amber'),
+            HmiComponent(id: 'c6', title: 'Motor Status Pill', type: 'StatusPillDisplay', tagBinding: 'Motor_Run', gridSpanWidth: 2, accentColor: 'teal'),
+          ],
+        ),
       ],
     );
 
-    // 2. Tank Level Simulation
+    // 2. Tank Level Simulation Project
     final tankProj = PlcProject(
       id: 'proj_tank',
       name: 'Tank Level Simulation',
@@ -115,7 +128,20 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         PlcTask(name: 'ProcessLoopTask', type: 'Continuous', periodMs: 100, programNames: ['TankLevelControl_ST']),
       ],
       hmis: [
-        HmiScreenDef(id: 'hmi_tank', title: 'Tank Level Process HMI', type: 'TankLevel'),
+        HmiScreenDef(
+          id: 'hmi_tank',
+          title: 'Tank Level Process Dashboard',
+          layoutType: 'GridDashboard',
+          components: [
+            HmiComponent(id: 't1', title: 'Tank Process Graphic', type: 'TankGraphicDisplay', tagBinding: 'Level_PV', gridSpanWidth: 2, accentColor: 'cyan'),
+            HmiComponent(id: 't2', title: 'Level Setpoint Slider', type: 'NumericSliderInput', tagBinding: 'Level_SP', gridSpanWidth: 2, accentColor: 'teal'),
+            HmiComponent(id: 't3', title: 'Auto Mode Toggle', type: 'ToggleSwitch', tagBinding: 'Auto_Mode', gridSpanWidth: 1, accentColor: 'green'),
+            HmiComponent(id: 't4', title: 'Fill Valve Solenoid LED', type: 'LedIndicatorLight', tagBinding: 'Fill_Valve', gridSpanWidth: 1, accentColor: 'green'),
+            HmiComponent(id: 't5', title: 'Drain Valve Solenoid LED', type: 'LedIndicatorLight', tagBinding: 'Drain_Valve', gridSpanWidth: 1, accentColor: 'amber'),
+            HmiComponent(id: 't6', title: 'High Level Alarm LED', type: 'LedIndicatorLight', tagBinding: 'High_Alarm', gridSpanWidth: 1, accentColor: 'red'),
+            HmiComponent(id: 't7', title: 'Level Gauge Bar', type: 'DigitalGaugeDisplay', tagBinding: 'Level_PV', gridSpanWidth: 4, accentColor: 'cyan'),
+          ],
+        ),
       ],
     );
 
@@ -245,6 +271,38 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       }
     });
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Program "$progName" deleted')));
+  }
+
+  void _addNewHmiDashboard() {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        final titleCtrl = TextEditingController(text: 'Custom HMI Dashboard');
+        return AlertDialog(
+          title: const Text('Add New HMI Dashboard'),
+          content: TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: 'Dashboard Title')),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () {
+                final newHmi = HmiScreenDef(
+                  id: 'hmi_${DateTime.now().millisecondsSinceEpoch}',
+                  title: titleCtrl.text,
+                  layoutType: 'GridDashboard',
+                  components: [],
+                );
+                setState(() {
+                  _activeProject.hmis.add(newHmi);
+                  _activeViewId = 'HMI:${newHmi.id}';
+                });
+                Navigator.pop(ctx);
+              },
+              child: const Text('Create HMI Dashboard'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   @override
@@ -440,11 +498,14 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
               padding: const EdgeInsets.all(8),
               children: [
                 // Project Header Info
-                ListTile(
-                  dense: true,
-                  leading: const Icon(Icons.account_tree, color: Colors.cyan, size: 20),
-                  title: Text(_activeProject.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                  subtitle: Text('${_activeProject.controllerName} (${_activeProject.scanPeriodMs}ms)', style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                Material(
+                  color: Colors.transparent,
+                  child: ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.account_tree, color: Colors.cyan, size: 20),
+                    title: Text(_activeProject.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                    subtitle: Text('${_activeProject.controllerName} (${_activeProject.scanPeriodMs}ms)', style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                  ),
                 ),
 
                 const Divider(height: 16, color: Colors.white12),
@@ -459,16 +520,33 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                       color: isSelected ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
                       borderRadius: BorderRadius.circular(4),
                     ),
-                    child: ListTile(
-                      dense: true,
-                      leading: Icon(Icons.monitor, size: 16, color: isSelected ? Colors.cyanAccent : Colors.grey),
-                      title: Text(hmi.title, style: TextStyle(fontSize: 12, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
-                      onTap: () => setState(() => _activeViewId = 'HMI:${hmi.id}'),
+                    child: Material(
+                      color: Colors.transparent,
+                      child: ListTile(
+                        dense: true,
+                        leading: Icon(Icons.monitor, size: 16, color: isSelected ? Colors.cyanAccent : Colors.grey),
+                        title: Text(hmi.title, style: TextStyle(fontSize: 12, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+                        onTap: () => setState(() => _activeViewId = 'HMI:${hmi.id}'),
+                      ),
                     ),
                   );
                 }),
 
-                const SizedBox(height: 12),
+                Padding(
+                  padding: const EdgeInsets.only(left: 12, top: 4, bottom: 8),
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.add, size: 14),
+                    label: const Text('Add HMI Dashboard', style: TextStyle(fontSize: 11)),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.tealAccent,
+                      side: const BorderSide(color: Colors.tealAccent),
+                      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                    ),
+                    onPressed: _addNewHmiDashboard,
+                  ),
+                ),
+
+                const SizedBox(height: 8),
 
                 // SECTION 2: MEMORY (Tags & Data Blocks)
                 _buildTreeFolderHeader('MEMORY (TAGS & DATA BLOCKS)', Icons.storage),
@@ -478,14 +556,17 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                     color: _activeViewId == 'MEMORY' ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
                     borderRadius: BorderRadius.circular(4),
                   ),
-                  child: ListTile(
-                    dense: true,
-                    leading: Icon(Icons.memory, size: 16, color: _activeViewId == 'MEMORY' ? Colors.cyanAccent : Colors.tealAccent),
-                    title: Text(
-                      'Tags & Data Blocks (${_activeProject.tags.length} Tags, ${_activeProject.structDefs.length} Structs, ${_activeProject.dataBlocks.length} DBs)',
-                      style: TextStyle(fontSize: 11, fontWeight: _activeViewId == 'MEMORY' ? FontWeight.bold : FontWeight.normal),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(Icons.memory, size: 16, color: _activeViewId == 'MEMORY' ? Colors.cyanAccent : Colors.tealAccent),
+                      title: Text(
+                        'Tags & Data Blocks (${_activeProject.tags.length} Tags, ${_activeProject.structDefs.length} Structs, ${_activeProject.dataBlocks.length} DBs)',
+                        style: TextStyle(fontSize: 11, fontWeight: _activeViewId == 'MEMORY' ? FontWeight.bold : FontWeight.normal),
+                      ),
+                      onTap: () => setState(() => _activeViewId = 'MEMORY'),
                     ),
-                    onTap: () => setState(() => _activeViewId = 'MEMORY'),
                   ),
                 ),
 
@@ -569,26 +650,29 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                   color: isSelected ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
                   borderRadius: BorderRadius.circular(4),
                 ),
-                child: ListTile(
-                  dense: true,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 6),
-                  leading: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: prog.language == 'StructuredText' ? Colors.blue.withValues(alpha: 0.3) : Colors.orange.withValues(alpha: 0.3),
-                      borderRadius: BorderRadius.circular(3),
+                child: Material(
+                  color: Colors.transparent,
+                  child: ListTile(
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 6),
+                    leading: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: prog.language == 'StructuredText' ? Colors.blue.withValues(alpha: 0.3) : Colors.orange.withValues(alpha: 0.3),
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                      child: Text(prog.language == 'StructuredText' ? 'ST' : 'LD', style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white)),
                     ),
-                    child: Text(prog.language == 'StructuredText' ? 'ST' : 'LD', style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white)),
+                    title: Text(prog.name, style: TextStyle(fontSize: 11, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      tooltip: 'Delete Program',
+                      onPressed: () => _deleteProgram(prog.name),
+                    ),
+                    onTap: () => setState(() => _activeViewId = 'PROGRAM:$progName'),
                   ),
-                  title: Text(prog.name, style: TextStyle(fontSize: 11, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                    tooltip: 'Delete Program',
-                    onPressed: () => _deleteProgram(prog.name),
-                  ),
-                  onTap: () => setState(() => _activeViewId = 'PROGRAM:$progName'),
                 ),
               );
             }),
@@ -666,7 +750,14 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
 
   Widget _buildCenterWorkspace() {
     if (_activeViewId.startsWith('HMI:')) {
-      return _buildHmiView();
+      final hmiId = _activeViewId.replaceFirst('HMI:', '');
+      final hmi = _activeProject.hmis.firstWhere((h) => h.id == hmiId, orElse: () => _activeProject.hmis.first);
+      return HmiDashboardBuilderScreen(
+        currentProject: _activeProject,
+        hmiScreen: hmi,
+        onScanTriggered: () => setState(() => _executeScan()),
+        onProjectUpdated: () => setState(() {}),
+      );
     } else if (_activeViewId == 'MEMORY') {
       return MemoryManagerScreen(
         currentProject: _activeProject,
@@ -688,264 +779,5 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       );
     }
     return const Center(child: Text('Select an HMI, Memory, or Program from the Left Dock'));
-  }
-
-  Widget _buildHmiView() {
-    if (_activeProject.id == 'proj_motor') {
-      return _buildMotorHmi();
-    } else if (_activeProject.id == 'proj_tank') {
-      return _buildTankHmi();
-    }
-    return const Center(child: Text('HMI Surface'));
-  }
-
-  Widget _buildMotorHmi() {
-    final motorRun = _getTagBool('Motor_Run');
-    final eStopOk = _getTagBool('EStop_OK');
-    final overloadOk = _getTagBool('Overload_OK');
-
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Project: ${_activeProject.name}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.cyan)),
-          const SizedBox(height: 4),
-          const Text('Interactive HMI Control Surface for Motor Start/Stop Circuit', style: TextStyle(color: Colors.grey)),
-          const SizedBox(height: 20),
-
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(20.0),
-              child: Column(
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: [
-                      ElevatedButton(
-                        onPressed: () {
-                          _setTagBool('Start_PB', true);
-                          if (isRunning) _executeScan();
-                          Future.delayed(const Duration(milliseconds: 300), () {
-                            if (mounted) {
-                              _setTagBool('Start_PB', false);
-                              if (isRunning) _executeScan();
-                            }
-                          });
-                        },
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade700, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16)),
-                        child: const Text('START (NO)'),
-                      ),
-
-                      ElevatedButton(
-                        onPressed: () {
-                          _setTagBool('Stop_PB', true);
-                          if (isRunning) _executeScan();
-                          Future.delayed(const Duration(milliseconds: 300), () {
-                            if (mounted) {
-                              _setTagBool('Stop_PB', false);
-                              if (isRunning) _executeScan();
-                            }
-                          });
-                        },
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade700, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16)),
-                        child: const Text('STOP (NC)'),
-                      ),
-
-                      Column(
-                        children: [
-                          Container(
-                            width: 64,
-                            height: 64,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: motorRun ? Colors.greenAccent : Colors.grey.shade800,
-                              boxShadow: motorRun ? [BoxShadow(color: Colors.greenAccent.withValues(alpha: 0.6), blurRadius: 16)] : [],
-                              border: Border.all(color: motorRun ? Colors.green : Colors.grey, width: 2),
-                            ),
-                            child: Icon(Icons.power_settings_new, color: motorRun ? Colors.black : Colors.grey, size: 36),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(motorRun ? 'RUNNING' : 'STOPPED', style: TextStyle(fontWeight: FontWeight.bold, color: motorRun ? Colors.greenAccent : Colors.grey)),
-                        ],
-                      ),
-                    ],
-                  ),
-
-                  const Divider(height: 32),
-
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      Row(
-                        children: [
-                          Switch(
-                            value: eStopOk,
-                            activeTrackColor: Colors.green,
-                            onChanged: (val) {
-                              _setTagBool('EStop_OK', val);
-                              if (isRunning) _executeScan();
-                            },
-                          ),
-                          const Text('E-Stop Healthy'),
-                        ],
-                      ),
-                      Row(
-                        children: [
-                          Switch(
-                            value: overloadOk,
-                            activeTrackColor: Colors.green,
-                            onChanged: (val) {
-                              _setTagBool('Overload_OK', val);
-                              if (isRunning) _executeScan();
-                            },
-                          ),
-                          const Text('Overload Healthy'),
-                        ],
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTankHmi() {
-    final levelPv = _getTagDouble('Level_PV');
-    final levelSp = _getTagDouble('Level_SP');
-    final fillValve = _getTagBool('Fill_Valve');
-    final drainValve = _getTagBool('Drain_Valve');
-    final highAlarm = _getTagBool('High_Alarm');
-    final autoMode = _getTagBool('Auto_Mode');
-
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Project: ${_activeProject.name}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.tealAccent)),
-          const SizedBox(height: 4),
-          const Text('Interactive Tank Level Fill & Drain Process Simulation HMI', style: TextStyle(color: Colors.grey)),
-          const SizedBox(height: 20),
-
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(20.0),
-              child: Row(
-                children: [
-                  // Tank Graphics Visualization
-                  Column(
-                    children: [
-                      Container(
-                        width: 120,
-                        height: 200,
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Colors.cyan, width: 3),
-                          borderRadius: BorderRadius.circular(8),
-                          color: const Color(0xFF0F172A),
-                        ),
-                        child: Stack(
-                          alignment: Alignment.bottomCenter,
-                          children: [
-                            AnimatedContainer(
-                              duration: const Duration(milliseconds: 200),
-                              width: 120,
-                              height: (levelPv / 100.0) * 194.0,
-                              color: highAlarm ? Colors.red.withValues(alpha: 0.7) : Colors.cyan.withValues(alpha: 0.6),
-                            ),
-                            Center(
-                              child: Text(
-                                '${levelPv.toStringAsFixed(1)}%',
-                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.white),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text('Tank PV: ${levelPv.toStringAsFixed(1)}%', style: const TextStyle(fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  const SizedBox(width: 32),
-
-                  // Process Controls & Valve Indicators
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Switch(
-                              value: autoMode,
-                              activeTrackColor: Colors.tealAccent,
-                              onChanged: (val) {
-                                _setTagBool('Auto_Mode', val);
-                                if (isRunning) _executeScan();
-                              },
-                            ),
-                            Text('Auto Control Mode (${autoMode ? "ON" : "OFF"})', style: const TextStyle(fontWeight: FontWeight.bold)),
-                          ],
-                        ),
-                        const SizedBox(height: 16),
-
-                        // Valve status indicators
-                        Row(
-                          children: [
-                            _buildValvePill('Fill Valve', fillValve, Colors.green),
-                            const SizedBox(width: 16),
-                            _buildValvePill('Drain Valve', drainValve, Colors.orange),
-                            const SizedBox(width: 16),
-                            _buildValvePill('High Level Alarm', highAlarm, Colors.red),
-                          ],
-                        ),
-                        const SizedBox(height: 20),
-
-                        // Setpoint Slider
-                        Text('Set Level Setpoint (SP): ${levelSp.toStringAsFixed(1)}%', style: const TextStyle(fontWeight: FontWeight.bold)),
-                        Slider(
-                          value: levelSp,
-                          min: 10.0,
-                          max: 90.0,
-                          divisions: 16,
-                          label: '${levelSp.toStringAsFixed(0)}%',
-                          activeColor: Colors.teal,
-                          onChanged: (val) {
-                            _setTagDouble('Level_SP', val);
-                            if (isRunning) _executeScan();
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildValvePill(String name, bool active, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: active ? color.withValues(alpha: 0.2) : Colors.black45,
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: active ? color : Colors.grey),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.water_drop, size: 16, color: active ? color : Colors.grey),
-          const SizedBox(width: 6),
-          Text(name, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: active ? color : Colors.grey)),
-        ],
-      ),
-    );
   }
 }
