@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../widgets/tag_inspector_dock.dart';
 import 'st_editor_screen.dart';
+import 'memory_manager_screen.dart';
 
 class WorkspaceShell extends StatefulWidget {
   const WorkspaceShell({super.key});
@@ -17,13 +18,13 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   late PlcProject _activeProject;
 
   // Active Main Content View
-  // 'HMI:<hmi_id>' or 'PROGRAM:<prog_name>'
+  // 'HMI:<hmi_id>', 'PROGRAM:<prog_name>', 'MEMORY'
   String _activeViewId = 'HMI:hmi_motor';
 
   // PLC Engine State
   bool isRunning = true;
   int scanCount = 0;
-  int scanSpeedMs = 200; // Configurable scan speed (10ms to 2000ms)
+  int scanSpeedMs = 500; // Configurable scan speed (50ms to 2000ms)
   Timer? _scanTimer;
 
   // Side Dock Inspector State
@@ -57,6 +58,19 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         PlcTag(name: 'Motor_Latch', path: 'Internal/Motor_Latch', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'Internal seal-in latch'),
         PlcTag(name: 'Motor_Run', path: 'Outputs/Motor_Run', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Motor contactor output'),
       ],
+      structDefs: [
+        PlcStructDef(
+          name: 'Motor_DUT',
+          fields: [
+            StructFieldDef(name: 'Run', dataType: 'BOOL', defaultValue: false),
+            StructFieldDef(name: 'Fault', dataType: 'BOOL', defaultValue: false),
+            StructFieldDef(name: 'Speed', dataType: 'INT32', defaultValue: 0),
+          ],
+        ),
+      ],
+      dataBlocks: [
+        PlcDataBlock(name: 'DB_Motor1', structTypeName: 'Motor_DUT', fieldValues: {'Run': false, 'Fault': false, 'Speed': 1450}),
+      ],
       programs: [
         PlcProgram(
           name: 'MotorControl_ST',
@@ -66,9 +80,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         ),
       ],
       tasks: [
-        PlcTask(name: 'StartupInit', type: 'Startup', periodMs: 0, programNames: []),
         PlcTask(name: 'MainContinuousTask', type: 'Continuous', periodMs: 100, programNames: ['MotorControl_ST']),
-        PlcTask(name: 'PeriodicDiagnostics', type: 'Periodic', periodMs: 500, programNames: []),
       ],
       hmis: [
         HmiScreenDef(id: 'hmi_motor', title: 'Motor Control HMI Panel', type: 'MotorControl'),
@@ -89,6 +101,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         PlcTag(name: 'Drain_Valve', path: 'Outputs/Drain_Valve', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Drain Valve Solenoid'),
         PlcTag(name: 'High_Alarm', path: 'Outputs/High_Alarm', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'High Level Alarm Light'),
       ],
+      structDefs: [],
+      dataBlocks: [],
       programs: [
         PlcProgram(
           name: 'TankLevelControl_ST',
@@ -98,7 +112,6 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         ),
       ],
       tasks: [
-        PlcTask(name: 'StartupInit', type: 'Startup', periodMs: 0, programNames: []),
         PlcTask(name: 'ProcessLoopTask', type: 'Continuous', periodMs: 100, programNames: ['TankLevelControl_ST']),
       ],
       hmis: [
@@ -217,6 +230,23 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     });
   }
 
+  void _deleteProgram(String progName) {
+    setState(() {
+      _activeProject.programs.removeWhere((p) => p.name == progName);
+      for (var task in _activeProject.tasks) {
+        task.programNames.remove(progName);
+      }
+      if (_activeViewId == 'PROGRAM:$progName') {
+        if (_activeProject.hmis.isNotEmpty) {
+          _activeViewId = 'HMI:${_activeProject.hmis.first.id}';
+        } else {
+          _activeViewId = 'MEMORY';
+        }
+      }
+    });
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Program "$progName" deleted')));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -232,82 +262,128 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
           ],
         ),
         backgroundColor: const Color(0xFF1E293B),
+        elevation: 0,
         actions: [
-          // Run/Pause Toggle
+          // Run / Pause Toggle
           IconButton(
-            icon: Icon(isRunning ? Icons.pause_circle_filled : Icons.play_circle_fill, color: isRunning ? Colors.amber : Colors.greenAccent),
+            icon: Icon(
+              isRunning ? Icons.pause_circle_filled : Icons.play_circle_fill,
+              color: isRunning ? Colors.amber : Colors.greenAccent,
+              size: 26,
+            ),
             tooltip: isRunning ? 'Pause Scan Loop' : 'Run Scan Loop',
-            onPressed: () => setState(() => isRunning = !isRunning),
+            onPressed: () {
+              setState(() {
+                isRunning = !isRunning;
+              });
+            },
           ),
 
-          // Step Scan Button (for debugging/slow motion)
+          // Step Scan Button (for step-by-step debugging)
           IconButton(
-            icon: const Icon(Icons.skip_next, color: Colors.cyanAccent),
-            tooltip: 'Execute Single Scan Step',
+            icon: const Icon(Icons.skip_next, color: Colors.cyanAccent, size: 26),
+            tooltip: 'Execute Single Scan Step (Step Scan)',
             onPressed: () => _executeScan(),
-          ),
-
-          const SizedBox(width: 8),
-
-          // Scan Speed Control Slider (Slow Motion mode)
-          Row(
-            children: [
-              const Icon(Icons.speed, size: 16, color: Colors.grey),
-              const SizedBox(width: 4),
-              SizedBox(
-                width: 130,
-                child: Slider(
-                  value: scanSpeedMs.toDouble(),
-                  min: 50.0,
-                  max: 2000.0,
-                  divisions: 39,
-                  label: '${scanSpeedMs}ms ${scanSpeedMs > 500 ? "(Slow Mo)" : ""}',
-                  activeColor: scanSpeedMs > 500 ? Colors.amber : Colors.cyan,
-                  onChanged: (val) {
-                    setState(() {
-                      scanSpeedMs = val.round();
-                    });
-                    _startScanLoop();
-                  },
-                ),
-              ),
-              Text('${scanSpeedMs}ms', style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
-            ],
           ),
 
           const SizedBox(width: 12),
 
+          // Status Badge
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: isRunning ? Colors.green.withValues(alpha: 0.2) : Colors.amber.withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: isRunning ? Colors.green : Colors.amber),
+            ),
+            child: Text(
+              isRunning ? 'RUNNING' : 'PAUSED',
+              style: TextStyle(color: isRunning ? Colors.green : Colors.amber, fontWeight: FontWeight.bold, fontSize: 11),
+            ),
+          ),
+
+          const SizedBox(width: 16),
+
           // Toggle Tag Inspector Side Dock
           IconButton(
-            icon: Icon(Icons.table_chart, color: isTagDockVisible ? Colors.cyanAccent : Colors.grey),
+            icon: Icon(Icons.table_chart, color: isTagDockVisible ? Colors.cyanAccent : Colors.grey, size: 24),
             tooltip: 'Toggle Tag Inspector Side Dock',
             onPressed: () => setState(() => isTagDockVisible = !isTagDockVisible),
           ),
 
-          const SizedBox(width: 8),
+          const SizedBox(width: 12),
         ],
       ),
-      body: Row(
+      body: Column(
         children: [
-          // LEFT DOCK: Project Tree & Navigation Explorer
-          _buildLeftDockExplorer(),
-
-          const VerticalDivider(width: 1, color: Colors.white12),
-
-          // CENTER WORKSPACE: Active View (HMI or ST Editor)
-          Expanded(
-            child: _buildCenterWorkspace(),
-          ),
-
-          // RIGHT DOCK: Toggleable Tag Inspector & Forcing Matrix
-          if (isTagDockVisible) ...[
-            const VerticalDivider(width: 1, color: Colors.white12),
-            TagInspectorDock(
-              tags: _activeProject.tags,
-              onTagStateChanged: () => setState(() {}),
-              onClose: () => setState(() => isTagDockVisible = false),
+          // PLC Execution Controls Toolbar (Scan Speed Slider cleanly placed to avoid clipping)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            color: const Color(0xFF0F172A),
+            child: Row(
+              children: [
+                const Icon(Icons.speed, size: 16, color: Colors.grey),
+                const SizedBox(width: 8),
+                const Text('SCAN LOOP SPEED:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey)),
+                const SizedBox(width: 12),
+                SizedBox(
+                  width: 220,
+                  child: Slider(
+                    value: scanSpeedMs.toDouble(),
+                    min: 50.0,
+                    max: 2000.0,
+                    divisions: 39,
+                    activeColor: scanSpeedMs > 500 ? Colors.amber : Colors.cyan,
+                    onChanged: (val) {
+                      setState(() {
+                        scanSpeedMs = val.round();
+                      });
+                      _startScanLoop();
+                    },
+                  ),
+                ),
+                Text(
+                  '${scanSpeedMs}ms ${scanSpeedMs >= 500 ? "(Slow Mo Step)" : ""}',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontFamily: 'monospace',
+                    fontWeight: FontWeight.bold,
+                    color: scanSpeedMs >= 500 ? Colors.amberAccent : Colors.cyanAccent,
+                  ),
+                ),
+                const Spacer(),
+                Text('Scan Count: $scanCount', style: const TextStyle(fontSize: 12, color: Colors.grey, fontFamily: 'monospace')),
+              ],
             ),
-          ],
+          ),
+          const Divider(height: 1, color: Colors.white12),
+
+          // Main Shell Layout
+          Expanded(
+            child: Row(
+              children: [
+                // LEFT DOCK: Project Tree & Navigation Explorer
+                _buildLeftDockExplorer(),
+
+                const VerticalDivider(width: 1, color: Colors.white12),
+
+                // CENTER WORKSPACE: Active View (HMI, ST Editor, or Memory Manager)
+                Expanded(
+                  child: _buildCenterWorkspace(),
+                ),
+
+                // RIGHT DOCK: Toggleable Tag Inspector & Forcing Matrix
+                if (isTagDockVisible) ...[
+                  const VerticalDivider(width: 1, color: Colors.white12),
+                  TagInspectorDock(
+                    tags: _activeProject.tags,
+                    onTagStateChanged: () => setState(() {}),
+                    onClose: () => setState(() => isTagDockVisible = false),
+                  ),
+                ],
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -373,14 +449,14 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
 
                 const Divider(height: 16, color: Colors.white12),
 
-                // SECTION: HMI Dashboards Folder
+                // SECTION 1: HMI Dashboards Folder
                 _buildTreeFolderHeader('HMI DASHBOARDS', Icons.dashboard_outlined),
                 ..._activeProject.hmis.map((hmi) {
                   final isSelected = _activeViewId == 'HMI:${hmi.id}';
                   return Container(
                     margin: const EdgeInsets.only(left: 12, top: 2),
                     decoration: BoxDecoration(
-                      color: isSelected ? Colors.cyan.withOpacity(0.2) : Colors.transparent,
+                      color: isSelected ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
                       borderRadius: BorderRadius.circular(4),
                     ),
                     child: ListTile(
@@ -394,7 +470,28 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
 
                 const SizedBox(height: 12),
 
-                // SECTION: Tasks & Programs Classified by Task Type
+                // SECTION 2: MEMORY (Tags & Data Blocks)
+                _buildTreeFolderHeader('MEMORY (TAGS & DATA BLOCKS)', Icons.storage),
+                Container(
+                  margin: const EdgeInsets.only(left: 12, top: 2),
+                  decoration: BoxDecoration(
+                    color: _activeViewId == 'MEMORY' ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: ListTile(
+                    dense: true,
+                    leading: Icon(Icons.memory, size: 16, color: _activeViewId == 'MEMORY' ? Colors.cyanAccent : Colors.tealAccent),
+                    title: Text(
+                      'Tags & Data Blocks (${_activeProject.tags.length} Tags, ${_activeProject.structDefs.length} Structs, ${_activeProject.dataBlocks.length} DBs)',
+                      style: TextStyle(fontSize: 11, fontWeight: _activeViewId == 'MEMORY' ? FontWeight.bold : FontWeight.normal),
+                    ),
+                    onTap: () => setState(() => _activeViewId = 'MEMORY'),
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+
+                // SECTION 3: Tasks & Programs Classified by Task Type
                 _buildTreeFolderHeader('TASKS & CONTROL LOGIC', Icons.folder_special_outlined),
 
                 _buildTaskCategoryFolder('Startup Tasks', Icons.play_arrow, 'Startup'),
@@ -437,7 +534,11 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   }
 
   Widget _buildTaskCategoryFolder(String title, IconData icon, String taskType) {
-    final matchingTasks = _activeProject.tasks.where((t) => t.type == taskType).toList();
+    // Count total programs assigned to tasks of this taskType
+    final programsInTaskType = <String>[];
+    for (var task in _activeProject.tasks.where((t) => t.type == taskType)) {
+      programsInTaskType.addAll(task.programNames);
+    }
 
     return Padding(
       padding: const EdgeInsets.only(left: 8, top: 4),
@@ -448,43 +549,48 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
             children: [
               Icon(icon, size: 14, color: Colors.tealAccent),
               const SizedBox(width: 6),
-              Text('$title (${matchingTasks.length})', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white70)),
+              Text('$title (${programsInTaskType.length})', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white70)),
             ],
           ),
 
-          if (matchingTasks.isEmpty)
+          if (programsInTaskType.isEmpty)
             const Padding(
               padding: EdgeInsets.only(left: 20, top: 2, bottom: 4),
               child: Text('(none configured)', style: TextStyle(fontSize: 10, color: Colors.grey, fontStyle: FontStyle.italic)),
             )
           else
-            ...matchingTasks.expand((task) {
-              return task.programNames.map((progName) {
-                final prog = _activeProject.programs.firstWhere((p) => p.name == progName, orElse: () => PlcProgram(name: progName, language: 'StructuredText'));
-                final isSelected = _activeViewId == 'PROGRAM:$progName';
+            ...programsInTaskType.map((progName) {
+              final prog = _activeProject.programs.firstWhere((p) => p.name == progName, orElse: () => PlcProgram(name: progName, language: 'StructuredText'));
+              final isSelected = _activeViewId == 'PROGRAM:$progName';
 
-                return Container(
-                  margin: const EdgeInsets.only(left: 20, top: 2),
-                  decoration: BoxDecoration(
-                    color: isSelected ? Colors.cyan.withOpacity(0.2) : Colors.transparent,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: ListTile(
-                    dense: true,
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                    leading: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: prog.language == 'StructuredText' ? Colors.blue.withOpacity(0.3) : Colors.orange.withOpacity(0.3),
-                        borderRadius: BorderRadius.circular(3),
-                      ),
-                      child: Text(prog.language == 'StructuredText' ? 'ST' : 'LD', style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white)),
+              return Container(
+                margin: const EdgeInsets.only(left: 20, top: 2),
+                decoration: BoxDecoration(
+                  color: isSelected ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: ListTile(
+                  dense: true,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 6),
+                  leading: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: prog.language == 'StructuredText' ? Colors.blue.withValues(alpha: 0.3) : Colors.orange.withValues(alpha: 0.3),
+                      borderRadius: BorderRadius.circular(3),
                     ),
-                    title: Text(prog.name, style: TextStyle(fontSize: 11, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
-                    onTap: () => setState(() => _activeViewId = 'PROGRAM:$progName'),
+                    child: Text(prog.language == 'StructuredText' ? 'ST' : 'LD', style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white)),
                   ),
-                );
-              });
+                  title: Text(prog.name, style: TextStyle(fontSize: 11, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    tooltip: 'Delete Program',
+                    onPressed: () => _deleteProgram(prog.name),
+                  ),
+                  onTap: () => setState(() => _activeViewId = 'PROGRAM:$progName'),
+                ),
+              );
             }),
         ],
       ),
@@ -497,6 +603,11 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       builder: (ctx) {
         final nameCtrl = TextEditingController(text: 'NewProgram');
         String language = 'StructuredText';
+
+        // Ensure at least 1 task exists
+        if (_activeProject.tasks.isEmpty) {
+          _activeProject.tasks.add(PlcTask(name: 'MainTask', type: 'Continuous', periodMs: 100, programNames: []));
+        }
         String taskName = _activeProject.tasks.first.name;
 
         return AlertDialog(
@@ -538,7 +649,9 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                 setState(() {
                   _activeProject.programs.add(newProg);
                   final t = _activeProject.tasks.firstWhere((tk) => tk.name == taskName);
-                  t.programNames.add(newProg.name);
+                  if (!t.programNames.contains(newProg.name)) {
+                    t.programNames.add(newProg.name);
+                  }
                   _activeViewId = 'PROGRAM:${newProg.name}';
                 });
                 Navigator.pop(ctx);
@@ -554,6 +667,11 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   Widget _buildCenterWorkspace() {
     if (_activeViewId.startsWith('HMI:')) {
       return _buildHmiView();
+    } else if (_activeViewId == 'MEMORY') {
+      return MemoryManagerScreen(
+        currentProject: _activeProject,
+        onProjectUpdated: () => setState(() {}),
+      );
     } else if (_activeViewId.startsWith('PROGRAM:')) {
       final progName = _activeViewId.replaceFirst('PROGRAM:', '');
       final prog = _activeProject.programs.firstWhere((p) => p.name == progName, orElse: () => _activeProject.programs.first);
@@ -569,7 +687,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         },
       );
     }
-    return const Center(child: Text('Select an HMI or Program from the Left Dock'));
+    return const Center(child: Text('Select an HMI, Memory, or Program from the Left Dock'));
   }
 
   Widget _buildHmiView() {
@@ -607,11 +725,11 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                       ElevatedButton(
                         onPressed: () {
                           _setTagBool('Start_PB', true);
-                          _executeScan();
+                          if (isRunning) _executeScan();
                           Future.delayed(const Duration(milliseconds: 300), () {
                             if (mounted) {
                               _setTagBool('Start_PB', false);
-                              _executeScan();
+                              if (isRunning) _executeScan();
                             }
                           });
                         },
@@ -622,11 +740,11 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                       ElevatedButton(
                         onPressed: () {
                           _setTagBool('Stop_PB', true);
-                          _executeScan();
+                          if (isRunning) _executeScan();
                           Future.delayed(const Duration(milliseconds: 300), () {
                             if (mounted) {
                               _setTagBool('Stop_PB', false);
-                              _executeScan();
+                              if (isRunning) _executeScan();
                             }
                           });
                         },
@@ -642,7 +760,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
                               color: motorRun ? Colors.greenAccent : Colors.grey.shade800,
-                              boxShadow: motorRun ? [BoxShadow(color: Colors.greenAccent.withOpacity(0.6), blurRadius: 16)] : [],
+                              boxShadow: motorRun ? [BoxShadow(color: Colors.greenAccent.withValues(alpha: 0.6), blurRadius: 16)] : [],
                               border: Border.all(color: motorRun ? Colors.green : Colors.grey, width: 2),
                             ),
                             child: Icon(Icons.power_settings_new, color: motorRun ? Colors.black : Colors.grey, size: 36),
@@ -663,10 +781,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                         children: [
                           Switch(
                             value: eStopOk,
-                            activeColor: Colors.green,
+                            activeTrackColor: Colors.green,
                             onChanged: (val) {
                               _setTagBool('EStop_OK', val);
-                              _executeScan();
+                              if (isRunning) _executeScan();
                             },
                           ),
                           const Text('E-Stop Healthy'),
@@ -676,10 +794,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                         children: [
                           Switch(
                             value: overloadOk,
-                            activeColor: Colors.green,
+                            activeTrackColor: Colors.green,
                             onChanged: (val) {
                               _setTagBool('Overload_OK', val);
-                              _executeScan();
+                              if (isRunning) _executeScan();
                             },
                           ),
                           const Text('Overload Healthy'),
@@ -737,7 +855,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                               duration: const Duration(milliseconds: 200),
                               width: 120,
                               height: (levelPv / 100.0) * 194.0,
-                              color: highAlarm ? Colors.red.withOpacity(0.7) : Colors.cyan.withOpacity(0.6),
+                              color: highAlarm ? Colors.red.withValues(alpha: 0.7) : Colors.cyan.withValues(alpha: 0.6),
                             ),
                             Center(
                               child: Text(
@@ -763,10 +881,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                           children: [
                             Switch(
                               value: autoMode,
-                              activeColor: Colors.tealAccent,
+                              activeTrackColor: Colors.tealAccent,
                               onChanged: (val) {
                                 _setTagBool('Auto_Mode', val);
-                                _executeScan();
+                                if (isRunning) _executeScan();
                               },
                             ),
                             Text('Auto Control Mode (${autoMode ? "ON" : "OFF"})', style: const TextStyle(fontWeight: FontWeight.bold)),
@@ -797,7 +915,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                           activeColor: Colors.teal,
                           onChanged: (val) {
                             _setTagDouble('Level_SP', val);
-                            _executeScan();
+                            if (isRunning) _executeScan();
                           },
                         ),
                       ],
@@ -816,7 +934,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: active ? color.withOpacity(0.2) : Colors.black45,
+        color: active ? color.withValues(alpha: 0.2) : Colors.black45,
         borderRadius: BorderRadius.circular(6),
         border: Border.all(color: active ? color : Colors.grey),
       ),

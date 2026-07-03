@@ -3,7 +3,7 @@ import 'dart:convert';
 class PlcTag {
   String name;
   String path;
-  String dataType; // 'BOOL', 'INT16', 'INT32', 'FLOAT64', 'STRING'
+  String dataType; // 'BOOL', 'INT16', 'INT32', 'FLOAT64', 'STRING', or Struct Name
   dynamic value;
   String quality;
   String access;
@@ -55,6 +55,40 @@ class PlcTag {
     'engineering_units': engineeringUnits,
     'io_type': ioType,
   };
+}
+
+class StructFieldDef {
+  String name;
+  String dataType; // 'BOOL', 'INT32', 'FLOAT64', 'STRING'
+  dynamic defaultValue;
+
+  StructFieldDef({
+    required this.name,
+    required this.dataType,
+    required this.defaultValue,
+  });
+}
+
+class PlcStructDef {
+  String name; // e.g. 'Motor_DUT'
+  List<StructFieldDef> fields;
+
+  PlcStructDef({
+    required this.name,
+    required this.fields,
+  });
+}
+
+class PlcDataBlock {
+  String name; // e.g. 'DB_MotorData'
+  String structTypeName; // Name of Struct instantiation
+  Map<String, dynamic> fieldValues;
+
+  PlcDataBlock({
+    required this.name,
+    required this.structTypeName,
+    required this.fieldValues,
+  });
 }
 
 class PlcProgram {
@@ -144,6 +178,8 @@ class PlcProject {
   String controllerName;
   int scanPeriodMs;
   List<PlcTag> tags;
+  List<PlcStructDef> structDefs;
+  List<PlcDataBlock> dataBlocks;
   List<PlcProgram> programs;
   List<PlcTask> tasks;
   List<HmiScreenDef> hmis;
@@ -156,6 +192,8 @@ class PlcProject {
     required this.controllerName,
     this.scanPeriodMs = 100,
     required this.tags,
+    required this.structDefs,
+    required this.dataBlocks,
     required this.programs,
     required this.tasks,
     required this.hmis,
@@ -172,6 +210,8 @@ class PlcProject {
       controllerName: ctrl['name'] ?? 'PLC_01',
       scanPeriodMs: ctrl['scan_period_ms'] ?? 100,
       tags: (proj['tags'] as List? ?? []).map((t) => PlcTag.fromJson(t)).toList(),
+      structDefs: [],
+      dataBlocks: [],
       programs: (proj['programs'] as List? ?? []).map((p) => PlcProgram.fromJson(p)).toList(),
       tasks: (proj['tasks'] as List? ?? []).map((tk) => PlcTask.fromJson(tk)).toList(),
       hmis: [

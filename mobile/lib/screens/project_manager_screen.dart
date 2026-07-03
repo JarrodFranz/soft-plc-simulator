@@ -43,6 +43,8 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
           PlcTag(name: 'Motor_Latch', path: 'Internal/Motor_Latch', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'Internal seal-in latch'),
           PlcTag(name: 'Motor_Run', path: 'Outputs/Motor_Run', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Motor contactor output'),
         ],
+        structDefs: [],
+        dataBlocks: [],
         programs: [
           PlcProgram(
             name: 'StMotorControl',
@@ -72,6 +74,8 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
           PlcTag(name: 'Fill_Valve', path: 'Outputs/Fill_Valve', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Fill valve solenoid'),
           PlcTag(name: 'Drain_Valve', path: 'Outputs/Drain_Valve', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Drain valve solenoid'),
         ],
+        structDefs: [],
+        dataBlocks: [],
         programs: [
           PlcProgram(
             name: 'StTankControl',
