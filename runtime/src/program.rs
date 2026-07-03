@@ -23,6 +23,9 @@ pub struct Program {
     pub language: ProgramLanguage,
     pub description: String,
     pub rungs: Vec<Rung>,
+    pub st_source: Option<String>,
+    #[serde(skip)]
+    pub st_ast: Vec<crate::st::StStatement>,
     pub enabled: bool,
 }
 
@@ -34,8 +37,17 @@ impl Program {
             language,
             description: description.to_string(),
             rungs: Vec::new(),
+            st_source: None,
+            st_ast: Vec::new(),
             enabled: true,
         }
+    }
+
+    /// Set Structured Text source code and compile it to AST.
+    pub fn set_st_source(&mut self, source: &str) -> Result<(), String> {
+        self.st_source = Some(source.to_string());
+        self.st_ast = crate::st::parse_st(source)?;
+        Ok(())
     }
 
     /// Add a rung to the program.

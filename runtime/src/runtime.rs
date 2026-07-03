@@ -344,11 +344,55 @@ mod tests {
     }
 
     #[test]
-    fn test_project_loading() {
-        let rt = create_motor_runtime();
-        assert_eq!(rt.project_name, "Motor Test");
-        assert_eq!(rt.controller_name, "PLC_01");
-        assert_eq!(rt.programs.len(), 1);
-        assert!(rt.tags.len() >= 6);
+    fn test_st_program_execution() {
+        let json = r#"{
+            "project": {
+                "name": "ST Motor Test",
+                "version": "1.0.0",
+                "description": "Structured Text motor control",
+                "controller": { "name": "PLC_02", "scan_period_ms": 100 },
+                "tags": [
+                    { "name": "Start_PB", "path": "Inputs/Start_PB", "data_type": "BOOL", "initial_value": false, "access": "ReadWrite", "retentive": false, "description": "Start", "engineering_units": "", "io_type": "SimulatedInput" },
+                    { "name": "Stop_PB", "path": "Inputs/Stop_PB", "data_type": "BOOL", "initial_value": false, "access": "ReadWrite", "retentive": false, "description": "Stop", "engineering_units": "", "io_type": "SimulatedInput" },
+                    { "name": "EStop_OK", "path": "Inputs/EStop_OK", "data_type": "BOOL", "initial_value": true, "access": "ReadWrite", "retentive": false, "description": "E-stop", "engineering_units": "", "io_type": "SimulatedInput" },
+                    { "name": "Motor_Run", "path": "Outputs/Motor_Run", "data_type": "BOOL", "initial_value": false, "access": "ReadWrite", "retentive": false, "description": "Motor", "engineering_units": "", "io_type": "SimulatedOutput" }
+                ],
+                "programs": [
+                    {
+                        "name": "StMotorControl",
+                        "language": "StructuredText",
+                        "description": "ST Motor logic",
+                        "st_source": "IF (Start_PB OR Motor_Run) AND NOT Stop_PB AND EStop_OK THEN Motor_Run := TRUE; ELSE Motor_Run := FALSE; END_IF;"
+                    }
+                ],
+                "tasks": [
+                    { "name": "MainTask", "type": "Continuous", "period_ms": 100, "programs": ["StMotorControl"] }
+                ]
+            }
+        }"#;
+
+        let project = Project::from_json(json).expect("Failed to parse ST project JSON");
+        let mut rt = Runtime::new(100);
+        rt.load_project(&project);
+        rt.start();
+
+        // Initial: Motor off
+        rt.execute_scan();
+        assert_eq!(rt.read_bool("Motor_Run"), Some(false));
+
+        // Start pressed
+        rt.write_bool("Start_PB", true);
+        rt.execute_scan();
+        assert_eq!(rt.read_bool("Motor_Run"), Some(true));
+
+        // Start released -> seal-in active
+        rt.write_bool("Start_PB", false);
+        rt.execute_scan();
+        assert_eq!(rt.read_bool("Motor_Run"), Some(true));
+
+        // Stop pressed -> motor turns off
+        rt.write_bool("Stop_PB", true);
+        rt.execute_scan();
+        assert_eq!(rt.read_bool("Motor_Run"), Some(false));
     }
 }

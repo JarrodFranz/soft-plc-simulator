@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use crate::instructions::{self, Rung};
 use crate::io_image;
-use crate::program::Program;
+use crate::program::{Program, ProgramLanguage};
 use crate::tag::TagDatabase;
 use crate::timer::TonTimer;
 
@@ -122,10 +122,20 @@ impl ScanEngine {
         self.diagnostics.update(scan_time);
     }
 
-    /// Execute a single program (all rungs).
+    /// Execute a single program (rungs for LD, AST statements for ST).
     fn execute_program(&mut self, db: &mut TagDatabase, program: &Program, scan_time_ms: u64) {
-        for rung in &program.rungs {
-            instructions::execute_rung(rung, db, &mut self.timers, scan_time_ms);
+        match program.language {
+            ProgramLanguage::StructuredText => {
+                let mut interpreter = crate::st::Interpreter::new(db, &mut self.timers, scan_time_ms);
+                if let Err(err) = interpreter.execute_statements(&program.st_ast) {
+                    log::error!("ST Execution error in program '{}': {}", program.name, err);
+                }
+            }
+            _ => {
+                for rung in &program.rungs {
+                    instructions::execute_rung(rung, db, &mut self.timers, scan_time_ms);
+                }
+            }
         }
     }
 

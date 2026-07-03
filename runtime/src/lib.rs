@@ -15,6 +15,7 @@ pub mod program;
 pub mod runtime;
 pub mod project;
 pub mod io_image;
+pub mod st;
 
 pub use runtime::Runtime;
 pub use tag::{Tag, TagValue, TagQuality, DataType, AccessMode};

@@ -48,7 +48,8 @@ pub struct ProgramDefinition {
     pub name: String,
     pub language: String,
     pub description: String,
-    pub rungs: Vec<RungDefinition>,
+    pub rungs: Option<Vec<RungDefinition>>,
+    pub st_source: Option<String>,
 }
 
 /// Rung definition in a project file.
@@ -161,43 +162,51 @@ impl Project {
 
             let mut program = Program::new(&prog_def.name, language, &prog_def.description);
 
-            for rung_def in &prog_def.rungs {
-                let instructions: Vec<Instruction> = rung_def.instructions.iter().map(|inst_def| {
-                    match inst_def.instruction_type.as_str() {
-                        "ExamineOpen" | "XIC" => Instruction::ExamineOpen {
-                            tag: inst_def.tag.clone().unwrap_or_default(),
-                        },
-                        "ExamineClosed" | "XIO" => Instruction::ExamineClosed {
-                            tag: inst_def.tag.clone().unwrap_or_default(),
-                        },
-                        "OutputCoil" | "OTE" => Instruction::OutputCoil {
-                            tag: inst_def.tag.clone().unwrap_or_default(),
-                        },
-                        "SetCoil" | "OTL" => Instruction::SetCoil {
-                            tag: inst_def.tag.clone().unwrap_or_default(),
-                        },
-                        "ResetCoil" | "OTU" => Instruction::ResetCoil {
-                            tag: inst_def.tag.clone().unwrap_or_default(),
-                        },
-                        "BranchStart" => Instruction::BranchStart,
-                        "BranchNext" => Instruction::BranchNext,
-                        "BranchEnd" => Instruction::BranchEnd,
-                        "TimerOnDelay" | "TON" => Instruction::TimerOnDelay {
-                            timer_name: inst_def.timer_name.clone().unwrap_or_default(),
-                            enable_tag: inst_def.enable_tag.clone().unwrap_or_default(),
-                            done_tag: inst_def.done_tag.clone().unwrap_or_default(),
-                            preset_ms: inst_def.preset_ms.unwrap_or(1000),
-                        },
-                        _ => Instruction::ExamineOpen {
-                            tag: "UNKNOWN".to_string(),
-                        },
-                    }
-                }).collect();
+            if let Some(source) = &prog_def.st_source {
+                if let Err(e) = program.set_st_source(source) {
+                    log::error!("Failed to parse ST source for program '{}': {}", prog_def.name, e);
+                }
+            }
 
-                program.add_rung(Rung {
-                    comment: rung_def.comment.clone(),
-                    instructions,
-                });
+            if let Some(rungs) = &prog_def.rungs {
+                for rung_def in rungs {
+                    let instructions: Vec<Instruction> = rung_def.instructions.iter().map(|inst_def| {
+                        match inst_def.instruction_type.as_str() {
+                            "ExamineOpen" | "XIC" => Instruction::ExamineOpen {
+                                tag: inst_def.tag.clone().unwrap_or_default(),
+                            },
+                            "ExamineClosed" | "XIO" => Instruction::ExamineClosed {
+                                tag: inst_def.tag.clone().unwrap_or_default(),
+                            },
+                            "OutputCoil" | "OTE" => Instruction::OutputCoil {
+                                tag: inst_def.tag.clone().unwrap_or_default(),
+                            },
+                            "SetCoil" | "OTL" => Instruction::SetCoil {
+                                tag: inst_def.tag.clone().unwrap_or_default(),
+                            },
+                            "ResetCoil" | "OTU" => Instruction::ResetCoil {
+                                tag: inst_def.tag.clone().unwrap_or_default(),
+                            },
+                            "BranchStart" => Instruction::BranchStart,
+                            "BranchNext" => Instruction::BranchNext,
+                            "BranchEnd" => Instruction::BranchEnd,
+                            "TimerOnDelay" | "TON" => Instruction::TimerOnDelay {
+                                timer_name: inst_def.timer_name.clone().unwrap_or_default(),
+                                enable_tag: inst_def.enable_tag.clone().unwrap_or_default(),
+                                done_tag: inst_def.done_tag.clone().unwrap_or_default(),
+                                preset_ms: inst_def.preset_ms.unwrap_or(1000),
+                            },
+                            _ => Instruction::ExamineOpen {
+                                tag: "UNKNOWN".to_string(),
+                            },
+                        }
+                    }).collect();
+
+                    program.add_rung(Rung {
+                        comment: rung_def.comment.clone(),
+                        instructions,
+                    });
+                }
             }
 
             program
