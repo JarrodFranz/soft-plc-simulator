@@ -31,6 +31,7 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
   void _loadPresetProject(String preset) {
     if (preset == 'MotorControl') {
       final proj = PlcProject(
+        id: 'proj_motor',
         name: 'Basic Motor Start Stop',
         controllerName: 'PLC_01',
         scanPeriodMs: 100,
@@ -53,10 +54,14 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
         tasks: [
           PlcTask(name: 'MainTask', type: 'Continuous', periodMs: 100, programNames: ['StMotorControl']),
         ],
+        hmis: [
+          HmiScreenDef(id: 'hmi_motor', title: 'Motor Control HMI', type: 'MotorControl'),
+        ],
       );
       widget.onLoadProject(proj);
     } else if (preset == 'TankLevel') {
       final proj = PlcProject(
+        id: 'proj_tank',
         name: 'Tank Level Simulation',
         controllerName: 'PLC_02',
         scanPeriodMs: 100,
@@ -77,6 +82,9 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
         ],
         tasks: [
           PlcTask(name: 'MainTask', type: 'Continuous', periodMs: 100, programNames: ['StTankControl']),
+        ],
+        hmis: [
+          HmiScreenDef(id: 'hmi_tank', title: 'Tank Level HMI', type: 'TankLevel'),
         ],
       );
       widget.onLoadProject(proj);

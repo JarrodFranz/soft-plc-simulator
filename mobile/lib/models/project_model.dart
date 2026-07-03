@@ -3,14 +3,14 @@ import 'dart:convert';
 class PlcTag {
   String name;
   String path;
-  String dataType;
+  String dataType; // 'BOOL', 'INT16', 'INT32', 'FLOAT64', 'STRING'
   dynamic value;
   String quality;
   String access;
   bool retentive;
   String description;
   String engineeringUnits;
-  String ioType;
+  String ioType; // 'SimulatedInput', 'SimulatedOutput', 'Internal'
   bool isForced;
   dynamic forcedValue;
 
@@ -93,7 +93,7 @@ class PlcProgram {
 
 class PlcTask {
   String name;
-  String type; // 'Continuous', 'Periodic', 'Event'
+  String type; // 'Startup', 'Continuous', 'Periodic', 'Event'
   int periodMs;
   List<String> programNames;
   bool enabled;
@@ -124,7 +124,20 @@ class PlcTask {
   };
 }
 
+class HmiScreenDef {
+  String id;
+  String title;
+  String type; // 'MotorControl', 'TankLevel', 'GenericTagDashboard'
+
+  HmiScreenDef({
+    required this.id,
+    required this.title,
+    required this.type,
+  });
+}
+
 class PlcProject {
+  String id;
   String name;
   String version;
   String description;
@@ -133,8 +146,10 @@ class PlcProject {
   List<PlcTag> tags;
   List<PlcProgram> programs;
   List<PlcTask> tasks;
+  List<HmiScreenDef> hmis;
 
   PlcProject({
+    required this.id,
     required this.name,
     this.version = '1.0.0',
     this.description = '',
@@ -143,12 +158,14 @@ class PlcProject {
     required this.tags,
     required this.programs,
     required this.tasks,
+    required this.hmis,
   });
 
   factory PlcProject.fromJson(Map<String, dynamic> json) {
     final proj = json['project'] ?? json;
     final ctrl = proj['controller'] ?? {};
     return PlcProject(
+      id: proj['id'] ?? proj['name']?.replaceAll(' ', '_')?.toLowerCase() ?? 'proj_01',
       name: proj['name'] ?? 'Untitled Project',
       version: proj['version'] ?? '1.0.0',
       description: proj['description'] ?? '',
@@ -157,11 +174,15 @@ class PlcProject {
       tags: (proj['tags'] as List? ?? []).map((t) => PlcTag.fromJson(t)).toList(),
       programs: (proj['programs'] as List? ?? []).map((p) => PlcProgram.fromJson(p)).toList(),
       tasks: (proj['tasks'] as List? ?? []).map((tk) => PlcTask.fromJson(tk)).toList(),
+      hmis: [
+        HmiScreenDef(id: 'hmi_1', title: 'Default HMI Dashboard', type: 'GenericTagDashboard'),
+      ],
     );
   }
 
   Map<String, dynamic> toJson() => {
     'project': {
+      'id': id,
       'name': name,
       'version': version,
       'description': description,
