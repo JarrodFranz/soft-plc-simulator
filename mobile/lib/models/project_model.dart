@@ -3,7 +3,7 @@ import 'dart:convert';
 class PlcTag {
   String name;
   String path;
-  String dataType; // 'BOOL', 'INT16', 'INT32', 'FLOAT64', 'STRING'
+  String dataType; // 'BOOL', 'INT16', 'INT32', 'FLOAT64', 'STRING', 'TIMER'
   dynamic value;
   String quality;
   String access;
@@ -92,7 +92,7 @@ class PlcDataBlock {
 }
 
 // -------------------------------------------------------------
-// LADDER LOGIC (LD) MODELS
+// LADDER LOGIC (LD) MODELS WITH PARALLEL BRANCHES
 // -------------------------------------------------------------
 class LdInstruction {
   String type; // 'XIC', 'XIO', 'OTE', 'OTL', 'OTU', 'TON', 'TOF', 'EQU', 'GRT', 'LES'
@@ -104,22 +104,34 @@ class LdInstruction {
     required this.type,
     required this.operandTag,
     this.comment = '',
-    this.presetMs = 1000,
+    this.presetMs = 5000,
+  });
+}
+
+class LdBranch {
+  List<LdInstruction> inputInstructions;
+  List<LdInstruction> outputInstructions;
+
+  LdBranch({
+    required this.inputInstructions,
+    required this.outputInstructions,
   });
 }
 
 class LdRung {
   int rungIndex;
   String comment;
-  List<LdInstruction> inputInstructions; // Contacts / Timers / Comparisons
-  List<LdInstruction> outputInstructions; // Coils / Latches
+  List<LdInstruction> inputInstructions;
+  List<LdInstruction> outputInstructions;
+  List<LdBranch> parallelBranches; // Parallel OR Rung Branches
 
   LdRung({
     required this.rungIndex,
     this.comment = '',
     required this.inputInstructions,
     required this.outputInstructions,
-  });
+    List<LdBranch>? parallelBranches,
+  }) : parallelBranches = parallelBranches ?? [];
 }
 
 // -------------------------------------------------------------
@@ -160,7 +172,7 @@ class SfcStep {
   String id;
   String name;
   bool isInitial;
-  String actionSt; // ST Logic executed while step is active
+  String actionSt;
 
   SfcStep({
     required this.id,
@@ -174,7 +186,7 @@ class SfcTransition {
   String id;
   String fromStepId;
   String toStepId;
-  String conditionSt; // ST Boolean expression for step transition
+  String conditionSt;
 
   SfcTransition({
     required this.id,

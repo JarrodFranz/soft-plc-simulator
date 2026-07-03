@@ -18,6 +18,13 @@ class MemoryManagerScreen extends StatefulWidget {
 class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTickerProviderStateMixin {
   late TabController _tabController;
 
+  // Sorting State for Global Tags Table
+  int _sortColumnIndex = 0;
+  bool _isAscending = true;
+
+  // Set of expanded Integer tag names for bit expansion
+  final Set<String> _expandedTagBits = {};
+
   @override
   void initState() {
     super.initState();
@@ -28,6 +35,43 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
   void dispose() {
     _tabController.dispose();
     super.dispose();
+  }
+
+  void _sortTags(int columnIndex, bool ascending) {
+    setState(() {
+      _sortColumnIndex = columnIndex;
+      _isAscending = ascending;
+
+      widget.currentProject.tags.sort((a, b) {
+        dynamic aValue;
+        dynamic bValue;
+
+        switch (columnIndex) {
+          case 0: aValue = a.name; bValue = b.name; break;
+          case 1: aValue = a.path; bValue = b.path; break;
+          case 2: aValue = a.dataType; bValue = b.dataType; break;
+          case 3: aValue = a.value.toString(); bValue = b.value.toString(); break;
+          case 4: aValue = a.quality; bValue = b.quality; break;
+          case 5: aValue = a.ioType; bValue = b.ioType; break;
+          default: aValue = a.name; bValue = b.name;
+        }
+
+        int cmp = Comparable.compare(aValue, bValue);
+        return ascending ? cmp : -cmp;
+      });
+    });
+  }
+
+  void _toggleBitValue(PlcTag parentTag, int bitIndex) {
+    if (parentTag.value is! int) return;
+    int currentInt = parentTag.value as int;
+    int mask = 1 << bitIndex;
+    int newInt = currentInt ^ mask;
+
+    setState(() {
+      parentTag.value = newInt;
+    });
+    widget.onProjectUpdated();
   }
 
   void _showAddStructDialog() {
@@ -177,7 +221,6 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
                     fieldValues: initialValues,
                   );
 
-                  // Automatically register tags in project memory for each field
                   for (var f in structDef.fields) {
                     widget.currentProject.tags.add(PlcTag(
                       name: '${db.name}.${f.name}',
@@ -247,7 +290,7 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
                     name: nameCtrl.text,
                     path: pathCtrl.text,
                     dataType: dataType,
-                    value: dataType == 'BOOL' ? false : (dataType == 'FLOAT64' ? 0.0 : 0),
+                    value: dataType == 'BOOL' ? false : (dataType.startsWith('INT') ? 0 : 0.0),
                     ioType: ioType,
                   );
                   setState(() {
@@ -269,13 +312,13 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('${widget.currentProject.name} — Memory & Data Blocks'),
+        title: Text('${widget.currentProject.name} — Memory, DUTs & Data Blocks'),
         backgroundColor: const Color(0xFF1E293B),
         bottom: TabBar(
           controller: _tabController,
           indicatorColor: Colors.cyan,
           tabs: const [
-            Tab(icon: Icon(Icons.table_rows), text: 'Global Tags'),
+            Tab(icon: Icon(Icons.table_chart), text: 'Global Tags (Sortable Table)'),
             Tab(icon: Icon(Icons.dataset), text: 'Struct Definitions (DUT)'),
             Tab(icon: Icon(Icons.inventory_2), text: 'Data Blocks (DB)'),
           ],
@@ -284,20 +327,15 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
       body: TabBarView(
         controller: _tabController,
         children: [
-          // Tab 1: Global Tags
-          _buildGlobalTagsTab(),
-
-          // Tab 2: Struct Definitions
+          _buildGlobalTagsSortableTableTab(),
           _buildStructDefsTab(),
-
-          // Tab 3: Data Blocks
           _buildDataBlocksTab(),
         ],
       ),
     );
   }
 
-  Widget _buildGlobalTagsTab() {
+  Widget _buildGlobalTagsSortableTableTab() {
     return Scaffold(
       floatingActionButton: FloatingActionButton.extended(
         icon: const Icon(Icons.add),
@@ -305,36 +343,143 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
         backgroundColor: Colors.cyan,
         onPressed: _showAddTagDialog,
       ),
-      body: ListView.builder(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
-        itemCount: widget.currentProject.tags.length,
-        itemBuilder: (context, index) {
-          final tag = widget.currentProject.tags[index];
-          return Card(
-            child: ListTile(
-              title: Text(tag.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-              subtitle: Text('${tag.path} [${tag.dataType}] — ${tag.description}'),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(tag.ioType, style: const TextStyle(color: Colors.grey, fontSize: 11)),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    icon: const Icon(Icons.delete, color: Colors.redAccent, size: 18),
-                    onPressed: () {
-                      setState(() {
-                        widget.currentProject.tags.removeAt(index);
-                      });
-                      widget.onProjectUpdated();
-                    },
-                  ),
-                ],
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('GLOBAL TAG DATABASE & BIT EXPANSION TABLE', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.cyanAccent)),
+            const SizedBox(height: 4),
+            const Text('Click column headers to sort. Expand integer tags (INT16/INT32) to view and force individual bits (myInt.0 to myInt.15).', style: TextStyle(color: Colors.grey, fontSize: 11)),
+            const SizedBox(height: 16),
+
+            Card(
+              color: const Color(0xFF1E293B),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: DataTable(
+                  sortColumnIndex: _sortColumnIndex,
+                  sortAscending: _isAscending,
+                  columns: [
+                    DataColumn(label: const Text('Tag Name'), onSort: _sortTags),
+                    DataColumn(label: const Text('Browse Path'), onSort: _sortTags),
+                    DataColumn(label: const Text('Data Type'), onSort: _sortTags),
+                    DataColumn(label: const Text('Live Value'), onSort: _sortTags),
+                    DataColumn(label: const Text('Quality'), onSort: _sortTags),
+                    DataColumn(label: const Text('I/O Classification'), onSort: _sortTags),
+                    const DataColumn(label: Text('Bit Expansion / Actions')),
+                  ],
+                  rows: _buildTableRowsWithBitExpansion(),
+                ),
               ),
             ),
-          );
-        },
+          ],
+        ),
       ),
     );
+  }
+
+  List<DataRow> _buildTableRowsWithBitExpansion() {
+    final rows = <DataRow>[];
+
+    for (int i = 0; i < widget.currentProject.tags.length; i++) {
+      final tag = widget.currentProject.tags[i];
+      final isInt = tag.dataType.startsWith('INT');
+      final isExpanded = _expandedTagBits.contains(tag.name);
+
+      // Parent Tag Row
+      rows.add(DataRow(
+        cells: [
+          DataCell(Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (isInt)
+                IconButton(
+                  icon: Icon(isExpanded ? Icons.arrow_drop_down_circle : Icons.play_arrow, size: 16, color: Colors.amberAccent),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  tooltip: 'Expand 16 Bits (${tag.name}.0 to ${tag.name}.15)',
+                  onPressed: () {
+                    setState(() {
+                      if (isExpanded) {
+                        _expandedTagBits.remove(tag.name);
+                      } else {
+                        _expandedTagBits.add(tag.name);
+                      }
+                    });
+                  },
+                ),
+              const SizedBox(width: 6),
+              Text(tag.name, style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace')),
+            ],
+          )),
+          DataCell(Text(tag.path, style: const TextStyle(color: Colors.grey, fontSize: 11))),
+          DataCell(Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(color: Colors.cyan.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
+            child: Text(tag.dataType, style: const TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold, fontSize: 11)),
+          )),
+          DataCell(Text(
+            '${tag.value} ${tag.engineeringUnits}',
+            style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.greenAccent, fontFamily: 'monospace'),
+          )),
+          DataCell(Text(tag.quality, style: const TextStyle(color: Colors.green, fontSize: 11))),
+          DataCell(Text(tag.ioType, style: const TextStyle(color: Colors.grey, fontSize: 11))),
+          DataCell(IconButton(
+            icon: const Icon(Icons.delete, color: Colors.redAccent, size: 16),
+            onPressed: () {
+              setState(() {
+                widget.currentProject.tags.removeAt(i);
+              });
+              widget.onProjectUpdated();
+            },
+          )),
+        ],
+      ));
+
+      // Expanded 16 Bit Sub-Rows for Integers (myInt.0 through myInt.15)
+      if (isInt && isExpanded) {
+        final int val = (tag.value is int) ? (tag.value as int) : 0;
+
+        for (int bitIndex = 0; bitIndex < 16; bitIndex++) {
+          final bool bitVal = (val & (1 << bitIndex)) != 0;
+          final String bitTagName = '${tag.name}.$bitIndex';
+
+          rows.add(DataRow(
+            color: WidgetStateProperty.all(const Color(0xFF0F172A)),
+            cells: [
+              DataCell(Padding(
+                padding: const EdgeInsets.only(left: 28),
+                child: Text(bitTagName, style: const TextStyle(fontFamily: 'monospace', color: Colors.amberAccent, fontSize: 12)),
+              )),
+              DataCell(Text('${tag.path}.$bitIndex', style: const TextStyle(color: Colors.grey, fontSize: 10))),
+              DataCell(const Text('BOOL (Bit)', style: TextStyle(color: Colors.amber, fontSize: 10))),
+              DataCell(Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(shape: BoxShape.circle, color: bitVal ? Colors.greenAccent : Colors.grey),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(bitVal ? 'TRUE (1)' : 'FALSE (0)', style: TextStyle(fontWeight: FontWeight.bold, color: bitVal ? Colors.greenAccent : Colors.grey, fontSize: 11)),
+                ],
+              )),
+              const DataCell(Text('Good', style: TextStyle(color: Colors.green, fontSize: 10))),
+              const DataCell(Text('Bit Reference', style: TextStyle(color: Colors.grey, fontSize: 10))),
+              DataCell(OutlinedButton(
+                style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2), side: const BorderSide(color: Colors.amberAccent)),
+                onPressed: () => _toggleBitValue(tag, bitIndex),
+                child: Text(bitVal ? 'Reset to 0' : 'Set to 1', style: const TextStyle(fontSize: 10, color: Colors.amberAccent)),
+              )),
+            ],
+          ));
+        }
+      }
+    }
+
+    return rows;
   }
 
   Widget _buildStructDefsTab() {
@@ -354,6 +499,7 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
               itemBuilder: (context, index) {
                 final s = structs[index];
                 return Card(
+                  color: const Color(0xFF1E293B),
                   child: ExpansionTile(
                     leading: const Icon(Icons.dataset, color: Colors.tealAccent),
                     title: Text(s.name, style: const TextStyle(fontWeight: FontWeight.bold)),
@@ -397,6 +543,7 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
               itemBuilder: (context, index) {
                 final db = dbs[index];
                 return Card(
+                  color: const Color(0xFF1E293B),
                   child: ExpansionTile(
                     leading: const Icon(Icons.inventory_2, color: Colors.indigoAccent),
                     title: Text(db.name, style: const TextStyle(fontWeight: FontWeight.bold)),
@@ -406,7 +553,6 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
                       onPressed: () {
                         setState(() {
                           dbs.removeAt(index);
-                          // Clean up tags
                           widget.currentProject.tags.removeWhere((t) => t.name.startsWith('${db.name}.'));
                         });
                         widget.onProjectUpdated();

@@ -31,28 +31,52 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       widget.program.rungs.addAll([
         LdRung(
           rungIndex: 0,
-          comment: 'Rung 0: Motor Start Pushbutton Seal-In Circuit',
+          comment: 'Rung 0: RSLogix Style Timer On Delay (TON) with Parallel Branch',
           inputInstructions: [
-            LdInstruction(type: 'XIC', operandTag: 'Start_PB', comment: 'Start Pushbutton (NO)'),
-            LdInstruction(type: 'XIO', operandTag: 'Stop_PB', comment: 'Stop Pushbutton (NC)'),
-            LdInstruction(type: 'XIC', operandTag: 'EStop_OK', comment: 'Emergency Stop Healthy'),
+            LdInstruction(type: 'XIO', operandTag: 'TONTimer.DN', comment: 'Normally Closed Timer Done Bit'),
+            LdInstruction(type: 'TON', operandTag: 'TONTimer', presetMs: 5000, comment: '5 Second TON Timer'),
           ],
           outputInstructions: [
-            LdInstruction(type: 'OTL', operandTag: 'Motor_Latch', comment: 'Latch Motor Internal Tag'),
+            LdInstruction(type: 'OTE', operandTag: 'MainContactor', comment: 'Main Motor Contactor'),
           ],
-        ),
-        LdRung(
-          rungIndex: 1,
-          comment: 'Rung 1: Pump Delay Timer (TON)',
-          inputInstructions: [
-            LdInstruction(type: 'XIC', operandTag: 'Motor_Latch', comment: 'Motor Internal Latch'),
-            LdInstruction(type: 'TON', operandTag: 'T4_0', presetMs: 3000, comment: '3 Second Pump On Delay Timer'),
-          ],
-          outputInstructions: [
-            LdInstruction(type: 'OTE', operandTag: 'Motor_Run', comment: 'Output Contactor Solenoid'),
+          parallelBranches: [
+            LdBranch(
+              inputInstructions: [
+                LdInstruction(type: 'XIC', operandTag: 'TONTimer.DN', comment: 'Examine if Timer Done'),
+              ],
+              outputInstructions: [
+                LdInstruction(type: 'OTE', operandTag: 'Arbor1Oiler', comment: 'Arbor 1 Oiler Solenoid Coil'),
+              ],
+            ),
           ],
         ),
       ]);
+    }
+
+    // Auto register TONTimer tags
+    _registerTimerTags('TONTimer', 5000);
+  }
+
+  void _registerTimerTags(String timerName, int presetMs) {
+    final subTags = [
+      {'name': '$timerName.PRE', 'type': 'INT32', 'val': presetMs, 'desc': 'Timer Preset (ms)'},
+      {'name': '$timerName.ACC', 'type': 'INT32', 'val': 0, 'desc': 'Timer Accumulator (ms)'},
+      {'name': '$timerName.EN', 'type': 'BOOL', 'val': false, 'desc': 'Timer Enable Bit'},
+      {'name': '$timerName.TT', 'type': 'BOOL', 'val': false, 'desc': 'Timer Timing Bit'},
+      {'name': '$timerName.DN', 'type': 'BOOL', 'val': false, 'desc': 'Timer Done Bit'},
+    ];
+
+    for (var st in subTags) {
+      if (!widget.currentProject.tags.any((t) => t.name == st['name'])) {
+        widget.currentProject.tags.add(PlcTag(
+          name: st['name'] as String,
+          path: 'Timers/${st['name']}',
+          dataType: st['type'] as String,
+          value: st['val'],
+          ioType: 'Internal',
+          description: st['desc'] as String,
+        ));
+      }
     }
   }
 
@@ -67,13 +91,22 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
       if (insertAt != null && insertAt >= 0 && insertAt <= widget.program.rungs.length) {
         widget.program.rungs.insert(insertAt, newRung);
-        // Re-index rungs
         for (int i = 0; i < widget.program.rungs.length; i++) {
           widget.program.rungs[i].rungIndex = i;
         }
       } else {
         widget.program.rungs.add(newRung);
       }
+    });
+    widget.onProgramUpdated();
+  }
+
+  void _addParallelBranch(LdRung rung) {
+    setState(() {
+      rung.parallelBranches.add(LdBranch(
+        inputInstructions: [LdInstruction(type: 'XIC', operandTag: 'TONTimer.DN')],
+        outputInstructions: [LdInstruction(type: 'OTE', operandTag: 'Arbor1Oiler')],
+      ));
     });
     widget.onProgramUpdated();
   }
@@ -91,18 +124,17 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     widget.onProgramUpdated();
   }
 
-  void _showAddInstructionDialog(LdRung rung, bool isInput) {
+  void _showAddInstructionDialog(LdRung rung, bool isInput, [LdBranch? targetBranch]) {
     String type = isInput ? 'XIC' : 'OTE';
     String tag = widget.currentProject.tags.isNotEmpty ? widget.currentProject.tags.first.name : 'Start_PB';
     final commentCtrl = TextEditingController();
-    int presetMs = 3000;
+    int presetMs = 5000;
 
     final inputTypes = [
       {'type': 'XIC', 'label': 'XIC — Examine if Closed (-| |-) [NO Contact]'},
       {'type': 'XIO', 'label': 'XIO — Examine if Open (-|/|-) [NC Contact]'},
-      {'type': 'TON', 'label': 'TON — Timer On Delay Block (EN, DN, TT, PRE, ACC)'},
-      {'type': 'TOF', 'label': 'TOF — Timer Off Delay Block (EN, DN, TT, PRE, ACC)'},
-      {'type': 'EQU', 'label': 'EQU — Compare Equal (A == B)'},
+      {'type': 'TON', 'label': 'TON — RSLogix Style Timer On Delay Box (EN, DN Out Pins)'},
+      {'type': 'TOF', 'label': 'TOF — RSLogix Style Timer Off Delay Box (EN, DN Out Pins)'},
     ];
 
     final outputTypes = [
@@ -133,7 +165,6 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                   ),
                   const SizedBox(height: 12),
 
-                  // Tag Binding
                   DropdownButtonFormField<String>(
                     value: widget.currentProject.tags.any((t) => t.name == tag) ? tag : null,
                     decoration: const InputDecoration(labelText: 'Operand Tag / Timer Structure Binding'),
@@ -149,7 +180,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     TextField(
                       controller: TextEditingController(text: presetMs.toString()),
                       keyboardType: TextInputType.number,
-                      onChanged: (v) => presetMs = int.tryParse(v) ?? 3000,
+                      onChanged: (v) => presetMs = int.tryParse(v) ?? 5000,
                       decoration: const InputDecoration(labelText: 'Timer Preset Time (PRE) in Milliseconds (ms)'),
                     ),
                     const SizedBox(height: 12),
@@ -165,16 +196,23 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 onPressed: () {
                   final inst = LdInstruction(type: type, operandTag: tag, presetMs: presetMs, comment: commentCtrl.text);
 
-                  // Auto-register Timer structure tags if TON/TOF
                   if (type == 'TON' || type == 'TOF') {
                     _registerTimerTags(tag, presetMs);
                   }
 
                   setState(() {
-                    if (isInput) {
-                      rung.inputInstructions.add(inst);
+                    if (targetBranch != null) {
+                      if (isInput) {
+                        targetBranch.inputInstructions.add(inst);
+                      } else {
+                        targetBranch.outputInstructions.add(inst);
+                      }
                     } else {
-                      rung.outputInstructions.add(inst);
+                      if (isInput) {
+                        rung.inputInstructions.add(inst);
+                      } else {
+                        rung.outputInstructions.add(inst);
+                      }
                     }
                   });
                   widget.onProgramUpdated();
@@ -187,29 +225,6 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
         );
       },
     );
-  }
-
-  void _registerTimerTags(String timerName, int presetMs) {
-    final subTags = [
-      {'name': '$timerName.PRE', 'type': 'INT32', 'val': presetMs, 'desc': 'Timer Preset (ms)'},
-      {'name': '$timerName.ACC', 'type': 'INT32', 'val': 0, 'desc': 'Timer Accumulator (ms)'},
-      {'name': '$timerName.EN', 'type': 'BOOL', 'val': false, 'desc': 'Timer Enable Bit'},
-      {'name': '$timerName.TT', 'type': 'BOOL', 'val': false, 'desc': 'Timer Timing Bit'},
-      {'name': '$timerName.DN', 'type': 'BOOL', 'val': false, 'desc': 'Timer Done Bit'},
-    ];
-
-    for (var st in subTags) {
-      if (!widget.currentProject.tags.any((t) => t.name == st['name'])) {
-        widget.currentProject.tags.add(PlcTag(
-          name: st['name'] as String,
-          path: 'Timers/${st['name']}',
-          dataType: st['type'] as String,
-          value: st['val'],
-          ioType: 'Internal',
-          description: st['desc'] as String,
-        ));
-      }
-    }
   }
 
   void _showClickToEditTagDialog(LdInstruction inst) {
@@ -228,7 +243,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
             }).toList();
 
             return AlertDialog(
-              title: Text('Edit Rung Component: ${inst.type} (${inst.operandTag})'),
+              title: Text('Edit Component: ${inst.type} (${inst.operandTag})'),
               content: SizedBox(
                 width: 440,
                 child: Column(
@@ -244,8 +259,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                         DropdownMenuItem(value: 'OTE', child: Text('OTE — Output Coil (-( )-)')),
                         DropdownMenuItem(value: 'OTL', child: Text('OTL — Output Latch (-(L)-)')),
                         DropdownMenuItem(value: 'OTU', child: Text('OTU — Output Unlatch (-(U)-)')),
-                        DropdownMenuItem(value: 'TON', child: Text('TON — Timer On Delay Box')),
-                        DropdownMenuItem(value: 'TOF', child: Text('TOF — Timer Off Delay Box')),
+                        DropdownMenuItem(value: 'TON', child: Text('TON — RSLogix Style Timer On Delay Box')),
+                        DropdownMenuItem(value: 'TOF', child: Text('TOF — RSLogix Style Timer Off Delay Box')),
                       ],
                       onChanged: (val) => setDlgState(() => selectedType = val!),
                     ),
@@ -255,7 +270,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                       controller: tagCtrl,
                       onChanged: (v) => setDlgState(() {}),
                       decoration: const InputDecoration(
-                        labelText: 'Tag Name / Bounded Parameter (Click Tag Below or Type)',
+                        labelText: 'Tag / Bit Parameter (e.g. TONTimer.DN, TONTimer.ACC)',
                         isDense: true,
                         suffixIcon: Icon(Icons.search, size: 16),
                         border: OutlineInputBorder(),
@@ -305,7 +320,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 ElevatedButton(
                   onPressed: () {
                     final newTag = tagCtrl.text.trim();
-                    final newPreset = int.tryParse(presetCtrl.text) ?? 3000;
+                    final newPreset = int.tryParse(presetCtrl.text) ?? 5000;
 
                     setState(() {
                       inst.type = selectedType;
@@ -340,7 +355,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('${widget.program.name} — Ladder Logic (LD) Rung Editor'),
+        title: Text('${widget.program.name} — RSLogix Style Ladder Logic (LD) Editor'),
         backgroundColor: const Color(0xFF1E293B),
         actions: [
           ElevatedButton.icon(
@@ -354,7 +369,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       ),
       body: Row(
         children: [
-          // CENTER WORKSPACE: Visual Rung Diagram Canvas
+          // CENTER WORKSPACE: Visual Rung Diagram Canvas with RSLogix Timers & Parallel Branches
           Expanded(
             child: Container(
               color: const Color(0xFF0F172A),
@@ -446,13 +461,13 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Rung Header & Operations Bar
+            // Rung Header Bar
             Row(
               children: [
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(color: Colors.cyan.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
-                  child: Text('RUNG ${index}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.cyanAccent, fontSize: 11)),
+                  child: Text('RUNG $index', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.cyanAccent, fontSize: 11)),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
@@ -467,7 +482,11 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                   ),
                 ),
 
-                // Reorder Rung Buttons
+                IconButton(
+                  icon: const Icon(Icons.add_road, size: 16, color: Colors.tealAccent),
+                  tooltip: 'Add Parallel Branch',
+                  onPressed: () => _addParallelBranch(rung),
+                ),
                 IconButton(
                   icon: const Icon(Icons.arrow_upward, size: 16, color: Colors.grey),
                   tooltip: 'Move Rung Up',
@@ -501,68 +520,39 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
             const SizedBox(height: 12),
 
-            // Rung Graphical Power Rail Line
+            // Rung Graphical Power Rail Line Canvas
             Container(
-              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+              padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: const Color(0xFF0F172A),
                 borderRadius: BorderRadius.circular(6),
                 border: Border.all(color: Colors.cyan.withValues(alpha: 0.3)),
               ),
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Left Power Rail (L1 - 24VDC)
-                  Column(
-                    children: [
-                      Container(width: 6, height: 70, color: Colors.greenAccent),
-                      const Text('L1', style: TextStyle(fontSize: 8, color: Colors.greenAccent, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  Container(width: 16, height: 3, color: Colors.greenAccent),
+                  // Main Rung Line
+                  _buildSingleRungLine(rung, rung.inputInstructions, rung.outputInstructions, null),
 
-                  // Input Contacts Flow
-                  Expanded(
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
+                  // Parallel Branches (OR Frames)
+                  ...rung.parallelBranches.map((branch) {
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 8),
                       child: Row(
                         children: [
-                          ...rung.inputInstructions.map((inst) => _buildInstructionGraphic(inst, rung, true)),
-                          IconButton(
-                            icon: const Icon(Icons.add_box, color: Colors.cyanAccent, size: 22),
-                            tooltip: 'Add Contact / Timer to Rung Input',
-                            onPressed: () => _showAddInstructionDialog(rung, true),
+                          const SizedBox(width: 22),
+                          // Drop line from main branch
+                          Container(width: 3, height: 40, color: Colors.greenAccent),
+                          Expanded(
+                            child: _buildSingleRungLine(rung, branch.inputInstructions, branch.outputInstructions, branch),
                           ),
+                          // Rise line back to main rail
+                          Container(width: 3, height: 40, color: Colors.blueAccent),
+                          const SizedBox(width: 22),
                         ],
                       ),
-                    ),
-                  ),
-
-                  // Wire Line across to Coil
-                  Expanded(child: Container(height: 3, color: Colors.greenAccent)),
-
-                  // Output Coils Flow
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        ...rung.outputInstructions.map((inst) => _buildInstructionGraphic(inst, rung, false)),
-                        IconButton(
-                          icon: const Icon(Icons.add_box, color: Colors.amberAccent, size: 22),
-                          tooltip: 'Add Output Coil',
-                          onPressed: () => _showAddInstructionDialog(rung, false),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  // Right Power Rail (L2 - Neutral / 0V)
-                  Container(width: 16, height: 3, color: Colors.blueAccent),
-                  Column(
-                    children: [
-                      Container(width: 6, height: 70, color: Colors.blueAccent),
-                      const Text('L2', style: TextStyle(fontSize: 8, color: Colors.blueAccent, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
+                    );
+                  }),
                 ],
               ),
             ),
@@ -572,47 +562,149 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     );
   }
 
+  Widget _buildSingleRungLine(LdRung rung, List<LdInstruction> inputs, List<LdInstruction> outputs, LdBranch? branch) {
+    return Row(
+      children: [
+        // Left Power Rail (L1 - 24VDC)
+        Column(
+          children: [
+            Container(width: 6, height: 75, color: Colors.greenAccent),
+            const Text('L1', style: TextStyle(fontSize: 8, color: Colors.greenAccent, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        Container(width: 16, height: 3, color: Colors.greenAccent),
+
+        // Input Contacts Flow
+        Expanded(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                ...inputs.map((inst) => _buildInstructionGraphic(inst, rung, true)),
+                IconButton(
+                  icon: const Icon(Icons.add_box, color: Colors.cyanAccent, size: 22),
+                  tooltip: 'Add Contact / Timer',
+                  onPressed: () => _showAddInstructionDialog(rung, true, branch),
+                ),
+              ],
+            ),
+          ),
+        ),
+
+        // Wire Line across to Output Coils
+        Expanded(child: Container(height: 3, color: Colors.greenAccent)),
+
+        // Output Coils Flow
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              ...outputs.map((inst) => _buildInstructionGraphic(inst, rung, false)),
+              IconButton(
+                icon: const Icon(Icons.add_box, color: Colors.amberAccent, size: 22),
+                tooltip: 'Add Output Coil',
+                onPressed: () => _showAddInstructionDialog(rung, false, branch),
+              ),
+            ],
+          ),
+        ),
+
+        // Right Power Rail (L2 - Neutral / 0V)
+        Container(width: 16, height: 3, color: Colors.blueAccent),
+        Column(
+          children: [
+            Container(width: 6, height: 75, color: Colors.blueAccent),
+            const Text('L2', style: TextStyle(fontSize: 8, color: Colors.blueAccent, fontWeight: FontWeight.bold)),
+          ],
+        ),
+      ],
+    );
+  }
+
   Widget _buildInstructionGraphic(LdInstruction inst, LdRung rung, bool isInput) {
     final bool isTimer = inst.type == 'TON' || inst.type == 'TOF';
 
     if (isTimer) {
-      // Render Industrial PLC Timer Box Component
+      // Render Exact RSLogix Style TON Timer Box with (EN) and (DN) Output Pins
       return InkWell(
         onTap: () => _showClickToEditTagDialog(inst),
         child: Container(
           margin: const EdgeInsets.symmetric(horizontal: 6),
-          padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
             color: const Color(0xFF1E293B),
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: Colors.purpleAccent, width: 2),
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(color: Colors.grey.shade400, width: 1.5),
             boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 4)],
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.timer, size: 14, color: Colors.purpleAccent),
-                  const SizedBox(width: 4),
-                  Text('${inst.type} (Timer)', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.purpleAccent)),
-                ],
+              // Timer Box Header (RSLogix Grey Header)
+              Container(
+                width: 170,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                color: const Color(0xFF334155),
+                child: Text(
+                  inst.type,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.white, fontFamily: 'monospace'),
+                ),
               ),
-              const SizedBox(height: 4),
-              Text('Timer: ${inst.operandTag}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.white, fontFamily: 'monospace')),
-              Text('Preset (PRE): ${inst.presetMs} ms', style: const TextStyle(fontSize: 10, color: Colors.grey)),
-              Text('Accum  (ACC): 0 ms', style: const TextStyle(fontSize: 10, color: Colors.cyanAccent)),
-              const SizedBox(height: 4),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _buildBitBadge('EN', false),
-                  const SizedBox(width: 4),
-                  _buildBitBadge('TT', false),
-                  const SizedBox(width: 4),
-                  _buildBitBadge('DN', false),
-                ],
+
+              // Timer Parameters Body with RSLogix (EN) & (DN) Right Output Pins
+              Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Row(
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Text('Timer', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                            const SizedBox(width: 12),
+                            Text(inst.operandTag, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.white, fontFamily: 'monospace')),
+                          ],
+                        ),
+                        Row(
+                          children: [
+                            const Text('Preset', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                            const SizedBox(width: 12),
+                            Text('${inst.presetMs}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.cyanAccent, fontFamily: 'monospace')),
+                          ],
+                        ),
+                        const Row(
+                          children: [
+                            Text('Accum', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                            SizedBox(width: 12),
+                            Text('0', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.cyanAccent, fontFamily: 'monospace')),
+                          ],
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(width: 12),
+
+                    // RSLogix Output Pins extending out right side of Timer Box: -(EN)- and -(DN)-
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(width: 8, height: 2, color: Colors.greenAccent),
+                            const Text('-(EN)-', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Colors.greenAccent, fontFamily: 'monospace')),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            Container(width: 8, height: 2, color: Colors.grey),
+                            const Text('-(DN)-', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Colors.grey, fontFamily: 'monospace')),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -649,18 +741,6 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           ],
         ),
       ),
-    );
-  }
-
-  Widget _buildBitBadge(String bitName, bool active) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-      decoration: BoxDecoration(
-        color: active ? Colors.green.withValues(alpha: 0.3) : Colors.black45,
-        borderRadius: BorderRadius.circular(3),
-        border: Border.all(color: active ? Colors.green : Colors.grey, width: 0.8),
-      ),
-      child: Text('$bitName:${active ? "1" : "0"}', style: TextStyle(fontSize: 8, fontWeight: FontWeight.bold, color: active ? Colors.greenAccent : Colors.grey)),
     );
   }
 }
