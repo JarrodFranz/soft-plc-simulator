@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/tag_resolver.dart';
+import '../models/sim_engine.dart';
 import '../data/default_projects.dart';
 import '../widgets/tag_inspector_dock.dart';
 import 'st_editor_screen.dart';
@@ -33,6 +34,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   int scanCount = 0;
   int scanSpeedMs = 500; // Configurable scan speed (50ms to 2000ms)
   Timer? _scanTimer;
+  final SimRuntime _simRuntime = SimRuntime();
 
   // Side Dock Inspector State
   bool isTagDockVisible = true;
@@ -67,6 +69,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   void _executeScan() {
     setState(() {
       scanCount++;
+      applySimRules(_activeProject, _activeProject.simRules, scanSpeedMs, _simRuntime);
       _evaluateActiveLogic();
     });
   }
@@ -95,9 +98,6 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         if (pv < sp - 5.0) { fill = true; }
         else if (pv > sp + 5.0) { drain = true; }
       }
-      if (fill && pv < 100.0) pv += 0.5;
-      if (drain && pv > 0.0) pv -= 0.5;
-      _setTagDouble('Level_PV', pv);
       _setTagBool('Fill_Valve', fill);
       _setTagBool('Drain_Valve', drain);
       _setTagBool('High_Alarm', pv > 85.0);
@@ -112,10 +112,6 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         if (temp < sp - 2.0) { heat = true; }
         else if (temp > sp + 2.0) { cool = true; }
       }
-      if (heat && temp < 100.0) temp += 0.3;
-      if (cool && temp > 0.0) temp -= 0.2;
-      if (!heat && !cool && temp > 20.0) temp -= 0.02; // ambient loss
-      _setTagDouble('Temp_PV', double.parse(temp.clamp(0.0, 105.0).toStringAsFixed(1)));
       _setTagBool('Heat_Cmd', heat);
       _setTagBool('Cool_Cmd', cool);
       _setTagBool('Alarm_High', temp > 95.0);
@@ -135,14 +131,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _setTagBool('Belt_Motor', run);
       _setTagBool('Belt_Latch', run);
 
-      // Simulate parts arriving every ~2s when belt running
-      bool eye = false;
-      if (run) {
-        eye = (scanCount % 22) < 4; // part present for 4/22 scans (~400ms pulse)
-        if (eye) _setTagBool('Belt_Jammed', false); // part clears jam
+      // Part detected by photo eye clears the jam alarm
+      if (run && _getTagBool('Photo_Eye')) {
+        _setTagBool('Belt_Jammed', false); // part clears jam
       }
-      _setTagBool('Photo_Eye', eye);
-      _setTagBool('Part_Present', eye);
 
     // ── 5. FBD HVAC Zone Controller ───────────────────────────────────────
     } else if (id == 'proj_fbd_hvac') {
@@ -155,11 +147,6 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       bool heat = hvacEnable && temp < (sp - 1.0);
       bool cool = hvacEnable && temp > (sp + 1.0);
 
-      if (heat && temp < 35.0) temp += 0.08;
-      if (cool && temp > 10.0) temp -= 0.08;
-      if (!heat && !cool && temp > 15.0) temp -= 0.01; // ambient drift
-
-      _setTagDouble('Room_Temp', double.parse(temp.clamp(0.0, 45.0).toStringAsFixed(1)));
       _setTagBool('Hvac_Active', hvacEnable);
       _setTagBool('Fan_Cmd', hvacEnable);
       _setTagBool('Heat_Cmd', heat);
@@ -184,12 +171,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         case 1: // WAIT_BOTTLE
           _setTagBool('Sequence_Running', true);
           _setTagBool('Eject_Cyl', false);
-          if (bottlePresent) { step = 2; fillLevel = 0.0; delay = 0; }
+          if (bottlePresent) { step = 2; delay = 0; }
           break;
         case 2: // FILLING
           _setTagBool('Fill_Valve', true);
-          fillLevel = (fillLevel + 4.0).clamp(0.0, 100.0);
-          _setTagDouble('Fill_Level', fillLevel);
           if (fillLevel >= 95.0) { step = 3; delay = 0; }
           break;
         case 3: // CAPPING — hold 6 scans (~1.2s)
@@ -230,22 +215,9 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       bool qualityOk = turbidity < turbSP && level > 10.0;
       _setTagBool('Quality_OK', qualityOk);
 
-      // Simulate flow rate
-      _setTagDouble('Flow_PV', pumpRun ? (42.0 + (scanCount % 7 - 3).toDouble()) : 0.0);
-
       // ST: Dosing pump — dose when running with bad water
       bool dosing = pumpRun && !qualityOk;
       _setTagBool('Treat_Dosing', dosing);
-
-      // Process physics — turbidity clears with dosing, rises slowly otherwise
-      if (dosing && turbidity > 0.5) { turbidity -= 0.12; }
-      else if (pumpRun && !dosing && turbidity < turbSP * 1.5) { turbidity += 0.04; }
-      _setTagDouble('Turbidity_PV', double.parse(turbidity.clamp(0.0, 20.0).toStringAsFixed(1)));
-
-      // Reservoir level — drops while pumping, refills slowly
-      if (pumpRun && level > 0.0) level -= 0.15;
-      if (!pumpRun && level < 100.0) level += 0.08;
-      _setTagDouble('Level_PV', double.parse(level.clamp(0.0, 100.0).toStringAsFixed(1)));
 
       // SFC: Backwash triggers when turbidity exceeds SP
       bool backwash = !qualityOk && pumpRun;
@@ -297,7 +269,6 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   }
 
   void _setTagBool(String path, bool val) => _writeIfNotForced(path, val);
-  void _setTagDouble(String path, double val) => _writeIfNotForced(path, val);
   void _setTagInt(String path, int val) => _writeIfNotForced(path, val);
 
   void _writeIfNotForced(String path, dynamic val) {
@@ -317,6 +288,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'PROGRAM:${proj.programs.first.name}';
       }
       scanCount = 0;
+      _simRuntime.byRuleId.clear();
     });
   }
 

@@ -116,6 +116,14 @@ abstract class DefaultProjects {
       PlcTag(name: 'High_Alarm', path: 'Outputs/High_Alarm', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'High level alarm'),
     ],
     structDefs: [],
+    simRules: [
+      SimRule(id: 'sim0', name: 'Tank fills while filling', targetPath: 'Level_PV',
+          behavior: 'integrate', ratePerSec: 1.0, minValue: 0, maxValue: 100,
+          condition: [SimClause(leftPath: 'Fill_Valve', comparator: '==', operand: 'true')]),
+      SimRule(id: 'sim1', name: 'Tank drains while draining', targetPath: 'Level_PV',
+          behavior: 'integrate', ratePerSec: -1.0, minValue: 0, maxValue: 100,
+          condition: [SimClause(leftPath: 'Drain_Valve', comparator: '==', operand: 'true')]),
+    ],
     programs: [
       PlcProgram(
         name: 'TankLevelControl_ST',
@@ -165,6 +173,16 @@ abstract class DefaultProjects {
       PlcTag(name: 'Reactor_Ready', path: 'Outputs/Reactor_Ready', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Reactor at setpoint ±2°C'),
     ],
     structDefs: [],
+    simRules: [
+      SimRule(id: 'sim0', name: 'Heating raises temp', targetPath: 'Temp_PV',
+          behavior: 'integrate', ratePerSec: 0.6, minValue: 0, maxValue: 105,
+          condition: [SimClause(leftPath: 'Heat_Cmd', comparator: '==', operand: 'true')]),
+      SimRule(id: 'sim1', name: 'Cooling lowers temp', targetPath: 'Temp_PV',
+          behavior: 'integrate', ratePerSec: -0.4, minValue: 0, maxValue: 105,
+          condition: [SimClause(leftPath: 'Cool_Cmd', comparator: '==', operand: 'true')]),
+      SimRule(id: 'sim2', name: 'Ambient heat loss', targetPath: 'Temp_PV',
+          behavior: 'integrate', ratePerSec: -0.04, minValue: 0, maxValue: 105, condition: []),
+    ],
     programs: [
       PlcProgram(
         name: 'ReactorTemp_ST',
@@ -246,6 +264,14 @@ Reactor_Ready := NOT Alarm_High
       ),
     ],
     structDefs: [],
+    simRules: [
+      SimRule(id: 'sim0', name: 'Photo eye blips while belt runs', targetPath: 'Photo_Eye',
+          behavior: 'pulse', onMs: 2000, offMs: 9000,
+          condition: [SimClause(leftPath: 'Belt_Motor', comparator: '==', operand: 'true')]),
+      SimRule(id: 'sim1', name: 'Part present follows photo eye', targetPath: 'Part_Present',
+          behavior: 'setWhileCondition',
+          condition: [SimClause(leftPath: 'Photo_Eye', comparator: '==', operand: 'true')]),
+    ],
     programs: [
       PlcProgram(
         name: 'ConveyorBelt_LD',
@@ -339,6 +365,16 @@ Reactor_Ready := NOT Alarm_High
       PlcTag(name: 'Hvac_Active', path: 'Internal/Hvac_Active', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'HVAC system enabled'),
     ],
     structDefs: [],
+    simRules: [
+      SimRule(id: 'sim0', name: 'Heating warms room', targetPath: 'Room_Temp',
+          behavior: 'integrate', ratePerSec: 0.16, minValue: 0, maxValue: 40,
+          condition: [SimClause(leftPath: 'Heat_Cmd', comparator: '==', operand: 'true')]),
+      SimRule(id: 'sim1', name: 'Cooling cools room', targetPath: 'Room_Temp',
+          behavior: 'integrate', ratePerSec: -0.16, minValue: 0, maxValue: 40,
+          condition: [SimClause(leftPath: 'Cool_Cmd', comparator: '==', operand: 'true')]),
+      SimRule(id: 'sim2', name: 'Ambient drift', targetPath: 'Room_Temp',
+          behavior: 'integrate', ratePerSec: -0.02, minValue: 0, maxValue: 40, condition: []),
+    ],
     programs: [
       PlcProgram(
         name: 'HvacZone_FBD',
@@ -422,6 +458,11 @@ Reactor_Ready := NOT Alarm_High
       PlcTag(name: 'Step_Delay', path: 'Internal/Step_Delay', dataType: 'INT32', value: 0, ioType: 'Internal', description: 'Step hold-time scan counter'),
     ],
     structDefs: [],
+    simRules: [
+      SimRule(id: 'sim0', name: 'Bottle fills while valve open', targetPath: 'Fill_Level',
+          behavior: 'integrate', ratePerSec: 8.0, minValue: 0, maxValue: 100,
+          condition: [SimClause(leftPath: 'Fill_Valve', comparator: '==', operand: 'true')]),
+    ],
     programs: [
       PlcProgram(
         name: 'BottleFill_SFC',
@@ -545,6 +586,38 @@ Reactor_Ready := NOT Alarm_High
         ),
       ],
       structDefs: structDefs,
+      simRules: [
+        // Turbidity clears while dosing (mirrors: dosing && turbidity>0.5 -> -0.12/scan)
+        SimRule(id: 'sim0', name: 'Dosing clears turbidity', targetPath: 'Turbidity_PV',
+            behavior: 'integrate', ratePerSec: -0.24, minValue: 0.5, maxValue: 20,
+            condition: [SimClause(leftPath: 'Treat_Dosing', comparator: '==', operand: 'true')]),
+        // Turbidity creeps up only while pumping with good water, capped near
+        // turbSP * 1.5 at the default 5.0 NTU setpoint (mirrors: pumpRun && !dosing
+        // && turbidity < turbSP*1.5 -> +0.04/scan). The engine has no dynamic
+        // (tag*const) comparator, so the ceiling is pinned to the default setpoint.
+        SimRule(id: 'sim1', name: 'Turbidity creeps up', targetPath: 'Turbidity_PV',
+            behavior: 'integrate', ratePerSec: 0.08, minValue: 0, maxValue: 7.5,
+            condition: [
+              SimClause(leftPath: 'Pump_Motor', comparator: '==', operand: 'true'),
+              SimClause(leftPath: 'Treat_Dosing', comparator: '==', operand: 'false'),
+            ]),
+        // Reservoir level drops while pumping (mirrors: pumpRun && level>0 -> -0.15/scan)
+        SimRule(id: 'sim2', name: 'Level drops while pumping', targetPath: 'Level_PV',
+            behavior: 'integrate', ratePerSec: -0.3, minValue: 0, maxValue: 100,
+            condition: [SimClause(leftPath: 'Pump_Motor', comparator: '==', operand: 'true')]),
+        // Reservoir level refills while idle (mirrors: !pumpRun && level<100 -> +0.08/scan)
+        SimRule(id: 'sim3', name: 'Level refills while idle', targetPath: 'Level_PV',
+            behavior: 'integrate', ratePerSec: 0.16, minValue: 0, maxValue: 100,
+            condition: [SimClause(leftPath: 'Pump_Motor', comparator: '==', operand: 'false')]),
+        // Flow follows pump state (mirrors: pumpRun ? ~42 : 0 — the ± noise term
+        // cannot be reproduced by the rule engine, so this ramps to a steady 42).
+        SimRule(id: 'sim4', name: 'Flow rises while pumping', targetPath: 'Flow_PV',
+            behavior: 'ramp', ratePerSec: 84.0, targetValue: 42.0, minValue: 0, maxValue: 150,
+            condition: [SimClause(leftPath: 'Pump_Motor', comparator: '==', operand: 'true')]),
+        SimRule(id: 'sim5', name: 'Flow drops to zero while stopped', targetPath: 'Flow_PV',
+            behavior: 'ramp', ratePerSec: 84.0, targetValue: 0.0, minValue: 0, maxValue: 150,
+            condition: [SimClause(leftPath: 'Pump_Motor', comparator: '==', operand: 'false')]),
+      ],
       programs: [
       // ST: Safety supervisor — runs every scan
       PlcProgram(
