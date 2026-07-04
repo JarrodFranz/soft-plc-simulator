@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/ld_graph.dart';
+import '../models/ld_layout.dart';
 
-const double _kColW = 116.0; // column pitch (cell + wire)
-const double _kCellW = 66.0; // element cell width
 const double _kContactH = 54.0;
 const double _kBlockH = 92.0;
 const double _kLaneGap = 10.0;
@@ -104,18 +103,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     return _laneTop(rung, lanes) + _laneHeight(rung, lanes);
   }
 
-  double _colX(int col) => col * _kColW;
-
-  double _rungWidth(LdRung rung, Map<String, int> col) {
-    int maxc = 0;
-    for (final n in rung.nodes) {
-      final c = col[n.id] ?? 0;
-      if (c > maxc) {
-        maxc = c;
-      }
-    }
-    return _colX(maxc);
-  }
+  double _colX(int col) => ldColX(col);
 
   double _nodeCenterY(LdRung rung, LdNode n) => _laneTop(rung, n.row) + _laneHeight(rung, n.row) / 2;
 
@@ -123,15 +111,14 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     if (n.kind == LdKind.leftRail) {
       return Offset(0, _nodeCenterY(rung, n));
     }
-    final x = _colX(col[n.id] ?? 0) + _kCellW;
-    return Offset(x, _nodeCenterY(rung, n));
+    return Offset(ldNodeX(n, col[n.id] ?? 0, width) + kLdCellW, _nodeCenterY(rung, n));
   }
 
   Offset _inPort(LdRung rung, LdNode n, Map<String, int> col, double width) {
     if (n.kind == LdKind.rightRail) {
       return Offset(width, _nodeCenterY(rung, n));
     }
-    return Offset(_colX(col[n.id] ?? 0), _nodeCenterY(rung, n));
+    return Offset(ldNodeX(n, col[n.id] ?? 0, width), _nodeCenterY(rung, n));
   }
 
   @override
@@ -231,7 +218,6 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
   Widget _buildRungCanvas(LdRung rung, int index) {
     final col = colAssignment(rung);
-    final width = _rungWidth(rung, col);
     final height = _rungHeight(rung);
 
     return Container(
@@ -249,40 +235,55 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
             child: Text('RUNG $index   ${rung.comment}',
                 style: const TextStyle(fontSize: 11, color: Colors.grey)),
           ),
-          SizedBox(
-            height: height,
-            width: width,
-            child: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                // Wires + branch brackets, drawn behind the elements.
-                Positioned.fill(
-                  child: CustomPaint(painter: _LadderPainter(this, rung, col, width)),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final minW = ldMinContentWidth(rung, col);
+              final width = constraints.maxWidth > minW ? constraints.maxWidth : minW;
+              return SizedBox(
+                height: height,
+                width: width,
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    // Wires + branch brackets, drawn behind the elements.
+                    Positioned.fill(
+                      child: CustomPaint(painter: _LadderPainter(this, rung, col, width)),
+                    ),
+                    // Element widgets.
+                    ...rung.nodes
+                        .where((n) => n.kind == LdKind.contact ||
+                            n.kind == LdKind.coil ||
+                            n.kind == LdKind.block)
+                        .map((n) => _positionedNode(rung, n, col, width)),
+                    // Insert targets on wires (contact/block modes).
+                    if (_editMode == 'contact' || _editMode == 'block')
+                      ...rung.wires
+                          .where((w) => canInsertContactOnWire(rung, w))
+                          .map((w) => _wireInsertTarget(rung, w, col, width)),
+                    // Insert targets on wires (coil mode).
+                    if (_editMode == 'coil')
+                      ...rung.wires
+                          .where((w) => canInsertCoilOnWire(rung, w))
+                          .map((w) => _wireInsertTarget(rung, w, col, width)),
+                    // Draggable branch start/end handles.
+                    ...findBranches(rung).expand((br) => _branchHandles(rung, br, col, width)),
+                  ],
                 ),
-                // Element widgets.
-                ...rung.nodes
-                    .where((n) => n.kind == LdKind.contact || n.kind == LdKind.coil || n.kind == LdKind.block)
-                    .map((n) => _positionedNode(rung, n, col)),
-                // Insert targets on wires (contact/coil/block modes).
-                if (_editMode == 'contact' || _editMode == 'coil' || _editMode == 'block')
-                  ...rung.wires.map((w) => _wireInsertTarget(rung, w, col, width)),
-                // Draggable branch start/end handles.
-                ...findBranches(rung).expand((br) => _branchHandles(rung, br, col, width)),
-              ],
-            ),
+              );
+            },
           ),
         ],
       ),
     );
   }
 
-  Widget _positionedNode(LdRung rung, LdNode n, Map<String, int> col) {
+  Widget _positionedNode(LdRung rung, LdNode n, Map<String, int> col, double width) {
     final h = _nodeH(n);
     final top = _nodeCenterY(rung, n) - h / 2;
     return Positioned(
-      left: _colX(col[n.id] ?? 0),
+      left: ldNodeX(n, col[n.id] ?? 0, width),
       top: top,
-      width: _kCellW,
+      width: kLdCellW,
       height: h,
       child: GestureDetector(
         onTap: () => _onNodeTap(rung, n),
