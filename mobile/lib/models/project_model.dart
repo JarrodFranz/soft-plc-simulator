@@ -285,6 +285,98 @@ class PlcTask {
   };
 }
 
+class SimClause {
+  String leftPath;
+  String comparator; // '>','<','>=','<=','==','!='
+  String operandKind; // 'literal' | 'tag'
+  String operand;     // literal text ('true'/'false'/number) or a tag path
+
+  SimClause({
+    required this.leftPath,
+    this.comparator = '>',
+    this.operandKind = 'literal',
+    this.operand = '0',
+  });
+
+  factory SimClause.fromJson(Map<String, dynamic> j) => SimClause(
+        leftPath: j['left'] ?? '',
+        comparator: j['cmp'] ?? '>',
+        operandKind: j['kind'] ?? 'literal',
+        operand: j['operand']?.toString() ?? '0',
+      );
+
+  Map<String, dynamic> toJson() => {
+        'left': leftPath,
+        'cmp': comparator,
+        'kind': operandKind,
+        'operand': operand,
+      };
+}
+
+class SimRule {
+  String id;
+  String name;
+  bool enabled;
+  String targetPath;
+  String behavior; // 'setWhileCondition'|'delayedSet'|'pulse'|'ramp'|'integrate'
+  int delayMs;
+  int onMs;
+  int offMs;
+  double ratePerSec;
+  double targetValue;
+  double minValue;
+  double maxValue;
+  List<SimClause> condition;
+
+  SimRule({
+    required this.id,
+    required this.name,
+    this.enabled = true,
+    required this.targetPath,
+    required this.behavior,
+    this.delayMs = 1000,
+    this.onMs = 500,
+    this.offMs = 500,
+    this.ratePerSec = 1.0,
+    this.targetValue = 0.0,
+    this.minValue = 0.0,
+    this.maxValue = 100.0,
+    List<SimClause>? condition,
+  }) : condition = condition ?? [];
+
+  factory SimRule.fromJson(Map<String, dynamic> j) => SimRule(
+        id: j['id'] ?? '',
+        name: j['name'] ?? '',
+        enabled: j['enabled'] ?? true,
+        targetPath: j['target'] ?? '',
+        behavior: j['behavior'] ?? 'integrate',
+        delayMs: j['delay_ms'] ?? 1000,
+        onMs: j['on_ms'] ?? 500,
+        offMs: j['off_ms'] ?? 500,
+        ratePerSec: (j['rate'] as num?)?.toDouble() ?? 1.0,
+        targetValue: (j['target_value'] as num?)?.toDouble() ?? 0.0,
+        minValue: (j['min'] as num?)?.toDouble() ?? 0.0,
+        maxValue: (j['max'] as num?)?.toDouble() ?? 100.0,
+        condition: (j['condition'] as List? ?? []).map((c) => SimClause.fromJson(c)).toList(),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'enabled': enabled,
+        'target': targetPath,
+        'behavior': behavior,
+        'delay_ms': delayMs,
+        'on_ms': onMs,
+        'off_ms': offMs,
+        'rate': ratePerSec,
+        'target_value': targetValue,
+        'min': minValue,
+        'max': maxValue,
+        'condition': condition.map((c) => c.toJson()).toList(),
+      };
+}
+
 class HmiComponent {
   String id;
   String title;
@@ -365,6 +457,7 @@ class PlcProject {
   List<PlcProgram> programs;
   List<PlcTask> tasks;
   List<HmiScreenDef> hmis;
+  List<SimRule> simRules;
 
   PlcProject({
     required this.id,
@@ -378,7 +471,8 @@ class PlcProject {
     required this.programs,
     required this.tasks,
     required this.hmis,
-  });
+    List<SimRule>? simRules,
+  }) : simRules = simRules ?? [];
 
   factory PlcProject.fromJson(Map<String, dynamic> json) {
     final proj = json['project'] ?? json;
@@ -395,6 +489,7 @@ class PlcProject {
       programs: (proj['programs'] as List? ?? []).map((p) => PlcProgram.fromJson(p)).toList(),
       tasks: (proj['tasks'] as List? ?? []).map((tk) => PlcTask.fromJson(tk)).toList(),
       hmis: (proj['hmis'] as List? ?? []).map((h) => HmiScreenDef.fromJson(h)).toList(),
+      simRules: (proj['sim_rules'] as List? ?? []).map((r) => SimRule.fromJson(r)).toList(),
     );
   }
 
@@ -412,6 +507,7 @@ class PlcProject {
       'programs': programs.map((p) => p.toJson()).toList(),
       'tasks': tasks.map((tk) => tk.toJson()).toList(),
       'hmis': hmis.map((h) => h.toJson()).toList(),
+      'sim_rules': simRules.map((r) => r.toJson()).toList(),
     }
   };
 
