@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
+import '../models/tag_resolver.dart';
 
 class MemoryManagerScreen extends StatefulWidget {
   final PlcProject currentProject;
@@ -28,28 +29,13 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
-    _ensureTimerParentTags();
+    _tabController = TabController(length: 2, vsync: this);
   }
 
   @override
   void dispose() {
     _tabController.dispose();
     super.dispose();
-  }
-
-  void _ensureTimerParentTags() {
-    // Check if TONTimer parent exists
-    if (!widget.currentProject.tags.any((t) => t.name == 'TONTimer')) {
-      widget.currentProject.tags.add(PlcTag(
-        name: 'TONTimer',
-        path: 'Timers/TONTimer',
-        dataType: 'TIMER',
-        value: 'Struct [PRE: 5000, ACC: 0]',
-        ioType: 'Internal',
-        description: 'Timer Structure (EN, TT, DN, PRE, ACC)',
-      ));
-    }
   }
 
   void _sortTags(int columnIndex, bool ascending) {
@@ -77,18 +63,6 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
     });
   }
 
-  void _toggleBitValue(PlcTag parentTag, int bitIndex) {
-    if (parentTag.value is! int) return;
-    int currentInt = parentTag.value as int;
-    int mask = 1 << bitIndex;
-    int newInt = currentInt ^ mask;
-
-    setState(() {
-      parentTag.value = newInt;
-    });
-    widget.onProjectUpdated();
-  }
-
   void _showAddTagDialog() {
     showDialog(
       context: context,
@@ -97,8 +71,10 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
         final pathCtrl = TextEditingController(text: 'Inputs/New_Tag');
         String dataType = 'BOOL';
         String ioType = 'SimulatedInput';
+        final arrayLenCtrl = TextEditingController(text: '0');
 
-        final availableTypes = ['BOOL', 'INT16', 'INT32', 'FLOAT64', 'STRING', 'TIMER', ...widget.currentProject.structDefs.map((s) => s.name)];
+        final availableTypes = ['BOOL', 'INT16', 'INT32', 'INT64', 'FLOAT64', 'STRING',
+            ...builtinCompositeNames(), ...widget.currentProject.structDefs.map((s) => s.name)];
 
         return StatefulBuilder(
           builder: (context, setDlgState) => AlertDialog(
@@ -115,6 +91,11 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
                   items: availableTypes.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
                   onChanged: (val) => setDlgState(() => dataType = val!),
                 ),
+                TextField(
+                  controller: arrayLenCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'Array Length (0 = scalar)'),
+                ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
                   initialValue: ioType,
@@ -128,11 +109,13 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
               ElevatedButton(
                 onPressed: () {
+                  final arrLen = int.tryParse(arrayLenCtrl.text) ?? 0;
                   final tag = PlcTag(
                     name: nameCtrl.text,
                     path: pathCtrl.text,
                     dataType: dataType,
-                    value: dataType == 'BOOL' ? false : (dataType.startsWith('INT') ? 0 : 0.0),
+                    arrayLength: arrLen,
+                    value: defaultValueFor(widget.currentProject, dataType, arrLen),
                     ioType: ioType,
                   );
                   setState(() {
@@ -162,7 +145,6 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
           tabs: const [
             Tab(icon: Icon(Icons.account_tree), text: 'Global Tags & Struct Hierarchy'),
             Tab(icon: Icon(Icons.dataset), text: 'Struct Definitions (DUT)'),
-            Tab(icon: Icon(Icons.inventory_2), text: 'Data Blocks (DB)'),
           ],
         ),
       ),
@@ -171,7 +153,6 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
         children: [
           _buildGlobalTagsHierarchicalTab(),
           _buildStructDefsTab(),
-          _buildDataBlocksTab(),
         ],
       ),
     );
@@ -223,12 +204,12 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
 
   List<DataRow> _buildHierarchicalRows() {
     final rows = <DataRow>[];
-    // Filter out child tags that belong under parent timer structs (e.g. TONTimer.EN) so they render under parent!
+    // Filter out child tags that belong under parent structs (e.g. TONTimer.EN) so they render under parent!
     final topLevelTags = widget.currentProject.tags.where((t) => !t.name.contains('.')).toList();
 
     for (var tag in topLevelTags) {
       final isTimer = tag.dataType == 'TIMER';
-      final isInt = tag.dataType.startsWith('INT');
+      final expandable = childrenOf(widget.currentProject, tag.name).isNotEmpty;
       final isParentExpanded = _expandedTagKeys.contains(tag.name);
 
       rows.add(DataRow(
@@ -236,7 +217,7 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
           DataCell(Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (isTimer || isInt)
+              if (expandable)
                 IconButton(
                   icon: Icon(isParentExpanded ? Icons.arrow_drop_down_circle : Icons.play_arrow, size: 16, color: isTimer ? Colors.purpleAccent : Colors.amberAccent),
                   padding: EdgeInsets.zero,
@@ -260,7 +241,7 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
           DataCell(Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
             decoration: BoxDecoration(color: (isTimer ? Colors.purple : Colors.cyan).withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
-            child: Text(tag.dataType, style: TextStyle(color: isTimer ? Colors.purpleAccent : Colors.cyanAccent, fontWeight: FontWeight.bold, fontSize: 11)),
+            child: Text('${tag.dataType}${tag.arrayLength > 0 ? '[${tag.arrayLength}]' : ''}', style: TextStyle(color: isTimer ? Colors.purpleAccent : Colors.cyanAccent, fontWeight: FontWeight.bold, fontSize: 11)),
           )),
           DataCell(Text(tag.value.toString(), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.greenAccent, fontFamily: 'monospace'))),
           DataCell(Text(tag.quality, style: const TextStyle(color: Colors.green, fontSize: 11))),
@@ -277,82 +258,76 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
         ],
       ));
 
-      // Expand TIMER Structure Children (TONTimer.EN, TONTimer.TT, TONTimer.DN, TONTimer.PRE, TONTimer.ACC)
-      if (isTimer && isParentExpanded) {
-        final childTags = widget.currentProject.tags.where((t) => t.name.startsWith('${tag.name}.')).toList();
-
-        for (var child in childTags) {
-          final isChildInt = child.dataType.startsWith('INT');
-          final isChildExpanded = _expandedTagKeys.contains(child.name);
-
-          rows.add(DataRow(
-            color: WidgetStateProperty.all(const Color(0xFF161E2E)),
-            cells: [
-              DataCell(Padding(
-                padding: const EdgeInsets.only(left: 24),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (isChildInt)
-                      IconButton(
-                        icon: Icon(isChildExpanded ? Icons.arrow_drop_down_circle : Icons.play_arrow, size: 14, color: Colors.amberAccent),
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                        onPressed: () {
-                          setState(() {
-                            if (isChildExpanded) {
-                              _expandedTagKeys.remove(child.name);
-                            } else {
-                              _expandedTagKeys.add(child.name);
-                            }
-                          });
-                        },
-                      ),
-                    const SizedBox(width: 4),
-                    Text(child.name, style: const TextStyle(fontFamily: 'monospace', color: Colors.purpleAccent, fontWeight: FontWeight.bold, fontSize: 12)),
-                  ],
-                ),
-              )),
-              DataCell(Text(child.path, style: const TextStyle(color: Colors.grey, fontSize: 10))),
-              DataCell(Text(child.dataType, style: const TextStyle(color: Colors.purple, fontSize: 10))),
-              DataCell(Text(child.value.toString(), style: const TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold, fontSize: 11))),
-              const DataCell(Text('Good', style: TextStyle(color: Colors.green, fontSize: 10))),
-              const DataCell(Text('Timer Member', style: TextStyle(color: Colors.grey, fontSize: 10))),
-              const DataCell(Text('Member', style: TextStyle(color: Colors.grey, fontSize: 10))),
-            ],
-          ));
-
-          // Expand Integer Bits under Child (.PRE.0 to .PRE.15)
-          if (isChildInt && isChildExpanded) {
-            final int val = (child.value is int) ? (child.value as int) : 0;
-            for (int b = 0; b < 16; b++) {
-              final bool bitVal = (val & (1 << b)) != 0;
-              rows.add(DataRow(
-                color: WidgetStateProperty.all(const Color(0xFF0F172A)),
-                cells: [
-                  DataCell(Padding(
-                    padding: const EdgeInsets.only(left: 48),
-                    child: Text('${child.name}.$b', style: const TextStyle(fontFamily: 'monospace', color: Colors.amberAccent, fontSize: 11)),
-                  )),
-                  DataCell(Text('${child.path}.$b', style: const TextStyle(color: Colors.grey, fontSize: 9))),
-                  const DataCell(Text('BOOL (Bit)', style: TextStyle(color: Colors.amber, fontSize: 9))),
-                  DataCell(Text(bitVal ? 'TRUE (1)' : 'FALSE (0)', style: TextStyle(fontWeight: FontWeight.bold, color: bitVal ? Colors.greenAccent : Colors.grey, fontSize: 10))),
-                  const DataCell(Text('Good', style: TextStyle(color: Colors.green, fontSize: 9))),
-                  const DataCell(Text('Bit Reference', style: TextStyle(color: Colors.grey, fontSize: 9))),
-                  DataCell(OutlinedButton(
-                    style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 0)),
-                    onPressed: () => _toggleBitValue(child, b),
-                    child: Text(bitVal ? 'Reset 0' : 'Set 1', style: const TextStyle(fontSize: 9, color: Colors.amberAccent)),
-                  )),
-                ],
-              ));
-            }
-          }
-        }
-      }
+      rows.addAll(_childRows(tag.name, 1));
     }
 
     return rows;
+  }
+
+  // Emits DataRows for the children of [path] when it is expanded, recursing
+  // into any expanded descendant. `depth` drives the indent.
+  List<DataRow> _childRows(String path, int depth) {
+    final rows = <DataRow>[];
+    if (!_expandedTagKeys.contains(path)) {
+      return rows;
+    }
+    for (final child in childrenOf(widget.currentProject, path)) {
+      final expandable = child.hasChildren;
+      final isExpanded = _expandedTagKeys.contains(child.path);
+      rows.add(DataRow(cells: [
+        DataCell(Padding(
+          padding: EdgeInsets.only(left: 16.0 * depth),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            if (expandable)
+              IconButton(
+                icon: Icon(isExpanded ? Icons.arrow_drop_down_circle : Icons.play_arrow,
+                    size: 14, color: Colors.amberAccent),
+                onPressed: () => setState(() {
+                  if (isExpanded) {
+                    _expandedTagKeys.remove(child.path);
+                  } else {
+                    _expandedTagKeys.add(child.path);
+                  }
+                }),
+              )
+            else
+              const SizedBox(width: 14),
+            Text(child.label,
+                style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.bold, fontSize: 12)),
+          ]),
+        )),
+        DataCell(Text(child.path, style: const TextStyle(fontSize: 10, color: Colors.grey))),
+        DataCell(Text('${child.dataType}${child.arrayLength > 0 ? '[${child.arrayLength}]' : ''}',
+            style: const TextStyle(fontSize: 10, color: Colors.cyanAccent))),
+        DataCell(_leafValueCell(child)),
+        const DataCell(Text('Good', style: TextStyle(color: Colors.greenAccent, fontSize: 10))),
+        const DataCell(Text('Derived', style: TextStyle(fontSize: 10, color: Colors.grey))),
+        const DataCell(SizedBox()),
+      ]));
+      rows.addAll(_childRows(child.path, depth + 1));
+    }
+    return rows;
+  }
+
+  // A value cell for a leaf child: BOOL toggles, integers/others show value.
+  Widget _leafValueCell(TagChild child) {
+    if (child.hasChildren) {
+      return Text(child.value is Map ? '{...}' : (child.value is List ? '[${(child.value as List).length}]' : '${child.value}'),
+          style: const TextStyle(fontSize: 10, color: Colors.grey));
+    }
+    if (child.dataType == 'BOOL') {
+      final on = child.value == true;
+      return TextButton(
+        onPressed: () {
+          writePath(widget.currentProject, child.path, !on);
+          setState(() {});
+          widget.onProjectUpdated();
+        },
+        child: Text(on ? 'TRUE (1)' : 'FALSE (0)',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: on ? Colors.greenAccent : Colors.grey)),
+      );
+    }
+    return Text('${child.value}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.white));
   }
 
   Widget _buildStructDefsTab() {
@@ -376,35 +351,6 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
                       contentPadding: const EdgeInsets.only(left: 32, right: 16),
                       title: Text(f.name, style: const TextStyle(fontFamily: 'monospace')),
                       trailing: Text(f.dataType, style: const TextStyle(color: Colors.cyan)),
-                    )).toList(),
-                  ),
-                );
-              },
-            ),
-    );
-  }
-
-  Widget _buildDataBlocksTab() {
-    final dbs = widget.currentProject.dataBlocks;
-    return Scaffold(
-      body: dbs.isEmpty
-          ? const Center(child: Text('No Data Blocks created yet.'))
-          : ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: dbs.length,
-              itemBuilder: (context, index) {
-                final db = dbs[index];
-                return Card(
-                  color: const Color(0xFF1E293B),
-                  child: ExpansionTile(
-                    leading: const Icon(Icons.inventory_2, color: Colors.indigoAccent),
-                    title: Text(db.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text('Type: ${db.structTypeName}'),
-                    children: db.fieldValues.entries.map((entry) => ListTile(
-                      dense: true,
-                      contentPadding: const EdgeInsets.only(left: 32, right: 16),
-                      title: Text('${db.name}.${entry.key}', style: const TextStyle(fontFamily: 'monospace')),
-                      trailing: Text(entry.value.toString(), style: const TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold)),
                     )).toList(),
                   ),
                 );
