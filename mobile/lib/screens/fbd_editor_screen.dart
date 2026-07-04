@@ -215,7 +215,7 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
 
           if (block.type.startsWith('TAG_'))
             DropdownButtonFormField<String>(
-              value: block.tagBinding.isNotEmpty ? block.tagBinding : widget.currentProject.tags.first.name,
+              initialValue: block.tagBinding.isNotEmpty ? block.tagBinding : widget.currentProject.tags.first.name,
               isDense: true,
               style: const TextStyle(fontSize: 11, color: Colors.white),
               decoration: const InputDecoration(isDense: true, border: InputBorder.none),

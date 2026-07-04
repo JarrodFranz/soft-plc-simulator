@@ -107,7 +107,7 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
 
                       return Card(
                         margin: EdgeInsets.zero,
-                        color: tag.isForced ? Colors.amber.shade900.withOpacity(0.2) : const Color(0xFF1E293B),
+                        color: tag.isForced ? Colors.amber.shade900.withValues(alpha: 0.2) : const Color(0xFF1E293B),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(6),
                           side: BorderSide(
@@ -168,8 +168,8 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                                       decoration: BoxDecoration(
                                         color: effectiveVal == true
-                                            ? Colors.green.withOpacity(0.2)
-                                            : (effectiveVal == false ? Colors.red.withOpacity(0.1) : Colors.cyan.withOpacity(0.1)),
+                                            ? Colors.green.withValues(alpha: 0.2)
+                                            : (effectiveVal == false ? Colors.red.withValues(alpha: 0.1) : Colors.cyan.withValues(alpha: 0.1)),
                                         borderRadius: BorderRadius.circular(4),
                                         border: Border.all(
                                           color: effectiveVal == true ? Colors.green : (effectiveVal == false ? Colors.red.shade700 : Colors.cyan),
@@ -232,7 +232,7 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
           padding: const EdgeInsets.symmetric(vertical: 4),
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: isSelected ? Colors.cyan.withOpacity(0.2) : Colors.transparent,
+            color: isSelected ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
             borderRadius: BorderRadius.circular(4),
             border: Border.all(color: isSelected ? Colors.cyan : Colors.white12),
           ),

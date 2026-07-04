@@ -31,7 +31,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       widget.program.rungs.addAll([
         LdRung(
           rungIndex: 0,
-          comment: 'OpenPLC Rung 0: Motor Start/Stop Seal-In Circuit',
+          comment: 'Rung 0: Motor Start/Stop Seal-In Circuit',
           inputInstructions: [
             LdInstruction(type: 'XIC', operandTag: 'Start_PB', comment: 'Start Pushbutton'),
             LdInstruction(type: 'XIO', operandTag: 'Stop_PB', comment: 'Stop Pushbutton'),
@@ -51,7 +51,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
         ),
         LdRung(
           rungIndex: 1,
-          comment: 'OpenPLC Rung 1: IEC 61131-3 Standard TON Timer Block (IN, Q, PT, ET)',
+          comment: 'Rung 1: IEC 61131-3 Standard TON Timer Block (IN, Q, PT, ET)',
           inputInstructions: [
             LdInstruction(type: 'XIO', operandTag: 'TONTimer.DN', comment: 'Timer Done NC Contact'),
             LdInstruction(type: 'TON', operandTag: 'TONTimer', presetMs: 5000, comment: '5 Second TON Timer'),
@@ -78,7 +78,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     setState(() {
       final newRung = LdRung(
         rungIndex: insertAt ?? widget.program.rungs.length,
-        comment: 'OpenPLC Rung ${widget.program.rungs.length}: Rail-to-Rail Continuous Wire Rung',
+        comment: 'Rung ${widget.program.rungs.length}: Rail-to-Rail Continuous Wire Rung',
         inputInstructions: [],
         outputInstructions: [LdInstruction(type: 'OTE', operandTag: 'Motor_Run')],
       );
@@ -149,7 +149,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       builder: (ctx) {
         return StatefulBuilder(
           builder: (context, setDlgState) => AlertDialog(
-            title: Text(isInput ? 'OpenPLC Grid: Insert Contact / Block' : 'OpenPLC Grid: Add Output Coil'),
+            title: Text(isInput ? 'Insert Contact / Block' : 'Add Output Coil'),
             content: SizedBox(
               width: 440,
               child: Column(
@@ -238,7 +238,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
             }).toList();
 
             return AlertDialog(
-              title: Text('Edit OpenPLC Component: ${inst.type} (${inst.operandTag})'),
+              title: Text('Edit IEC 61131-3 Component: ${inst.type} (${inst.operandTag})'),
               content: SizedBox(
                 width: 440,
                 child: Column(
@@ -346,7 +346,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('${widget.program.name} — OpenPLC Engine Ladder Diagram (LD) Editor'),
+        title: Text('${widget.program.name} — IEC 61131-3 Ladder Diagram (LD) Editor'),
         backgroundColor: const Color(0xFF1E293B),
         actions: [
           ElevatedButton.icon(
@@ -360,7 +360,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       ),
       body: Row(
         children: [
-          // CENTER WORKSPACE: OpenPLC Grid Matrix Rung Canvas
+          // CENTER WORKSPACE: LD Grid Matrix Rung Canvas
           Expanded(
             child: Container(
               color: const Color(0xFF0F172A),
@@ -390,7 +390,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('OPENPLC TAG & INSTRUCTION PALETTE', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.cyanAccent)),
+                      const Text('TAG & INSTRUCTION PALETTE', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.cyanAccent)),
                       const SizedBox(height: 8),
                       TextField(
                         onChanged: (v) => setState(() => _tagSearchQuery = v),
@@ -458,7 +458,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(color: Colors.cyan.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
-                  child: Text('OPENPLC RUNG $index', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.cyanAccent, fontSize: 11)),
+                  child: Text('RUNG $index', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.cyanAccent, fontSize: 11)),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
@@ -511,7 +511,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
             const SizedBox(height: 12),
 
-            // OpenPLC Grid Matrix Rung Container with Rail-to-Rail Wire Pass
+            // IEC 61131-3 Grid Matrix Rung Container with Rail-to-Rail Wire Pass
             Container(
               padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
               decoration: BoxDecoration(
@@ -586,7 +586,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
             child: Row(
               children: [
                 if (inputs.isEmpty)
-                  // OpenPLC Blank Wire Line Cell (Clickable to Insert Component)
+                  // Blank Wire Line Cell (Clickable to Insert Component)
                   InkWell(
                     onTap: () => _showAddInstructionDialog(rung, true, branch, 0),
                     child: Container(
@@ -600,7 +600,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                         children: [
                           Icon(Icons.add, size: 14, color: Colors.cyanAccent),
                           SizedBox(width: 6),
-                          Text('OpenPLC Wire Line — Click to Insert Contact / Timer', style: TextStyle(fontSize: 11, color: Colors.cyanAccent, fontWeight: FontWeight.bold)),
+                          Text('Wire — Click to Insert Contact / Timer', style: TextStyle(fontSize: 11, color: Colors.cyanAccent, fontWeight: FontWeight.bold)),
                         ],
                       ),
                     ),
@@ -661,7 +661,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     final bool isTimer = inst.type == 'TON' || inst.type == 'TOF';
 
     if (isTimer) {
-      // OpenPLC IEC 61131-3 Standard Timer Block (IN, Q, PT, ET)
+      // IEC 61131-3 Standard Timer Block (IN, Q, PT, ET)
       return InkWell(
         onTap: () => _showClickToEditTagDialog(inst),
         child: Container(
@@ -677,7 +677,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // OpenPLC Block Header
+              // Timer Block Header
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -689,7 +689,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 ),
               ),
 
-              // OpenPLC Block Pins: IN (Input), Q (Done output), PT (Preset), ET (Elapsed)
+              // IEC 61131-3 Block Pins: IN (Input), Q (Done output), PT (Preset), ET (Elapsed)
               Padding(
                 padding: const EdgeInsets.all(6.0),
                 child: Row(

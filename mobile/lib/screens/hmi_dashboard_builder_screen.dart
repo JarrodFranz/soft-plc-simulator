@@ -69,7 +69,7 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
                   const SizedBox(height: 12),
 
                   DropdownButtonFormField<String>(
-                    value: selectedType,
+                    initialValue: selectedType,
                     decoration: const InputDecoration(labelText: 'Component Type'),
                     items: availableTypes.map((t) => DropdownMenuItem(
                       value: t['type'],
@@ -80,7 +80,7 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
                   const SizedBox(height: 12),
 
                   DropdownButtonFormField<String>(
-                    value: selectedTag.isNotEmpty ? selectedTag : null,
+                    initialValue: selectedTag.isNotEmpty ? selectedTag : null,
                     decoration: const InputDecoration(labelText: 'Link / Bind to PLC Tag'),
                     items: widget.currentProject.tags.map((t) => DropdownMenuItem(
                       value: t.name,
@@ -94,7 +94,7 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
                     children: [
                       Expanded(
                         child: DropdownButtonFormField<int>(
-                          value: gridSpanWidth,
+                          initialValue: gridSpanWidth,
                           decoration: const InputDecoration(labelText: 'Grid Width Span'),
                           items: const [
                             DropdownMenuItem(value: 1, child: Text('1 Column (Small)')),
@@ -108,7 +108,7 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
                       const SizedBox(width: 12),
                       Expanded(
                         child: DropdownButtonFormField<String>(
-                          value: accentColor,
+                          initialValue: accentColor,
                           decoration: const InputDecoration(labelText: 'Accent Color'),
                           items: const [
                             DropdownMenuItem(value: 'cyan', child: Text('Cyan')),
