@@ -198,14 +198,20 @@ void moveBranchMerge(LdRung rung, LdBranchView br, LdNode newDest) {
   }
 }
 
-/// Removes [n] and reconnects each of its sources to each of its destinations.
+/// Removes [n]. For a series node it reconnects sources to destinations
+/// (heals the line); for the sole node on a branch lane it drops the branch
+/// entirely (no bypass jumper) instead of shorting the parallel span.
 void deleteNode(LdRung rung, LdNode n) {
   final ins = rung.wires.where((w) => w.toId == n.id).toList();
   final outs = rung.wires.where((w) => w.fromId == n.id).toList();
   rung.wires.removeWhere((w) => w.fromId == n.id || w.toId == n.id);
-  for (final i in ins) {
-    for (final o in outs) {
-      rung.wires.add(LdWire(fromId: i.fromId, toId: o.toId));
+  final soleBranchNode =
+      n.row > 0 && !rung.nodes.any((o) => o.id != n.id && o.row == n.row);
+  if (!soleBranchNode) {
+    for (final i in ins) {
+      for (final o in outs) {
+        rung.wires.add(LdWire(fromId: i.fromId, toId: o.toId));
+      }
     }
   }
   rung.nodes.remove(n);

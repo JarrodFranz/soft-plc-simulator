@@ -94,6 +94,20 @@ void main() {
     expect(r.wires.any((w) => w.fromId == a.id && w.toId == y.id), isTrue);
   });
 
+  test('deleteNode drops a sole-node branch without creating a bypass jumper', () {
+    final r = buildRung(
+      index: 0,
+      main: [contact('Start'), contact('Stop'), coil('Y')],
+      branches: [BranchSpec(startIndex: 0, endIndex: 0, nodes: [contact('Seal')])],
+    );
+    final seal = r.nodes.firstWhere((n) => n.variable == 'Seal');
+    final left = r.nodes.firstWhere((n) => n.kind == LdKind.leftRail);
+    final stop = r.nodes.firstWhere((n) => n.variable == 'Stop');
+    deleteNode(r, seal);
+    expect(r.wires.any((w) => w.fromId == left.id && w.toId == stop.id), isFalse);
+    expect(r.nodes.any((n) => n.row == 1), isFalse);
+  });
+
   test('moveBranchTap re-points the branch start wire', () {
     final r = buildRung(index: 0, main: [contact('A'), contact('B'), coil('Y')]);
     final a = r.nodes.firstWhere((n) => n.variable == 'A');

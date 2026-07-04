@@ -29,6 +29,9 @@ class LdEditorScreen extends StatefulWidget {
 class _LdEditorScreenState extends State<LdEditorScreen> {
   String _editMode = 'select'; // 'select' | 'contact' | 'coil' | 'block' | 'branch'
   LdNode? _branchStart; // first element tapped in branch mode
+  LdBranchView? _dragBranch;
+  bool _dragTapEnd = false; // true = dragging the tap (start) handle; false = merge (end)
+  double _dragX = 0;
 
   @override
   void initState() {
@@ -61,6 +64,12 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
             LdNode(id: '', kind: LdKind.contact, variable: 'TONTimer.DN', modifier: 'negated', comment: 'Done NC'),
             LdNode(id: '', kind: LdKind.block, blockType: 'TON', variable: 'TONTimer', presetMs: 5000, comment: '5s timer'),
             LdNode(id: '', kind: LdKind.coil, variable: 'MixerMotor', comment: 'Mixer coil'),
+          ],
+          branches: [
+            BranchSpec(startIndex: 0, endIndex: 2, nodes: [
+              LdNode(id: '', kind: LdKind.contact, variable: 'TONTimer.DN', comment: 'Done NO'),
+              LdNode(id: '', kind: LdKind.coil, variable: 'Arbor1Oiler', comment: 'Arbor oiler coil'),
+            ]),
           ],
         ),
       ]);
@@ -352,22 +361,33 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     final startPt = _inPort(rung, first, col, width);
     final endPt = _outPort(rung, last, col, width);
     return [
-      _handle(startPt, Colors.tealAccent, (dx) => _dragBranchTap(rung, br, dx)),
-      _handle(endPt, Colors.tealAccent, (dx) => _dragBranchMerge(rung, br, dx)),
+      _handle(startPt,
+          onStart: () => _beginBranchDrag(br, true, startPt.dx),
+          onUpdate: (dx) => _dragX += dx,
+          onEnd: () => _endBranchDrag(rung)),
+      _handle(endPt,
+          onStart: () => _beginBranchDrag(br, false, endPt.dx),
+          onUpdate: (dx) => _dragX += dx,
+          onEnd: () => _endBranchDrag(rung)),
     ];
   }
 
-  Widget _handle(Offset at, Color color, void Function(double globalDx) onDrag) {
+  Widget _handle(Offset at,
+      {required VoidCallback onStart,
+      required void Function(double delta) onUpdate,
+      required VoidCallback onEnd}) {
     return Positioned(
       left: at.dx - 8,
       top: at.dy - 8,
       width: 16,
       height: 16,
       child: GestureDetector(
-        onHorizontalDragUpdate: (d) => onDrag(d.localPosition.dx + at.dx - 8),
+        onHorizontalDragStart: (_) => onStart(),
+        onHorizontalDragUpdate: (d) => onUpdate(d.delta.dx),
+        onHorizontalDragEnd: (_) => onEnd(),
         child: Container(
           decoration: BoxDecoration(
-            color: color,
+            color: Colors.tealAccent,
             shape: BoxShape.circle,
             border: Border.all(color: Colors.black, width: 1),
           ),
@@ -376,15 +396,80 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     );
   }
 
-  /// Finds the lane-0 node whose column boundary is nearest to pixel x.
-  LdNode _nearestMainNode(LdRung rung, Map<String, int> col, double x) {
-    LdNode best = rung.nodes.firstWhere((n) => n.kind == LdKind.leftRail);
+  void _beginBranchDrag(LdBranchView br, bool tapEnd, double startX) {
+    _dragBranch = br;
+    _dragTapEnd = tapEnd;
+    _dragX = startX;
+  }
+
+  void _endBranchDrag(LdRung rung) {
+    final br = _dragBranch;
+    if (br == null) {
+      return;
+    }
+    final col = colAssignment(rung);
+    if (_dragTapEnd) {
+      final mergeDestId = _branchMergeDestId(rung, br);
+      final maxCol = mergeDestId == null ? null : col[mergeDestId];
+      final target = _nearestMainNode(rung, col, _dragX, maxColExclusive: maxCol);
+      if (target != null) {
+        moveBranchTap(rung, br, target);
+      }
+    } else {
+      final tapSrcId = _branchTapSrcId(rung, br);
+      final minCol = tapSrcId == null ? null : col[tapSrcId];
+      final target = _nearestMainNode(rung, col, _dragX, minColExclusive: minCol);
+      if (target != null) {
+        moveBranchMerge(rung, br, target);
+      }
+    }
+    setState(() => _dragBranch = null);
+    widget.onProgramUpdated();
+  }
+
+  String? _branchTapSrcId(LdRung rung, LdBranchView br) {
+    for (final w in rung.wires) {
+      if (w.toId == br.firstNodeId) {
+        final src = rung.nodes.firstWhere((n) => n.id == w.fromId);
+        if (src.row < br.lane) {
+          return w.fromId;
+        }
+      }
+    }
+    return null;
+  }
+
+  String? _branchMergeDestId(LdRung rung, LdBranchView br) {
+    for (final w in rung.wires) {
+      if (w.fromId == br.lastNodeId) {
+        final dst = rung.nodes.firstWhere((n) => n.id == w.toId);
+        if (dst.row < br.lane) {
+          return w.toId;
+        }
+      }
+    }
+    return null;
+  }
+
+  /// Nearest lane-0 node to pixel [x], optionally constrained to columns
+  /// strictly greater than [minColExclusive] and/or strictly less than
+  /// [maxColExclusive]. Returns null if no candidate satisfies the bounds.
+  LdNode? _nearestMainNode(LdRung rung, Map<String, int> col, double x,
+      {int? minColExclusive, int? maxColExclusive}) {
+    LdNode? best;
     double bestDist = double.infinity;
     for (final n in rung.nodes) {
       if (n.row != 0) {
         continue;
       }
-      final nx = _colX(col[n.id] ?? 0);
+      final c = col[n.id] ?? 0;
+      if (minColExclusive != null && c <= minColExclusive) {
+        continue;
+      }
+      if (maxColExclusive != null && c >= maxColExclusive) {
+        continue;
+      }
+      final nx = _colX(c);
       final d = (nx - x).abs();
       if (d < bestDist) {
         bestDist = d;
@@ -392,20 +477,6 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       }
     }
     return best;
-  }
-
-  void _dragBranchTap(LdRung rung, LdBranchView br, double x) {
-    final col = colAssignment(rung);
-    final target = _nearestMainNode(rung, col, x);
-    setState(() => moveBranchTap(rung, br, target));
-    widget.onProgramUpdated();
-  }
-
-  void _dragBranchMerge(LdRung rung, LdBranchView br, double x) {
-    final col = colAssignment(rung);
-    final target = _nearestMainNode(rung, col, x);
-    setState(() => moveBranchMerge(rung, br, target));
-    widget.onProgramUpdated();
   }
 
   void _showEditNodeDialog(LdRung rung, LdNode n) {
@@ -646,11 +717,21 @@ class _LadderPainter extends CustomPainter {
       ..strokeWidth = 2.0
       ..style = PaintingStyle.stroke;
 
-    LdNode nodeById(String id) => rung.nodes.firstWhere((n) => n.id == id);
+    LdNode? nodeById(String id) {
+      for (final n in rung.nodes) {
+        if (n.id == id) {
+          return n;
+        }
+      }
+      return null;
+    }
 
     for (final w in rung.wires) {
       final src = nodeById(w.fromId);
       final dst = nodeById(w.toId);
+      if (src == null || dst == null) {
+        continue;
+      }
       final p1 = s._outPort(rung, src, col, width);
       final p2 = s._inPort(rung, dst, col, width);
       final path = Path()..moveTo(p1.dx, p1.dy);
