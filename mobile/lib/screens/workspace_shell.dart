@@ -10,6 +10,7 @@ import 'fbd_editor_screen.dart';
 import 'sfc_editor_screen.dart';
 import 'memory_manager_screen.dart';
 import 'hmi_dashboard_builder_screen.dart';
+import 'simulated_io_screen.dart';
 
 class WorkspaceShell extends StatefulWidget {
   const WorkspaceShell({super.key});
@@ -633,6 +634,28 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                   ),
                 ),
 
+                const SizedBox(height: 8),
+
+                Container(
+                  margin: const EdgeInsets.only(left: 12, top: 2),
+                  decoration: BoxDecoration(
+                    color: _activeViewId == 'SIMIO:rules' ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(Icons.sensors, size: 16, color: _activeViewId == 'SIMIO:rules' ? Colors.cyanAccent : Colors.tealAccent),
+                      title: Text(
+                        'SIMULATED I/O (${_activeProject.simRules.length})',
+                        style: TextStyle(fontSize: 11, fontWeight: _activeViewId == 'SIMIO:rules' ? FontWeight.bold : FontWeight.normal),
+                      ),
+                      onTap: () => setState(() => _activeViewId = 'SIMIO:rules'),
+                    ),
+                  ),
+                ),
+
                 const SizedBox(height: 12),
 
                 // SECTION 3: Tasks & Programs Classified by Task Type & Language
@@ -873,6 +896,11 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
           },
         );
       }
+    } else if (_activeViewId == 'SIMIO:rules') {
+      return SimulatedIoScreen(
+        currentProject: _activeProject,
+        onProjectUpdated: () => setState(() {}),
+      );
     }
     return const Center(child: Text('Select an HMI, Memory, or Program from the Left Dock'));
   }
