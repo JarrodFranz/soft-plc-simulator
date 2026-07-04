@@ -181,7 +181,8 @@ abstract class DefaultProjects {
           behavior: 'integrate', ratePerSec: -0.4, minValue: 0, maxValue: 105,
           condition: [SimClause(leftPath: 'Cool_Cmd', comparator: '==', operand: 'true')]),
       SimRule(id: 'sim2', name: 'Ambient heat loss', targetPath: 'Temp_PV',
-          behavior: 'integrate', ratePerSec: -0.04, minValue: 0, maxValue: 105, condition: []),
+          behavior: 'integrate', ratePerSec: -0.04, minValue: 20, maxValue: 105,
+          condition: [SimClause(leftPath: 'Heat_Cmd', comparator: '==', operand: 'false'), SimClause(leftPath: 'Cool_Cmd', comparator: '==', operand: 'false')]),
     ],
     programs: [
       PlcProgram(
@@ -373,7 +374,8 @@ Reactor_Ready := NOT Alarm_High
           behavior: 'integrate', ratePerSec: -0.16, minValue: 0, maxValue: 40,
           condition: [SimClause(leftPath: 'Cool_Cmd', comparator: '==', operand: 'true')]),
       SimRule(id: 'sim2', name: 'Ambient drift', targetPath: 'Room_Temp',
-          behavior: 'integrate', ratePerSec: -0.02, minValue: 0, maxValue: 40, condition: []),
+          behavior: 'integrate', ratePerSec: -0.02, minValue: 15, maxValue: 40,
+          condition: [SimClause(leftPath: 'Heat_Cmd', comparator: '==', operand: 'false'), SimClause(leftPath: 'Cool_Cmd', comparator: '==', operand: 'false')]),
     ],
     programs: [
       PlcProgram(
