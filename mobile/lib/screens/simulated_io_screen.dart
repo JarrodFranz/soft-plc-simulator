@@ -255,6 +255,7 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
   List<Widget> _conditionRows(SimRule r, List<String> paths, StateSetter setDlg) {
     return r.condition.asMap().entries.map((e) {
       final c = e.value;
+      final isTagOperand = c.operandKind == 'tag';
       return Padding(
         padding: const EdgeInsets.only(top: 6),
         child: Row(children: [
@@ -280,13 +281,40 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
             ),
           ),
           const SizedBox(width: 4),
-          Expanded(
-            flex: 2,
-            child: TextFormField(
-              initialValue: c.operand,
-              decoration: const InputDecoration(isDense: true, hintText: 'value'),
-              onChanged: (v) => c.operand = v,
+          SizedBox(
+            width: 56,
+            child: DropdownButtonFormField<String>(
+              initialValue: c.operandKind,
+              isExpanded: true,
+              decoration: const InputDecoration(isDense: true),
+              items: const [
+                DropdownMenuItem(value: 'literal', child: Text('val', style: TextStyle(fontSize: 11))),
+                DropdownMenuItem(value: 'tag', child: Text('tag', style: TextStyle(fontSize: 11))),
+              ],
+              onChanged: (v) => setDlg(() {
+                c.operandKind = v ?? c.operandKind;
+                if (c.operandKind == 'tag' && !paths.contains(c.operand)) {
+                  c.operand = paths.isNotEmpty ? paths.first : '';
+                }
+              }),
             ),
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            flex: 3,
+            child: isTagOperand
+                ? DropdownButtonFormField<String>(
+                    initialValue: paths.contains(c.operand) ? c.operand : (paths.isNotEmpty ? paths.first : null),
+                    isExpanded: true,
+                    decoration: const InputDecoration(isDense: true),
+                    items: paths.map((p) => DropdownMenuItem(value: p, child: Text(p, overflow: TextOverflow.ellipsis))).toList(),
+                    onChanged: (v) => setDlg(() => c.operand = v ?? c.operand),
+                  )
+                : TextFormField(
+                    initialValue: c.operand,
+                    decoration: const InputDecoration(isDense: true, hintText: 'value'),
+                    onChanged: (v) => c.operand = v,
+                  ),
           ),
           IconButton(
             icon: const Icon(Icons.close, size: 16, color: Colors.redAccent),
