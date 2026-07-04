@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/ld_graph.dart';
 import '../models/ld_layout.dart';
+import '../models/tag_resolver.dart';
 
 const double _kContactH = 54.0;
 const double _kBlockH = 92.0;
@@ -520,11 +521,11 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 DropdownButtonFormField<String>(
-                  initialValue: widget.currentProject.tags.any((t) => t.name == n.variable) ? n.variable : null,
+                  initialValue: leafAndNodePaths(widget.currentProject).contains(n.variable) ? n.variable : null,
                   isExpanded: true,
                   decoration: const InputDecoration(labelText: 'Tag'),
-                  items: widget.currentProject.tags
-                      .map((t) => DropdownMenuItem(value: t.name, child: Text('${t.name} [${t.dataType}]', overflow: TextOverflow.ellipsis)))
+                  items: leafAndNodePaths(widget.currentProject)
+                      .map((p) => DropdownMenuItem(value: p, child: Text(p, overflow: TextOverflow.ellipsis)))
                       .toList(),
                   onChanged: (v) => tagCtrl.text = v ?? tagCtrl.text,
                 ),

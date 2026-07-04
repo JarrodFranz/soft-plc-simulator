@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
+import '../models/tag_resolver.dart';
 import '../data/default_projects.dart';
 import '../widgets/tag_inspector_dock.dart';
 import 'st_editor_screen.dart';
@@ -258,49 +259,52 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     }
   }
 
-  bool _getTagBool(String name) {
-    final t = _activeProject.tags.firstWhere((t) => t.name == name, orElse: () => PlcTag(name: name, path: '', dataType: 'BOOL', value: false, ioType: 'Internal'));
-    return t.isForced ? (t.forcedValue as bool) : (t.value == true);
-  }
-
-  double _getTagDouble(String name) {
-    final t = _activeProject.tags.firstWhere((t) => t.name == name, orElse: () => PlcTag(name: name, path: '', dataType: 'FLOAT64', value: 0.0, ioType: 'Internal'));
-    return t.isForced ? (t.forcedValue as double) : (t.value is double ? t.value : 0.0);
-  }
-
-  void _setTagBool(String name, bool val) {
-    final idx = _activeProject.tags.indexWhere((t) => t.name == name);
-    if (idx != -1) {
-      final t = _activeProject.tags[idx];
-      if (!t.isForced) {
-        t.value = val;
+  PlcTag? _rootOf(String path) {
+    final rootName = path.split('.').first.split('[').first;
+    for (final t in _activeProject.tags) {
+      if (t.name == rootName) {
+        return t;
       }
     }
+    return null;
   }
 
-  void _setTagDouble(String name, double val) {
-    final idx = _activeProject.tags.indexWhere((t) => t.name == name);
-    if (idx != -1) {
-      final t = _activeProject.tags[idx];
-      if (!t.isForced) {
-        t.value = val;
-      }
+  bool _getTagBool(String path) {
+    final root = _rootOf(path);
+    if (root != null && root.isForced && root.name == path) {
+      return root.forcedValue == true;
     }
+    return readPath(_activeProject, path) == true;
   }
 
-  int _getTagInt(String name) {
-    final t = _activeProject.tags.firstWhere(
-      (t) => t.name == name,
-      orElse: () => PlcTag(name: name, path: '', dataType: 'INT32', value: 0, ioType: 'Internal'),
-    );
-    return t.isForced ? (t.forcedValue as int? ?? 0) : ((t.value as num?)?.toInt() ?? 0);
-  }
-
-  void _setTagInt(String name, int val) {
-    final idx = _activeProject.tags.indexWhere((t) => t.name == name);
-    if (idx != -1 && !_activeProject.tags[idx].isForced) {
-      _activeProject.tags[idx].value = val;
+  double _getTagDouble(String path) {
+    final root = _rootOf(path);
+    if (root != null && root.isForced && root.name == path) {
+      return (root.forcedValue as num?)?.toDouble() ?? 0.0;
     }
+    final v = readPath(_activeProject, path);
+    return v is num ? v.toDouble() : 0.0;
+  }
+
+  int _getTagInt(String path) {
+    final root = _rootOf(path);
+    if (root != null && root.isForced && root.name == path) {
+      return (root.forcedValue as num?)?.toInt() ?? 0;
+    }
+    final v = readPath(_activeProject, path);
+    return v is num ? v.toInt() : 0;
+  }
+
+  void _setTagBool(String path, bool val) => _writeIfNotForced(path, val);
+  void _setTagDouble(String path, double val) => _writeIfNotForced(path, val);
+  void _setTagInt(String path, int val) => _writeIfNotForced(path, val);
+
+  void _writeIfNotForced(String path, dynamic val) {
+    final root = _rootOf(path);
+    if (root != null && root.isForced && root.name == path) {
+      return; // forced root value is not overwritten by logic
+    }
+    writePath(_activeProject, path, val);
   }
 
   void _switchActiveProject(PlcProject proj) {
