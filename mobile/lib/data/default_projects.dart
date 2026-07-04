@@ -25,7 +25,7 @@ abstract class DefaultProjects {
     _allWaterProject(),
   ];
 
-  // ── 1. Basic Motor Start/Stop (ST + LD) ─────────────────────────────────
+  // ── 1. Basic Motor Start/Stop (LD) ──────────────────────────────────────
 
   static PlcProject _motorProject() => PlcProject(
     id: 'proj_motor',
@@ -52,19 +52,13 @@ abstract class DefaultProjects {
     ],
     programs: [
       PlcProgram(
-        name: 'MotorControl_ST',
-        language: 'StructuredText',
-        description: 'Motor start/stop with permissives in ST',
-        stSource: '// Structured Text Motor Control\nIF (Start_PB OR Motor_Latch) AND NOT Stop_PB AND EStop_OK AND Overload_OK THEN\n    Motor_Latch := TRUE;\nELSE\n    Motor_Latch := FALSE;\nEND_IF;\nMotor_Run := Motor_Latch AND EStop_OK AND Overload_OK;',
-      ),
-      PlcProgram(
         name: 'MotorControl_LD',
         language: 'LadderLogic',
         description: 'Motor start/stop seal-in rungs in Ladder Logic (LD)',
       ),
     ],
     tasks: [
-      PlcTask(name: 'MainContinuousTask', type: 'Continuous', periodMs: 100, programNames: ['MotorControl_ST', 'MotorControl_LD']),
+      PlcTask(name: 'MainContinuousTask', type: 'Continuous', periodMs: 100, programNames: ['MotorControl_LD']),
     ],
     hmis: [
       HmiScreenDef(
