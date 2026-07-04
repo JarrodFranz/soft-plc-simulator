@@ -134,4 +134,20 @@ void main() {
     moveBranchTap(r, fake, a); // must not throw
     expect(r.nodes.contains(a), isTrue);
   });
+
+  test('moveBranchMerge keeps a branch coil terminal (refuses non-rail dest)', () {
+    final r = buildRung(
+      index: 0,
+      main: [contact('A'), coil('Y')],
+      branches: [BranchSpec(startIndex: 0, endIndex: 1, nodes: [contact('C'), coil('D')])],
+    );
+    final br = findBranches(r).first;
+    final d = r.nodes.firstWhere((n) => n.variable == 'D');
+    final a = r.nodes.firstWhere((n) => n.variable == 'A');
+    final right = r.nodes.firstWhere((n) => n.kind == LdKind.rightRail);
+    expect(br.lastNodeId, equals(d.id));
+    moveBranchMerge(r, br, a); // attempt to point coil D -> A (non-rail)
+    final dOut = r.wires.firstWhere((w) => w.fromId == d.id);
+    expect(dOut.toId, equals(right.id)); // still terminal at the rail
+  });
 }

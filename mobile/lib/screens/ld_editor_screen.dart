@@ -360,17 +360,23 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     final first = rung.nodes.firstWhere((n) => n.id == br.firstNodeId);
     final last = rung.nodes.firstWhere((n) => n.id == br.lastNodeId);
     final startPt = _inPort(rung, first, col, width);
-    final endPt = _outPort(rung, last, col, width);
-    return [
+    final handles = <Widget>[
       _handle(startPt,
           onStart: () => _beginBranchDrag(br, true, startPt.dx),
           onUpdate: (dx) => _dragX += dx,
           onEnd: () => _endBranchDrag(rung)),
-      _handle(endPt,
+    ];
+    // A coil-terminated branch's output is fixed at the right rail — its end is
+    // not re-spannable, so don't offer a merge handle that could make the coil
+    // non-terminal.
+    if (last.kind != LdKind.coil) {
+      final endPt = _outPort(rung, last, col, width);
+      handles.add(_handle(endPt,
           onStart: () => _beginBranchDrag(br, false, endPt.dx),
           onUpdate: (dx) => _dragX += dx,
-          onEnd: () => _endBranchDrag(rung)),
-    ];
+          onEnd: () => _endBranchDrag(rung)));
+    }
+    return handles;
   }
 
   Widget _handle(Offset at,

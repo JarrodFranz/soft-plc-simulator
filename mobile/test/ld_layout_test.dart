@@ -29,7 +29,6 @@ void main() {
 
   test('canInsertContactOnWire forbids inserting after a coil', () {
     final r = buildRung(index: 0, main: [contact('A'), coil('Y')]);
-    final a = r.nodes.firstWhere((n) => n.variable == 'A');
     final y = r.nodes.firstWhere((n) => n.variable == 'Y');
     final left = r.nodes.firstWhere((n) => n.kind == LdKind.leftRail);
     final beforeCoil = r.wires.firstWhere((w) => w.toId == y.id);   // A -> Y
@@ -38,7 +37,6 @@ void main() {
     expect(canInsertContactOnWire(r, firstWire), isTrue);
     expect(canInsertContactOnWire(r, beforeCoil), isTrue);   // before the coil is fine
     expect(canInsertContactOnWire(r, afterCoil), isFalse);   // after the coil is not
-    expect(a, isNotNull);
   });
 
   test('canInsertCoilOnWire allows only terminal, non-post-coil segments', () {

@@ -190,6 +190,12 @@ void moveBranchTap(LdRung rung, LdBranchView br, LdNode newSource) {
 
 /// Re-points the branch's outbound (merge) wire to terminate at [newDest].
 void moveBranchMerge(LdRung rung, LdBranchView br, LdNode newDest) {
+  final lastNode = rung.nodes.firstWhere((n) => n.id == br.lastNodeId);
+  // A coil's output must stay on the right rail; never let a drag make it
+  // non-terminal by re-pointing it to a non-rail node.
+  if (lastNode.kind == LdKind.coil && newDest.kind != LdKind.rightRail) {
+    return;
+  }
   for (final w in rung.wires) {
     if (w.fromId == br.lastNodeId && _laneOfNode(rung, w.toId) < br.lane) {
       w.toId = newDest.id;
