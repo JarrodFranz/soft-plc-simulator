@@ -85,18 +85,6 @@ class PlcStructDef {
   });
 }
 
-class PlcDataBlock {
-  String name;
-  String structTypeName;
-  Map<String, dynamic> fieldValues;
-
-  PlcDataBlock({
-    required this.name,
-    required this.structTypeName,
-    required this.fieldValues,
-  });
-}
-
 // -------------------------------------------------------------
 // LADDER LOGIC (LD) — node-and-wire graph model
 // -------------------------------------------------------------
@@ -374,7 +362,6 @@ class PlcProject {
   int scanPeriodMs;
   List<PlcTag> tags;
   List<PlcStructDef> structDefs;
-  List<PlcDataBlock> dataBlocks;
   List<PlcProgram> programs;
   List<PlcTask> tasks;
   List<HmiScreenDef> hmis;
@@ -388,7 +375,6 @@ class PlcProject {
     this.scanPeriodMs = 100,
     required this.tags,
     required this.structDefs,
-    required this.dataBlocks,
     required this.programs,
     required this.tasks,
     required this.hmis,
@@ -406,7 +392,6 @@ class PlcProject {
       scanPeriodMs: ctrl['scan_period_ms'] ?? 100,
       tags: (proj['tags'] as List? ?? []).map((t) => PlcTag.fromJson(t)).toList(),
       structDefs: [],
-      dataBlocks: [],
       programs: (proj['programs'] as List? ?? []).map((p) => PlcProgram.fromJson(p)).toList(),
       tasks: (proj['tasks'] as List? ?? []).map((tk) => PlcTask.fromJson(tk)).toList(),
       hmis: (proj['hmis'] as List? ?? []).map((h) => HmiScreenDef.fromJson(h)).toList(),

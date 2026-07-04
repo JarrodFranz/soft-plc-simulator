@@ -144,31 +144,7 @@ END_FOR;''',
       ));
     }
 
-    // 2. Data Blocks & Field Members
-    for (var db in widget.currentProject.dataBlocks) {
-      items.add(AutocompleteItem(
-        label: db.name,
-        insertText: db.name,
-        detail: 'Data Block (Type: ${db.structTypeName})',
-        category: 'DB',
-        icon: Icons.inventory_2,
-        color: Colors.indigoAccent,
-      ));
-
-      for (var fieldName in db.fieldValues.keys) {
-        final fullMember = '${db.name}.$fieldName';
-        items.add(AutocompleteItem(
-          label: fullMember,
-          insertText: fullMember,
-          detail: 'Member of ${db.name}',
-          category: 'DB MEMBER',
-          icon: Icons.account_tree,
-          color: Colors.lightBlueAccent,
-        ));
-      }
-    }
-
-    // 3. Struct Definitions (DUT)
+    // 2. Struct Definitions (DUT)
     for (var stDef in widget.currentProject.structDefs) {
       items.add(AutocompleteItem(
         label: stDef.name,
@@ -180,7 +156,7 @@ END_FOR;''',
       ));
     }
 
-    // 4. Built-in IEC 61131-3 Function Blocks & Math Functions
+    // 3. Built-in IEC 61131-3 Function Blocks & Math Functions
     final functions = [
       AutocompleteItem(label: 'TON', insertText: 'TON_1(IN := , PT := 5000);', detail: 'Timer On Delay Function Block', category: 'FUNCTION', icon: Icons.timer, color: Colors.amberAccent),
       AutocompleteItem(label: 'TOF', insertText: 'TOF_1(IN := , PT := 5000);', detail: 'Timer Off Delay Function Block', category: 'FUNCTION', icon: Icons.timer_off, color: Colors.amberAccent),
@@ -194,7 +170,7 @@ END_FOR;''',
     ];
     items.addAll(functions);
 
-    // 5. IEC 61131-3 Control Keywords
+    // 4. IEC 61131-3 Control Keywords
     final keywords = [
       AutocompleteItem(label: 'IF .. THEN .. END_IF', insertText: 'IF  THEN\n    \nEND_IF;', detail: 'Conditional Statement', category: 'KEYWORD', icon: Icons.code, color: Colors.blueAccent),
       AutocompleteItem(label: 'IF .. ELSIF .. ELSE', insertText: 'IF  THEN\n    \nELSIF  THEN\n    \nELSE\n    \nEND_IF;', detail: 'Multi-branch Conditional Statement', category: 'KEYWORD', icon: Icons.code, color: Colors.blueAccent),

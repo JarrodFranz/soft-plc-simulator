@@ -155,42 +155,46 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                               Row(
                                 children: [
                                   // Live Value Pill
-                                  InkWell(
-                                    onTap: () {
-                                      if (isBool) {
-                                        setState(() {
-                                          if (tag.isForced) {
-                                            tag.forcedValue = !(tag.forcedValue == true);
-                                          } else {
-                                            tag.value = !(tag.value == true);
-                                          }
-                                        });
-                                        widget.onTagStateChanged();
-                                      }
-                                    },
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                      decoration: BoxDecoration(
-                                        color: effectiveVal == true
-                                            ? Colors.green.withValues(alpha: 0.2)
-                                            : (effectiveVal == false ? Colors.red.withValues(alpha: 0.1) : Colors.cyan.withValues(alpha: 0.1)),
-                                        borderRadius: BorderRadius.circular(4),
-                                        border: Border.all(
-                                          color: effectiveVal == true ? Colors.green : (effectiveVal == false ? Colors.red.shade700 : Colors.cyan),
+                                  Flexible(
+                                    child: InkWell(
+                                      onTap: () {
+                                        if (isBool) {
+                                          setState(() {
+                                            if (tag.isForced) {
+                                              tag.forcedValue = !(tag.forcedValue == true);
+                                            } else {
+                                              tag.value = !(tag.value == true);
+                                            }
+                                          });
+                                          widget.onTagStateChanged();
+                                        }
+                                      },
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                        decoration: BoxDecoration(
+                                          color: effectiveVal == true
+                                              ? Colors.green.withValues(alpha: 0.2)
+                                              : (effectiveVal == false ? Colors.red.withValues(alpha: 0.1) : Colors.cyan.withValues(alpha: 0.1)),
+                                          borderRadius: BorderRadius.circular(4),
+                                          border: Border.all(
+                                            color: effectiveVal == true ? Colors.green : (effectiveVal == false ? Colors.red.shade700 : Colors.cyan),
+                                          ),
                                         ),
-                                      ),
-                                      child: Text(
-                                        '$effectiveVal ${tag.engineeringUnits}',
-                                        style: TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 12,
-                                          color: effectiveVal == true ? Colors.greenAccent : (effectiveVal == false ? Colors.redAccent : Colors.cyanAccent),
+                                        child: Text(
+                                          '$effectiveVal ${tag.engineeringUnits}',
+                                          overflow: TextOverflow.ellipsis,
+                                          maxLines: 1,
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 12,
+                                            color: effectiveVal == true ? Colors.greenAccent : (effectiveVal == false ? Colors.redAccent : Colors.cyanAccent),
+                                          ),
                                         ),
                                       ),
                                     ),
                                   ),
 
-                                  const Spacer(),
+                                  const SizedBox(width: 8),
 
                                   // Force Toggle Lock
                                   ElevatedButton.icon(

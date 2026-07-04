@@ -4,7 +4,7 @@ import 'package:soft_plc_mobile/models/tag_resolver.dart';
 
 PlcProject _proj(List<PlcTag> tags, {List<PlcStructDef> defs = const []}) => PlcProject(
       id: 'p', name: 'p', controllerName: 'c',
-      tags: tags, structDefs: defs, dataBlocks: [], programs: [], tasks: [], hmis: [],
+      tags: tags, structDefs: defs, programs: [], tasks: [], hmis: [],
     );
 
 PlcTag _tag(String name, String type, dynamic value, {int arrayLength = 0}) =>

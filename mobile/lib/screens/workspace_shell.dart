@@ -607,8 +607,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
 
                 const SizedBox(height: 8),
 
-                // SECTION 2: MEMORY (Tags & Data Blocks)
-                _buildTreeFolderHeader('MEMORY (TAGS & DATA BLOCKS)', Icons.storage),
+                // SECTION 2: MEMORY (Tags & Structs)
+                _buildTreeFolderHeader('MEMORY (TAGS & STRUCTS)', Icons.storage),
                 Container(
                   margin: const EdgeInsets.only(left: 12, top: 2),
                   decoration: BoxDecoration(
@@ -621,7 +621,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                       dense: true,
                       leading: Icon(Icons.memory, size: 16, color: _activeViewId == 'MEMORY' ? Colors.cyanAccent : Colors.tealAccent),
                       title: Text(
-                        'Tags & Data Blocks (${_activeProject.tags.length} Tags, ${_activeProject.structDefs.length} Structs, ${_activeProject.dataBlocks.length} DBs)',
+                        'Tags & Structs (${_activeProject.tags.length} Tags, ${_activeProject.structDefs.length} Structs)',
                         style: TextStyle(fontSize: 11, fontWeight: _activeViewId == 'MEMORY' ? FontWeight.bold : FontWeight.normal),
                       ),
                       onTap: () => setState(() => _activeViewId = 'MEMORY'),

@@ -1,5 +1,6 @@
 import '../models/project_model.dart';
 import '../models/ld_graph.dart';
+import '../models/tag_resolver.dart';
 
 abstract class DefaultProjects {
   static LdNode _xic(String v, [String c = '']) =>
@@ -15,6 +16,20 @@ abstract class DefaultProjects {
   static LdNode _ton(String v, int ms, [String c = '']) =>
       LdNode(id: '', kind: LdKind.block, blockType: 'TON', variable: v, presetMs: ms, comment: c);
 
+  /// Throwaway project used only to resolve built-in composite (e.g. TIMER)
+  /// and scalar-array default values, which do not depend on a project's
+  /// own structDefs.
+  static final PlcProject _emptyProject = PlcProject(
+    id: '_scratch',
+    name: '_scratch',
+    controllerName: '_scratch',
+    tags: [],
+    structDefs: [],
+    programs: [],
+    tasks: [],
+    hmis: [],
+  );
+
   static List<PlcProject> all() => [
     _motorProject(),
     _tankProject(),
@@ -27,55 +42,63 @@ abstract class DefaultProjects {
 
   // ── 1. Basic Motor Start/Stop (LD) ──────────────────────────────────────
 
-  static PlcProject _motorProject() => PlcProject(
-    id: 'proj_motor',
-    name: 'Basic Motor Start Stop',
-    controllerName: 'PLC_01',
-    scanPeriodMs: 100,
-    tags: [
-      PlcTag(name: 'Start_PB', path: 'Inputs/Start_PB', dataType: 'BOOL', value: false, ioType: 'SimulatedInput', description: 'Start pushbutton NO'),
-      PlcTag(name: 'Stop_PB', path: 'Inputs/Stop_PB', dataType: 'BOOL', value: false, ioType: 'SimulatedInput', description: 'Stop pushbutton NC'),
-      PlcTag(name: 'EStop_OK', path: 'Inputs/EStop_OK', dataType: 'BOOL', value: true, ioType: 'SimulatedInput', description: 'Emergency Stop healthy'),
-      PlcTag(name: 'Overload_OK', path: 'Inputs/Overload_OK', dataType: 'BOOL', value: true, ioType: 'SimulatedInput', description: 'Thermal overload healthy'),
-      PlcTag(name: 'Motor_Latch', path: 'Internal/Motor_Latch', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'Internal seal-in latch'),
-      PlcTag(name: 'Motor_Run', path: 'Outputs/Motor_Run', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Motor contactor output'),
-    ],
-    structDefs: [
+  static PlcProject _motorProject() {
+    final structDefs = [
       PlcStructDef(name: 'Motor_DUT', fields: [
         StructFieldDef(name: 'Run', dataType: 'BOOL', defaultValue: false),
         StructFieldDef(name: 'Fault', dataType: 'BOOL', defaultValue: false),
         StructFieldDef(name: 'Speed', dataType: 'INT32', defaultValue: 0),
       ]),
-    ],
-    dataBlocks: [
-      PlcDataBlock(name: 'DB_Motor1', structTypeName: 'Motor_DUT', fieldValues: {'Run': false, 'Fault': false, 'Speed': 1450}),
-    ],
-    programs: [
-      PlcProgram(
-        name: 'MotorControl_LD',
-        language: 'LadderLogic',
-        description: 'Motor start/stop seal-in rungs in Ladder Logic (LD)',
-      ),
-    ],
-    tasks: [
-      PlcTask(name: 'MainContinuousTask', type: 'Continuous', periodMs: 100, programNames: ['MotorControl_LD']),
-    ],
-    hmis: [
-      HmiScreenDef(
-        id: 'hmi_motor',
-        title: 'Motor Control HMI Dashboard',
-        layoutType: 'GridDashboard',
-        components: [
-          HmiComponent(id: 'c1', title: 'START Motor (NO)', type: 'PushbuttonSwitch', tagBinding: 'Start_PB', gridSpanWidth: 1, accentColor: 'green'),
-          HmiComponent(id: 'c2', title: 'STOP Motor (NC)', type: 'PushbuttonSwitch', tagBinding: 'Stop_PB', gridSpanWidth: 1, accentColor: 'red'),
-          HmiComponent(id: 'c3', title: 'Motor Running LED', type: 'LedIndicatorLight', tagBinding: 'Motor_Run', gridSpanWidth: 1, accentColor: 'green'),
-          HmiComponent(id: 'c4', title: 'E-Stop Healthy', type: 'ToggleSwitch', tagBinding: 'EStop_OK', gridSpanWidth: 1, accentColor: 'cyan'),
-          HmiComponent(id: 'c5', title: 'Overload Healthy', type: 'ToggleSwitch', tagBinding: 'Overload_OK', gridSpanWidth: 1, accentColor: 'amber'),
-          HmiComponent(id: 'c6', title: 'Motor Status', type: 'StatusPillDisplay', tagBinding: 'Motor_Run', gridSpanWidth: 2, accentColor: 'teal'),
-        ],
-      ),
-    ],
-  );
+    ];
+    return PlcProject(
+      id: 'proj_motor',
+      name: 'Basic Motor Start Stop',
+      controllerName: 'PLC_01',
+      scanPeriodMs: 100,
+      tags: [
+        PlcTag(name: 'Start_PB', path: 'Inputs/Start_PB', dataType: 'BOOL', value: false, ioType: 'SimulatedInput', description: 'Start pushbutton NO'),
+        PlcTag(name: 'Stop_PB', path: 'Inputs/Stop_PB', dataType: 'BOOL', value: false, ioType: 'SimulatedInput', description: 'Stop pushbutton NC'),
+        PlcTag(name: 'EStop_OK', path: 'Inputs/EStop_OK', dataType: 'BOOL', value: true, ioType: 'SimulatedInput', description: 'Emergency Stop healthy'),
+        PlcTag(name: 'Overload_OK', path: 'Inputs/Overload_OK', dataType: 'BOOL', value: true, ioType: 'SimulatedInput', description: 'Thermal overload healthy'),
+        PlcTag(name: 'Motor_Latch', path: 'Internal/Motor_Latch', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'Internal seal-in latch'),
+        PlcTag(name: 'Motor_Run', path: 'Outputs/Motor_Run', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Motor contactor output'),
+        PlcTag(
+          name: 'DB_Motor1',
+          path: 'Data/DB_Motor1',
+          dataType: 'Motor_DUT',
+          value: {'Run': false, 'Fault': false, 'Speed': 1450},
+          ioType: 'Internal',
+          description: 'Motor status/telemetry struct instance',
+        ),
+      ],
+      structDefs: structDefs,
+      programs: [
+        PlcProgram(
+          name: 'MotorControl_LD',
+          language: 'LadderLogic',
+          description: 'Motor start/stop seal-in rungs in Ladder Logic (LD)',
+        ),
+      ],
+      tasks: [
+        PlcTask(name: 'MainContinuousTask', type: 'Continuous', periodMs: 100, programNames: ['MotorControl_LD']),
+      ],
+      hmis: [
+        HmiScreenDef(
+          id: 'hmi_motor',
+          title: 'Motor Control HMI Dashboard',
+          layoutType: 'GridDashboard',
+          components: [
+            HmiComponent(id: 'c1', title: 'START Motor (NO)', type: 'PushbuttonSwitch', tagBinding: 'Start_PB', gridSpanWidth: 1, accentColor: 'green'),
+            HmiComponent(id: 'c2', title: 'STOP Motor (NC)', type: 'PushbuttonSwitch', tagBinding: 'Stop_PB', gridSpanWidth: 1, accentColor: 'red'),
+            HmiComponent(id: 'c3', title: 'Motor Running LED', type: 'LedIndicatorLight', tagBinding: 'Motor_Run', gridSpanWidth: 1, accentColor: 'green'),
+            HmiComponent(id: 'c4', title: 'E-Stop Healthy', type: 'ToggleSwitch', tagBinding: 'EStop_OK', gridSpanWidth: 1, accentColor: 'cyan'),
+            HmiComponent(id: 'c5', title: 'Overload Healthy', type: 'ToggleSwitch', tagBinding: 'Overload_OK', gridSpanWidth: 1, accentColor: 'amber'),
+            HmiComponent(id: 'c6', title: 'Motor Status', type: 'StatusPillDisplay', tagBinding: 'Motor_Run', gridSpanWidth: 2, accentColor: 'teal'),
+          ],
+        ),
+      ],
+    );
+  }
 
   // ── 2. Tank Level Simulation (ST + FBD + SFC) ────────────────────────────
 
@@ -93,7 +116,6 @@ abstract class DefaultProjects {
       PlcTag(name: 'High_Alarm', path: 'Outputs/High_Alarm', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'High level alarm'),
     ],
     structDefs: [],
-    dataBlocks: [],
     programs: [
       PlcProgram(
         name: 'TankLevelControl_ST',
@@ -143,7 +165,6 @@ abstract class DefaultProjects {
       PlcTag(name: 'Reactor_Ready', path: 'Outputs/Reactor_Ready', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Reactor at setpoint ±2°C'),
     ],
     structDefs: [],
-    dataBlocks: [],
     programs: [
       PlcProgram(
         name: 'ReactorTemp_ST',
@@ -215,9 +236,16 @@ Reactor_Ready := NOT Alarm_High
       PlcTag(name: 'Photo_Eye', path: 'Inputs/Photo_Eye', dataType: 'BOOL', value: false, ioType: 'SimulatedInput', description: 'Part detection photo eye'),
       PlcTag(name: 'Belt_Jammed', path: 'Outputs/Belt_Jammed', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Belt jam alarm output'),
       PlcTag(name: 'Part_Present', path: 'Internal/Part_Present', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'Part present internal flag'),
+      PlcTag(
+        name: 'JamTimer',
+        path: 'Timers/JamTimer',
+        dataType: 'TIMER',
+        value: defaultValueFor(_emptyProject, 'TIMER', 0),
+        ioType: 'Internal',
+        description: 'On-delay timer: belt running with no part for 5s trips jam alarm',
+      ),
     ],
     structDefs: [],
-    dataBlocks: [],
     programs: [
       PlcProgram(
         name: 'ConveyorBelt_LD',
@@ -311,7 +339,6 @@ Reactor_Ready := NOT Alarm_High
       PlcTag(name: 'Hvac_Active', path: 'Internal/Hvac_Active', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'HVAC system enabled'),
     ],
     structDefs: [],
-    dataBlocks: [],
     programs: [
       PlcProgram(
         name: 'HvacZone_FBD',
@@ -395,7 +422,6 @@ Reactor_Ready := NOT Alarm_High
       PlcTag(name: 'Step_Delay', path: 'Internal/Step_Delay', dataType: 'INT32', value: 0, ioType: 'Internal', description: 'Step hold-time scan counter'),
     ],
     structDefs: [],
-    dataBlocks: [],
     programs: [
       PlcProgram(
         name: 'BottleFill_SFC',
@@ -446,36 +472,80 @@ Reactor_Ready := NOT Alarm_High
 
   // ── 7. All Languages — Water Treatment Plant ─────────────────────────────
 
-  static PlcProject _allWaterProject() => PlcProject(
-    id: 'proj_all_water',
-    name: 'All Languages — Water Treatment Plant',
-    controllerName: 'PLC_WTP',
-    scanPeriodMs: 100,
-    tags: [
-      // LD pump control
-      PlcTag(name: 'Start_PB', path: 'Inputs/Start_PB', dataType: 'BOOL', value: false, ioType: 'SimulatedInput', description: 'Pump start pushbutton'),
-      PlcTag(name: 'Stop_PB', path: 'Inputs/Stop_PB', dataType: 'BOOL', value: false, ioType: 'SimulatedInput', description: 'Pump stop pushbutton'),
-      PlcTag(name: 'EStop', path: 'Inputs/EStop', dataType: 'BOOL', value: true, ioType: 'SimulatedInput', description: 'Emergency stop healthy'),
-      PlcTag(name: 'Pump_Latch', path: 'Internal/Pump_Latch', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'Pump seal-in latch'),
-      PlcTag(name: 'Pump_Motor', path: 'Outputs/Pump_Motor', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Main pump motor contactor'),
-      // Process values (FBD)
-      PlcTag(name: 'Turbidity_PV', path: 'Inputs/Turbidity_PV', dataType: 'FLOAT64', value: 8.5, ioType: 'SimulatedInput', engineeringUnits: 'NTU', description: 'Raw water turbidity sensor'),
-      PlcTag(name: 'Turbidity_SP', path: 'Internal/Turbidity_SP', dataType: 'FLOAT64', value: 5.0, ioType: 'Internal', engineeringUnits: 'NTU', description: 'Max turbidity setpoint'),
-      PlcTag(name: 'Level_PV', path: 'Inputs/Level_PV', dataType: 'FLOAT64', value: 65.0, ioType: 'SimulatedInput', engineeringUnits: '%', description: 'Clear water reservoir level'),
-      PlcTag(name: 'Flow_PV', path: 'Inputs/Flow_PV', dataType: 'FLOAT64', value: 0.0, ioType: 'SimulatedInput', engineeringUnits: 'L/min', description: 'Treated water flow rate'),
-      PlcTag(name: 'Quality_OK', path: 'Internal/Quality_OK', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'Water quality within spec'),
-      // ST supervisor outputs
-      PlcTag(name: 'Treat_Dosing', path: 'Outputs/Treat_Dosing', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Chemical dosing pump'),
-      PlcTag(name: 'System_Ready', path: 'Internal/System_Ready', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'All permissives healthy'),
-      PlcTag(name: 'Alarm_Active', path: 'Outputs/Alarm_Active', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'System alarm beacon'),
-      // SFC backwash sequence
-      PlcTag(name: 'Backwash_Active', path: 'Internal/Backwash_Active', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'Filter backwash mode active'),
-      PlcTag(name: 'Backwash_Valve', path: 'Outputs/Backwash_Valve', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Backwash header valve'),
-      PlcTag(name: 'Backwash_Pump', path: 'Outputs/Backwash_Pump', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Backwash pump'),
-    ],
-    structDefs: [],
-    dataBlocks: [],
-    programs: [
+  static PlcProject _allWaterProject() {
+    final structDefs = [
+      PlcStructDef(name: 'PumpStatusDUT', fields: [
+        StructFieldDef(name: 'Running', dataType: 'BOOL', defaultValue: false),
+        StructFieldDef(name: 'Faulted', dataType: 'BOOL', defaultValue: false),
+        StructFieldDef(name: 'RunHours', dataType: 'INT32', defaultValue: 0),
+      ]),
+    ];
+    final scratchProj = PlcProject(
+      id: '_scratch_water',
+      name: '_scratch_water',
+      controllerName: '_scratch',
+      tags: [],
+      structDefs: structDefs,
+      programs: [],
+      tasks: [],
+      hmis: [],
+    );
+    return PlcProject(
+      id: 'proj_all_water',
+      name: 'All Languages — Water Treatment Plant',
+      controllerName: 'PLC_WTP',
+      scanPeriodMs: 100,
+      tags: [
+        // LD pump control
+        PlcTag(name: 'Start_PB', path: 'Inputs/Start_PB', dataType: 'BOOL', value: false, ioType: 'SimulatedInput', description: 'Pump start pushbutton'),
+        PlcTag(name: 'Stop_PB', path: 'Inputs/Stop_PB', dataType: 'BOOL', value: false, ioType: 'SimulatedInput', description: 'Pump stop pushbutton'),
+        PlcTag(name: 'EStop', path: 'Inputs/EStop', dataType: 'BOOL', value: true, ioType: 'SimulatedInput', description: 'Emergency stop healthy'),
+        PlcTag(name: 'Pump_Latch', path: 'Internal/Pump_Latch', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'Pump seal-in latch'),
+        PlcTag(name: 'Pump_Motor', path: 'Outputs/Pump_Motor', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Main pump motor contactor'),
+        // Process values (FBD)
+        PlcTag(name: 'Turbidity_PV', path: 'Inputs/Turbidity_PV', dataType: 'FLOAT64', value: 8.5, ioType: 'SimulatedInput', engineeringUnits: 'NTU', description: 'Raw water turbidity sensor'),
+        PlcTag(name: 'Turbidity_SP', path: 'Internal/Turbidity_SP', dataType: 'FLOAT64', value: 5.0, ioType: 'Internal', engineeringUnits: 'NTU', description: 'Max turbidity setpoint'),
+        PlcTag(name: 'Level_PV', path: 'Inputs/Level_PV', dataType: 'FLOAT64', value: 65.0, ioType: 'SimulatedInput', engineeringUnits: '%', description: 'Clear water reservoir level'),
+        PlcTag(name: 'Flow_PV', path: 'Inputs/Flow_PV', dataType: 'FLOAT64', value: 0.0, ioType: 'SimulatedInput', engineeringUnits: 'L/min', description: 'Treated water flow rate'),
+        PlcTag(name: 'Quality_OK', path: 'Internal/Quality_OK', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'Water quality within spec'),
+        // ST supervisor outputs
+        PlcTag(name: 'Treat_Dosing', path: 'Outputs/Treat_Dosing', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Chemical dosing pump'),
+        PlcTag(name: 'System_Ready', path: 'Internal/System_Ready', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'All permissives healthy'),
+        PlcTag(name: 'Alarm_Active', path: 'Outputs/Alarm_Active', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'System alarm beacon'),
+        // SFC backwash sequence
+        PlcTag(name: 'Backwash_Active', path: 'Internal/Backwash_Active', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'Filter backwash mode active'),
+        PlcTag(name: 'Backwash_Valve', path: 'Outputs/Backwash_Valve', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Backwash header valve'),
+        PlcTag(name: 'Backwash_Pump', path: 'Outputs/Backwash_Pump', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Backwash pump'),
+        PlcTag(
+          name: 'BackwashTimer',
+          path: 'Timers/BackwashTimer',
+          dataType: 'TIMER',
+          value: defaultValueFor(_emptyProject, 'TIMER', 0)..['PRE'] = 30000,
+          ioType: 'Internal',
+          description: 'On-delay timer: 30s backwash cycle on sustained high turbidity',
+        ),
+        // Showcase array tag
+        PlcTag(
+          name: 'Recipe_Steps',
+          path: 'Recipe/Steps',
+          dataType: 'INT16',
+          arrayLength: 8,
+          value: defaultValueFor(_emptyProject, 'INT16', 8),
+          ioType: 'Internal',
+          description: '8-step recipe setpoints',
+        ),
+        // Showcase DUT-typed tag
+        PlcTag(
+          name: 'Pump1_Status',
+          path: 'Status/Pump1',
+          dataType: 'PumpStatusDUT',
+          value: defaultValueFor(scratchProj, 'PumpStatusDUT', 0),
+          ioType: 'Internal',
+          description: 'Main pump status/telemetry struct instance',
+        ),
+      ],
+      structDefs: structDefs,
+      programs: [
       // ST: Safety supervisor — runs every scan
       PlcProgram(
         name: 'Safety_ST',
@@ -623,5 +693,6 @@ END_IF;''',
         ],
       ),
     ],
-  );
+    );
+  }
 }
