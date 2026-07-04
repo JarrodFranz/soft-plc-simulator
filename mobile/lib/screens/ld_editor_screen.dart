@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
+import '../models/ld_graph.dart';
 
 const double _kRowH = 90.0;
 const double _kRailW = 6.0;
@@ -34,45 +35,28 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
   void _ensureDefaultRungs() {
     if (widget.program.rungs.isEmpty) {
       widget.program.rungs.addAll([
-        LdRung(
-          rungIndex: 0,
+        buildRung(
+          index: 0,
           comment: 'Rung 0: Motor Start/Stop Seal-In Circuit',
-          inputInstructions: [
-            LdInstruction(type: 'XIC', operandTag: 'Start_PB', comment: 'Start Pushbutton'),
-            LdInstruction(type: 'XIO', operandTag: 'Stop_PB', comment: 'Stop Pushbutton'),
-            LdInstruction(type: 'XIO', operandTag: 'Overload_OK', comment: 'Overload Thermal Relay'),
+          main: [
+            LdNode(id: '', kind: LdKind.contact, variable: 'Start_PB', comment: 'Start PB'),
+            LdNode(id: '', kind: LdKind.contact, variable: 'Stop_PB', modifier: 'negated', comment: 'Stop PB'),
+            LdNode(id: '', kind: LdKind.contact, variable: 'Overload_OK', modifier: 'negated', comment: 'Overload'),
+            LdNode(id: '', kind: LdKind.coil, variable: 'Motor_Run', comment: 'Starter coil'),
           ],
-          outputInstructions: [
-            LdInstruction(type: 'OTE', operandTag: 'Motor_Run', comment: 'Motor Starter Solenoid Coil'),
-          ],
-          parallelBranches: [
-            LdBranch(
-              inputInstructions: [
-                LdInstruction(type: 'XIC', operandTag: 'Motor_Run', comment: 'Motor Seal-In Auxiliary Contact'),
-              ],
-              outputInstructions: [],
-            ),
+          branches: [
+            BranchSpec(startIndex: 0, endIndex: 0, nodes: [
+              LdNode(id: '', kind: LdKind.contact, variable: 'Motor_Run', comment: 'Seal-in aux'),
+            ]),
           ],
         ),
-        LdRung(
-          rungIndex: 1,
-          comment: 'Rung 1: IEC 61131-3 Standard TON Timer Block (IN, Q, PT, ET)',
-          inputInstructions: [
-            LdInstruction(type: 'XIO', operandTag: 'TONTimer.DN', comment: 'Timer Done NC Contact'),
-            LdInstruction(type: 'TON', operandTag: 'TONTimer', presetMs: 5000, comment: '5 Second TON Timer'),
-          ],
-          outputInstructions: [
-            LdInstruction(type: 'OTE', operandTag: 'MixerMotor', comment: 'Mixer Motor Coil'),
-          ],
-          parallelBranches: [
-            LdBranch(
-              inputInstructions: [
-                LdInstruction(type: 'XIC', operandTag: 'TONTimer.DN', comment: 'Timer Done NO Contact'),
-              ],
-              outputInstructions: [
-                LdInstruction(type: 'OTE', operandTag: 'Arbor1Oiler', comment: 'Arbor Oiler Coil'),
-              ],
-            ),
+        buildRung(
+          index: 1,
+          comment: 'Rung 1: TON Timer Block (IN, Q, PT, ET)',
+          main: [
+            LdNode(id: '', kind: LdKind.contact, variable: 'TONTimer.DN', modifier: 'negated', comment: 'Done NC'),
+            LdNode(id: '', kind: LdKind.block, blockType: 'TON', variable: 'TONTimer', presetMs: 5000, comment: '5s timer'),
+            LdNode(id: '', kind: LdKind.coil, variable: 'MixerMotor', comment: 'Mixer coil'),
           ],
         ),
       ]);
