@@ -173,7 +173,7 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
           children: [
             const Text('HIERARCHICAL TAG DATABASE (TIMERS, STRUCTS & BITS)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.cyanAccent)),
             const SizedBox(height: 4),
-            const Text('Expand TIMER structures (TONTimer) to see .EN, .TT, .DN, .PRE, .ACC members. Expand integer members to view individual bits (.0 to .15).', style: TextStyle(color: Colors.grey, fontSize: 11)),
+            const Text('Expand structured tags (timers, DUTs, arrays) to see their members. Expand integer tags to view individual bits.', style: TextStyle(color: Colors.grey, fontSize: 11)),
             const SizedBox(height: 16),
 
             Card(
