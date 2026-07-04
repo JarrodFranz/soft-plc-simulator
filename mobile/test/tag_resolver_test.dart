@@ -95,4 +95,14 @@ void main() {
     expect(paths, contains('W'));
     expect(paths.where((x) => x.startsWith('W.')), isEmpty); // bits excluded
   });
+
+  test('readPath/writePath handle a bit under an array element', () {
+    final p = _proj([_tag('Arr', 'INT16', [0, 0, 0, 0], arrayLength: 4)]);
+    writePath(p, 'Arr[2].5', true);
+    expect(readPath(p, 'Arr[2]'), equals(32)); // bit 5 set = 32
+    expect(readPath(p, 'Arr[2].5'), isTrue);
+    expect(readPath(p, 'Arr[0].5'), isFalse);
+    writePath(p, 'Arr[2].5', false);
+    expect(readPath(p, 'Arr[2]'), equals(0));
+  });
 }
