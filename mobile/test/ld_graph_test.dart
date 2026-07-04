@@ -93,4 +93,31 @@ void main() {
     expect(r.nodes.contains(b), isFalse);
     expect(r.wires.any((w) => w.fromId == a.id && w.toId == y.id), isTrue);
   });
+
+  test('moveBranchTap re-points the branch start wire', () {
+    final r = buildRung(index: 0, main: [contact('A'), contact('B'), coil('Y')]);
+    final a = r.nodes.firstWhere((n) => n.variable == 'A');
+    final br = addParallelBranch(r, a, a); // taps at left rail initially
+    moveBranchTap(r, br, a);
+    expect(r.wires.any((w) => w.fromId == a.id && w.toId == br.firstNodeId), isTrue);
+  });
+
+  test('findBranches reports each branch lane once', () {
+    final r = buildRung(
+      index: 0,
+      main: [contact('A'), coil('Y')],
+      branches: [BranchSpec(startIndex: 0, endIndex: 0, nodes: [contact('Seal')])],
+    );
+    final branches = findBranches(r);
+    expect(branches.length, equals(1));
+    expect(branches.first.lane, equals(1));
+  });
+
+  test('moveBranchTap is a no-op (no throw) when no matching wire exists', () {
+    final r = buildRung(index: 0, main: [contact('A'), coil('Y')]);
+    final a = r.nodes.firstWhere((n) => n.variable == 'A');
+    final fake = LdBranchView(lane: 9, firstNodeId: 'missing', lastNodeId: 'missing');
+    moveBranchTap(r, fake, a); // must not throw
+    expect(r.nodes.contains(a), isTrue);
+  });
 }

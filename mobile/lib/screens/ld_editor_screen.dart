@@ -27,9 +27,7 @@ class LdEditorScreen extends StatefulWidget {
 }
 
 class _LdEditorScreenState extends State<LdEditorScreen> {
-  // ignore: prefer_final_fields, unused_field
   String _editMode = 'select'; // 'select' | 'contact' | 'coil' | 'block' | 'branch'
-  // ignore: unused_field
   LdNode? _branchStart; // first element tapped in branch mode
 
   @override
@@ -163,14 +161,63 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
   }
 
   Widget _buildToolbar() {
-    // Full implementation added in Task 4; placeholder keeps the app compiling now.
+    Widget modeBtn(String mode, IconData icon, String label) {
+      final active = _editMode == mode;
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 3),
+        child: TextButton.icon(
+          icon: Icon(icon, size: 15, color: active ? Colors.black : Colors.cyanAccent),
+          label: Text(label, style: TextStyle(fontSize: 11, color: active ? Colors.black : Colors.cyanAccent)),
+          style: TextButton.styleFrom(
+            backgroundColor: active ? Colors.cyanAccent : Colors.transparent,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          ),
+          onPressed: () => setState(() {
+            _editMode = mode;
+            _branchStart = null;
+          }),
+        ),
+      );
+    }
+
     return Container(
       height: 44,
       color: const Color(0xFF1E293B),
       alignment: Alignment.centerLeft,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      child: const Text('LADDER TOOLBAR', style: TextStyle(color: Colors.cyanAccent, fontSize: 11)),
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: Row(children: [
+        modeBtn('select', Icons.near_me, 'Select'),
+        modeBtn('contact', Icons.horizontal_rule, 'Contact'),
+        modeBtn('coil', Icons.radio_button_unchecked, 'Coil'),
+        modeBtn('block', Icons.widgets, 'Block'),
+        modeBtn('branch', Icons.account_tree, 'Branch'),
+        const Spacer(),
+        TextButton.icon(
+          icon: const Icon(Icons.add, size: 15, color: Colors.greenAccent),
+          label: const Text('Add Rung', style: TextStyle(fontSize: 11, color: Colors.greenAccent)),
+          onPressed: _addRung,
+        ),
+        if (_editMode == 'branch')
+          const Padding(
+            padding: EdgeInsets.only(left: 8),
+            child: Text('Tap span start, then span end', style: TextStyle(fontSize: 10, color: Colors.amberAccent)),
+          ),
+      ]),
     );
+  }
+
+  void _addRung() {
+    setState(() {
+      widget.program.rungs.add(buildRung(
+        index: widget.program.rungs.length,
+        comment: 'New Rung',
+        main: [
+          LdNode(id: '', kind: LdKind.contact, variable: 'New_Contact'),
+          LdNode(id: '', kind: LdKind.coil, variable: 'Output_Coil'),
+        ],
+      ));
+    });
+    widget.onProgramUpdated();
   }
 
   Widget _buildRungCanvas(LdRung rung, int index) {
@@ -207,6 +254,11 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 ...rung.nodes
                     .where((n) => n.kind == LdKind.contact || n.kind == LdKind.coil || n.kind == LdKind.block)
                     .map((n) => _positionedNode(rung, n, col)),
+                // Insert targets on wires (contact/coil/block modes).
+                if (_editMode == 'contact' || _editMode == 'coil' || _editMode == 'block')
+                  ...rung.wires.map((w) => _wireInsertTarget(rung, w, col, width)),
+                // Draggable branch start/end handles.
+                ...findBranches(rung).expand((br) => _branchHandles(rung, br, col, width)),
               ],
             ),
           ),
@@ -231,9 +283,226 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     );
   }
 
-  // Stubs so the file compiles now; full versions land in Task 4.
-  void _onNodeTap(LdRung rung, LdNode n) {}
-  void _showEditNodeDialog(LdRung rung, LdNode n) {}
+  void _onNodeTap(LdRung rung, LdNode n) {
+    if (_editMode == 'branch') {
+      if (_branchStart == null) {
+        setState(() => _branchStart = n);
+      } else {
+        final start = _branchStart!;
+        final col = colAssignment(rung);
+        // order the two picks left-to-right by column
+        final a = (col[start.id] ?? 0) <= (col[n.id] ?? 0) ? start : n;
+        final b = identical(a, start) ? n : start;
+        setState(() {
+          addParallelBranch(rung, a, b);
+          _branchStart = null;
+          _editMode = 'select';
+        });
+        widget.onProgramUpdated();
+      }
+      return;
+    }
+    // select mode: single tap selects (highlight handled via _branchStart reuse is avoided)
+  }
+
+  Widget _wireInsertTarget(LdRung rung, LdWire w, Map<String, int> col, double width) {
+    final src = rung.nodes.firstWhere((n) => n.id == w.fromId);
+    final dst = rung.nodes.firstWhere((n) => n.id == w.toId);
+    final p1 = _outPort(rung, src, col, width);
+    final p2 = _inPort(rung, dst, col, width);
+    final mid = Offset((p1.dx + p2.dx) / 2, (p1.dy + p2.dy) / 2);
+    return Positioned(
+      left: mid.dx - 11,
+      top: mid.dy - 11,
+      width: 22,
+      height: 22,
+      child: GestureDetector(
+        onTap: () => _insertOnWire(rung, w),
+        child: Container(
+          decoration: BoxDecoration(
+            color: Colors.cyanAccent.withValues(alpha: 0.85),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(Icons.add, size: 14, color: Colors.black),
+        ),
+      ),
+    );
+  }
+
+  void _insertOnWire(LdRung rung, LdWire w) {
+    final LdNode node;
+    if (_editMode == 'coil') {
+      node = LdNode(id: newNodeId(rung), kind: LdKind.coil, variable: 'Output_Coil');
+    } else if (_editMode == 'block') {
+      node = LdNode(id: newNodeId(rung), kind: LdKind.block, blockType: 'TON', variable: 'Timer', presetMs: 5000);
+    } else {
+      node = LdNode(id: newNodeId(rung), kind: LdKind.contact, variable: 'New_Contact');
+    }
+    setState(() {
+      insertContactOnWire(rung, w, node);
+      _editMode = 'select';
+    });
+    widget.onProgramUpdated();
+    _showEditNodeDialog(rung, node);
+  }
+
+  List<Widget> _branchHandles(LdRung rung, LdBranchView br, Map<String, int> col, double width) {
+    final first = rung.nodes.firstWhere((n) => n.id == br.firstNodeId);
+    final last = rung.nodes.firstWhere((n) => n.id == br.lastNodeId);
+    final startPt = _inPort(rung, first, col, width);
+    final endPt = _outPort(rung, last, col, width);
+    return [
+      _handle(startPt, Colors.tealAccent, (dx) => _dragBranchTap(rung, br, dx)),
+      _handle(endPt, Colors.tealAccent, (dx) => _dragBranchMerge(rung, br, dx)),
+    ];
+  }
+
+  Widget _handle(Offset at, Color color, void Function(double globalDx) onDrag) {
+    return Positioned(
+      left: at.dx - 8,
+      top: at.dy - 8,
+      width: 16,
+      height: 16,
+      child: GestureDetector(
+        onHorizontalDragUpdate: (d) => onDrag(d.localPosition.dx + at.dx - 8),
+        child: Container(
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.black, width: 1),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Finds the lane-0 node whose column boundary is nearest to pixel x.
+  LdNode _nearestMainNode(LdRung rung, Map<String, int> col, double x) {
+    LdNode best = rung.nodes.firstWhere((n) => n.kind == LdKind.leftRail);
+    double bestDist = double.infinity;
+    for (final n in rung.nodes) {
+      if (n.row != 0) {
+        continue;
+      }
+      final nx = _colX(col[n.id] ?? 0);
+      final d = (nx - x).abs();
+      if (d < bestDist) {
+        bestDist = d;
+        best = n;
+      }
+    }
+    return best;
+  }
+
+  void _dragBranchTap(LdRung rung, LdBranchView br, double x) {
+    final col = colAssignment(rung);
+    final target = _nearestMainNode(rung, col, x);
+    setState(() => moveBranchTap(rung, br, target));
+    widget.onProgramUpdated();
+  }
+
+  void _dragBranchMerge(LdRung rung, LdBranchView br, double x) {
+    final col = colAssignment(rung);
+    final target = _nearestMainNode(rung, col, x);
+    setState(() => moveBranchMerge(rung, br, target));
+    widget.onProgramUpdated();
+  }
+
+  void _showEditNodeDialog(LdRung rung, LdNode n) {
+    final tagCtrl = TextEditingController(text: n.variable);
+    final presetCtrl = TextEditingController(text: n.presetMs.toString());
+    String modifier = n.modifier;
+    final isCoil = n.kind == LdKind.coil;
+    final isBlock = n.kind == LdKind.block;
+
+    const contactMods = [
+      DropdownMenuItem(value: 'normal', child: Text('Normally Open  -| |-')),
+      DropdownMenuItem(value: 'negated', child: Text('Normally Closed  -|/|-')),
+      DropdownMenuItem(value: 'rising', child: Text('Rising Edge  -|P|-')),
+      DropdownMenuItem(value: 'falling', child: Text('Falling Edge  -|N|-')),
+    ];
+    const coilMods = [
+      DropdownMenuItem(value: 'normal', child: Text('Coil  -( )-')),
+      DropdownMenuItem(value: 'negated', child: Text('Negated  -(/)-')),
+      DropdownMenuItem(value: 'set', child: Text('Set / Latch  -(S)-')),
+      DropdownMenuItem(value: 'reset', child: Text('Reset / Unlatch  -(R)-')),
+      DropdownMenuItem(value: 'rising', child: Text('Rising  -(P)-')),
+      DropdownMenuItem(value: 'falling', child: Text('Falling  -(N)-')),
+    ];
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDlg) => AlertDialog(
+          title: Text('Edit ${isBlock ? n.blockType : (isCoil ? "Coil" : "Contact")}'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                DropdownButtonFormField<String>(
+                  initialValue: widget.currentProject.tags.any((t) => t.name == n.variable) ? n.variable : null,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Tag'),
+                  items: widget.currentProject.tags
+                      .map((t) => DropdownMenuItem(value: t.name, child: Text('${t.name} [${t.dataType}]', overflow: TextOverflow.ellipsis)))
+                      .toList(),
+                  onChanged: (v) => tagCtrl.text = v ?? tagCtrl.text,
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: tagCtrl,
+                  decoration: const InputDecoration(labelText: 'Tag / literal', isDense: true, border: OutlineInputBorder()),
+                ),
+                if (!isBlock) ...[
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: modifier,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Type'),
+                    items: isCoil ? coilMods : contactMods,
+                    onChanged: (v) => setDlg(() => modifier = v!),
+                  ),
+                ],
+                if (isBlock) ...[
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: presetCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Preset Time (PT) ms'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                setState(() => deleteNode(rung, n));
+                widget.onProgramUpdated();
+                Navigator.pop(ctx);
+              },
+              child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
+            ),
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () {
+                setState(() {
+                  n.variable = tagCtrl.text.trim();
+                  n.modifier = modifier;
+                  n.presetMs = int.tryParse(presetCtrl.text) ?? n.presetMs;
+                });
+                widget.onProgramUpdated();
+                Navigator.pop(ctx);
+              },
+              child: const Text('Apply'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _buildContactCoil(LdNode n) {
     final isCoil = n.kind == LdKind.coil;

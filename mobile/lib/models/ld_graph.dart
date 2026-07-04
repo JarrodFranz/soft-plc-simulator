@@ -180,18 +180,22 @@ LdBranchView addParallelBranch(LdRung rung, LdNode spanStart, LdNode spanEnd) {
 
 /// Re-points the branch's inbound (tap) wire to originate at [newSource].
 void moveBranchTap(LdRung rung, LdBranchView br, LdNode newSource) {
-  final w = rung.wires.firstWhere(
-    (w) => w.toId == br.firstNodeId && _laneOfNode(rung, w.fromId) < br.lane,
-  );
-  w.fromId = newSource.id;
+  for (final w in rung.wires) {
+    if (w.toId == br.firstNodeId && _laneOfNode(rung, w.fromId) < br.lane) {
+      w.fromId = newSource.id;
+      return;
+    }
+  }
 }
 
 /// Re-points the branch's outbound (merge) wire to terminate at [newDest].
 void moveBranchMerge(LdRung rung, LdBranchView br, LdNode newDest) {
-  final w = rung.wires.firstWhere(
-    (w) => w.fromId == br.lastNodeId && _laneOfNode(rung, w.toId) < br.lane,
-  );
-  w.toId = newDest.id;
+  for (final w in rung.wires) {
+    if (w.fromId == br.lastNodeId && _laneOfNode(rung, w.toId) < br.lane) {
+      w.toId = newDest.id;
+      return;
+    }
+  }
 }
 
 /// Removes [n] and reconnects each of its sources to each of its destinations.
