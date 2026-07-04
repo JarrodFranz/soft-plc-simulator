@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/tag_resolver.dart';
 import '../models/sim_engine.dart';
+import '../models/ld_exec.dart';
 import '../data/default_projects.dart';
 import '../widgets/tag_inspector_dock.dart';
 import 'st_editor_screen.dart';
@@ -35,6 +36,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   int scanSpeedMs = 500; // Configurable scan speed (50ms to 2000ms)
   Timer? _scanTimer;
   final SimRuntime _simRuntime = SimRuntime();
+  final LdExecRuntime _ldRuntime = LdExecRuntime();
 
   // Side Dock Inspector State
   bool isTagDockVisible = true;
@@ -70,6 +72,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     setState(() {
       scanCount++;
       applySimRules(_activeProject, _activeProject.simRules, scanSpeedMs, _simRuntime);
+      executeLdPrograms(_activeProject, scanSpeedMs, _ldRuntime);
       _evaluateActiveLogic();
     });
   }
@@ -78,18 +81,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     final id = _activeProject.id;
 
     // ── 1. Basic Motor Start/Stop ─────────────────────────────────────────
-    if (id == 'proj_motor') {
-      bool start = _getTagBool('Start_PB');
-      bool stop = _getTagBool('Stop_PB');
-      bool estop = _getTagBool('EStop_OK');
-      bool overload = _getTagBool('Overload_OK');
-      bool latch = _getTagBool('Motor_Latch');
-      latch = (start || latch) && !stop && estop && overload;
-      _setTagBool('Motor_Latch', latch);
-      _setTagBool('Motor_Run', latch && estop && overload);
+    // Now fully executed by MotorControl_LD rungs 0/1 (see executeLdPrograms).
 
     // ── 2. Tank Level Simulation ──────────────────────────────────────────
-    } else if (id == 'proj_tank') {
+    if (id == 'proj_tank') {
       double pv = _getTagDouble('Level_PV');
       double sp = _getTagDouble('Level_SP');
       bool auto = _getTagBool('Auto_Mode');
@@ -119,22 +114,9 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _setTagBool('Reactor_Ready', !heat && !cool && temp >= sp - 2.0 && temp <= sp + 2.0);
 
     // ── 4. LD Conveyor Belt Control ───────────────────────────────────────
-    } else if (id == 'proj_ld_conveyor') {
-      bool start = _getTagBool('Start_PB');
-      bool stop = _getTagBool('Stop_PB');
-      bool estop = _getTagBool('EStop');
-      bool jog = _getTagBool('Manual_Jog');
-      bool latch = _getTagBool('Belt_Latch');
-      bool jammed = _getTagBool('Belt_Jammed');
-
-      bool run = (start || latch || jog) && !stop && estop && !jammed;
-      _setTagBool('Belt_Motor', run);
-      _setTagBool('Belt_Latch', run);
-
-      // Part detected by photo eye clears the jam alarm
-      if (run && _getTagBool('Photo_Eye')) {
-        _setTagBool('Belt_Jammed', false); // part clears jam
-      }
+    // Now fully executed by ConveyorBelt_LD rungs 0-5 (see executeLdPrograms):
+    // Belt_Motor (rung 0), Belt_Latch set/unlatch (rungs 1 & 5), Part_Present
+    // (rung 2), Belt_Jammed via JamTimer.DN (rungs 3-4).
 
     // ── 5. FBD HVAC Zone Controller ───────────────────────────────────────
     } else if (id == 'proj_fbd_hvac') {
@@ -206,14 +188,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
 
     // ── 7. All Languages — Water Treatment Plant ──────────────────────────
     } else if (id == 'proj_all_water') {
-      // LD: Pump start/stop seal-in
-      bool start = _getTagBool('Start_PB');
-      bool stop = _getTagBool('Stop_PB');
+      // LD: Pump_Latch (rung 1 OTL) / Pump_Motor (rung 0) / Treat_Dosing
+      // (rung 2) are now executed by PumpControl_LD (see executeLdPrograms).
+      bool pumpRun = _getTagBool('Pump_Motor');
       bool estop = _getTagBool('EStop');
-      bool latch = _getTagBool('Pump_Latch');
-      bool pumpRun = (start || latch) && !stop && estop && !_getTagBool('Alarm_Active');
-      _setTagBool('Pump_Latch', pumpRun);
-      _setTagBool('Pump_Motor', pumpRun);
 
       // FBD: Quality gate logic
       double turbidity = _getTagDouble('Turbidity_PV');
@@ -222,11 +200,11 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       bool qualityOk = turbidity < turbSP && level > 10.0;
       _setTagBool('Quality_OK', qualityOk);
 
-      // ST: Dosing pump — dose when running with bad water
-      bool dosing = pumpRun && !qualityOk;
-      _setTagBool('Treat_Dosing', dosing);
-
       // SFC: Backwash triggers when turbidity exceeds SP
+      // Backwash_Active stays hardcoded until SFC execution (WS4b): rung 4
+      // only sets it after BackwashTimer.DN (30s on-delay), which differs
+      // materially from this immediate trigger that FilterBackwash_SFC's
+      // valve/pump sequencing relies on to start promptly.
       bool backwash = !qualityOk && pumpRun;
       _setTagBool('Backwash_Active', backwash);
       _setTagBool('Backwash_Valve', backwash);
@@ -296,6 +274,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       }
       scanCount = 0;
       _simRuntime.byRuleId.clear();
+      _ldRuntime.clear();
     });
   }
 

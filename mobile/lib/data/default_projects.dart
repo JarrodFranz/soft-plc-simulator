@@ -77,6 +77,30 @@ abstract class DefaultProjects {
           name: 'MotorControl_LD',
           language: 'LadderLogic',
           description: 'Motor start/stop seal-in rungs in Ladder Logic (LD)',
+          rungs: [
+            buildRung(
+              index: 0,
+              comment: 'Rung 0: Motor Latch Seal-In',
+              main: [
+                _xic('Start_PB', 'Start NO'),
+                _xio('Stop_PB', 'Stop NC'),
+                _ote('Motor_Latch', 'Seal-in latch'),
+              ],
+              branches: [
+                BranchSpec(startIndex: 0, endIndex: 0, nodes: [_xic('Motor_Latch', 'Seal-in aux')]),
+              ],
+            ),
+            buildRung(
+              index: 1,
+              comment: 'Rung 1: Motor Run Permissives',
+              main: [
+                _xic('Motor_Latch', 'Latched'),
+                _xic('EStop_OK', 'E-Stop healthy'),
+                _xic('Overload_OK', 'Overload healthy'),
+                _ote('Motor_Run', 'Starter coil'),
+              ],
+            ),
+          ],
         ),
       ],
       tasks: [
@@ -269,9 +293,6 @@ Reactor_Ready := NOT Alarm_High
       SimRule(id: 'sim0', name: 'Photo eye blips while belt runs', targetPath: 'Photo_Eye',
           behavior: 'pulse', onMs: 2000, offMs: 9000,
           condition: [SimClause(leftPath: 'Belt_Motor', comparator: '==', operand: 'true')]),
-      SimRule(id: 'sim1', name: 'Part present follows photo eye', targetPath: 'Part_Present',
-          behavior: 'setWhileCondition',
-          condition: [SimClause(leftPath: 'Photo_Eye', comparator: '==', operand: 'true')]),
     ],
     programs: [
       PlcProgram(
