@@ -51,3 +51,6 @@ desktop.ini
 *.generated.dart
 *.g.dart
 *.freezed.dart
+
+# Reference example sources (kept locally, not tracked)
+/Source/Examples/

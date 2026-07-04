@@ -146,7 +146,7 @@ once the gap is gone.)
 
 ## Global constraints (unchanged)
 
-- No "OpenPLC" branding in any user-facing string, label, comment, or identifier.
+- No third-party or reference-editor branding in any user-facing string, label, comment, or identifier.
 - Dark theme preserved. `flutter analyze` **zero** issues (`withValues(alpha:)`,
   `initialValue:` on dropdowns, braces on flow-control, prefer `const`).
 - No RenderFlex overflow.

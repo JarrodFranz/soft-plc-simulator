@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- No "OpenPLC" branding in any user-facing string, label, comment, or identifier.
+- No third-party or reference-editor branding in any user-facing string, label, comment, or identifier.
 - Dark theme preserved. `flutter analyze` must report **zero** issues. Use `withValues(alpha:)` (not `withOpacity`), `initialValue:` (not `value:`) on `DropdownButtonFormField`, braces on all flow-control bodies, prefer `const`, `x.isNotEmpty` not `x.length >= 1`.
 - No RenderFlex overflow.
 - All shell commands run from `mobile/`.
@@ -459,7 +459,7 @@ Open the LD editor for "LD — Conveyor Belt Control" and "Basic Motor Start Sto
 
 - [ ] **Step 3: Branding/theme check**
 
-Run: `grep -ri "openplc" mobile/lib/models/ld_layout.dart mobile/lib/screens/ld_editor_screen.dart mobile/lib/data/default_projects.dart`
+Run: `grep -riE "external brand names" mobile/lib/models/ld_layout.dart mobile/lib/screens/ld_editor_screen.dart mobile/lib/data/default_projects.dart`
 Expected: no matches.
 
 - [ ] **Step 4: Commit (only if fixes were made)**

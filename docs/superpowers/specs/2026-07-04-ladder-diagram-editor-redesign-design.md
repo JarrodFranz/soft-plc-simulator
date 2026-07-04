@@ -22,7 +22,7 @@ The root cause of #3 is the model: `LdRung { inputInstructions[],
 outputInstructions[], parallelBranches[] }` where each `LdBranch` is a complete
 alternate row. This cannot express sub-span parallelism.
 
-## Research summary (OpenPLC / Beremiz + PLCopen TC6)
+## Research summary (reference IEC 61131-3 editors + PLCopen TC6)
 
 - **Data model** is a node-and-wire *graph*. Every element (contact, coil,
   block, power rail) has a `localId`, input connection point(s), and output
@@ -35,7 +35,7 @@ alternate row. This cannot express sub-span parallelism.
   40px between rungs; Manhattan-routed wires. Contact modifiers: normal `| |`,
   negated `|/|`, rising `|P|`, falling `|N|`. Coil modifiers: normal `( )`,
   negated `(/)`, set `(S)`, reset `(R)`, rising `(P)`, falling `(N)`.
-- **Interaction:** OpenPLC selects an element/group, right-clicks → "Add
+- **Interaction:** the reference editor selects an element/group, right-clicks → "Add
   Divergence Branch," which extracts the left/right connectors of the selection
   and generates new parallel wires. Elements are inserted in series by dropping
   onto a wire (splitting it). Toolbar is mode-based (Select / Contact / Coil /
@@ -43,7 +43,7 @@ alternate row. This cannot express sub-span parallelism.
 
 ## Decisions (confirmed with user)
 
-1. **Data model:** free-form node-and-wire **graph** (OpenPLC-exact), not a
+1. **Data model:** free-form node-and-wire **graph** (reference-exact), not a
    series/parallel tree.
 2. **Rails:** **both** — a continuous outer L1/L2 frame spanning all rungs AND
    unbroken internal wires within each rung.
@@ -120,7 +120,7 @@ class LdRung {
 
 ### Interaction
 
-Toolbar modes (mirrors OpenPLC): **Select · Contact · Coil · Block · Branch**.
+Toolbar modes (mirrors common reference editors): **Select · Contact · Coil · Block · Branch**.
 
 - **Series insert:** in Contact/Coil/Block mode, tap a wire segment → element is
   inserted on that wire, splitting it (the wire's downstream endpoint re-points
@@ -131,7 +131,7 @@ Toolbar modes (mirrors OpenPLC): **Select · Contact · Coil · Block · Branch*
 - **Movable branch endpoints:** a selected branch shows **drag handles at its
   start and end**. Dragging a handle horizontally snaps it to the nearest
   element's connection column and re-wires the branch to span a different set of
-  elements. (This is the user's explicit requirement beyond OpenPLC.)
+  elements. (This is the user's explicit requirement beyond typical reference editors.)
 - **Edit element:** double-tap → dialog with variable (tag autocomplete) +
   modifier (normal / negated / rising / falling for contacts; normal / negated /
   set / reset / rising / falling for coils) + preset (blocks).
@@ -161,7 +161,7 @@ Toolbar modes (mirrors OpenPLC): **Select · Contact · Coil · Block · Branch*
 
 ## Constraints (must hold)
 
-- No "OpenPLC" branding in any user-facing UI, labels, comments, or identifiers.
+- No third-party or reference-editor branding in any user-facing UI, labels, comments, or identifiers.
 - Dark theme preserved.
 - Zero `flutter analyze` warnings.
 

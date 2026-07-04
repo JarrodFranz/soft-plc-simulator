@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- No "OpenPLC" branding anywhere in user-facing UI, labels, dialogs, comments, or identifiers.
+- No third-party or reference-editor branding anywhere in user-facing UI, labels, dialogs, comments, or identifiers.
 - Dark theme preserved (canvas `#0F172A`, cards `#1E293B`).
 - `flutter analyze` must report **zero** issues. Use `withValues(alpha:)` (never `withOpacity`) and `initialValue:` (never `value:`) on `DropdownButtonFormField`.
 - Prefer `const` constructors; use `x.isNotEmpty` not `x.length >= 1`; always wrap flow-control bodies in braces.
@@ -1448,7 +1448,7 @@ Run: `flutter build web --release`, restart preview, and for each of the 7 proje
 
 Grep the touched files for forbidden branding and confirm none is present in user-facing strings:
 
-Run: `grep -ri "openplc" mobile/lib/screens/ld_editor_screen.dart mobile/lib/models/ld_graph.dart mobile/lib/data/default_projects.dart`
+Run: `grep -riE "external brand names" mobile/lib/screens/ld_editor_screen.dart mobile/lib/models/ld_graph.dart mobile/lib/data/default_projects.dart`
 Expected: no matches.
 
 - [ ] **Step 5: Final commit (if any fixes were made)**

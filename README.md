@@ -16,7 +16,7 @@ The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators
 
 - **ALL IEC 61131-3 Programming Languages Supported**:
   - **Structured Text (ST)**: Textual IDE with live autocomplete suggestions (`IF`, `WHILE`, `FOR`, `TON`), code templates, AST compilation, and real-time AST interpreter.
-  - **Ladder Logic (LD)**: IEC 61131-3 compliant rung editor with power rails (`L1`/`L2`), grid matrix rung layout, standard timer blocks (`TON`/`TOF` with `IN`, `Q`, `PT`, `ET` pins), contacts (`XIC`, `XIO`), coils (`OTE`, `OTL`, `OTU`), parallel branch lines, and live tag autocomplete palette.
+  - **Ladder Logic (LD)**: IEC 61131-3 rung editor built on a node-and-wire graph model with a continuous `L1`/`L2` power-rail frame. Contacts (normally-open, normally-closed, rising/falling edge) and output coils (coil, negated, set, reset) — coils pin to the right rail with the coil-terminal rule enforced. Parallel (OR) branches over any span of elements with draggable start/end handles, `TON`/`TOF` timer blocks (`IN`, `Q`, `PT`, `ET`), and a mode toolbar (Select · Contact · Coil · Block · Branch).
   - **Function Block Diagram (FBD)**: Graphical Signal Flow Diagram Editor with drag-and-drop block placement (`AND`, `OR`, `NOT`, `TON`, `LIMIT`, `TAG_INPUT`, `TAG_OUTPUT`), signal wires, and FBD block autocomplete palette.
   - **Sequential Function Chart (SFC)**: State Machine Chart Editor with Initial Steps, Steps, Transitions, ST Actions, and Condition Autocomplete Palette.
 - **Categorized Tasks & Multi-Program Architecture**:
@@ -174,7 +174,7 @@ flutter analyze
 | **Phase 0** | Project Scaffold, Architecture & Schemas | ✅ Completed |
 | **Phase 1** | Tag Database, Scan Engine & Ladder Logic ISA | ✅ Completed |
 | **Phase 2** | Structured Text (ST) Engine, ST Autocomplete IDE, Memory Manager & Custom HMI Builder | ✅ Completed |
-| **Phase 3** | Complete IEC 61131-3 Languages (ST, LD, FBD, SFC) with Autocomplete Palettes — LD editor cleaned, 0 `flutter analyze` warnings | 🔄 **ACTIVE / IN PROGRESS** |
+| **Phase 3** | Complete IEC 61131-3 Languages (ST, LD, FBD, SFC) — LD editor rebuilt on a node-and-wire graph (right-pinned terminal coils, movable OR branches, continuous power rails), 0 `flutter analyze` warnings | 🔄 **ACTIVE / IN PROGRESS** |
 | **Phase 4** | Industrial OPC UA Server Adapter | ⏳ Planned |
 | **Phase 5** | Modbus TCP Server Adapter | ⏳ Planned |
 | **Phase 6** | MQTT Client / Sparkplug B Publisher | ⏳ Planned |
