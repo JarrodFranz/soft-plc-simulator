@@ -50,4 +50,20 @@ void main() {
     expect(canInsertCoilOnWire(r, terminal), isTrue);
     expect(canInsertCoilOnWire(r, midWire), isFalse); // not a terminal segment
   });
+
+  test('inserting a coil on the terminal wire keeps it terminal', () {
+    final r = buildRung(index: 0, main: [contact('A'), contact('B')]);
+    final b = r.nodes.firstWhere((n) => n.variable == 'B');
+    final right = r.nodes.firstWhere((n) => n.kind == LdKind.rightRail);
+    final terminal = r.wires.firstWhere((w) => w.fromId == b.id && w.toId == right.id);
+    expect(canInsertCoilOnWire(r, terminal), isTrue);
+    final coilNode = LdNode(id: newNodeId(r), kind: LdKind.coil, variable: 'Y');
+    insertContactOnWire(r, terminal, coilNode);
+    // coil's only outgoing wire is to the right rail; nothing follows it
+    final coilOut = r.wires.where((w) => w.fromId == coilNode.id).toList();
+    expect(coilOut.length, equals(1));
+    expect(coilOut.first.toId, equals(right.id));
+    // and no wire now originates from the coil to a non-rail node
+    expect(canInsertContactOnWire(r, coilOut.first), isFalse);
+  });
 }
