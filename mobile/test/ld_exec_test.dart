@@ -173,4 +173,87 @@ void main() {
     executeLdPrograms(p, 100, LdExecRuntime()); // must not throw
     expect(_b(p, 'Y'), isFalse);
   });
+
+  test('negated coil writes the inverse of rung power', () {
+    final r = buildRung(index: 0, main: [
+      _no('A'),
+      LdNode(id: '', kind: LdKind.coil, variable: 'Y', modifier: 'negated'),
+    ]);
+    final p = _proj([_tag('A', 'BOOL', false), _tag('Y', 'BOOL', false)], [_ldProg([r])]);
+    final rt = LdExecRuntime();
+    executeLdPrograms(p, 100, rt);
+    expect(_b(p, 'Y'), isTrue); // no power -> negated coil energized
+    writePath(p, 'A', true);
+    executeLdPrograms(p, 100, rt);
+    expect(_b(p, 'Y'), isFalse);
+  });
+
+  test('falling-edge contact fires when the tag drops', () {
+    final r = buildRung(index: 0, main: [
+      LdNode(id: '', kind: LdKind.contact, variable: 'In', modifier: 'falling'),
+      LdNode(id: '', kind: LdKind.coil, variable: 'Out', modifier: 'set'),
+    ]);
+    final p = _proj([_tag('In', 'BOOL', true), _tag('Out', 'BOOL', false)], [_ldProg([r])]);
+    final rt = LdExecRuntime();
+    executeLdPrograms(p, 100, rt); // prev seeded true, no edge
+    expect(_b(p, 'Out'), isFalse);
+    writePath(p, 'In', false);
+    executeLdPrograms(p, 100, rt); // falling edge
+    expect(_b(p, 'Out'), isTrue);
+  });
+
+  test('rising pulse coil is true for exactly one scan', () {
+    final r = buildRung(index: 0, main: [
+      _no('A'),
+      LdNode(id: '', kind: LdKind.coil, variable: 'P', modifier: 'rising'),
+    ]);
+    final p = _proj([_tag('A', 'BOOL', false), _tag('P', 'BOOL', false)], [_ldProg([r])]);
+    final rt = LdExecRuntime();
+    executeLdPrograms(p, 100, rt);
+    expect(_b(p, 'P'), isFalse);
+    writePath(p, 'A', true);
+    executeLdPrograms(p, 100, rt); // power rising edge -> pulse
+    expect(_b(p, 'P'), isTrue);
+    executeLdPrograms(p, 100, rt); // still powered, no edge -> pulse over
+    expect(_b(p, 'P'), isFalse);
+  });
+
+  test('TON exposes EN and TT while timing, TT clears at DN', () {
+    final r = buildRung(index: 0, main: [
+      _no('Run'),
+      LdNode(id: '', kind: LdKind.block, blockType: 'TON', variable: 'T', presetMs: 200),
+    ]);
+    final p = _proj([
+      _tag('Run', 'BOOL', true),
+      _tag('T', 'TIMER', defaultValueFor(_proj([], []), 'TIMER', 0)),
+    ], [_ldProg([r])]);
+    final rt = LdExecRuntime();
+    executeLdPrograms(p, 100, rt); // timing
+    expect(_b(p, 'T.EN'), isTrue);
+    expect(_b(p, 'T.TT'), isTrue);
+    executeLdPrograms(p, 100, rt); // DN
+    expect(_b(p, 'T.DN'), isTrue);
+    expect(_b(p, 'T.TT'), isFalse);
+  });
+
+  test('block output powers further series elements downstream', () {
+    final r = buildRung(index: 0, main: [
+      _no('Run'),
+      LdNode(id: '', kind: LdKind.block, blockType: 'TON', variable: 'T', presetMs: 100),
+      _no('Gate'),
+      _coil('Y'),
+    ]);
+    final p = _proj([
+      _tag('Run', 'BOOL', true),
+      _tag('T', 'TIMER', defaultValueFor(_proj([], []), 'TIMER', 0)),
+      _tag('Gate', 'BOOL', false),
+      _tag('Y', 'BOOL', false),
+    ], [_ldProg([r])]);
+    final rt = LdExecRuntime();
+    executeLdPrograms(p, 100, rt); // DN true but Gate false
+    expect(_b(p, 'Y'), isFalse);
+    writePath(p, 'Gate', true);
+    executeLdPrograms(p, 100, rt); // DN AND Gate
+    expect(_b(p, 'Y'), isTrue);
+  });
 }

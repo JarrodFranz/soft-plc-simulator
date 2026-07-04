@@ -4,6 +4,9 @@ import 'tag_resolver.dart';
 
 /// Prev-scan state for edge contacts and pulse coils, keyed by
 /// "program|rungIndex|nodeId".
+///
+/// Precondition: rungIndex values must be unique within a program and program
+/// names unique within a project — the state key aliases otherwise.
 class LdExecRuntime {
   final Map<String, bool> prevBool = {};
   void clear() => prevBool.clear();
