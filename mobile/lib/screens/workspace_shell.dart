@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
+import '../data/default_projects.dart';
 import '../widgets/tag_inspector_dock.dart';
 import 'st_editor_screen.dart';
 import 'ld_editor_screen.dart';
@@ -48,123 +49,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   }
 
   void _initProjects() {
-    // 1. Basic Motor Start Stop Project
-    final motorProj = PlcProject(
-      id: 'proj_motor',
-      name: 'Basic Motor Start Stop',
-      controllerName: 'PLC_01',
-      scanPeriodMs: 100,
-      tags: [
-        PlcTag(name: 'Start_PB', path: 'Inputs/Start_PB', dataType: 'BOOL', value: false, ioType: 'SimulatedInput', description: 'Start pushbutton'),
-        PlcTag(name: 'Stop_PB', path: 'Inputs/Stop_PB', dataType: 'BOOL', value: false, ioType: 'SimulatedInput', description: 'Stop pushbutton'),
-        PlcTag(name: 'EStop_OK', path: 'Inputs/EStop_OK', dataType: 'BOOL', value: true, ioType: 'SimulatedInput', description: 'Emergency Stop Healthy'),
-        PlcTag(name: 'Overload_OK', path: 'Inputs/Overload_OK', dataType: 'BOOL', value: true, ioType: 'SimulatedInput', description: 'Thermal Overload Healthy'),
-        PlcTag(name: 'Motor_Latch', path: 'Internal/Motor_Latch', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'Internal seal-in latch'),
-        PlcTag(name: 'Motor_Run', path: 'Outputs/Motor_Run', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Motor contactor output'),
-      ],
-      structDefs: [
-        PlcStructDef(
-          name: 'Motor_DUT',
-          fields: [
-            StructFieldDef(name: 'Run', dataType: 'BOOL', defaultValue: false),
-            StructFieldDef(name: 'Fault', dataType: 'BOOL', defaultValue: false),
-            StructFieldDef(name: 'Speed', dataType: 'INT32', defaultValue: 0),
-          ],
-        ),
-      ],
-      dataBlocks: [
-        PlcDataBlock(name: 'DB_Motor1', structTypeName: 'Motor_DUT', fieldValues: {'Run': false, 'Fault': false, 'Speed': 1450}),
-      ],
-      programs: [
-        PlcProgram(
-          name: 'MotorControl_ST',
-          language: 'StructuredText',
-          description: 'Motor start/stop with permissives in ST',
-          stSource: '// Structured Text Motor Control\nIF (Start_PB OR Motor_Latch) AND NOT Stop_PB AND EStop_OK AND Overload_OK THEN\n    Motor_Latch := TRUE;\nELSE\n    Motor_Latch := FALSE;\nEND_IF;\nMotor_Run := Motor_Latch AND EStop_OK AND Overload_OK;',
-        ),
-        PlcProgram(
-          name: 'MotorControl_LD',
-          language: 'LadderLogic',
-          description: 'Motor start/stop Rungs in Ladder Logic (LD)',
-        ),
-      ],
-      tasks: [
-        PlcTask(name: 'MainContinuousTask', type: 'Continuous', periodMs: 100, programNames: ['MotorControl_ST', 'MotorControl_LD']),
-      ],
-      hmis: [
-        HmiScreenDef(
-          id: 'hmi_motor',
-          title: 'Motor Control HMI Dashboard',
-          layoutType: 'GridDashboard',
-          components: [
-            HmiComponent(id: 'c1', title: 'START Motor (NO)', type: 'PushbuttonSwitch', tagBinding: 'Start_PB', gridSpanWidth: 1, accentColor: 'green'),
-            HmiComponent(id: 'c2', title: 'STOP Motor (NC)', type: 'PushbuttonSwitch', tagBinding: 'Stop_PB', gridSpanWidth: 1, accentColor: 'red'),
-            HmiComponent(id: 'c3', title: 'Motor Running LED', type: 'LedIndicatorLight', tagBinding: 'Motor_Run', gridSpanWidth: 1, accentColor: 'green'),
-            HmiComponent(id: 'c4', title: 'E-Stop Healthy Switch', type: 'ToggleSwitch', tagBinding: 'EStop_OK', gridSpanWidth: 1, accentColor: 'cyan'),
-            HmiComponent(id: 'c5', title: 'Overload Healthy Switch', type: 'ToggleSwitch', tagBinding: 'Overload_OK', gridSpanWidth: 1, accentColor: 'amber'),
-            HmiComponent(id: 'c6', title: 'Motor Status Pill', type: 'StatusPillDisplay', tagBinding: 'Motor_Run', gridSpanWidth: 2, accentColor: 'teal'),
-          ],
-        ),
-      ],
-    );
-
-    // 2. Tank Level Simulation Project
-    final tankProj = PlcProject(
-      id: 'proj_tank',
-      name: 'Tank Level Simulation',
-      controllerName: 'PLC_02',
-      scanPeriodMs: 100,
-      tags: [
-        PlcTag(name: 'Level_PV', path: 'Inputs/Level_PV', dataType: 'FLOAT64', value: 42.0, ioType: 'SimulatedInput', engineeringUnits: '%', description: 'Tank Level PV'),
-        PlcTag(name: 'Level_SP', path: 'Internal/Level_SP', dataType: 'FLOAT64', value: 50.0, ioType: 'Internal', engineeringUnits: '%', description: 'Level Setpoint'),
-        PlcTag(name: 'Auto_Mode', path: 'Inputs/Auto_Mode', dataType: 'BOOL', value: true, ioType: 'SimulatedInput', description: 'Auto/Manual Switch'),
-        PlcTag(name: 'Fill_Valve', path: 'Outputs/Fill_Valve', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Fill Valve Solenoid'),
-        PlcTag(name: 'Drain_Valve', path: 'Outputs/Drain_Valve', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Drain Valve Solenoid'),
-        PlcTag(name: 'High_Alarm', path: 'Outputs/High_Alarm', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'High Level Alarm Light'),
-      ],
-      structDefs: [],
-      dataBlocks: [],
-      programs: [
-        PlcProgram(
-          name: 'TankLevelControl_ST',
-          language: 'StructuredText',
-          description: 'On/Off Tank Level Fill/Drain Control',
-          stSource: '// Tank Level Fill/Drain Logic\nIF Auto_Mode THEN\n    IF Level_PV < (Level_SP - 5.0) THEN\n        Fill_Valve := TRUE;\n        Drain_Valve := FALSE;\n    ELSIF Level_PV > (Level_SP + 5.0) THEN\n        Fill_Valve := FALSE;\n        Drain_Valve := TRUE;\n    ELSE\n        Fill_Valve := FALSE;\n        Drain_Valve := FALSE;\n    END_IF;\nEND_IF;\nHigh_Alarm := Level_PV > 85.0;',
-        ),
-        PlcProgram(
-          name: 'TankLevel_FBD',
-          language: 'FunctionBlockDiagram',
-          description: 'Tank Level Signal Flow Gate Diagram',
-        ),
-        PlcProgram(
-          name: 'TankSequence_SFC',
-          language: 'SequentialFunctionChart',
-          description: 'Tank Fill/Drain Sequence State Machine',
-        ),
-      ],
-      tasks: [
-        PlcTask(name: 'ProcessLoopTask', type: 'Continuous', periodMs: 100, programNames: ['TankLevelControl_ST', 'TankLevel_FBD', 'TankSequence_SFC']),
-      ],
-      hmis: [
-        HmiScreenDef(
-          id: 'hmi_tank',
-          title: 'Tank Level Process Dashboard',
-          layoutType: 'GridDashboard',
-          components: [
-            HmiComponent(id: 't1', title: 'Tank Process Graphic', type: 'TankGraphicDisplay', tagBinding: 'Level_PV', gridSpanWidth: 2, accentColor: 'cyan'),
-            HmiComponent(id: 't2', title: 'Level Setpoint Slider', type: 'NumericSliderInput', tagBinding: 'Level_SP', gridSpanWidth: 2, accentColor: 'teal'),
-            HmiComponent(id: 't3', title: 'Auto Mode Toggle', type: 'ToggleSwitch', tagBinding: 'Auto_Mode', gridSpanWidth: 1, accentColor: 'green'),
-            HmiComponent(id: 't4', title: 'Fill Valve Solenoid LED', type: 'LedIndicatorLight', tagBinding: 'Fill_Valve', gridSpanWidth: 1, accentColor: 'green'),
-            HmiComponent(id: 't5', title: 'Drain Valve Solenoid LED', type: 'LedIndicatorLight', tagBinding: 'Drain_Valve', gridSpanWidth: 1, accentColor: 'amber'),
-            HmiComponent(id: 't6', title: 'High Level Alarm LED', type: 'LedIndicatorLight', tagBinding: 'High_Alarm', gridSpanWidth: 1, accentColor: 'red'),
-            HmiComponent(id: 't7', title: 'Level Gauge Bar', type: 'DigitalGaugeDisplay', tagBinding: 'Level_PV', gridSpanWidth: 4, accentColor: 'cyan'),
-          ],
-        ),
-      ],
-    );
-
-    _allProjects = [motorProj, tankProj];
-    _activeProject = motorProj;
+    _allProjects = DefaultProjects.all();
+    _activeProject = _allProjects.first;
   }
 
   void _startScanLoop() {
@@ -184,51 +70,191 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   }
 
   void _evaluateActiveLogic() {
-    if (_activeProject.id == 'proj_motor') {
+    final id = _activeProject.id;
+
+    // ── 1. Basic Motor Start/Stop ─────────────────────────────────────────
+    if (id == 'proj_motor') {
       bool start = _getTagBool('Start_PB');
       bool stop = _getTagBool('Stop_PB');
       bool estop = _getTagBool('EStop_OK');
       bool overload = _getTagBool('Overload_OK');
       bool latch = _getTagBool('Motor_Latch');
-
-      if ((start || latch) && !stop && estop && overload) {
-        latch = true;
-      } else {
-        latch = false;
-      }
-
-      bool run = latch && estop && overload;
-
+      latch = (start || latch) && !stop && estop && overload;
       _setTagBool('Motor_Latch', latch);
-      _setTagBool('Motor_Run', run);
-    } else if (_activeProject.id == 'proj_tank') {
-      double levelPv = _getTagDouble('Level_PV');
-      double levelSp = _getTagDouble('Level_SP');
-      bool autoMode = _getTagBool('Auto_Mode');
-      bool fill = _getTagBool('Fill_Valve');
-      bool drain = _getTagBool('Drain_Valve');
+      _setTagBool('Motor_Run', latch && estop && overload);
 
-      if (autoMode) {
-        if (levelPv < (levelSp - 5.0)) {
-          fill = true;
-          drain = false;
-        } else if (levelPv > (levelSp + 5.0)) {
-          fill = false;
-          drain = true;
-        } else {
-          fill = false;
-          drain = false;
-        }
+    // ── 2. Tank Level Simulation ──────────────────────────────────────────
+    } else if (id == 'proj_tank') {
+      double pv = _getTagDouble('Level_PV');
+      double sp = _getTagDouble('Level_SP');
+      bool auto = _getTagBool('Auto_Mode');
+      bool fill = false, drain = false;
+      if (auto) {
+        if (pv < sp - 5.0) { fill = true; }
+        else if (pv > sp + 5.0) { drain = true; }
       }
-
-      // Simulate process tank physics
-      if (fill && levelPv < 100.0) levelPv += 0.5;
-      if (drain && levelPv > 0.0) levelPv -= 0.5;
-
-      _setTagDouble('Level_PV', levelPv);
+      if (fill && pv < 100.0) pv += 0.5;
+      if (drain && pv > 0.0) pv -= 0.5;
+      _setTagDouble('Level_PV', pv);
       _setTagBool('Fill_Valve', fill);
       _setTagBool('Drain_Valve', drain);
-      _setTagBool('High_Alarm', levelPv > 85.0);
+      _setTagBool('High_Alarm', pv > 85.0);
+
+    // ── 3. ST Reactor Temperature Controller ─────────────────────────────
+    } else if (id == 'proj_st_reactor') {
+      double temp = _getTagDouble('Temp_PV');
+      double sp = _getTagDouble('Temp_SP');
+      bool auto = _getTagBool('Auto_Mode');
+      bool heat = false, cool = false;
+      if (auto) {
+        if (temp < sp - 2.0) { heat = true; }
+        else if (temp > sp + 2.0) { cool = true; }
+      }
+      if (heat && temp < 100.0) temp += 0.3;
+      if (cool && temp > 0.0) temp -= 0.2;
+      if (!heat && !cool && temp > 20.0) temp -= 0.02; // ambient loss
+      _setTagDouble('Temp_PV', double.parse(temp.clamp(0.0, 105.0).toStringAsFixed(1)));
+      _setTagBool('Heat_Cmd', heat);
+      _setTagBool('Cool_Cmd', cool);
+      _setTagBool('Alarm_High', temp > 95.0);
+      _setTagBool('Alarm_Low', temp < 5.0);
+      _setTagBool('Reactor_Ready', !heat && !cool && temp >= sp - 2.0 && temp <= sp + 2.0);
+
+    // ── 4. LD Conveyor Belt Control ───────────────────────────────────────
+    } else if (id == 'proj_ld_conveyor') {
+      bool start = _getTagBool('Start_PB');
+      bool stop = _getTagBool('Stop_PB');
+      bool estop = _getTagBool('EStop');
+      bool jog = _getTagBool('Manual_Jog');
+      bool latch = _getTagBool('Belt_Latch');
+      bool jammed = _getTagBool('Belt_Jammed');
+
+      bool run = (start || latch || jog) && !stop && estop && !jammed;
+      _setTagBool('Belt_Motor', run);
+      _setTagBool('Belt_Latch', run);
+
+      // Simulate parts arriving every ~2s when belt running
+      bool eye = false;
+      if (run) {
+        eye = (scanCount % 22) < 4; // part present for 4/22 scans (~400ms pulse)
+        if (eye) _setTagBool('Belt_Jammed', false); // part clears jam
+      }
+      _setTagBool('Photo_Eye', eye);
+      _setTagBool('Part_Present', eye);
+
+    // ── 5. FBD HVAC Zone Controller ───────────────────────────────────────
+    } else if (id == 'proj_fbd_hvac') {
+      double temp = _getTagDouble('Room_Temp');
+      double sp = _getTagDouble('Setpoint');
+      bool occupied = _getTagBool('Occupied');
+      bool windowOpen = _getTagBool('Window_Open');
+
+      bool hvacEnable = occupied && !windowOpen;
+      bool heat = hvacEnable && temp < (sp - 1.0);
+      bool cool = hvacEnable && temp > (sp + 1.0);
+
+      if (heat && temp < 35.0) temp += 0.08;
+      if (cool && temp > 10.0) temp -= 0.08;
+      if (!heat && !cool && temp > 15.0) temp -= 0.01; // ambient drift
+
+      _setTagDouble('Room_Temp', double.parse(temp.clamp(0.0, 45.0).toStringAsFixed(1)));
+      _setTagBool('Hvac_Active', hvacEnable);
+      _setTagBool('Fan_Cmd', hvacEnable);
+      _setTagBool('Heat_Cmd', heat);
+      _setTagBool('Cool_Cmd', cool);
+
+    // ── 6. SFC Bottle Filling Sequence ────────────────────────────────────
+    } else if (id == 'proj_sfc_filling') {
+      int step = _getTagInt('Sfc_Step');
+      int delay = _getTagInt('Step_Delay');
+      bool startCmd = _getTagBool('Start_Cmd');
+      bool bottlePresent = _getTagBool('Bottle_Present');
+      double fillLevel = _getTagDouble('Fill_Level');
+
+      switch (step) {
+        case 0: // IDLE
+          _setTagBool('Fill_Valve', false);
+          _setTagBool('Cap_Solenoid', false);
+          _setTagBool('Eject_Cyl', false);
+          _setTagBool('Sequence_Running', false);
+          if (startCmd) { step = 1; delay = 0; }
+          break;
+        case 1: // WAIT_BOTTLE
+          _setTagBool('Sequence_Running', true);
+          _setTagBool('Eject_Cyl', false);
+          if (bottlePresent) { step = 2; fillLevel = 0.0; delay = 0; }
+          break;
+        case 2: // FILLING
+          _setTagBool('Fill_Valve', true);
+          fillLevel = (fillLevel + 4.0).clamp(0.0, 100.0);
+          _setTagDouble('Fill_Level', fillLevel);
+          if (fillLevel >= 95.0) { step = 3; delay = 0; }
+          break;
+        case 3: // CAPPING — hold 6 scans (~1.2s)
+          _setTagBool('Fill_Valve', false);
+          _setTagBool('Cap_Solenoid', true);
+          delay++;
+          if (delay >= 6) { step = 4; delay = 0; }
+          break;
+        case 4: // EJECTING — hold 4 scans (~800ms)
+          _setTagBool('Cap_Solenoid', false);
+          _setTagBool('Eject_Cyl', true);
+          delay++;
+          if (delay >= 4) {
+            _setTagInt('Filled_Count', _getTagInt('Filled_Count') + 1);
+            step = 1;
+            delay = 0;
+          }
+          break;
+      }
+      _setTagInt('Sfc_Step', step);
+      _setTagInt('Step_Delay', delay);
+
+    // ── 7. All Languages — Water Treatment Plant ──────────────────────────
+    } else if (id == 'proj_all_water') {
+      // LD: Pump start/stop seal-in
+      bool start = _getTagBool('Start_PB');
+      bool stop = _getTagBool('Stop_PB');
+      bool estop = _getTagBool('EStop');
+      bool latch = _getTagBool('Pump_Latch');
+      bool pumpRun = (start || latch) && !stop && estop && !_getTagBool('Alarm_Active');
+      _setTagBool('Pump_Latch', pumpRun);
+      _setTagBool('Pump_Motor', pumpRun);
+
+      // FBD: Quality gate logic
+      double turbidity = _getTagDouble('Turbidity_PV');
+      double turbSP = _getTagDouble('Turbidity_SP');
+      double level = _getTagDouble('Level_PV');
+      bool qualityOk = turbidity < turbSP && level > 10.0;
+      _setTagBool('Quality_OK', qualityOk);
+
+      // Simulate flow rate
+      _setTagDouble('Flow_PV', pumpRun ? (42.0 + (scanCount % 7 - 3).toDouble()) : 0.0);
+
+      // ST: Dosing pump — dose when running with bad water
+      bool dosing = pumpRun && !qualityOk;
+      _setTagBool('Treat_Dosing', dosing);
+
+      // Process physics — turbidity clears with dosing, rises slowly otherwise
+      if (dosing && turbidity > 0.5) { turbidity -= 0.12; }
+      else if (pumpRun && !dosing && turbidity < turbSP * 1.5) { turbidity += 0.04; }
+      _setTagDouble('Turbidity_PV', double.parse(turbidity.clamp(0.0, 20.0).toStringAsFixed(1)));
+
+      // Reservoir level — drops while pumping, refills slowly
+      if (pumpRun && level > 0.0) level -= 0.15;
+      if (!pumpRun && level < 100.0) level += 0.08;
+      _setTagDouble('Level_PV', double.parse(level.clamp(0.0, 100.0).toStringAsFixed(1)));
+
+      // SFC: Backwash triggers when turbidity exceeds SP
+      bool backwash = !qualityOk && pumpRun;
+      _setTagBool('Backwash_Active', backwash);
+      _setTagBool('Backwash_Valve', backwash);
+      _setTagBool('Backwash_Pump', backwash && turbidity > turbSP + 1.0);
+
+      // ST: Safety supervisor alarm
+      bool alarm = !estop || level < 5.0 || turbidity > turbSP + 8.0;
+      _setTagBool('Alarm_Active', alarm);
+      _setTagBool('System_Ready', pumpRun && qualityOk && !alarm);
     }
   }
 
@@ -259,6 +285,21 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       if (!t.isForced) {
         t.value = val;
       }
+    }
+  }
+
+  int _getTagInt(String name) {
+    final t = _activeProject.tags.firstWhere(
+      (t) => t.name == name,
+      orElse: () => PlcTag(name: name, path: '', dataType: 'INT32', value: 0, ioType: 'Internal'),
+    );
+    return t.isForced ? (t.forcedValue as int? ?? 0) : ((t.value as num?)?.toInt() ?? 0);
+  }
+
+  void _setTagInt(String name, int val) {
+    final idx = _activeProject.tags.indexWhere((t) => t.name == name);
+    if (idx != -1 && !_activeProject.tags[idx].isForced) {
+      _activeProject.tags[idx].value = val;
     }
   }
 
@@ -626,7 +667,12 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         children: [
           Icon(icon, size: 14, color: Colors.grey),
           const SizedBox(width: 6),
-          Text(label, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Colors.grey, letterSpacing: 0.5)),
+          Expanded(
+            child: Text(label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Colors.grey, letterSpacing: 0.5)),
+          ),
         ],
       ),
     );

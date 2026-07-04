@@ -223,7 +223,7 @@ END_FOR;''',
 
     if (wordMatch != null) {
       final wordPrefix = wordMatch.group(0)!;
-      if (wordPrefix.length >= 1) {
+      if (wordPrefix.isNotEmpty) {
         final allItems = _buildAllAutocompleteItems();
         final matches = allItems.where((item) {
           return item.label.toLowerCase().contains(wordPrefix.toLowerCase()) ||

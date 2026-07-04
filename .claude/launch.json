@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mobile-web",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "cd mobile\\build\\web && python -m http.server 8080"],
+      "port": 8080
+    }
+  ]
+}

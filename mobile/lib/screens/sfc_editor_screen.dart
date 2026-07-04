@@ -174,7 +174,7 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
               ],
             ),
             const SizedBox(height: 8),
-            Text('N (Non-Stored Action Logic):', style: const TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
+            const Text('N (Non-Stored Action Logic):', style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             TextField(
               controller: TextEditingController(text: step.actionSt),

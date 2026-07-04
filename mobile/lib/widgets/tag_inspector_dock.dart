@@ -43,9 +43,13 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
               children: [
                 const Icon(Icons.table_rows, color: Colors.cyan, size: 18),
                 const SizedBox(width: 8),
-                const Text(
-                  'TAG INSPECTOR & FORCING',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: 0.5),
+                const Flexible(
+                  child: Text(
+                    'TAG INSPECTOR & FORCING',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: 0.5),
+                  ),
                 ),
                 const Spacer(),
                 IconButton(
