@@ -117,4 +117,32 @@ void main() {
     applySimRules(p, p.simRules, 1000, SimRuntime());
     expect(p.tags.first.value, equals(0.0));
   });
+
+  test('pulse with zero on-time does not get stuck on', () {
+    final rule = SimRule(id: 'r', name: 'p0', targetPath: 'Eye', behavior: 'pulse',
+        onMs: 0, offMs: 200, condition: []);
+    final p = _proj([_tag('Eye', 'BOOL', false)], [rule]);
+    final rt = SimRuntime();
+    bool sawFalse = false;
+    for (int i = 0; i < 5; i++) {
+      applySimRules(p, p.simRules, 100, rt);
+      if (p.tags.first.value == false) {
+        sawFalse = true;
+      }
+    }
+    expect(sawFalse, isTrue); // a 0ms on-phase must not freeze the output true
+  });
+
+  test('ramp decreases toward a lower target and stops', () {
+    final rule = SimRule(id: 'r', name: 'down', targetPath: 'PV', behavior: 'ramp',
+        ratePerSec: 5.0, targetValue: 10.0, minValue: 0, maxValue: 100, condition: []);
+    final p = _proj([_tag('PV', 'FLOAT64', 30.0)], [rule]);
+    final rt = SimRuntime();
+    applySimRules(p, p.simRules, 1000, rt); // 30 -> 25
+    expect(p.tags.first.value, closeTo(25.0, 0.001));
+    for (int i = 0; i < 10; i++) {
+      applySimRules(p, p.simRules, 1000, rt);
+    }
+    expect(p.tags.first.value, equals(10.0)); // reaches target, no undershoot
+  });
 }

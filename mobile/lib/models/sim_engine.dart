@@ -123,7 +123,9 @@ void applySimRules(PlcProject p, List<SimRule> rules, int dtMs, SimRuntime rt) {
         }
         st.phaseMs += dtMs;
         final limit = st.pulseOn ? rule.onMs : rule.offMs;
-        if (st.phaseMs >= limit && limit > 0) {
+        // A zero/negative phase length flips immediately (skip that phase)
+        // rather than sticking in it forever.
+        if (limit <= 0 || st.phaseMs >= limit) {
           st.pulseOn = !st.pulseOn;
           st.phaseMs = 0;
         }
