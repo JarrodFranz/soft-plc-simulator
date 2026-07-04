@@ -4,6 +4,7 @@ class PlcTag {
   String name;
   String path;
   String dataType; // 'BOOL', 'INT16', 'INT32', 'FLOAT64', 'STRING', 'TIMER'
+  int arrayLength;
   dynamic value;
   String quality;
   String access;
@@ -18,6 +19,7 @@ class PlcTag {
     required this.name,
     required this.path,
     required this.dataType,
+    this.arrayLength = 0,
     required this.value,
     this.quality = 'Good',
     this.access = 'ReadWrite',
@@ -34,6 +36,7 @@ class PlcTag {
       name: json['name'] ?? '',
       path: json['path'] ?? '',
       dataType: json['data_type'] ?? 'BOOL',
+      arrayLength: json['array_length'] ?? 0,
       value: json['initial_value'] ?? json['value'] ?? false,
       quality: json['quality'] ?? 'Good',
       access: json['access'] ?? 'ReadWrite',
@@ -48,6 +51,7 @@ class PlcTag {
     'name': name,
     'path': path,
     'data_type': dataType,
+    'array_length': arrayLength,
     'initial_value': value,
     'access': access,
     'retentive': retentive,
@@ -60,11 +64,13 @@ class PlcTag {
 class StructFieldDef {
   String name;
   String dataType;
+  int arrayLength;
   dynamic defaultValue;
 
   StructFieldDef({
     required this.name,
     required this.dataType,
+    this.arrayLength = 0,
     required this.defaultValue,
   });
 }
