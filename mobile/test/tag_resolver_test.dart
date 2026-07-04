@@ -62,6 +62,17 @@ void main() {
     expect(readPath(p, 'W'), equals(0));
   });
 
+  test('writePath no-ops on invalid/out-of-range paths (no throw)', () {
+    final p = _proj([
+      _tag('T', 'TIMER', defaultValueFor(_proj([]), 'TIMER', 0)),
+      _tag('Motors', 'TIMER', [defaultValueFor(_proj([]), 'TIMER', 0)], arrayLength: 1),
+    ]);
+    writePath(p, 'T.NOPE', 1);         // unknown field
+    writePath(p, 'Motors[9].ACC', 1);  // out-of-range index
+    writePath(p, 'Ghost.x', 1);        // unknown root tag
+    expect(readPath(p, 'T.ACC'), equals(0)); // state unchanged, nothing thrown
+  });
+
   test('childrenOf enumerates composite fields, array elements, and int bits', () {
     final p = _proj([
       _tag('T', 'TIMER', defaultValueFor(_proj([]), 'TIMER', 0)),
