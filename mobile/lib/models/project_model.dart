@@ -92,46 +92,60 @@ class PlcDataBlock {
 }
 
 // -------------------------------------------------------------
-// LADDER LOGIC (LD) MODELS WITH PARALLEL BRANCHES
+// LADDER LOGIC (LD) — node-and-wire graph model
 // -------------------------------------------------------------
-class LdInstruction {
-  String type; // 'XIC', 'XIO', 'OTE', 'OTL', 'OTU', 'TON', 'TOF', 'EQU', 'GRT', 'LES'
-  String operandTag;
-  String comment;
-  int presetMs; // For TON/TOF timers
+enum LdKind { leftRail, rightRail, contact, coil, block }
 
-  LdInstruction({
-    required this.type,
-    required this.operandTag,
-    this.comment = '',
+class LdNode {
+  String id;
+  LdKind kind;
+  String variable;   // bound tag (contact/coil); '' for rails/blocks
+  String modifier;   // 'normal'|'negated'|'rising'|'falling'|'set'|'reset'
+  String blockType;  // 'TON'|'TOF'|'CTU'|... when kind == LdKind.block
+  int presetMs;      // block preset time (TON/TOF)
+  String comment;
+  int col;           // grid column (series index) — assigned by layout
+  int row;           // grid lane (0 = main line)
+
+  LdNode({
+    required this.id,
+    required this.kind,
+    this.variable = '',
+    this.modifier = 'normal',
+    this.blockType = '',
     this.presetMs = 5000,
+    this.comment = '',
+    this.col = 0,
+    this.row = 0,
   });
 }
 
-class LdBranch {
-  List<LdInstruction> inputInstructions;
-  List<LdInstruction> outputInstructions;
+class LdWire {
+  String fromId;
+  String fromPort;
+  String toId;
+  String toPort;
 
-  LdBranch({
-    required this.inputInstructions,
-    required this.outputInstructions,
+  LdWire({
+    required this.fromId,
+    this.fromPort = 'out',
+    required this.toId,
+    this.toPort = 'in',
   });
 }
 
 class LdRung {
   int rungIndex;
   String comment;
-  List<LdInstruction> inputInstructions;
-  List<LdInstruction> outputInstructions;
-  List<LdBranch> parallelBranches; // Parallel OR Rung Branches
+  List<LdNode> nodes;
+  List<LdWire> wires;
 
   LdRung({
     required this.rungIndex,
     this.comment = '',
-    required this.inputInstructions,
-    required this.outputInstructions,
-    List<LdBranch>? parallelBranches,
-  }) : parallelBranches = parallelBranches ?? [];
+    required this.nodes,
+    required this.wires,
+  });
 }
 
 // -------------------------------------------------------------
