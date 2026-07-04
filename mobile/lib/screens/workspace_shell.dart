@@ -171,7 +171,14 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         case 1: // WAIT_BOTTLE
           _setTagBool('Sequence_Running', true);
           _setTagBool('Eject_Cyl', false);
-          if (bottlePresent) { step = 2; delay = 0; }
+          if (bottlePresent) {
+            step = 2;
+            delay = 0;
+            // Fill_Level is driven upward by a sim rule while Fill_Valve is
+            // on; reset it here on entry to FILLING so each new bottle
+            // ramps from zero instead of starting already full.
+            _writeIfNotForced('Fill_Level', 0.0);
+          }
           break;
         case 2: // FILLING
           _setTagBool('Fill_Valve', true);
