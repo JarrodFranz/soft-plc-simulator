@@ -325,4 +325,149 @@ void main() {
     expect(readPath(p, 'QOut'), isFalse);
     expect(readPath(p, 'EtOut'), equals(0));
   });
+
+  group('PID', () {
+    // Builds a PID block fed by TAG_INPUT SP/PV and CONST KP/KI/KD, with CV
+    // wired to a TAG_OUTPUT. Any of the gain bindings may be null to leave
+    // that pin unwired.
+    PlcProject buildPid({
+      String? kp,
+      String? ki,
+      String? kd,
+      double sp = 0,
+      double pv = 0,
+    }) {
+      final blocks = <FbdBlock>[
+        FbdBlock(id: 'sp', type: 'TAG_INPUT', title: '', tagBinding: 'SP'),
+        FbdBlock(id: 'pv', type: 'TAG_INPUT', title: '', tagBinding: 'PV'),
+        FbdBlock(id: 'pid', type: 'PID', title: ''),
+        FbdBlock(id: 'o', type: 'TAG_OUTPUT', title: '', tagBinding: 'CV'),
+      ];
+      final wires = <FbdWire>[
+        FbdWire(fromBlockId: 'sp', fromPin: 'OUT', toBlockId: 'pid', toPin: 'SP'),
+        FbdWire(fromBlockId: 'pv', fromPin: 'OUT', toBlockId: 'pid', toPin: 'PV'),
+        FbdWire(fromBlockId: 'pid', fromPin: 'CV', toBlockId: 'o', toPin: 'IN'),
+      ];
+      if (kp != null) {
+        blocks.add(FbdBlock(id: 'kp', type: 'CONST', title: '', tagBinding: kp));
+        wires.add(FbdWire(fromBlockId: 'kp', fromPin: 'OUT', toBlockId: 'pid', toPin: 'KP'));
+      }
+      if (ki != null) {
+        blocks.add(FbdBlock(id: 'ki', type: 'CONST', title: '', tagBinding: ki));
+        wires.add(FbdWire(fromBlockId: 'ki', fromPin: 'OUT', toBlockId: 'pid', toPin: 'KI'));
+      }
+      if (kd != null) {
+        blocks.add(FbdBlock(id: 'kd', type: 'CONST', title: '', tagBinding: kd));
+        wires.add(FbdWire(fromBlockId: 'kd', fromPin: 'OUT', toBlockId: 'pid', toPin: 'KD'));
+      }
+      final prog = _fbd(blocks, wires);
+      return _proj([
+        _tag('SP', 'FLOAT64', sp), _tag('PV', 'FLOAT64', pv), _tag('CV', 'FLOAT64', -1.0),
+      ], prog);
+    }
+
+    test('proportional only: CV = clamp(KP * error, 0, 100)', () {
+      // SP=50, PV=0 -> error=50. KP=2 -> raw=100 -> clamp -> 100 (saturated).
+      final p1 = buildPid(kp: '2', ki: '0', kd: '0', sp: 50, pv: 0);
+      _run(p1, FbdRuntime(), 500);
+      expect(readPath(p1, 'CV'), equals(100.0));
+
+      // KP=1 -> raw=50 -> CV=50.
+      final p2 = buildPid(kp: '1', ki: '0', kd: '0', sp: 50, pv: 0);
+      _run(p2, FbdRuntime(), 500);
+      expect(readPath(p2, 'CV'), equals(50.0));
+
+      // KP=0.5 -> raw=25 -> CV=25.
+      final p3 = buildPid(kp: '0.5', ki: '0', kd: '0', sp: 50, pv: 0);
+      _run(p3, FbdRuntime(), 500);
+      expect(readPath(p3, 'CV'), equals(25.0));
+    });
+
+    test('clamps both ends: raw>100 -> 100, raw<0 -> 0', () {
+      final pHigh = buildPid(kp: '10', ki: '0', kd: '0', sp: 50, pv: 0);
+      _run(pHigh, FbdRuntime(), 500);
+      expect(readPath(pHigh, 'CV'), equals(100.0));
+
+      // PV > SP with positive KP -> negative error -> raw < 0 -> clamp to 0.
+      final pLow = buildPid(kp: '10', ki: '0', kd: '0', sp: 0, pv: 50);
+      _run(pLow, FbdRuntime(), 500);
+      expect(readPath(pLow, 'CV'), equals(0.0));
+    });
+
+    test('integral accumulates and anti-windup bounds it (prompt come-down on reversal)', () {
+      final p = buildPid(kp: '0', ki: '1', kd: '0', sp: 50, pv: 45);
+      final rt = FbdRuntime();
+
+      // error = 5, dt = 0.5s -> integral grows by 2.5 each scan; raw = KI*integral.
+      _run(p, rt, 500);
+      final cv1 = readPath(p, 'CV') as double;
+      expect(cv1, greaterThan(0));
+
+      _run(p, rt, 500);
+      final cv2 = readPath(p, 'CV') as double;
+      expect(cv2, greaterThanOrEqualTo(cv1)); // rising as integral accumulates
+
+      // Keep scanning until CV saturates at 100.
+      for (var i = 0; i < 50; i++) {
+        _run(p, rt, 500);
+      }
+      expect(readPath(p, 'CV'), equals(100.0));
+
+      // Now reverse the error (PV > SP) and confirm CV comes down promptly
+      // (within a couple of scans), proving the integral didn't wind up
+      // unboundedly while saturated.
+      writePath(p, 'PV', 55.0); // error now -5
+      _run(p, rt, 500);
+      final afterReversal1 = readPath(p, 'CV') as double;
+      _run(p, rt, 500);
+      final afterReversal2 = readPath(p, 'CV') as double;
+      expect(afterReversal2, lessThan(100.0));
+      expect(afterReversal1, lessThanOrEqualTo(100.0));
+      // Should be dropping, not stuck pinned at 100 for many scans.
+      expect(afterReversal2, lessThan(afterReversal1 + 1e-9));
+    });
+
+    test('derivative: sudden PV change produces a kick; steady PV -> ~0 derivative', () {
+      final p = buildPid(kp: '0', ki: '0', kd: '1', sp: 50, pv: 50);
+      final rt = FbdRuntime();
+
+      // First scan: error=0, prevError defaults to 0 -> derivative=0 -> CV=0.
+      _run(p, rt, 500);
+      expect(readPath(p, 'CV'), equals(0.0));
+
+      // Sudden PV change -> error jumps -> derivative kick this scan.
+      writePath(p, 'PV', 40.0); // error = 10
+      _run(p, rt, 500);
+      expect(readPath(p, 'CV'), greaterThan(0));
+
+      // Steady PV afterward -> error unchanged -> derivative back to ~0.
+      _run(p, rt, 500);
+      expect(readPath(p, 'CV'), equals(0.0));
+    });
+
+    test('unwired gains -> 0, CV = 0, no throw', () {
+      final p = buildPid(sp: 50, pv: 0); // KP/KI/KD all unwired
+      _run(p, FbdRuntime(), 500);
+      expect(readPath(p, 'CV'), equals(0.0));
+    });
+
+    test('rt.clear() resets PID integral/prevError state', () {
+      final p = buildPid(kp: '0', ki: '1', kd: '0', sp: 50, pv: 45);
+      final rt = FbdRuntime();
+      _run(p, rt, 500);
+      _run(p, rt, 500);
+      final beforeClear = readPath(p, 'CV') as double;
+      expect(beforeClear, greaterThan(0));
+
+      rt.clear();
+      // Single scan after clear should match the very first scan's CV from a
+      // fresh runtime (integral/prevError both reset to 0).
+      final fresh = buildPid(kp: '0', ki: '1', kd: '0', sp: 50, pv: 45);
+      _run(fresh, FbdRuntime(), 500);
+      final freshFirstScan = readPath(fresh, 'CV') as double;
+
+      _run(p, rt, 500);
+      expect(readPath(p, 'CV'), equals(freshFirstScan));
+    });
+  });
 }

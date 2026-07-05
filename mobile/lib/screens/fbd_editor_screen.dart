@@ -492,6 +492,7 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
                 _buildBlockPaletteItem('OR', 'OR Logic Gate', Icons.alt_route, Colors.purpleAccent),
                 _buildBlockPaletteItem('NOT', 'NOT Inverter Gate', Icons.do_not_disturb_on, Colors.redAccent),
                 _buildBlockPaletteItem('TON', 'Timer On Delay Block', Icons.timer, Colors.amberAccent),
+                _buildBlockPaletteItem('PID', 'PID Controller', Icons.speed, Colors.pinkAccent),
                 _buildBlockPaletteItem('LIMIT', 'Limit Clamp (Min, In, Max)', Icons.tune, Colors.orangeAccent),
                 _buildBlockPaletteItem('CONST', 'Constant Value', Icons.pin, Colors.limeAccent),
                 _buildBlockPaletteItem('ADD', 'Add (+)', Icons.add, Colors.tealAccent),

@@ -38,6 +38,8 @@ List<String> fbdInputPins(String type, {int inputCount = 2}) {
     case 'TON':
     case 'TOF':
       return const ['IN', 'PT'];
+    case 'PID':
+      return const ['SP', 'PV', 'KP', 'KI', 'KD'];
     default:
       return const [];
   }
@@ -71,6 +73,8 @@ List<String> fbdOutputPins(String type) {
     case 'TON':
     case 'TOF':
       return const ['Q', 'ET'];
+    case 'PID':
+      return const ['CV'];
     default:
       return const [];
   }

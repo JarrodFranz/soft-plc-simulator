@@ -7,7 +7,14 @@ import 'tag_resolver.dart';
 /// switch.
 class FbdRuntime {
   final Map<String, num> _elapsedMs = {};
-  void clear() => _elapsedMs.clear();
+
+  /// Per-block PID state keyed by block id: `[integral, prevError]`.
+  final Map<String, List<double>> _pid = {};
+
+  void clear() {
+    _elapsedMs.clear();
+    _pid.clear();
+  }
 }
 
 PlcTag? _rootTagOf(PlcProject p, String path) {
@@ -93,6 +100,10 @@ dynamic _arith(String op, List<dynamic> inputs) {
   return acc;
 }
 
+/// Coerces a possibly-null/non-numeric wire value to a `double`, defaulting
+/// to 0.0 for unwired/non-numeric pins. Never throws.
+double _asNum(dynamic v) => v is num ? v.toDouble() : 0.0;
+
 dynamic _compare(String op, List<dynamic> inputs) {
   if (inputs.length < 2) {
     return null;
@@ -127,7 +138,9 @@ dynamic _compare(String op, List<dynamic> inputs) {
 /// Evaluates block [b] given its ordered input-pin values [inputs] (aligned
 /// with `fbdInputPins(b.type, inputCount: b.inputCount)`), returning a map of
 /// output-pin-name -> value. Single-output combinational blocks yield
-/// `{'OUT': v}`; TON/TOF yield `{'Q': bool, 'ET': num}`. Never throws.
+/// `{'OUT': v}`; TON/TOF yield `{'Q': bool, 'ET': num}`; PID yields
+/// `{'CV': double}` (stateful, conditional-anti-windup, clamped 0-100).
+/// Never throws.
 Map<String, dynamic> _evalBlock(
   PlcProject p,
   FbdBlock b,
@@ -246,6 +259,39 @@ Map<String, dynamic> _evalBlock(
         }
         rt._elapsedMs[b.id] = et;
         return {'Q': q, 'ET': et};
+      }
+    case 'PID':
+      {
+        // Ordered inputs follow fbdInputPins('PID'): SP, PV, KP, KI, KD.
+        final sp = _asNum(inputs.isNotEmpty ? inputs[0] : null);
+        final pv = _asNum(inputs.length > 1 ? inputs[1] : null);
+        final kp = _asNum(inputs.length > 2 ? inputs[2] : null);
+        final ki = _asNum(inputs.length > 3 ? inputs[3] : null);
+        final kd = _asNum(inputs.length > 4 ? inputs[4] : null);
+
+        final dt = dtMs / 1000.0;
+        final e = sp - pv;
+        final state = rt._pid[b.id] ?? [0.0, 0.0];
+        final integral = state[0];
+        final prevError = state[1];
+        final deriv = dt <= 0 ? 0.0 : (e - prevError) / dt;
+
+        // Conditional anti-windup: only accumulate the integral if doing so
+        // keeps (or brings) the output within [0,100]; if the un-integrated
+        // output is already saturated and integrating pushes it further into
+        // saturation, freeze the integral instead.
+        final candidateInteg = integral + e * dt;
+        var raw = kp * e + ki * candidateInteg + kd * deriv;
+        double integ;
+        if (raw >= 0 && raw <= 100) {
+          integ = candidateInteg;
+        } else {
+          integ = integral;
+          raw = kp * e + ki * integral + kd * deriv;
+        }
+        final cv = raw.clamp(0.0, 100.0);
+        rt._pid[b.id] = [integ, e];
+        return {'CV': cv};
       }
     case 'TAG_OUTPUT':
       if (inputs.isEmpty) {
