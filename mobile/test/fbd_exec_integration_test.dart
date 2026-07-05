@@ -7,8 +7,8 @@ import 'package:soft_plc_mobile/models/sim_engine.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 
 // One scan tick, exactly as the workspace shell's `_executeScan` runs it up
-// to (and including) FBD: sim -> LD -> FBD. SFC/`_evaluateActiveLogic` are
-// not relevant to either diagram under test here.
+// to (and including) FBD: sim -> LD -> FBD. SFC/ST are not relevant to either
+// diagram under test here.
 void _scan(PlcProject p, SimRuntime sim, LdExecRuntime ld, FbdRuntime fbd,
     [int dtMs = 500]) {
   applySimRules(p, p.simRules, dtMs, sim);
@@ -70,8 +70,8 @@ void main() {
   });
 
   test(
-      'water Quality_OK tracks turb<SP && level>10; FBD leaves Flow_PV to sim',
-      () {
+      'water Quality_OK (computed by WaterQuality_FBD) tracks turb<SP && '
+      'level>10; FBD leaves Flow_PV to sim', () {
     final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_all_water');
     final sim = SimRuntime();
     final ld = LdExecRuntime();

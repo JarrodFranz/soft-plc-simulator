@@ -6,10 +6,10 @@ import 'package:soft_plc_mobile/models/sfc_exec.dart';
 import 'package:soft_plc_mobile/models/sim_engine.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 
-// One scan tick, exactly as the workspace shell's `_executeScan` runs it
-// (minus `_evaluateActiveLogic`, which is hardcoded FBD/ST logic outside the
-// LD/SFC pipeline under test here — see the water-plant test below for how
-// its one relevant output, `Quality_OK`, is emulated).
+// One scan tick, covering only sim -> LD -> SFC (this harness intentionally
+// omits FBD/ST, which are outside the LD/SFC pipeline under test here — see
+// the water-plant test below for how its one relevant output, `Quality_OK`
+// (normally computed by WaterQuality_FBD), is emulated).
 void _scan(PlcProject p, SimRuntime sim, LdExecRuntime ld, SfcRuntime sfc,
     [int dtMs = 500]) {
   applySimRules(p, p.simRules, dtMs, sim);
@@ -68,12 +68,11 @@ void main() {
     turb.forcedValue = 12.0;
     turb.value = 12.0;
 
-    // Quality_OK is normally computed by the shell's hardcoded
-    // `_evaluateActiveLogic` (FBD-domain: Turbidity_PV < Turbidity_SP &&
-    // Level_PV > 10.0), which this pure sim->LD->SFC harness intentionally
-    // does not run. Pin it false each scan to emulate that output, since with
-    // Turbidity_PV forced to 12.0 (> the 5.0 setpoint) it would evaluate to
-    // false anyway.
+    // Quality_OK is normally computed by WaterQuality_FBD (FBD-domain:
+    // Turbidity_PV < Turbidity_SP && Level_PV > 10.0), which this pure
+    // sim->LD->SFC harness intentionally does not run. Pin it false each scan
+    // to emulate that output, since with Turbidity_PV forced to 12.0 (> the
+    // 5.0 setpoint) it would evaluate to false anyway.
     writePath(p, 'Quality_OK', false);
 
     bool sawBackwash = false;
