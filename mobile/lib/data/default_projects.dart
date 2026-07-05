@@ -176,23 +176,23 @@ abstract class DefaultProjects {
           FbdBlock(id: 't_oa', type: 'TAG_OUTPUT', title: 'High Alarm', tagBinding: 'High_Alarm', x: 790, y: 520),
         ],
         fbdWires: [
-          FbdWire(fromBlockId: 't_sp', toBlockId: 't_sub'),  // Level_SP (left)
-          FbdWire(fromBlockId: 't_db', toBlockId: 't_sub'),  // 5.0 (right) -> SP-5
-          FbdWire(fromBlockId: 't_pv', toBlockId: 't_lt'),   // Level_PV (left)
-          FbdWire(fromBlockId: 't_sub', toBlockId: 't_lt'),  // SP-5 (right) -> PV < SP-5
-          FbdWire(fromBlockId: 't_auto', toBlockId: 't_af'),
-          FbdWire(fromBlockId: 't_lt', toBlockId: 't_af'),
-          FbdWire(fromBlockId: 't_af', toBlockId: 't_of'),
-          FbdWire(fromBlockId: 't_sp', toBlockId: 't_add'),  // Level_SP (left)
-          FbdWire(fromBlockId: 't_db', toBlockId: 't_add'),  // 5.0 (right) -> SP+5
-          FbdWire(fromBlockId: 't_pv', toBlockId: 't_gt'),   // Level_PV (left)
-          FbdWire(fromBlockId: 't_add', toBlockId: 't_gt'),  // SP+5 (right) -> PV > SP+5
-          FbdWire(fromBlockId: 't_auto', toBlockId: 't_ad'),
-          FbdWire(fromBlockId: 't_gt', toBlockId: 't_ad'),
-          FbdWire(fromBlockId: 't_ad', toBlockId: 't_od'),
-          FbdWire(fromBlockId: 't_pv', toBlockId: 't_ga'),   // Level_PV (left)
-          FbdWire(fromBlockId: 't_hi', toBlockId: 't_ga'),   // 85.0 (right) -> PV > 85
-          FbdWire(fromBlockId: 't_ga', toBlockId: 't_oa'),
+          FbdWire(fromBlockId: 't_sp', fromPin: 'OUT', toBlockId: 't_sub', toPin: 'IN1'),  // Level_SP
+          FbdWire(fromBlockId: 't_db', fromPin: 'OUT', toBlockId: 't_sub', toPin: 'IN2'),  // 5.0 -> SP-5
+          FbdWire(fromBlockId: 't_pv', fromPin: 'OUT', toBlockId: 't_lt', toPin: 'IN1'),   // Level_PV
+          FbdWire(fromBlockId: 't_sub', fromPin: 'OUT', toBlockId: 't_lt', toPin: 'IN2'),  // SP-5 -> PV < SP-5
+          FbdWire(fromBlockId: 't_auto', fromPin: 'OUT', toBlockId: 't_af', toPin: 'IN1'),
+          FbdWire(fromBlockId: 't_lt', fromPin: 'OUT', toBlockId: 't_af', toPin: 'IN2'),
+          FbdWire(fromBlockId: 't_af', fromPin: 'OUT', toBlockId: 't_of', toPin: 'IN'),
+          FbdWire(fromBlockId: 't_sp', fromPin: 'OUT', toBlockId: 't_add', toPin: 'IN1'),  // Level_SP
+          FbdWire(fromBlockId: 't_db', fromPin: 'OUT', toBlockId: 't_add', toPin: 'IN2'),  // 5.0 -> SP+5
+          FbdWire(fromBlockId: 't_pv', fromPin: 'OUT', toBlockId: 't_gt', toPin: 'IN1'),   // Level_PV
+          FbdWire(fromBlockId: 't_add', fromPin: 'OUT', toBlockId: 't_gt', toPin: 'IN2'),  // SP+5 -> PV > SP+5
+          FbdWire(fromBlockId: 't_auto', fromPin: 'OUT', toBlockId: 't_ad', toPin: 'IN1'),
+          FbdWire(fromBlockId: 't_gt', fromPin: 'OUT', toBlockId: 't_ad', toPin: 'IN2'),
+          FbdWire(fromBlockId: 't_ad', fromPin: 'OUT', toBlockId: 't_od', toPin: 'IN'),
+          FbdWire(fromBlockId: 't_pv', fromPin: 'OUT', toBlockId: 't_ga', toPin: 'IN1'),   // Level_PV
+          FbdWire(fromBlockId: 't_hi', fromPin: 'OUT', toBlockId: 't_ga', toPin: 'IN2'),   // 85.0 -> PV > 85
+          FbdWire(fromBlockId: 't_ga', fromPin: 'OUT', toBlockId: 't_oa', toPin: 'IN'),
         ],
       ),
       PlcProgram(name: 'TankSequence_SFC', language: 'SequentialFunctionChart', description: 'Tank fill/drain sequence state machine'),
@@ -469,27 +469,27 @@ Reactor_Ready := NOT Alarm_High
           FbdBlock(id: 'f_o4', type: 'TAG_OUTPUT', title: 'Cool Cmd', tagBinding: 'Cool_Cmd', x: 790, y: 590),
         ],
         fbdWires: [
-          FbdWire(fromBlockId: 'f_i2', toBlockId: 'f_n1'),
-          FbdWire(fromBlockId: 'f_i1', toBlockId: 'f_a1'),
-          FbdWire(fromBlockId: 'f_n1', toBlockId: 'f_a1'),
-          FbdWire(fromBlockId: 'f_a1', toBlockId: 'f_o1'),
-          FbdWire(fromBlockId: 'f_a1', toBlockId: 'f_o2'),
+          FbdWire(fromBlockId: 'f_i2', fromPin: 'OUT', toBlockId: 'f_n1', toPin: 'IN'),
+          FbdWire(fromBlockId: 'f_i1', fromPin: 'OUT', toBlockId: 'f_a1', toPin: 'IN1'),
+          FbdWire(fromBlockId: 'f_n1', fromPin: 'OUT', toBlockId: 'f_a1', toPin: 'IN2'),
+          FbdWire(fromBlockId: 'f_a1', fromPin: 'OUT', toBlockId: 'f_o1', toPin: 'IN'),
+          FbdWire(fromBlockId: 'f_a1', fromPin: 'OUT', toBlockId: 'f_o2', toPin: 'IN'),
           // Heat: Room_Temp < (Setpoint - 1.0)
-          FbdWire(fromBlockId: 'f_i4', toBlockId: 'f_s1'), // Setpoint (left)
-          FbdWire(fromBlockId: 'f_c1', toBlockId: 'f_s1'), // 1.0 (right)
-          FbdWire(fromBlockId: 'f_i3', toBlockId: 'f_lt'), // Room_Temp (left)
-          FbdWire(fromBlockId: 'f_s1', toBlockId: 'f_lt'), // SP-1 (right)
-          FbdWire(fromBlockId: 'f_a1', toBlockId: 'f_a2'),
-          FbdWire(fromBlockId: 'f_lt', toBlockId: 'f_a2'),
-          FbdWire(fromBlockId: 'f_a2', toBlockId: 'f_o3'),
+          FbdWire(fromBlockId: 'f_i4', fromPin: 'OUT', toBlockId: 'f_s1', toPin: 'IN1'), // Setpoint
+          FbdWire(fromBlockId: 'f_c1', fromPin: 'OUT', toBlockId: 'f_s1', toPin: 'IN2'), // 1.0
+          FbdWire(fromBlockId: 'f_i3', fromPin: 'OUT', toBlockId: 'f_lt', toPin: 'IN1'), // Room_Temp
+          FbdWire(fromBlockId: 'f_s1', fromPin: 'OUT', toBlockId: 'f_lt', toPin: 'IN2'), // SP-1
+          FbdWire(fromBlockId: 'f_a1', fromPin: 'OUT', toBlockId: 'f_a2', toPin: 'IN1'),
+          FbdWire(fromBlockId: 'f_lt', fromPin: 'OUT', toBlockId: 'f_a2', toPin: 'IN2'),
+          FbdWire(fromBlockId: 'f_a2', fromPin: 'OUT', toBlockId: 'f_o3', toPin: 'IN'),
           // Cool: Room_Temp > (Setpoint + 1.0)
-          FbdWire(fromBlockId: 'f_i4', toBlockId: 'f_a3'), // Setpoint (left)
-          FbdWire(fromBlockId: 'f_c1', toBlockId: 'f_a3'), // 1.0 (right)
-          FbdWire(fromBlockId: 'f_i3', toBlockId: 'f_gt'), // Room_Temp (left)
-          FbdWire(fromBlockId: 'f_a3', toBlockId: 'f_gt'), // SP+1 (right)
-          FbdWire(fromBlockId: 'f_a1', toBlockId: 'f_a4'),
-          FbdWire(fromBlockId: 'f_gt', toBlockId: 'f_a4'),
-          FbdWire(fromBlockId: 'f_a4', toBlockId: 'f_o4'),
+          FbdWire(fromBlockId: 'f_i4', fromPin: 'OUT', toBlockId: 'f_a3', toPin: 'IN1'), // Setpoint
+          FbdWire(fromBlockId: 'f_c1', fromPin: 'OUT', toBlockId: 'f_a3', toPin: 'IN2'), // 1.0
+          FbdWire(fromBlockId: 'f_i3', fromPin: 'OUT', toBlockId: 'f_gt', toPin: 'IN1'), // Room_Temp
+          FbdWire(fromBlockId: 'f_a3', fromPin: 'OUT', toBlockId: 'f_gt', toPin: 'IN2'), // SP+1
+          FbdWire(fromBlockId: 'f_a1', fromPin: 'OUT', toBlockId: 'f_a4', toPin: 'IN1'),
+          FbdWire(fromBlockId: 'f_gt', fromPin: 'OUT', toBlockId: 'f_a4', toPin: 'IN2'),
+          FbdWire(fromBlockId: 'f_a4', fromPin: 'OUT', toBlockId: 'f_o4', toPin: 'IN'),
         ],
       ),
     ],
@@ -777,13 +777,13 @@ System_Ready := Pump_Motor AND Quality_OK AND NOT Alarm_Active;''',
           FbdBlock(id: 'wf_o1', type: 'TAG_OUTPUT', title: 'Quality OK', tagBinding: 'Quality_OK', x: 660, y: 240),
         ],
         fbdWires: [
-          FbdWire(fromBlockId: 'wf_i1', toBlockId: 'wf_lt'), // Turbidity_PV (left)
-          FbdWire(fromBlockId: 'wf_i2', toBlockId: 'wf_lt'), // Turbidity_SP (right)
-          FbdWire(fromBlockId: 'wf_i3', toBlockId: 'wf_gt'), // Level_PV (left)
-          FbdWire(fromBlockId: 'wf_c1', toBlockId: 'wf_gt'), // 10.0 (right)
-          FbdWire(fromBlockId: 'wf_lt', toBlockId: 'wf_a1'),
-          FbdWire(fromBlockId: 'wf_gt', toBlockId: 'wf_a1'),
-          FbdWire(fromBlockId: 'wf_a1', toBlockId: 'wf_o1'),
+          FbdWire(fromBlockId: 'wf_i1', fromPin: 'OUT', toBlockId: 'wf_lt', toPin: 'IN1'), // Turbidity_PV
+          FbdWire(fromBlockId: 'wf_i2', fromPin: 'OUT', toBlockId: 'wf_lt', toPin: 'IN2'), // Turbidity_SP
+          FbdWire(fromBlockId: 'wf_i3', fromPin: 'OUT', toBlockId: 'wf_gt', toPin: 'IN1'), // Level_PV
+          FbdWire(fromBlockId: 'wf_c1', fromPin: 'OUT', toBlockId: 'wf_gt', toPin: 'IN2'), // 10.0
+          FbdWire(fromBlockId: 'wf_lt', fromPin: 'OUT', toBlockId: 'wf_a1', toPin: 'IN1'),
+          FbdWire(fromBlockId: 'wf_gt', fromPin: 'OUT', toBlockId: 'wf_a1', toPin: 'IN2'),
+          FbdWire(fromBlockId: 'wf_a1', fromPin: 'OUT', toBlockId: 'wf_o1', toPin: 'IN'),
         ],
       ),
       // SFC: Filter backwash sequence
