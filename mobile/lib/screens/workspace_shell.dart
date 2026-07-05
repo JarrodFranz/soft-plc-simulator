@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/project_model.dart';
 import '../models/sim_engine.dart';
 import '../models/ld_exec.dart';
@@ -8,6 +9,7 @@ import '../models/fbd_exec.dart';
 import '../models/sfc_exec.dart';
 import '../models/st_exec.dart';
 import '../data/default_projects.dart';
+import '../data/project_repository.dart';
 import '../ui/responsive.dart';
 import '../widgets/tag_inspector_dock.dart';
 import 'st_editor_screen.dart';
@@ -18,8 +20,16 @@ import 'memory_manager_screen.dart';
 import 'hmi_dashboard_builder_screen.dart';
 import 'simulated_io_screen.dart';
 
+/// Debounce window between the last project mutation and the autosave write.
+const Duration _autosaveDebounce = Duration(milliseconds: 800);
+
 class WorkspaceShell extends StatefulWidget {
-  const WorkspaceShell({super.key});
+  /// Optional injection seam so tests (and callers that already own a
+  /// [ProjectRepository]) can share one backing store with the shell instead
+  /// of it always minting its own via [SharedPreferences.getInstance].
+  final ProjectRepository? repository;
+
+  const WorkspaceShell({super.key, this.repository});
 
   @override
   State<WorkspaceShell> createState() => _WorkspaceShellState();
@@ -29,7 +39,9 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   // Project Workspace Repository
-  late List<PlcProject> _allProjects;
+  ProjectRepository? _repo;
+  bool _booting = true;
+  List<PlcProject> _allProjects = [];
   late PlcProject _activeProject;
 
   // Active Main Content View
@@ -50,22 +62,107 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   // Side Dock Inspector State
   bool isTagDockVisible = true;
 
+  // Autosave status: null = nothing pending/in-flight (fully saved, or the
+  // user hasn't edited anything yet this session).
+  Timer? _autosaveTimer;
+  bool _saveInFlight = false;
+  bool _savedIndicatorVisible = false;
+
+  // Cancellable guard against SharedPreferences.getInstance() hanging (e.g.
+  // the platform channel has no responder). Cancelled in dispose() so a
+  // still-pending Timer never trips flutter_test's post-dispose invariant
+  // check in tests that unmount before boot naturally resolves.
+  Timer? _bootTimeoutGuard;
+
   @override
   void initState() {
     super.initState();
-    _initProjects();
-    _startScanLoop();
+    _boot();
   }
 
   @override
   void dispose() {
     _scanTimer?.cancel();
+    _autosaveTimer?.cancel();
+    _bootTimeoutGuard?.cancel();
     super.dispose();
   }
 
-  void _initProjects() {
-    _allProjects = DefaultProjects.all();
-    _activeProject = _allProjects.first;
+  Future<void> _boot() async {
+    ProjectRepository? repo;
+    List<PlcProject> loadedProjects = [];
+    PlcProject? active;
+
+    try {
+      if (widget.repository != null) {
+        repo = widget.repository;
+      } else {
+        final prefsCompleter = Completer<SharedPreferences>();
+        SharedPreferences.getInstance().then(
+          (p) {
+            if (!prefsCompleter.isCompleted) prefsCompleter.complete(p);
+          },
+          onError: (Object e, StackTrace st) {
+            if (!prefsCompleter.isCompleted) prefsCompleter.completeError(e, st);
+          },
+        );
+        _bootTimeoutGuard = Timer(const Duration(seconds: 5), () {
+          if (!prefsCompleter.isCompleted) {
+            prefsCompleter.completeError(TimeoutException('SharedPreferences.getInstance timed out'));
+          }
+        });
+        final prefs = await prefsCompleter.future;
+        _bootTimeoutGuard?.cancel();
+        repo = ProjectRepository(prefs);
+      }
+      await repo!.seedDefaultsIfEmpty();
+
+      final catalog = await repo.listProjects();
+      final activeId = await repo.getActiveProjectId();
+
+      if (activeId != null) {
+        active = await repo.loadProject(activeId);
+      }
+      active ??= catalog.isNotEmpty ? await repo.loadProject(catalog.first.id) : null;
+
+      for (final summary in catalog) {
+        if (active != null && summary.id == active.id) {
+          loadedProjects.add(active);
+          continue;
+        }
+        final p = await repo.loadProject(summary.id);
+        if (p != null) loadedProjects.add(p);
+      }
+    } catch (_) {
+      // No persistence backend available (e.g. the shared_preferences
+      // platform channel isn't wired up, such as in a widget test that
+      // doesn't mock it and didn't inject a repository). Fall back to
+      // pure in-memory defaults so the shell still boots and functions —
+      // just without cross-session persistence.
+      repo = null;
+    }
+
+    if (repo == null || loadedProjects.isEmpty) {
+      loadedProjects = DefaultProjects.all();
+      active = loadedProjects.first;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _repo = repo;
+      _allProjects = loadedProjects;
+      _activeProject = active ?? loadedProjects.first;
+      if (_activeProject.hmis.isNotEmpty) {
+        _activeViewId = 'HMI:${_activeProject.hmis.first.id}';
+      } else if (_activeProject.programs.isNotEmpty) {
+        _activeViewId = 'PROGRAM:${_activeProject.programs.first.name}';
+      } else {
+        _activeViewId = 'MEMORY';
+      }
+      _booting = false;
+    });
+    await repo?.setActiveProjectId(_activeProject.id);
+    _startScanLoop();
   }
 
   void _startScanLoop() {
@@ -89,6 +186,9 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   }
 
   void _switchActiveProject(PlcProject proj) {
+    // Flush any pending edit on the project we're leaving before switching
+    // away from it, so a rapid switch right after an edit can't drop it.
+    _flushPendingAutosave();
     setState(() {
       _activeProject = proj;
       if (proj.hmis.isNotEmpty) {
@@ -103,6 +203,305 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _sfcRuntime.clear();
       _stRuntime.clear();
     });
+    unawaited(_repo?.setActiveProjectId(proj.id));
+  }
+
+  // ── Autosave ─────────────────────────────────────────────────────────
+
+  /// Call after any in-memory mutation of [_activeProject] to (re)start the
+  /// debounce window and refresh the UI. Cheap/no-op-safe to call from
+  /// every editor callback — repeated calls just push the save out further.
+  void _markDirtyAndAutosave() {
+    setState(() {});
+    _autosaveTimer?.cancel();
+    _autosaveTimer = Timer(_autosaveDebounce, _runAutosave);
+  }
+
+  Future<void> _runAutosave() async {
+    final repo = _repo;
+    if (repo == null) return;
+    setState(() => _saveInFlight = true);
+    final projectToSave = _activeProject;
+    await repo.saveProject(projectToSave);
+    if (!mounted) return;
+    setState(() {
+      _saveInFlight = false;
+      _savedIndicatorVisible = true;
+    });
+  }
+
+  /// If a debounced autosave is pending, run it immediately instead of
+  /// waiting out the timer (used before switching/closing a project so an
+  /// edit made just before the switch isn't lost).
+  void _flushPendingAutosave() {
+    if (_autosaveTimer == null || !_autosaveTimer!.isActive) return;
+    _autosaveTimer!.cancel();
+    unawaited(_runAutosave());
+  }
+
+  // ── Project CRUD ─────────────────────────────────────────────────────
+
+  /// Prompts for a single line of text via [showAdaptiveWidthDialog] (so it
+  /// never overflows a phone) and returns the trimmed result, or null if the
+  /// user cancelled or entered nothing.
+  Future<String?> _promptForName(
+    BuildContext context, {
+    required String title,
+    required String initialValue,
+    required String confirmLabel,
+  }) {
+    final controller = TextEditingController(text: initialValue);
+    return showAdaptiveWidthDialog<String>(
+      context,
+      child: AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Project Name'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              final name = controller.text.trim();
+              Navigator.pop(context, name.isNotEmpty ? name : null);
+            },
+            child: Text(confirmLabel),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<bool> _confirm(
+    BuildContext context, {
+    required String title,
+    required String message,
+    String confirmLabel = 'Confirm',
+  }) async {
+    final result = await showAdaptiveWidthDialog<bool>(
+      context,
+      child: AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(confirmLabel),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
+  }
+
+  Future<void> _createNewProject() async {
+    final repo = _repo;
+    if (repo == null) return;
+    final name = await _promptForName(
+      context,
+      title: 'New Project',
+      initialValue: 'New Project',
+      confirmLabel: 'Create',
+    );
+    if (name == null) return;
+
+    final blank = PlcProject(
+      id: 'proj_new_${DateTime.now().millisecondsSinceEpoch}',
+      name: name,
+      controllerName: 'PLC_01',
+      tags: [],
+      structDefs: [],
+      programs: [],
+      tasks: [],
+      hmis: [],
+    );
+    await repo.saveProject(blank);
+    await repo.setActiveProjectId(blank.id);
+    if (!mounted) return;
+    setState(() {
+      _allProjects.add(blank);
+      _activeProject = blank;
+      _activeViewId = 'MEMORY';
+      scanCount = 0;
+      _simRuntime.byRuleId.clear();
+      _ldRuntime.clear();
+      _fbdRuntime.clear();
+      _sfcRuntime.clear();
+      _stRuntime.clear();
+    });
+  }
+
+  Future<void> _duplicateActiveProject() async {
+    final repo = _repo;
+    if (repo == null) return;
+    _flushPendingAutosave();
+    final newId = await repo.duplicateProject(_activeProject.id, newName: '${_activeProject.name} Copy');
+    final copy = await repo.loadProject(newId);
+    if (copy == null) return;
+    await repo.setActiveProjectId(copy.id);
+    if (!mounted) return;
+    setState(() {
+      _allProjects.add(copy);
+      _activeProject = copy;
+      if (copy.hmis.isNotEmpty) {
+        _activeViewId = 'HMI:${copy.hmis.first.id}';
+      } else if (copy.programs.isNotEmpty) {
+        _activeViewId = 'PROGRAM:${copy.programs.first.name}';
+      } else {
+        _activeViewId = 'MEMORY';
+      }
+      scanCount = 0;
+      _simRuntime.byRuleId.clear();
+      _ldRuntime.clear();
+      _fbdRuntime.clear();
+      _sfcRuntime.clear();
+      _stRuntime.clear();
+    });
+  }
+
+  Future<void> _renameActiveProject() async {
+    final repo = _repo;
+    if (repo == null) return;
+    final name = await _promptForName(
+      context,
+      title: 'Rename Project',
+      initialValue: _activeProject.name,
+      confirmLabel: 'Rename',
+    );
+    if (name == null) return;
+    await repo.renameProject(_activeProject.id, name);
+    if (!mounted) return;
+    setState(() {
+      _activeProject.name = name;
+    });
+  }
+
+  Future<void> _deleteActiveProject() async {
+    final repo = _repo;
+    if (repo == null) return;
+    final confirmed = await _confirm(
+      context,
+      title: 'Delete Project',
+      message: 'Delete "${_activeProject.name}"? This cannot be undone.',
+      confirmLabel: 'Delete',
+    );
+    if (!confirmed) return;
+
+    _autosaveTimer?.cancel();
+    final deletedId = _activeProject.id;
+    await repo.deleteProject(deletedId);
+
+    var remaining = _allProjects.where((p) => p.id != deletedId).toList();
+    if (remaining.isEmpty) {
+      await repo.seedDefaultsIfEmpty();
+      final catalog = await repo.listProjects();
+      remaining = [];
+      for (final s in catalog) {
+        final p = await repo.loadProject(s.id);
+        if (p != null) remaining.add(p);
+      }
+    }
+    final next = remaining.first;
+    await repo.setActiveProjectId(next.id);
+    if (!mounted) return;
+    setState(() {
+      _allProjects = remaining;
+      _activeProject = next;
+      if (next.hmis.isNotEmpty) {
+        _activeViewId = 'HMI:${next.hmis.first.id}';
+      } else if (next.programs.isNotEmpty) {
+        _activeViewId = 'PROGRAM:${next.programs.first.name}';
+      } else {
+        _activeViewId = 'MEMORY';
+      }
+      scanCount = 0;
+      _simRuntime.byRuleId.clear();
+      _ldRuntime.clear();
+      _fbdRuntime.clear();
+      _sfcRuntime.clear();
+      _stRuntime.clear();
+    });
+  }
+
+  Future<void> _resetToDefaults() async {
+    final repo = _repo;
+    if (repo == null) return;
+    final confirmed = await _confirm(
+      context,
+      title: 'Reset to Defaults',
+      message: 'This deletes ALL projects (including your edits) and restores the built-in defaults. Continue?',
+      confirmLabel: 'Reset',
+    );
+    if (!confirmed) return;
+
+    _autosaveTimer?.cancel();
+    await repo.resetToDefaults();
+    final catalog = await repo.listProjects();
+    final loaded = <PlcProject>[];
+    for (final s in catalog) {
+      final p = await repo.loadProject(s.id);
+      if (p != null) loaded.add(p);
+    }
+    final first = loaded.first;
+    await repo.setActiveProjectId(first.id);
+    if (!mounted) return;
+    setState(() {
+      _allProjects = loaded;
+      _activeProject = first;
+      if (first.hmis.isNotEmpty) {
+        _activeViewId = 'HMI:${first.hmis.first.id}';
+      } else if (first.programs.isNotEmpty) {
+        _activeViewId = 'PROGRAM:${first.programs.first.name}';
+      } else {
+        _activeViewId = 'MEMORY';
+      }
+      scanCount = 0;
+      _simRuntime.byRuleId.clear();
+      _ldRuntime.clear();
+      _fbdRuntime.clear();
+      _sfcRuntime.clear();
+      _stRuntime.clear();
+    });
+  }
+
+  Widget _projectCrudButton({required IconData icon, required String tooltip, required VoidCallback onTap}) {
+    return touchable(
+      IconButton(
+        icon: Icon(icon, size: 16, color: Colors.grey),
+        tooltip: tooltip,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+        onPressed: onTap,
+      ),
+    );
+  }
+
+  Widget _buildSaveStatus() {
+    if (_saveInFlight) {
+      return const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.amberAccent)),
+          SizedBox(width: 6),
+          Text('Saving…', style: TextStyle(fontSize: 11, color: Colors.amberAccent)),
+        ],
+      );
+    }
+    if (_savedIndicatorVisible) {
+      return const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.check_circle, size: 12, color: Colors.greenAccent),
+          SizedBox(width: 4),
+          Text('Saved', style: TextStyle(fontSize: 11, color: Colors.greenAccent)),
+        ],
+      );
+    }
+    return const SizedBox.shrink();
   }
 
   void _deleteProgram(String progName) {
@@ -119,6 +518,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         }
       }
     });
+    _markDirtyAndAutosave();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Program "$progName" deleted')));
   }
 
@@ -144,6 +544,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                   _activeProject.hmis.add(newHmi);
                   _activeViewId = 'HMI:${newHmi.id}';
                 });
+                _markDirtyAndAutosave();
                 Navigator.pop(ctx);
               },
               child: const Text('Create HMI Dashboard'),
@@ -164,6 +565,22 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
 
   @override
   Widget build(BuildContext context) {
+    if (_booting) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF0F172A),
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(color: Colors.cyanAccent),
+              SizedBox(height: 16),
+              Text('Loading projects…', style: TextStyle(color: Colors.grey)),
+            ],
+          ),
+        ),
+      );
+    }
+
     final expanded = context.isExpanded;
     final compact = context.isCompact;
 
@@ -182,6 +599,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                 style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
               ),
             ),
+            const SizedBox(width: 10),
+            _buildSaveStatus(),
           ],
         ),
         backgroundColor: const Color(0xFF1E293B),
@@ -195,7 +614,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
               width: math.min(340, MediaQuery.sizeOf(context).width * 0.9),
               child: TagInspectorDock(
                 tags: _activeProject.tags,
-                onTagStateChanged: () => setState(() {}),
+                onTagStateChanged: _markDirtyAndAutosave,
                 onClose: () {
                   Navigator.pop(context);
                   setState(() => isTagDockVisible = false);
@@ -269,7 +688,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                         const VerticalDivider(width: 1, color: Colors.white12),
                         TagInspectorDock(
                           tags: _activeProject.tags,
-                          onTagStateChanged: () => setState(() {}),
+                          onTagStateChanged: _markDirtyAndAutosave,
                           onClose: () => setState(() => isTagDockVisible = false),
                         ),
                       ],
@@ -439,6 +858,18 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                       _switchActiveProject(selected);
                     }
                   },
+                ),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  children: [
+                    _projectCrudButton(icon: Icons.add, tooltip: 'New Project', onTap: _createNewProject),
+                    _projectCrudButton(icon: Icons.copy_all, tooltip: 'Duplicate Project', onTap: _duplicateActiveProject),
+                    _projectCrudButton(icon: Icons.drive_file_rename_outline, tooltip: 'Rename Project', onTap: _renameActiveProject),
+                    _projectCrudButton(icon: Icons.delete_outline, tooltip: 'Delete Project', onTap: _deleteActiveProject),
+                    _projectCrudButton(icon: Icons.restore, tooltip: 'Reset to Defaults', onTap: _resetToDefaults),
+                  ],
                 ),
               ],
             ),
@@ -724,6 +1155,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                   }
                   _activeViewId = 'PROGRAM:${newProg.name}';
                 });
+                _markDirtyAndAutosave();
                 Navigator.pop(ctx);
               },
               child: const Text('Add Program'),
@@ -742,12 +1174,12 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         currentProject: _activeProject,
         hmiScreen: hmi,
         onScanTriggered: () => setState(() => _executeScan()),
-        onProjectUpdated: () => setState(() {}),
+        onProjectUpdated: _markDirtyAndAutosave,
       );
     } else if (_activeViewId == 'MEMORY') {
       return MemoryManagerScreen(
         currentProject: _activeProject,
-        onProjectUpdated: () => setState(() {}),
+        onProjectUpdated: _markDirtyAndAutosave,
       );
     } else if (_activeViewId.startsWith('PROGRAM:')) {
       final progName = _activeViewId.replaceFirst('PROGRAM:', '');
@@ -758,19 +1190,19 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         return LdEditorScreen(
           currentProject: _activeProject,
           program: prog,
-          onProgramUpdated: () => setState(() {}),
+          onProgramUpdated: _markDirtyAndAutosave,
         );
       } else if (prog.language == 'FunctionBlockDiagram') {
         return FbdEditorScreen(
           currentProject: _activeProject,
           program: prog,
-          onProgramUpdated: () => setState(() {}),
+          onProgramUpdated: _markDirtyAndAutosave,
         );
       } else if (prog.language == 'SequentialFunctionChart') {
         return SfcEditorScreen(
           currentProject: _activeProject,
           program: prog,
-          onProgramUpdated: () => setState(() {}),
+          onProgramUpdated: _markDirtyAndAutosave,
         );
       } else {
         return StEditorScreen(
@@ -782,13 +1214,14 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                 _activeProject.programs[idx] = updated;
               }
             });
+            _markDirtyAndAutosave();
           },
         );
       }
     } else if (_activeViewId == 'SIMIO:rules') {
       return SimulatedIoScreen(
         currentProject: _activeProject,
-        onProjectUpdated: () => setState(() {}),
+        onProjectUpdated: _markDirtyAndAutosave,
       );
     }
     return const Center(child: Text('Select an HMI, Memory, or Program from the Left Dock'));
