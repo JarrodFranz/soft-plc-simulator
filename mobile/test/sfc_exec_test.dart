@@ -121,4 +121,21 @@ void main() {
     executeSfcPrograms(p2, 100, SfcRuntime());
     expect(true, isTrue); // reached without exception
   });
+
+  test('a true transition to a dangling target is ignored; a later valid one still fires', () {
+    final prog = _sfc([
+      SfcStep(id: 's0', name: 'A', isInitial: true, actionSt: ''),
+      SfcStep(id: 's1', name: 'B', actionSt: 'X := 1;'),
+    ], [
+      // First transition is true but points at a non-existent step.
+      SfcTransition(id: 't0', fromStepId: 's0', toStepId: 'nope', conditionSt: 'TRUE'),
+      // Second transition is also true and points at a real step.
+      SfcTransition(id: 't1', fromStepId: 's0', toStepId: 's1', conditionSt: 'TRUE'),
+    ]);
+    final p = _proj([_tag('X', 'INT32', 0)], prog);
+    final rt = SfcRuntime();
+    executeSfcPrograms(p, 100, rt); // A acts; t0 dangling -> skipped; t1 fires
+    executeSfcPrograms(p, 100, rt); // B acts
+    expect(readPath(p, 'X'), equals(1)); // reached B, not stranded on A
+  });
 }

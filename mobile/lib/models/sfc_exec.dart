@@ -80,8 +80,10 @@ void executeSfcPrograms(PlcProject p, int dtMs, SfcRuntime rt) {
         if (targetExists) {
           rt.activeStepId[prog.name] = t.toStepId;
           rt.stepElapsedMs[prog.name] = 0;
+          break;
         }
-        break;
+        // Dangling target (no such step): ignore this transition and keep
+        // evaluating later ones, rather than stranding the step for the scan.
       }
     }
   }
