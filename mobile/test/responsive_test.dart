@@ -54,10 +54,23 @@ void main() {
     ));
     await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
-    final box = tester.getSize(find
-        .descendant(of: find.byType(Dialog), matching: find.byType(ConstrainedBox))
-        .first);
-    expect(box.width, lessThanOrEqualTo(360 - 32));
+    // Assert the CLAMP CONSTRAINT itself, not a rendered size (the child is
+    // narrow so its rendered width is 280 regardless of the constraint, and the
+    // screen physically caps width anyway — either would pass even if the clamp
+    // were removed). The dialog subtree has the framework's own ConstrainedBox
+    // (maxWidth == infinity) plus ours (finite). Ours must be clamped to
+    // min(desiredWidth 460, screenWidth 360 - 32) == 328, so every finite
+    // maxWidth must be <= 328 and 328 must be present. Deleting the clamp makes
+    // our box maxWidth 460 > 328 and fails this test.
+    final finiteMaxWidths = tester
+        .widgetList<ConstrainedBox>(find.descendant(
+            of: find.byType(Dialog), matching: find.byType(ConstrainedBox)))
+        .map((b) => b.constraints.maxWidth)
+        .where((w) => w.isFinite)
+        .toList();
+    expect(finiteMaxWidths, isNotEmpty);
+    expect(finiteMaxWidths.every((w) => w <= 360 - 32), isTrue);
+    expect(finiteMaxWidths, contains(360.0 - 32));
     expect(tester.takeException(), isNull);
   });
 
