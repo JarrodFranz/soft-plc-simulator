@@ -44,6 +44,8 @@ class PlcTag {
       description: json['description'] ?? '',
       engineeringUnits: json['engineering_units'] ?? '',
       ioType: json['io_type'] ?? 'Internal',
+      isForced: json['is_forced'] ?? false,
+      forcedValue: json['forced_value'],
     );
   }
 
@@ -53,11 +55,14 @@ class PlcTag {
     'data_type': dataType,
     'array_length': arrayLength,
     'initial_value': value,
+    'quality': quality,
     'access': access,
     'retentive': retentive,
     'description': description,
     'engineering_units': engineeringUnits,
     'io_type': ioType,
+    'is_forced': isForced,
+    'forced_value': forcedValue,
   };
 }
 
@@ -73,6 +78,22 @@ class StructFieldDef {
     this.arrayLength = 0,
     required this.defaultValue,
   });
+
+  factory StructFieldDef.fromJson(Map<String, dynamic> json) {
+    return StructFieldDef(
+      name: json['name'] ?? '',
+      dataType: json['data_type'] ?? 'BOOL',
+      arrayLength: json['array_length'] ?? 0,
+      defaultValue: json['default_value'],
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'data_type': dataType,
+    'array_length': arrayLength,
+    'default_value': defaultValue,
+  };
 }
 
 class PlcStructDef {
@@ -83,6 +104,20 @@ class PlcStructDef {
     required this.name,
     required this.fields,
   });
+
+  factory PlcStructDef.fromJson(Map<String, dynamic> json) {
+    return PlcStructDef(
+      name: json['name'] ?? '',
+      fields: (json['fields'] as List? ?? [])
+          .map((f) => StructFieldDef.fromJson(f))
+          .toList(),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'fields': fields.map((f) => f.toJson()).toList(),
+  };
 }
 
 // -------------------------------------------------------------
@@ -112,6 +147,35 @@ class LdNode {
     this.col = 0,
     this.row = 0,
   });
+
+  factory LdNode.fromJson(Map<String, dynamic> json) {
+    return LdNode(
+      id: json['id'] ?? '',
+      kind: LdKind.values.firstWhere(
+        (e) => e.name == json['kind'],
+        orElse: () => LdKind.contact,
+      ),
+      variable: json['variable'] ?? '',
+      modifier: json['modifier'] ?? 'normal',
+      blockType: json['block_type'] ?? '',
+      presetMs: json['preset_ms'] ?? 5000,
+      comment: json['comment'] ?? '',
+      col: json['col'] ?? 0,
+      row: json['row'] ?? 0,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'kind': kind.name,
+    'variable': variable,
+    'modifier': modifier,
+    'block_type': blockType,
+    'preset_ms': presetMs,
+    'comment': comment,
+    'col': col,
+    'row': row,
+  };
 }
 
 class LdWire {
@@ -126,6 +190,22 @@ class LdWire {
     required this.toId,
     this.toPort = 'in',
   });
+
+  factory LdWire.fromJson(Map<String, dynamic> json) {
+    return LdWire(
+      fromId: json['from_id'] ?? '',
+      fromPort: json['from_port'] ?? 'out',
+      toId: json['to_id'] ?? '',
+      toPort: json['to_port'] ?? 'in',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'from_id': fromId,
+    'from_port': fromPort,
+    'to_id': toId,
+    'to_port': toPort,
+  };
 }
 
 class LdRung {
@@ -140,6 +220,22 @@ class LdRung {
     required this.nodes,
     required this.wires,
   });
+
+  factory LdRung.fromJson(Map<String, dynamic> json) {
+    return LdRung(
+      rungIndex: json['rung_index'] ?? 0,
+      comment: json['comment'] ?? '',
+      nodes: (json['nodes'] as List? ?? []).map((n) => LdNode.fromJson(n)).toList(),
+      wires: (json['wires'] as List? ?? []).map((w) => LdWire.fromJson(w)).toList(),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'rung_index': rungIndex,
+    'comment': comment,
+    'nodes': nodes.map((n) => n.toJson()).toList(),
+    'wires': wires.map((w) => w.toJson()).toList(),
+  };
 }
 
 // -------------------------------------------------------------
@@ -161,6 +257,26 @@ class FbdBlock {
     this.x = 100,
     this.y = 100,
   });
+
+  factory FbdBlock.fromJson(Map<String, dynamic> json) {
+    return FbdBlock(
+      id: json['id'] ?? '',
+      type: json['type'] ?? '',
+      title: json['title'] ?? '',
+      tagBinding: json['tag_binding'] ?? '',
+      x: (json['x'] as num?)?.toDouble() ?? 100,
+      y: (json['y'] as num?)?.toDouble() ?? 100,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'type': type,
+    'title': title,
+    'tag_binding': tagBinding,
+    'x': x,
+    'y': y,
+  };
 }
 
 class FbdWire {
@@ -171,6 +287,18 @@ class FbdWire {
     required this.fromBlockId,
     required this.toBlockId,
   });
+
+  factory FbdWire.fromJson(Map<String, dynamic> json) {
+    return FbdWire(
+      fromBlockId: json['from_block_id'] ?? '',
+      toBlockId: json['to_block_id'] ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'from_block_id': fromBlockId,
+    'to_block_id': toBlockId,
+  };
 }
 
 // -------------------------------------------------------------
@@ -188,6 +316,22 @@ class SfcStep {
     this.isInitial = false,
     this.actionSt = '',
   });
+
+  factory SfcStep.fromJson(Map<String, dynamic> json) {
+    return SfcStep(
+      id: json['id'] ?? '',
+      name: json['name'] ?? '',
+      isInitial: json['is_initial'] ?? false,
+      actionSt: json['action_st'] ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'is_initial': isInitial,
+    'action_st': actionSt,
+  };
 }
 
 class SfcTransition {
@@ -202,6 +346,22 @@ class SfcTransition {
     required this.toStepId,
     required this.conditionSt,
   });
+
+  factory SfcTransition.fromJson(Map<String, dynamic> json) {
+    return SfcTransition(
+      id: json['id'] ?? '',
+      fromStepId: json['from_step_id'] ?? '',
+      toStepId: json['to_step_id'] ?? '',
+      conditionSt: json['condition_st'] ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'from_step_id': fromStepId,
+    'to_step_id': toStepId,
+    'condition_st': conditionSt,
+  };
 }
 
 class PlcProgram {
@@ -239,6 +399,13 @@ class PlcProgram {
       language: json['language'] ?? 'StructuredText',
       description: json['description'] ?? '',
       stSource: json['st_source'] ?? '',
+      rungs: (json['rungs'] as List? ?? []).map((r) => LdRung.fromJson(r)).toList(),
+      fbdBlocks: (json['fbd_blocks'] as List? ?? []).map((b) => FbdBlock.fromJson(b)).toList(),
+      fbdWires: (json['fbd_wires'] as List? ?? []).map((w) => FbdWire.fromJson(w)).toList(),
+      sfcSteps: (json['sfc_steps'] as List? ?? []).map((s) => SfcStep.fromJson(s)).toList(),
+      sfcTransitions: (json['sfc_transitions'] as List? ?? [])
+          .map((t) => SfcTransition.fromJson(t))
+          .toList(),
       enabled: json['enabled'] ?? true,
     );
   }
@@ -248,6 +415,11 @@ class PlcProgram {
     'language': language,
     'description': description,
     'st_source': stSource,
+    'rungs': rungs.map((r) => r.toJson()).toList(),
+    'fbd_blocks': fbdBlocks.map((b) => b.toJson()).toList(),
+    'fbd_wires': fbdWires.map((w) => w.toJson()).toList(),
+    'sfc_steps': sfcSteps.map((s) => s.toJson()).toList(),
+    'sfc_transitions': sfcTransitions.map((t) => t.toJson()).toList(),
     'enabled': enabled,
   };
 }
@@ -485,7 +657,7 @@ class PlcProject {
       controllerName: ctrl['name'] ?? 'PLC_01',
       scanPeriodMs: ctrl['scan_period_ms'] ?? 100,
       tags: (proj['tags'] as List? ?? []).map((t) => PlcTag.fromJson(t)).toList(),
-      structDefs: [],
+      structDefs: (proj['struct_defs'] as List? ?? []).map((s) => PlcStructDef.fromJson(s)).toList(),
       programs: (proj['programs'] as List? ?? []).map((p) => PlcProgram.fromJson(p)).toList(),
       tasks: (proj['tasks'] as List? ?? []).map((tk) => PlcTask.fromJson(tk)).toList(),
       hmis: (proj['hmis'] as List? ?? []).map((h) => HmiScreenDef.fromJson(h)).toList(),
@@ -494,6 +666,7 @@ class PlcProject {
   }
 
   Map<String, dynamic> toJson() => {
+    'schema': 1,
     'project': {
       'id': id,
       'name': name,
@@ -504,6 +677,7 @@ class PlcProject {
         'scan_period_ms': scanPeriodMs,
       },
       'tags': tags.map((t) => t.toJson()).toList(),
+      'struct_defs': structDefs.map((s) => s.toJson()).toList(),
       'programs': programs.map((p) => p.toJson()).toList(),
       'tasks': tasks.map((tk) => tk.toJson()).toList(),
       'hmis': hmis.map((h) => h.toJson()).toList(),
