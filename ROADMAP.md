@@ -49,16 +49,16 @@
 
 ---
 
-## Phase 3.5: Structured Tag System, Simulated I/O & In-App Execution Engines
-- **Objective**: Make the in-app simulator real — structured tags resolved by path, data-driven input simulation, and actual execution of the programs built in the editors (in-app Dart engines; see ADR-009).
+## Phase 3.5: Structured Tag System, Simulated I/O & In-App Execution Engines ✅
+- **Objective**: Make the in-app simulator real — structured tags resolved by path, data-driven input simulation, and actual execution of the programs built in the editors (in-app Dart engines; see ADR-009). **All four IEC 61131-3 languages now execute; every default project's outputs are driven by real engines, and the previously hardcoded per-project logic is fully retired.**
 - **Deliverables**:
   - **Structured tag & type system**: `PlcTag` values as real trees (struct `Map`s, array `List`s); DUT-typed tags replace the retired Data Blocks concept; built-in `TIMER` composite; a pure path resolver (`readPath`/`writePath`/`childrenOf`) for members (`TONTimer.DN`), integer bits (`Word.5`), and array elements (`Recipe[3]`); recursive Memory Manager expansion; path-aware scan accessors and editor tag pickers. ✅
   - **Simulated I/O rules engine**: editable, condition-gated input behaviours (`pulse`, `ramp`, `integrate`, `delayedSet`, `setWhileCondition`) with per-second rates and a dedicated editor screen; the previously hardcoded per-project input physics migrated into visible default rules. ✅
   - **Ladder execution engine**: pure power-flow interpreter over the LD graph (series=AND, parallel=OR, evaluated in topological column order), latch/edge/pulse coil semantics, `TON`/`TOF` timers counting live in their `TIMER` struct tags (scan-tick clock), forcing always wins; hardcoded LD control logic replaced for the motor, conveyor, and water-pump projects; verified by end-to-end scan tests. ✅
   - **SFC execution engine**: pure ST-subset expression/assignment evaluator (`st_expr.dart` — the seed of the ST interpreter) runs step actions and transition conditions with an implicit `STEP_T` step timer; `sfc_exec.dart` drives one active step per program with N-action semantics, first-true-transition switching, and force-aware writes; the bottle filler and water-plant backwash migrated from hardcoded state machines to executed charts. ✅
   - **FBD execution engine**: pure topological dataflow evaluator (`fbd_exec.dart`) over the `FbdBlock`/`FbdWire` graph with a full block set (AND/OR/NOT, ADD/SUB/MUL/DIV, comparators GT/LT/GE/LE/EQ/NE, IEC `LIMIT` clamp, `CONST`, TAG_INPUT/TAG_OUTPUT), input order = wire order, never-throws/never-hangs; the HVAC zone controller and water-quality gate migrated from hardcoded logic to executed diagrams (with editor palette + `CONST` literal editing). ✅
-  - **ST interpreter** (full statement interpreter — `IF`/loops/functions — building on the `st_expr` expression core; must reconcile `proj_all_water`'s `Safety_ST` so it does not re-drive FBD/LD/hardcoded-owned tags `Quality_OK`/`Treat_Dosing`/`Alarm_Active`/`System_Ready`). ⏳ Planned
-- **Status**: 🔄 **ACTIVE — LD, SFC & FBD execution shipped; ST interpreter next**
+  - **ST interpreter**: pure statement interpreter (`st_exec.dart`) — `IF`/`ELSIF`/`ELSE` (nested) + assignments — built on the `st_expr` expression core; tokenizes with source offsets and evaluates each expression as an exact source substring; force-aware writes; never throws and never hangs (parser progress guaranteed on any input). The reactor deadband controller runs as `ReactorTemp_ST` and water alarms/permissive as a trimmed `Safety_ST`; a single authoritative owner was assigned per tag (`Quality_OK`→FBD, `Treat_Dosing`→LD, tank→FBD) and the last hardcoded logic (`_evaluateActiveLogic`) was retired. ✅
+- **Status**: ✅ **COMPLETED — LD, SFC, FBD & ST execution shipped; every default project runs entirely through a real engine (no hardcoded logic remains)**
 
 ---
 
