@@ -342,6 +342,10 @@ Reactor_Ready := NOT Alarm_High
             comment: 'Rung 4: Belt Jammed Alarm Latch',
             main: [_xic('JamTimer.DN', 'Timer done'), _otl('Belt_Jammed', 'Latch jam alarm')],
           ),
+          // Intentional: once a part is seen the jam unlatches and the belt
+          // auto-resumes (the seal-in latch was never dropped). A jam is a
+          // transient blockage, unlike the motor's E-Stop fault-latch, which
+          // deliberately requires a fresh Start press after clearing.
           buildRung(
             index: 5,
             comment: 'Rung 5: Photo Eye Clears the Jam Alarm',
