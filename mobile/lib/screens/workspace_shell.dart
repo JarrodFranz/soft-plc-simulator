@@ -90,21 +90,12 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     // Now fully executed by MotorControl_LD rungs 0/1 (see executeLdPrograms).
 
     // ── 2. Tank Level Simulation ──────────────────────────────────────────
-    if (id == 'proj_tank') {
-      double pv = _getTagDouble('Level_PV');
-      double sp = _getTagDouble('Level_SP');
-      bool auto = _getTagBool('Auto_Mode');
-      bool fill = false, drain = false;
-      if (auto) {
-        if (pv < sp - 5.0) { fill = true; }
-        else if (pv > sp + 5.0) { drain = true; }
-      }
-      _setTagBool('Fill_Valve', fill);
-      _setTagBool('Drain_Valve', drain);
-      _setTagBool('High_Alarm', pv > 85.0);
+    // Now fully executed by TankLevel_FBD (see executeFbdPrograms): Fill_Valve
+    // = Auto AND Level_PV < Level_SP-5, Drain_Valve = Auto AND Level_PV >
+    // Level_SP+5, High_Alarm = Level_PV > 85.
 
     // ── 3. ST Reactor Temperature Controller ─────────────────────────────
-    } else if (id == 'proj_st_reactor') {
+    if (id == 'proj_st_reactor') {
       double temp = _getTagDouble('Temp_PV');
       double sp = _getTagDouble('Temp_SP');
       bool auto = _getTagBool('Auto_Mode');

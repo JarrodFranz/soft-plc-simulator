@@ -157,7 +157,50 @@ abstract class DefaultProjects {
         description: 'On/Off tank level fill/drain control',
         stSource: '// Tank Level Fill/Drain Logic\nIF Auto_Mode THEN\n    IF Level_PV < (Level_SP - 5.0) THEN\n        Fill_Valve := TRUE;\n        Drain_Valve := FALSE;\n    ELSIF Level_PV > (Level_SP + 5.0) THEN\n        Fill_Valve := FALSE;\n        Drain_Valve := TRUE;\n    ELSE\n        Fill_Valve := FALSE;\n        Drain_Valve := FALSE;\n    END_IF;\nEND_IF;\nHigh_Alarm := Level_PV > 85.0;',
       ),
-      PlcProgram(name: 'TankLevel_FBD', language: 'FunctionBlockDiagram', description: 'Tank level signal flow gate diagram'),
+      PlcProgram(
+        name: 'TankLevel_FBD',
+        language: 'FunctionBlockDiagram',
+        description: 'Tank level on/off fill/drain control',
+        fbdBlocks: [
+          FbdBlock(id: 't_auto', type: 'TAG_INPUT', title: 'Auto Mode', tagBinding: 'Auto_Mode', x: 50, y: 80),
+          FbdBlock(id: 't_pv', type: 'TAG_INPUT', title: 'Level PV', tagBinding: 'Level_PV', x: 50, y: 200),
+          FbdBlock(id: 't_sp', type: 'TAG_INPUT', title: 'Level SP', tagBinding: 'Level_SP', x: 50, y: 320),
+          FbdBlock(id: 't_db', type: 'CONST', title: 'Deadband', tagBinding: '5.0', x: 50, y: 440),
+          // Fill: Auto AND Level_PV < (Level_SP - 5.0)
+          FbdBlock(id: 't_sub', type: 'SUB', title: 'SP - 5', tagBinding: '', x: 240, y: 360),
+          FbdBlock(id: 't_lt', type: 'LT', title: 'PV < SP-5', tagBinding: '', x: 420, y: 220),
+          FbdBlock(id: 't_af', type: 'AND', title: 'Fill Enable', tagBinding: '', x: 600, y: 160),
+          FbdBlock(id: 't_of', type: 'TAG_OUTPUT', title: 'Fill Valve', tagBinding: 'Fill_Valve', x: 790, y: 160),
+          // Drain: Auto AND Level_PV > (Level_SP + 5.0)
+          FbdBlock(id: 't_add', type: 'ADD', title: 'SP + 5', tagBinding: '', x: 240, y: 500),
+          FbdBlock(id: 't_gt', type: 'GT', title: 'PV > SP+5', tagBinding: '', x: 420, y: 380),
+          FbdBlock(id: 't_ad', type: 'AND', title: 'Drain Enable', tagBinding: '', x: 600, y: 340),
+          FbdBlock(id: 't_od', type: 'TAG_OUTPUT', title: 'Drain Valve', tagBinding: 'Drain_Valve', x: 790, y: 340),
+          // High alarm: Level_PV > 85.0
+          FbdBlock(id: 't_hi', type: 'CONST', title: 'High Limit', tagBinding: '85.0', x: 420, y: 540),
+          FbdBlock(id: 't_ga', type: 'GT', title: 'PV > 85', tagBinding: '', x: 600, y: 520),
+          FbdBlock(id: 't_oa', type: 'TAG_OUTPUT', title: 'High Alarm', tagBinding: 'High_Alarm', x: 790, y: 520),
+        ],
+        fbdWires: [
+          FbdWire(fromBlockId: 't_sp', toBlockId: 't_sub'),  // Level_SP (left)
+          FbdWire(fromBlockId: 't_db', toBlockId: 't_sub'),  // 5.0 (right) -> SP-5
+          FbdWire(fromBlockId: 't_pv', toBlockId: 't_lt'),   // Level_PV (left)
+          FbdWire(fromBlockId: 't_sub', toBlockId: 't_lt'),  // SP-5 (right) -> PV < SP-5
+          FbdWire(fromBlockId: 't_auto', toBlockId: 't_af'),
+          FbdWire(fromBlockId: 't_lt', toBlockId: 't_af'),
+          FbdWire(fromBlockId: 't_af', toBlockId: 't_of'),
+          FbdWire(fromBlockId: 't_sp', toBlockId: 't_add'),  // Level_SP (left)
+          FbdWire(fromBlockId: 't_db', toBlockId: 't_add'),  // 5.0 (right) -> SP+5
+          FbdWire(fromBlockId: 't_pv', toBlockId: 't_gt'),   // Level_PV (left)
+          FbdWire(fromBlockId: 't_add', toBlockId: 't_gt'),  // SP+5 (right) -> PV > SP+5
+          FbdWire(fromBlockId: 't_auto', toBlockId: 't_ad'),
+          FbdWire(fromBlockId: 't_gt', toBlockId: 't_ad'),
+          FbdWire(fromBlockId: 't_ad', toBlockId: 't_od'),
+          FbdWire(fromBlockId: 't_pv', toBlockId: 't_ga'),   // Level_PV (left)
+          FbdWire(fromBlockId: 't_hi', toBlockId: 't_ga'),   // 85.0 (right) -> PV > 85
+          FbdWire(fromBlockId: 't_ga', toBlockId: 't_oa'),
+        ],
+      ),
       PlcProgram(name: 'TankSequence_SFC', language: 'SequentialFunctionChart', description: 'Tank fill/drain sequence state machine'),
     ],
     tasks: [
@@ -775,7 +818,7 @@ END_IF;''',
         sfcTransitions: [
           SfcTransition(id: 'bt0', fromStepId: 'bw0', toStepId: 'bw1', conditionSt: 'Backwash_Active'),
           SfcTransition(id: 'bt1', fromStepId: 'bw1', toStepId: 'bw2', conditionSt: 'STEP_T >= 5000  (* valve open dwell *)'),
-          SfcTransition(id: 'bt2', fromStepId: 'bw2', toStepId: 'bw3', conditionSt: 'Quality_OK  (* turbidity clearing *)'),
+          SfcTransition(id: 'bt2', fromStepId: 'bw2', toStepId: 'bw3', conditionSt: 'Quality_OK OR STEP_T >= 30000  (* quality recovers, else 30s flush cap *)'),
           SfcTransition(id: 'bt3', fromStepId: 'bw3', toStepId: 'bw4', conditionSt: 'STEP_T >= 10000  (* rinse cycle *)'),
           SfcTransition(id: 'bt4', fromStepId: 'bw4', toStepId: 'bw0', conditionSt: 'NOT Backwash_Active'),
         ],

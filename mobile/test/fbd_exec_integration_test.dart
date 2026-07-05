@@ -101,4 +101,51 @@ void main() {
     expect(_b(p, 'Pump_Motor'), isFalse);
     expect((readPath(p, 'Flow_PV') as num).toDouble(), lessThan(1.0));
   });
+
+  test('tank TankLevel_FBD reproduces the retired hardcoded fill/drain/alarm',
+      () {
+    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_tank');
+    final sim = SimRuntime();
+    final ld = LdExecRuntime();
+    final fbd = FbdRuntime();
+
+    void setInputs(bool auto, double pv, double sp) {
+      writePath(p, 'Auto_Mode', auto);
+      writePath(p, 'Level_PV', pv);
+      writePath(p, 'Level_SP', sp);
+    }
+
+    // Auto, well below setpoint band -> fill, not drain.
+    setInputs(true, 40.0, 50.0);
+    _scan(p, sim, ld, fbd);
+    expect(_b(p, 'Fill_Valve'), isTrue); // 40 < 50-5
+    expect(_b(p, 'Drain_Valve'), isFalse);
+    expect(_b(p, 'High_Alarm'), isFalse);
+
+    // Auto, well above setpoint band -> drain, not fill.
+    setInputs(true, 60.0, 50.0);
+    _scan(p, sim, ld, fbd);
+    expect(_b(p, 'Drain_Valve'), isTrue); // 60 > 50+5
+    expect(_b(p, 'Fill_Valve'), isFalse);
+
+    // Auto, inside the deadband -> neither.
+    setInputs(true, 50.0, 50.0);
+    _scan(p, sim, ld, fbd);
+    expect(_b(p, 'Fill_Valve'), isFalse);
+    expect(_b(p, 'Drain_Valve'), isFalse);
+
+    // Manual (Auto off) -> neither, regardless of level.
+    setInputs(false, 40.0, 50.0);
+    _scan(p, sim, ld, fbd);
+    expect(_b(p, 'Fill_Valve'), isFalse);
+    expect(_b(p, 'Drain_Valve'), isFalse);
+
+    // High alarm is unconditional on level > 85 (even in manual).
+    setInputs(false, 90.0, 50.0);
+    _scan(p, sim, ld, fbd);
+    expect(_b(p, 'High_Alarm'), isTrue);
+    setInputs(true, 80.0, 50.0);
+    _scan(p, sim, ld, fbd);
+    expect(_b(p, 'High_Alarm'), isFalse);
+  });
 }
