@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
+import '../models/fbd_pins.dart';
 import '../models/project_model.dart';
 import '../ui/responsive.dart';
 import '../widgets/tag_autocomplete_field.dart';
+
+const double _kBlockWidth = 180;
+const double _kPinRowHeight = 22;
+const double _kHeaderHeight = 40; // icon row + divider, approx.
 
 class FbdEditorScreen extends StatefulWidget {
   final PlcProject currentProject;
@@ -21,6 +26,17 @@ class FbdEditorScreen extends StatefulWidget {
 
 class _FbdEditorScreenState extends State<FbdEditorScreen> {
   String _searchQuery = '';
+
+  // Wiring interaction state.
+  String? _armedBlockId;
+  String? _armedPin;
+
+  // Wire selection state (for delete).
+  int? _selectedWireIndex;
+
+  // Anchor cache: 'blockId|IN|pin' or 'blockId|OUT|pin' -> local offset within
+  // the 1600x1200 canvas content (i.e. absolute canvas coordinates).
+  final Map<String, Offset> _anchors = {};
 
   @override
   void initState() {
@@ -57,7 +73,162 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     widget.onProgramUpdated();
   }
 
+  // -----------------------------------------------------------------
+  // Wiring helpers
+  // -----------------------------------------------------------------
+
+  void _cancelArm() {
+    if (_armedBlockId != null || _armedPin != null) {
+      setState(() {
+        _armedBlockId = null;
+        _armedPin = null;
+      });
+    }
+  }
+
+  void _selectWire(int? index) {
+    setState(() => _selectedWireIndex = index);
+  }
+
+  void _showSnack(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  void _onOutputTap(String blockId, String pin) {
+    setState(() {
+      _selectedWireIndex = null;
+      if (_armedBlockId == blockId && _armedPin == pin) {
+        // Tapping the same armed output again cancels the arm.
+        _armedBlockId = null;
+        _armedPin = null;
+      } else {
+        _armedBlockId = blockId;
+        _armedPin = pin;
+      }
+    });
+  }
+
+  void _onInputTap(String blockId, String pin) {
+    if (_armedBlockId == null || _armedPin == null) {
+      // No output armed: nothing to do (no-op).
+      setState(() => _selectedWireIndex = null);
+      return;
+    }
+    _completeWire(toBlockId: blockId, toPin: pin);
+  }
+
+  void _completeWire({required String toBlockId, required String toPin}) {
+    final fromBlockId = _armedBlockId!;
+    final fromPin = _armedPin!;
+
+    if (fromBlockId == toBlockId) {
+      _showSnack('Cannot wire a block to itself.');
+      _cancelArm();
+      return;
+    }
+
+    setState(() {
+      // An input takes at most one wire: replace any existing wire to this pin.
+      widget.program.fbdWires.removeWhere((w) => w.toBlockId == toBlockId && w.toPin == toPin);
+      widget.program.fbdWires.add(FbdWire(
+        fromBlockId: fromBlockId,
+        fromPin: fromPin,
+        toBlockId: toBlockId,
+        toPin: toPin,
+      ));
+      _armedBlockId = null;
+      _armedPin = null;
+      _selectedWireIndex = null;
+    });
+    widget.onProgramUpdated();
+  }
+
+  void _deleteWire(int index) {
+    setState(() {
+      widget.program.fbdWires.removeAt(index);
+      _selectedWireIndex = null;
+    });
+    widget.onProgramUpdated();
+  }
+
+  void _deleteBlock(FbdBlock block) {
+    setState(() {
+      widget.program.fbdBlocks.removeWhere((b) => b.id == block.id);
+      widget.program.fbdWires.removeWhere((w) => w.fromBlockId == block.id || w.toBlockId == block.id);
+      if (_armedBlockId == block.id) {
+        _armedBlockId = null;
+        _armedPin = null;
+      }
+      _selectedWireIndex = null;
+    });
+    widget.onProgramUpdated();
+  }
+
+  void _changeInputCount(FbdBlock block, int delta) {
+    final newCount = (block.inputCount + delta).clamp(2, 8);
+    if (newCount == block.inputCount) return;
+    setState(() {
+      block.inputCount = newCount;
+      final validPins = fbdInputPins(block.type, inputCount: block.inputCount).toSet();
+      widget.program.fbdWires.removeWhere((w) => w.toBlockId == block.id && !validPins.contains(w.toPin));
+      _selectedWireIndex = null;
+    });
+    widget.onProgramUpdated();
+  }
+
+  static bool _typeIsExtensible(String type) => type == 'AND' || type == 'OR' || type == 'ADD' || type == 'MUL';
+
+  Color _pinColor(String pin) {
+    // Light type hint: BOOL-ish pins (EN/Q/G/IN on binary gates) vs numeric.
+    const boolPins = {'Q', 'G', 'EN', 'ENO'};
+    if (boolPins.contains(pin)) return Colors.tealAccent;
+    return Colors.lightBlueAccent;
+  }
+
+  // -----------------------------------------------------------------
+  // Canvas
+  // -----------------------------------------------------------------
+
   Widget _buildCanvas(bool expanded) {
+    _anchors.clear();
+
+    final blockWidgets = widget.program.fbdBlocks.map((block) {
+      return Positioned(
+        left: block.x,
+        top: block.y,
+        child: GestureDetector(
+          onPanUpdate: expanded
+              ? (details) {
+                  setState(() {
+                    block.x += details.delta.dx;
+                    block.y += details.delta.dy;
+                  });
+                  widget.onProgramUpdated();
+                }
+              : null,
+          onTap: expanded ? null : () => _showConfigureBlockDialog(block),
+          child: _buildFbdBlockCard(block, showInlineEditors: expanded),
+        ),
+      );
+    }).toList();
+
+    // Pre-compute pin anchors for the painter (after blocks are laid out with
+    // known positions/sizes, purely arithmetic — no need to wait for a frame).
+    for (final block in widget.program.fbdBlocks) {
+      final inputs = fbdInputPins(block.type, inputCount: block.inputCount);
+      final outputs = fbdOutputPins(block.type);
+      for (var i = 0; i < inputs.length; i++) {
+        final dy = _kHeaderHeight + i * _kPinRowHeight + _kPinRowHeight / 2;
+        _anchors['${block.id}|IN|${inputs[i]}'] = Offset(block.x, block.y + dy);
+      }
+      for (var i = 0; i < outputs.length; i++) {
+        final dy = _kHeaderHeight + i * _kPinRowHeight + _kPinRowHeight / 2;
+        _anchors['${block.id}|OUT|${outputs[i]}'] = Offset(block.x + _kBlockWidth, block.y + dy);
+      }
+    }
+
     final stack = Stack(
       children: [
         // Grid Background Pattern
@@ -68,26 +239,33 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
           ),
         ),
 
-        // FBD Blocks
-        ...widget.program.fbdBlocks.map((block) {
-          return Positioned(
-            left: block.x,
-            top: block.y,
-            child: GestureDetector(
-              onPanUpdate: expanded
-                  ? (details) {
-                      setState(() {
-                        block.x += details.delta.dx;
-                        block.y += details.delta.dy;
-                      });
-                      widget.onProgramUpdated();
-                    }
-                  : null,
-              onTap: expanded ? null : () => _showConfigureBlockDialog(block),
-              child: _buildFbdBlockCard(block, showInlineEditors: expanded),
+        // Wires painted beneath the blocks so block cards remain tappable.
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onTap: () {
+              if (_armedBlockId != null) {
+                _cancelArm();
+              } else if (_selectedWireIndex != null) {
+                _selectWire(null);
+              }
+            },
+            child: CustomPaint(
+              painter: _WirePainter(
+                wires: widget.program.fbdWires,
+                anchors: _anchors,
+                selectedIndex: _selectedWireIndex,
+              ),
             ),
-          );
-        }),
+          ),
+        ),
+
+        // Tap targets over each wire midpoint for selection (simple circular
+        // hit areas placed at the wire midpoint).
+        ..._buildWireHitTargets(),
+
+        // FBD Blocks
+        ...blockWidgets,
       ],
     );
 
@@ -113,6 +291,44 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     );
   }
 
+  List<Widget> _buildWireHitTargets() {
+    final widgets = <Widget>[];
+    for (var i = 0; i < widget.program.fbdWires.length; i++) {
+      final w = widget.program.fbdWires[i];
+      final from = _anchors['${w.fromBlockId}|OUT|${w.fromPin}'];
+      final to = _anchors['${w.toBlockId}|IN|${w.toPin}'];
+      if (from == null || to == null) continue;
+      final mid = Offset((from.dx + to.dx) / 2, (from.dy + to.dy) / 2);
+      widgets.add(Positioned(
+        left: mid.dx - 16,
+        top: mid.dy - 16,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => _selectWire(_selectedWireIndex == i ? null : i),
+          child: Container(
+            key: Key('fbdwire_$i'),
+            width: 32,
+            height: 32,
+            alignment: Alignment.center,
+            child: _selectedWireIndex == i
+                ? GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => _deleteWire(i),
+                    child: Container(
+                      width: 20,
+                      height: 20,
+                      decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle),
+                      child: const Icon(Icons.close, size: 14, color: Colors.white),
+                    ),
+                  )
+                : const SizedBox.shrink(),
+          ),
+        ),
+      ));
+    }
+    return widgets;
+  }
+
   void _openPaletteSheet() {
     showModalBottomSheet(
       context: context,
@@ -134,6 +350,11 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
   }
 
   void _showConfigureBlockDialog(FbdBlock block) {
+    // Local pending edits so the tag binding / const value only commit
+    // (and trigger `onProgramUpdated`) when the dialog is saved, not on
+    // every keystroke.
+    String pendingTagBinding = block.tagBinding;
+
     showAdaptiveWidthDialog(
       context,
       desiredWidth: 400,
@@ -149,23 +370,40 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
               if (block.type.startsWith('TAG_'))
                 TagAutocompleteField(
                   options: widget.currentProject.tags.map((t) => t.name).toList(),
-                  initialValue: block.tagBinding.isNotEmpty ? block.tagBinding : widget.currentProject.tags.first.name,
+                  initialValue: pendingTagBinding.isNotEmpty ? pendingTagBinding : (widget.currentProject.tags.isNotEmpty ? widget.currentProject.tags.first.name : ''),
                   label: 'Tag Binding',
-                  onChanged: (val) => setDlgState(() => block.tagBinding = val),
+                  onChanged: (val) => pendingTagBinding = val,
                 )
               else if (block.type == 'CONST')
                 TextFormField(
-                  initialValue: block.tagBinding,
+                  initialValue: pendingTagBinding,
                   decoration: const InputDecoration(labelText: 'Constant Value'),
-                  onChanged: (val) => block.tagBinding = val,
+                  onChanged: (val) => pendingTagBinding = val,
                 ),
+              if (_typeIsExtensible(block.type)) ...[
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const Text('Inputs:', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                    const SizedBox(width: 8),
+                    touchable(
+                      const Icon(Icons.remove_circle_outline, size: 20),
+                      onTap: () => setDlgState(() => _changeInputCount(block, -1)),
+                    ),
+                    Text('${block.inputCount}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                    touchable(
+                      const Icon(Icons.add_circle_outline, size: 20),
+                      onTap: () => setDlgState(() => _changeInputCount(block, 1)),
+                    ),
+                  ],
+                ),
+              ],
             ],
           ),
           actions: [
             TextButton(
               onPressed: () {
-                setState(() => widget.program.fbdBlocks.removeWhere((b) => b.id == block.id));
-                widget.onProgramUpdated();
+                _deleteBlock(block);
                 Navigator.pop(context);
               },
               child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
@@ -173,7 +411,7 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
             TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
             ElevatedButton(
               onPressed: () {
-                setState(() {});
+                setState(() => block.tagBinding = pendingTagBinding);
                 widget.onProgramUpdated();
                 Navigator.pop(context);
               },
@@ -303,71 +541,213 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     );
   }
 
+  Widget _buildPinDot(FbdBlock block, String pin, {required bool isInput}) {
+    final color = _pinColor(pin);
+    final armed = !isInput && _armedBlockId == block.id && _armedPin == pin;
+    final key = Key('fbdpin_${block.id}_${isInput ? 'in' : 'out'}_$pin');
+
+    final dot = Container(
+      key: key,
+      width: 12,
+      height: 12,
+      decoration: BoxDecoration(
+        color: armed ? Colors.white : color,
+        shape: BoxShape.circle,
+        border: Border.all(color: armed ? Colors.orangeAccent : Colors.black45, width: armed ? 2 : 1),
+      ),
+    );
+
+    void onTap() {
+      if (isInput) {
+        _onInputTap(block.id, pin);
+      } else {
+        _onOutputTap(block.id, pin);
+      }
+    }
+
+    Widget dotWidget = touchable(dot, onTap: onTap);
+
+    // Desktop: also support drag-from-output to input, alongside tap-tap.
+    if (context.isExpanded) {
+      if (isInput) {
+        dotWidget = DragTarget<Map<String, String>>(
+          onWillAcceptWithDetails: (details) => details.data['blockId'] != block.id,
+          onAcceptWithDetails: (details) {
+            setState(() {
+              _armedBlockId = details.data['blockId'];
+              _armedPin = details.data['pin'];
+            });
+            _completeWire(toBlockId: block.id, toPin: pin);
+          },
+          builder: (context, candidateData, rejectedData) => touchable(dot, onTap: onTap),
+        );
+      } else {
+        dotWidget = Draggable<Map<String, String>>(
+          data: {'blockId': block.id, 'pin': pin},
+          feedback: Material(color: Colors.transparent, child: dot),
+          childWhenDragging: Opacity(opacity: 0.4, child: touchable(dot, onTap: onTap)),
+          onDragStarted: () => setState(() {
+            _armedBlockId = block.id;
+            _armedPin = pin;
+          }),
+          child: touchable(dot, onTap: onTap),
+        );
+      }
+    }
+
+    Widget row = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: isInput
+          ? [
+              dotWidget,
+              const SizedBox(width: 2),
+              Text(pin, style: const TextStyle(fontSize: 9, color: Colors.grey)),
+            ]
+          : [
+              Text(pin, style: const TextStyle(fontSize: 9, color: Colors.grey)),
+              const SizedBox(width: 2),
+              dotWidget,
+            ],
+    );
+
+    return SizedBox(height: _kPinRowHeight, child: row);
+  }
+
   Widget _buildFbdBlockCard(FbdBlock block, {bool showInlineEditors = true}) {
     Color color = Colors.blueAccent;
     if (block.type == 'TAG_INPUT') color = Colors.greenAccent;
     if (block.type == 'TAG_OUTPUT') color = Colors.amberAccent;
     if (block.type == 'TON') color = Colors.purpleAccent;
 
-    return Container(
-      width: 180,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color, width: 2),
-        boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 8)],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.drag_indicator, size: 16, color: color),
-              const SizedBox(width: 4),
-              Expanded(child: Text(block.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
-              if (showInlineEditors)
-                IconButton(
-                  icon: const Icon(Icons.close, size: 14, color: Colors.redAccent),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                  onPressed: () {
-                    setState(() {
-                      widget.program.fbdBlocks.removeWhere((b) => b.id == block.id);
-                    });
-                    widget.onProgramUpdated();
-                  },
-                ),
-            ],
-          ),
-          const Divider(height: 12),
+    final inputs = fbdInputPins(block.type, inputCount: block.inputCount);
+    final outputs = fbdOutputPins(block.type);
+    final maxPinRows = inputs.length > outputs.length ? inputs.length : outputs.length;
+    final extensible = _typeIsExtensible(block.type);
 
-          if (!showInlineEditors)
-            Text('Block Function: ${block.type}\n${block.tagBinding.isNotEmpty ? "Tag/Value: ${block.tagBinding}" : ""}',
-                style: const TextStyle(fontSize: 10, color: Colors.grey))
-          else if (block.type.startsWith('TAG_'))
-            TagAutocompleteField(
-              options: widget.currentProject.tags.map((t) => t.name).toList(),
-              initialValue: block.tagBinding.isNotEmpty ? block.tagBinding : widget.currentProject.tags.first.name,
-              onChanged: (val) {
-                setState(() => block.tagBinding = val);
-                widget.onProgramUpdated();
-              },
-            )
-          else if (block.type == 'CONST')
-            TextFormField(
-              initialValue: block.tagBinding,
-              style: const TextStyle(fontSize: 11, color: Colors.white),
-              decoration: const InputDecoration(isDense: true, border: InputBorder.none, labelText: 'Value'),
-              onChanged: (val) {
-                block.tagBinding = val;
-                widget.onProgramUpdated();
-              },
-            )
-          else
-            Text('Block Function: ${block.type}', style: const TextStyle(fontSize: 10, color: Colors.grey)),
-        ],
+    return GestureDetector(
+      onTap: () {
+        if (_selectedWireIndex != null) _selectWire(null);
+      },
+      child: Container(
+        width: _kBlockWidth,
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E293B),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color, width: 2),
+          boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 8)],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.drag_indicator, size: 16, color: color),
+                const SizedBox(width: 4),
+                Expanded(child: Text(block.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12), overflow: TextOverflow.ellipsis)),
+                if (showInlineEditors)
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 14, color: Colors.redAccent),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    onPressed: () => _deleteBlock(block),
+                  ),
+              ],
+            ),
+            const Divider(height: 10),
+
+            // Pin rows: input names/dots on the left, output names/dots on
+            // the right, aligned by row index.
+            for (var i = 0; i < maxPinRows; i++)
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  i < inputs.length ? _buildPinDot(block, inputs[i], isInput: true) : const SizedBox(height: _kPinRowHeight),
+                  i < outputs.length ? _buildPinDot(block, outputs[i], isInput: false) : const SizedBox(height: _kPinRowHeight),
+                ],
+              ),
+
+            if (extensible)
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text('Inputs', style: TextStyle(fontSize: 9, color: Colors.grey)),
+                  touchable(
+                    const Icon(Icons.remove_circle_outline, size: 16),
+                    onTap: () => _changeInputCount(block, -1),
+                  ),
+                  Text('${block.inputCount}', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                  touchable(
+                    const Icon(Icons.add_circle_outline, size: 16),
+                    onTap: () => _changeInputCount(block, 1),
+                  ),
+                ],
+              ),
+
+            const SizedBox(height: 2),
+            if (!showInlineEditors)
+              Text(
+                'Block Function: ${block.type}\n${block.tagBinding.isNotEmpty ? "Tag/Value: ${block.tagBinding}" : ""}',
+                style: const TextStyle(fontSize: 10, color: Colors.grey),
+              )
+            else if (block.type.startsWith('TAG_') || block.type == 'CONST')
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      block.tagBinding.isNotEmpty ? block.tagBinding : '(unset)',
+                      style: const TextStyle(fontSize: 10, color: Colors.grey),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  touchable(
+                    const Icon(Icons.edit, size: 14, color: Colors.tealAccent),
+                    onTap: () => _showConfigureBlockDialog(block),
+                  ),
+                ],
+              )
+            else
+              Text('Block Function: ${block.type}', style: const TextStyle(fontSize: 10, color: Colors.grey)),
+          ],
+        ),
       ),
     );
+  }
+}
+
+/// Paints straight lines between each wire's source output-pin anchor and
+/// target input-pin anchor. The selected wire (if any) is highlighted.
+class _WirePainter extends CustomPainter {
+  final List<FbdWire> wires;
+  final Map<String, Offset> anchors;
+  final int? selectedIndex;
+
+  _WirePainter({required this.wires, required this.anchors, required this.selectedIndex});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (var i = 0; i < wires.length; i++) {
+      final w = wires[i];
+      final from = anchors['${w.fromBlockId}|OUT|${w.fromPin}'];
+      final to = anchors['${w.toBlockId}|IN|${w.toPin}'];
+      if (from == null || to == null) continue;
+
+      final selected = selectedIndex == i;
+      final paint = Paint()
+        ..color = selected ? Colors.orangeAccent : Colors.tealAccent.withValues(alpha: 0.8)
+        ..strokeWidth = selected ? 3 : 2
+        ..style = PaintingStyle.stroke;
+
+      final path = Path()..moveTo(from.dx, from.dy);
+      final dx = (to.dx - from.dx).abs().clamp(24.0, 120.0);
+      path.cubicTo(from.dx + dx, from.dy, to.dx - dx, to.dy, to.dx, to.dy);
+      canvas.drawPath(path, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _WirePainter oldDelegate) {
+    return oldDelegate.wires != wires || oldDelegate.anchors != anchors || oldDelegate.selectedIndex != selectedIndex;
   }
 }
