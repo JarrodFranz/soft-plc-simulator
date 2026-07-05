@@ -118,7 +118,12 @@
 
 ## Phase 9: Advanced Process Simulation Engine
 - **Objective**: Built-in physical process models (PID loops, thermal dynamics, multi-tank flow systems).
-- **Status**: ⏳ Planned
+- **Deliverables**:
+  - **Analog-scaled rates** ✅ — an optional actuator tag (`sourcePath` + `refValue`) proportionally drives an `integrate`/`ramp` rate, so a PLC's analog output modulates the process (real closed-loop control); off/byte-identical when unset.
+  - **First-order lag dynamics** ✅ — a `firstOrderLag` behaviour moves a value toward a target (fixed or tag-driven) with a time constant τ (realistic thermal/level/pressure response). Both are configurable in the Simulated I/O editor.
+  - **Showcase** ✅ — the reactor temperature is a first-order thermal process (ambient pull + heat/cool) that the executed ST deadband controller regulates: reaches and holds setpoint, decays to ambient with control off (verified by a falsifiable closed-loop test).
+  - PID function block / auto-tune, multi-variable coupled plant models, transport dead-time, nonlinear valve curves, and measurement noise. ⏳ Planned
+- **Status**: 🔄 **ACTIVE — analog-driven rates + first-order lag + a closed-loop thermal showcase shipped; richer/coupled models remain**
 
 ---
 
