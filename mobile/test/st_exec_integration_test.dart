@@ -12,14 +12,13 @@ bool _b(PlcProject p, String path) => readPath(p, path) == true;
 void main() {
   test('reactor ST reproduces the retired hardcoded deadband + alarms', () {
     final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_st_reactor');
-    final sim = SimRuntime();
     final st = StRuntime();
 
-    // One scan tick, exactly as the workspace shell's `_executeScan` runs it
-    // for this project: sim -> ST (proj_st_reactor has no LD/FBD/SFC
-    // programs, so those stages are no-ops and are omitted here).
+    // ST-only scan: this test hand-picks Temp_PV values to exercise the
+    // deadband/alarm logic directly, so the sim stage (which now drives
+    // Temp_PV via a first-order thermal model — see the closed-loop test
+    // below) is intentionally not run here.
     void scan() {
-      applySimRules(p, p.simRules, 500, sim);
       executeStPrograms(p, 500, st);
     }
 
@@ -63,6 +62,65 @@ void main() {
     setInputs(true, 4.0, 50.0);
     scan();
     expect(_b(p, 'Alarm_Low'), isTrue); // 4 < 5
+  });
+
+  test('reactor closed loop: first-order thermal process reaches and holds '
+      'setpoint under Auto control, decays to ambient with control off', () {
+    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_st_reactor');
+    final sim = SimRuntime();
+    final st = StRuntime();
+
+    // Full scan tick, exactly as the workspace shell's `_executeScan` runs it:
+    // sim (thermal model) -> ST (deadband controller). proj_st_reactor has no
+    // LD/FBD/SFC programs, so those stages are omitted.
+    void scan() {
+      applySimRules(p, p.simRules, 500, sim);
+      executeStPrograms(p, 500, st);
+    }
+
+    final ambient = readPath(p, 'Temp_Ambient') as double;
+    final sp = readPath(p, 'Temp_SP') as double;
+    expect(sp, greaterThan(ambient), reason: 'setpoint must sit above ambient for this test to be meaningful');
+
+    writePath(p, 'Auto_Mode', true);
+
+    // Run enough scans (400 * 500ms = 200s) for the first-order process to
+    // reach and settle near setpoint under deadband control.
+    var sawHeat = false;
+    var sawNeitherAtSp = false;
+    for (var i = 0; i < 400; i++) {
+      scan();
+      if (_b(p, 'Heat_Cmd')) sawHeat = true;
+      if (i > 350) {
+        final pv = readPath(p, 'Temp_PV') as double;
+        if ((pv - sp).abs() <= 5.0) sawNeitherAtSp = true;
+      }
+    }
+
+    expect(sawHeat, isTrue, reason: 'heater must engage while PV is below setpoint');
+    final settledPv = readPath(p, 'Temp_PV') as double;
+    expect((settledPv - sp).abs(), lessThanOrEqualTo(5.0),
+        reason: 'Temp_PV must settle near Temp_SP under Auto control (got $settledPv vs sp $sp)');
+    expect(sawNeitherAtSp, isTrue);
+    expect(_b(p, 'Reactor_Ready'), isTrue, reason: 'settled within deadband, so Reactor_Ready should assert');
+
+    // Now disable Auto control: Heat_Cmd/Cool_Cmd drop, and the ambient pull
+    // alone should carry Temp_PV back down toward Temp_Ambient over time.
+    writePath(p, 'Auto_Mode', false);
+    scan();
+    expect(_b(p, 'Heat_Cmd'), isFalse);
+    expect(_b(p, 'Cool_Cmd'), isFalse);
+
+    final pvAtHandoff = readPath(p, 'Temp_PV') as double;
+    for (var i = 0; i < 200; i++) {
+      scan();
+    }
+    final pvAfterDecay = readPath(p, 'Temp_PV') as double;
+
+    expect(pvAfterDecay, lessThan(pvAtHandoff),
+        reason: 'with no heating/cooling, Temp_PV should decay toward ambient');
+    expect((pvAfterDecay - ambient).abs(), lessThan((pvAtHandoff - ambient).abs()),
+        reason: 'Temp_PV must move closer to Temp_Ambient once control is disabled');
   });
 
   test('water Safety_ST drives Alarm_Active/System_Ready; leaves Quality_OK to '
