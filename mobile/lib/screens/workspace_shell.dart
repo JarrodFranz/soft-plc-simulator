@@ -618,18 +618,6 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     messenger.showSnackBar(SnackBar(content: Text('Imported "${imported.name}"')));
   }
 
-  Widget _projectCrudButton({required IconData icon, required String tooltip, required VoidCallback onTap}) {
-    return touchable(
-      IconButton(
-        icon: Icon(icon, size: 16, color: Colors.grey),
-        tooltip: tooltip,
-        padding: EdgeInsets.zero,
-        constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-        onPressed: onTap,
-      ),
-    );
-  }
-
   /// Renders the autosave status indicator. On [compact] widths the label
   /// text is dropped (icon + tooltip only) so the indicator can't push the
   /// AppBar title/actions into overflow on narrow phones (360/320px) —
@@ -1033,43 +1021,98 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
               children: [
                 const Text('SELECT PROJECT', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey, letterSpacing: 0.5)),
                 const SizedBox(height: 6),
-                DropdownButton<String>(
-                  value: _activeProject.id,
-                  isExpanded: true,
-                  dropdownColor: const Color(0xFF1E293B),
-                  style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 13),
-                  items: _allProjects.map((p) {
-                    final isActive = p.id == _activeProject.id;
-                    return DropdownMenuItem(
-                      value: p.id,
-                      child: Row(
-                        children: [
-                          Icon(isActive ? Icons.check_circle : Icons.folder, size: 16, color: isActive ? Colors.greenAccent : Colors.grey),
-                          const SizedBox(width: 8),
-                          Expanded(child: Text(p.name, overflow: TextOverflow.ellipsis)),
-                        ],
-                      ),
-                    );
-                  }).toList(),
-                  onChanged: (id) {
-                    if (id != null) {
-                      final selected = _allProjects.firstWhere((p) => p.id == id);
-                      _switchActiveProject(selected);
-                    }
-                  },
-                ),
-                const SizedBox(height: 6),
-                Wrap(
-                  spacing: 4,
-                  runSpacing: 4,
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    _projectCrudButton(icon: Icons.add, tooltip: 'New Project', onTap: _createNewProject),
-                    _projectCrudButton(icon: Icons.copy_all, tooltip: 'Duplicate Project', onTap: _duplicateActiveProject),
-                    _projectCrudButton(icon: Icons.drive_file_rename_outline, tooltip: 'Rename Project', onTap: _renameActiveProject),
-                    _projectCrudButton(icon: Icons.delete_outline, tooltip: 'Delete Project', onTap: _deleteActiveProject),
-                    _projectCrudButton(icon: Icons.restore, tooltip: 'Reset to Defaults', onTap: _resetToDefaults),
-                    _projectCrudButton(icon: Icons.ios_share, tooltip: 'Export Project (.splc.json)', onTap: _exportActiveProject),
-                    _projectCrudButton(icon: Icons.file_open_outlined, tooltip: 'Import Project (.splc.json)', onTap: _importProject),
+                    Expanded(
+                      child: DropdownButton<String>(
+                        value: _activeProject.id,
+                        isExpanded: true,
+                        dropdownColor: const Color(0xFF1E293B),
+                        style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 13),
+                        items: _allProjects.map((p) {
+                          final isActive = p.id == _activeProject.id;
+                          return DropdownMenuItem(
+                            value: p.id,
+                            child: Row(
+                              children: [
+                                Icon(isActive ? Icons.check_circle : Icons.folder, size: 16, color: isActive ? Colors.greenAccent : Colors.grey),
+                                const SizedBox(width: 8),
+                                Expanded(child: Text(p.name, overflow: TextOverflow.ellipsis)),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                        onChanged: (id) {
+                          if (id != null) {
+                            final selected = _allProjects.firstWhere((p) => p.id == id);
+                            _switchActiveProject(selected);
+                          }
+                        },
+                      ),
+                    ),
+                    PopupMenuButton<String>(
+                      tooltip: 'Project actions',
+                      icon: const Icon(Icons.more_vert, size: 20, color: Colors.grey),
+                      padding: EdgeInsets.zero,
+                      color: const Color(0xFF1E293B),
+                      onSelected: (value) {
+                        switch (value) {
+                          case 'new':
+                            _createNewProject();
+                            break;
+                          case 'duplicate':
+                            _duplicateActiveProject();
+                            break;
+                          case 'rename':
+                            _renameActiveProject();
+                            break;
+                          case 'delete':
+                            _deleteActiveProject();
+                            break;
+                          case 'reset':
+                            _resetToDefaults();
+                            break;
+                          case 'export':
+                            _exportActiveProject();
+                            break;
+                          case 'import':
+                            _importProject();
+                            break;
+                        }
+                      },
+                      itemBuilder: (context) => const [
+                        PopupMenuItem(
+                          value: 'new',
+                          child: _ProjectMenuEntry(icon: Icons.add, label: 'New Project'),
+                        ),
+                        PopupMenuItem(
+                          value: 'duplicate',
+                          child: _ProjectMenuEntry(icon: Icons.copy_all, label: 'Duplicate Project'),
+                        ),
+                        PopupMenuItem(
+                          value: 'rename',
+                          child: _ProjectMenuEntry(icon: Icons.drive_file_rename_outline, label: 'Rename Project'),
+                        ),
+                        PopupMenuItem(
+                          value: 'delete',
+                          child: _ProjectMenuEntry(icon: Icons.delete_outline, label: 'Delete Project'),
+                        ),
+                        PopupMenuItem(
+                          value: 'reset',
+                          child: _ProjectMenuEntry(icon: Icons.restore, label: 'Reset to Defaults'),
+                        ),
+                        PopupMenuDivider(),
+                        PopupMenuItem(
+                          value: 'export',
+                          child: _ProjectMenuEntry(icon: Icons.ios_share, label: 'Export Project'),
+                        ),
+                        PopupMenuItem(
+                          value: 'import',
+                          child: _ProjectMenuEntry(icon: Icons.file_open_outlined, label: 'Import Project'),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ],
@@ -1426,5 +1469,26 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       );
     }
     return const Center(child: Text('Select an HMI, Memory, or Program from the Left Dock'));
+  }
+}
+
+/// A single row (icon + label) inside the project ⋮ overflow menu's
+/// [PopupMenuItem]s. Kept as a tiny standalone widget (rather than inline
+/// `Row`s) so every entry gets identical dark-theme styling for free.
+class _ProjectMenuEntry extends StatelessWidget {
+  const _ProjectMenuEntry({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, size: 18, color: Colors.grey),
+        const SizedBox(width: 12),
+        Text(label, style: const TextStyle(color: Colors.white, fontSize: 13)),
+      ],
+    );
   }
 }
