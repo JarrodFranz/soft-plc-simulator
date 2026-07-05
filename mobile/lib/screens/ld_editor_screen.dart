@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/ld_graph.dart';
@@ -10,6 +12,12 @@ const double _kBlockH = 92.0;
 const double _kLaneGap = 10.0;
 const double _kRailW = 6.0;
 const double _kRungGap = 8.0;
+
+/// Below this LOCAL available width, the toolbar wraps and the ladder canvas
+/// gets pan/zoom. This is a per-pane decision (LayoutBuilder), never derived
+/// from the window/`MediaQuery` width — the editor can be embedded in a
+/// narrow center pane even when the overall window is wide (both docks open).
+const double _kCompactPaneWidth = 560.0;
 
 class LdEditorScreen extends StatefulWidget {
   final PlcProject currentProject;
@@ -130,30 +138,88 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
         title: Text('${widget.program.name} — Ladder Diagram (LD) Editor'),
         backgroundColor: const Color(0xFF1E293B),
       ),
-      body: Column(
-        children: [
-          _buildToolbar(),
-          Expanded(
-            child: Container(
-              color: const Color(0xFF0F172A),
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Container(width: _kRailW, color: Colors.greenAccent), // continuous L1
-                  Expanded(
-                    child: ListView.separated(
-                      itemCount: widget.program.rungs.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: _kRungGap),
-                      itemBuilder: (context, i) => _buildRungCanvas(widget.program.rungs[i], i),
-                    ),
-                  ),
-                  Container(width: _kRailW, color: Colors.blueAccent), // continuous L2
-                ],
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < _kCompactPaneWidth;
+          return Column(
+            children: [
+              _buildToolbar(),
+              Expanded(
+                child: Container(
+                  color: const Color(0xFF0F172A),
+                  padding: const EdgeInsets.all(16),
+                  child: _buildRungList(compact: compact),
+                ),
               ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildRungList({required bool compact}) {
+    if (!compact) {
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(width: _kRailW, color: Colors.greenAccent), // continuous L1
+          Expanded(
+            child: ListView.separated(
+              itemCount: widget.program.rungs.length,
+              separatorBuilder: (_, __) => const SizedBox(height: _kRungGap),
+              itemBuilder: (context, i) => _buildRungCanvas(widget.program.rungs[i], i),
             ),
           ),
+          Container(width: _kRailW, color: Colors.blueAccent), // continuous L2
         ],
+      );
+    }
+
+    // Compact (narrow local pane, e.g. phone or a squeezed center workspace):
+    // pan/zoom the whole ladder canvas so every rung/element is reachable by
+    // swiping, instead of relying on the per-rung horizontal scroll (which
+    // would fight a single pan gesture across the whole canvas).
+    final rungs = widget.program.rungs;
+    double contentHeight = 0;
+    for (final r in rungs) {
+      contentHeight += _rungHeight(r) + 44 /* rung chrome: label + padding */ + _kRungGap;
+    }
+    double contentWidth = _kCompactPaneWidth;
+    for (final r in rungs) {
+      final col = colAssignment(r);
+      final w = ldMinContentWidth(r, col);
+      if (w > contentWidth) {
+        contentWidth = w;
+      }
+    }
+
+    final rails = Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(width: _kRailW, color: Colors.greenAccent), // continuous L1
+        Expanded(
+          child: ListView.separated(
+            physics: const NeverScrollableScrollPhysics(),
+            shrinkWrap: true,
+            itemCount: rungs.length,
+            separatorBuilder: (_, __) => const SizedBox(height: _kRungGap),
+            itemBuilder: (context, i) => _buildRungCanvas(rungs[i], i, compact: true),
+          ),
+        ),
+        Container(width: _kRailW, color: Colors.blueAccent), // continuous L2
+      ],
+    );
+
+    return InteractiveViewer(
+      constrained: false,
+      minScale: 0.5,
+      maxScale: 2.5,
+      boundaryMargin: const EdgeInsets.all(200),
+      child: SizedBox(
+        width: contentWidth,
+        height: math.max(contentHeight, 200),
+        child: rails,
       ),
     );
   }
@@ -195,33 +261,41 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       child: Text('Tap span start, then span end', style: TextStyle(fontSize: 10, color: Colors.amberAccent)),
     );
 
-    if (!context.isExpanded) {
-      // Compact: never overflow — wrap the toolbar buttons onto multiple lines.
-      return Container(
-        color: const Color(0xFF1E293B),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        child: Wrap(
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
+    // Decide compact-vs-wide from the toolbar's own LOCAL available width,
+    // never the window/MediaQuery width — this editor can be embedded in a
+    // narrow center pane even when the overall window is wide (both docks
+    // open), which previously caused a RenderFlex overflow in the fixed Row.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < _kCompactPaneWidth) {
+          // Compact: never overflow — wrap the toolbar buttons onto multiple lines.
+          return Container(
+            color: const Color(0xFF1E293B),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                ...modeButtons,
+                addRungBtn,
+                if (_editMode == 'branch') branchHint,
+              ],
+            ),
+          );
+        }
+
+        return Container(
+          height: 44,
+          color: const Color(0xFF1E293B),
+          alignment: Alignment.centerLeft,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Row(children: [
             ...modeButtons,
+            const Spacer(),
             addRungBtn,
             if (_editMode == 'branch') branchHint,
-          ],
-        ),
-      );
-    }
-
-    return Container(
-      height: 44,
-      color: const Color(0xFF1E293B),
-      alignment: Alignment.centerLeft,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      child: Row(children: [
-        ...modeButtons,
-        const Spacer(),
-        addRungBtn,
-        if (_editMode == 'branch') branchHint,
-      ]),
+          ]),
+        );
+      },
     );
   }
 
@@ -239,7 +313,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     widget.onProgramUpdated();
   }
 
-  Widget _buildRungCanvas(LdRung rung, int index) {
+  Widget _buildRungCanvas(LdRung rung, int index, {bool compact = false}) {
     final col = colAssignment(rung);
     final height = _rungHeight(rung);
 
@@ -295,7 +369,12 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 ),
               );
 
-              if (!needsScroll) {
+              if (!needsScroll || compact) {
+                // On a compact pane the enclosing InteractiveViewer already
+                // provides panning across the whole canvas (including any
+                // rung wider than the pane) — an inner horizontal scrollable
+                // here would fight that single pan gesture, so it's only
+                // used on wide/desktop panes.
                 return canvas;
               }
               // The rung's minimum content width exceeds the available space
