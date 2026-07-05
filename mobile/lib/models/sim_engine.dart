@@ -93,6 +93,12 @@ void _write(PlcProject p, String path, dynamic value) {
 
 double _clamp(double v, double lo, double hi) => v < lo ? lo : (v > hi ? hi : v);
 
+/// Analog gain for [integrate]/[ramp]: scales the per-second rate by
+/// `source / refValue` when a driving tag is set (1.0 — i.e. unscaled — when
+/// [SimRule.sourcePath] is empty or [SimRule.refValue] is zero).
+double _gain(PlcProject p, SimRule r) =>
+    (r.sourcePath.isEmpty || r.refValue == 0) ? 1.0 : _asDouble(readPath(p, r.sourcePath)) / r.refValue;
+
 void applySimRules(PlcProject p, List<SimRule> rules, int dtMs, SimRuntime rt) {
   final dt = dtMs / 1000.0;
   for (final rule in rules) {
@@ -134,7 +140,7 @@ void applySimRules(PlcProject p, List<SimRule> rules, int dtMs, SimRuntime rt) {
       case 'ramp':
         if (cond) {
           final cur = _asDouble(readPath(p, rule.targetPath));
-          final step = rule.ratePerSec * dt;
+          final step = rule.ratePerSec * dt * _gain(p, rule);
           double next;
           if (cur < rule.targetValue) {
             next = (cur + step).clamp(cur, rule.targetValue).toDouble();
@@ -147,7 +153,17 @@ void applySimRules(PlcProject p, List<SimRule> rules, int dtMs, SimRuntime rt) {
       case 'integrate':
         if (cond) {
           final cur = _asDouble(readPath(p, rule.targetPath));
-          _write(p, rule.targetPath, _clamp(cur + rule.ratePerSec * dt, rule.minValue, rule.maxValue));
+          _write(p, rule.targetPath,
+              _clamp(cur + rule.ratePerSec * dt * _gain(p, rule), rule.minValue, rule.maxValue));
+        }
+        break;
+      case 'firstOrderLag':
+        if (cond) {
+          final target = rule.sourcePath.isNotEmpty ? _asDouble(readPath(p, rule.sourcePath)) : rule.targetValue;
+          final cur = _asDouble(readPath(p, rule.targetPath));
+          final k = rule.tauSec <= 0 ? 1.0 : (dt / rule.tauSec).clamp(0.0, 1.0);
+          final next = cur + (target - cur) * k;
+          _write(p, rule.targetPath, _clamp(next, rule.minValue, rule.maxValue));
         }
         break;
       default:

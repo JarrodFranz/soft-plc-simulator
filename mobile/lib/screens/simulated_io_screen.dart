@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/tag_resolver.dart';
@@ -25,7 +24,17 @@ const List<String> _behaviors = [
   'pulse',
   'ramp',
   'integrate',
+  'firstOrderLag',
 ];
+
+const Map<String, String> _behaviorLabels = {
+  'setWhileCondition': 'Set While Condition',
+  'delayedSet': 'Delayed Set',
+  'pulse': 'Pulse',
+  'ramp': 'Ramp',
+  'integrate': 'Integrate',
+  'firstOrderLag': 'First-Order Lag (process response)',
+};
 const List<String> _comparators = ['>', '<', '>=', '<=', '==', '!='];
 
 class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
@@ -57,6 +66,8 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
         return 'ramp to ${r.targetValue} @ ${r.ratePerSec}/s';
       case 'integrate':
         return 'integrate ${r.ratePerSec >= 0 ? '+' : ''}${r.ratePerSec}/s';
+      case 'firstOrderLag':
+        return 'lag τ=${r.tauSec}s → ${r.sourcePath.isNotEmpty ? r.sourcePath : r.targetValue}';
       default:
         return r.behavior;
     }
@@ -148,60 +159,61 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
     final nameCtrl = TextEditingController(text: working.name);
     final paths = leafAndNodePaths(widget.currentProject);
 
-    showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
+    showAdaptiveWidthDialog(
+      context,
+      desiredWidth: 460,
+      child: StatefulBuilder(
         builder: (context, setDlg) {
           final numeric = working.behavior == 'ramp' || working.behavior == 'integrate';
-          final maxDialogWidth =
-              math.min(460.0, MediaQuery.sizeOf(context).width - 32);
           return AlertDialog(
             backgroundColor: const Color(0xFF1E293B),
             title: Text(isNew ? 'Add Simulated Input' : 'Edit Simulated Input'),
-            content: ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: maxDialogWidth),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    TextField(
-                      controller: nameCtrl,
-                      decoration: const InputDecoration(labelText: 'Name'),
-                      onChanged: (v) => working.name = v,
-                    ),
-                    const SizedBox(height: 8),
-                    TagAutocompleteField(
-                      options: paths,
-                      initialValue: working.targetPath,
-                      label: 'Target tag',
-                      allowFreeText: false,
-                      onChanged: (v) => setDlg(() => working.targetPath = v),
-                    ),
-                    const SizedBox(height: 8),
-                    DropdownButtonFormField<String>(
-                      initialValue: working.behavior,
-                      isExpanded: true,
-                      decoration: const InputDecoration(labelText: 'Behaviour'),
-                      items: _behaviors.map((b) => DropdownMenuItem(value: b, child: Text(b))).toList(),
-                      onChanged: (v) => setDlg(() => working.behavior = v ?? working.behavior),
-                    ),
-                    const SizedBox(height: 8),
-                    ..._behaviorParams(working, numeric, setDlg),
-                    const Divider(color: Colors.white24),
-                    const Text('Condition (AND — empty = Always)', style: TextStyle(fontSize: 11, color: Colors.amberAccent)),
-                    ..._conditionRows(context, working, paths, setDlg),
-                    TextButton.icon(
-                      icon: const Icon(Icons.add, size: 14),
-                      label: const Text('Add condition clause'),
-                      onPressed: () => setDlg(() => working.condition.add(SimClause(leftPath: paths.isNotEmpty ? paths.first : ''))),
-                    ),
-                  ],
-                ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: nameCtrl,
+                    decoration: const InputDecoration(labelText: 'Name'),
+                    onChanged: (v) => working.name = v,
+                  ),
+                  const SizedBox(height: 8),
+                  TagAutocompleteField(
+                    options: paths,
+                    initialValue: working.targetPath,
+                    label: 'Target tag',
+                    allowFreeText: false,
+                    onChanged: (v) => setDlg(() => working.targetPath = v),
+                  ),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<String>(
+                    initialValue: working.behavior,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Behaviour'),
+                    items: _behaviors
+                        .map((b) => DropdownMenuItem(
+                              value: b,
+                              child: Text(_behaviorLabels[b] ?? b, style: const TextStyle(fontSize: 12)),
+                            ))
+                        .toList(),
+                    onChanged: (v) => setDlg(() => working.behavior = v ?? working.behavior),
+                  ),
+                  const SizedBox(height: 8),
+                  ..._behaviorParams(working, numeric, paths, setDlg),
+                  const Divider(color: Colors.white24),
+                  const Text('Condition (AND — empty = Always)', style: TextStyle(fontSize: 11, color: Colors.amberAccent)),
+                  ..._conditionRows(context, working, paths, setDlg),
+                  TextButton.icon(
+                    icon: const Icon(Icons.add, size: 14),
+                    label: const Text('Add condition clause'),
+                    onPressed: () => setDlg(() => working.condition.add(SimClause(leftPath: paths.isNotEmpty ? paths.first : ''))),
+                  ),
+                ],
               ),
             ),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
               ElevatedButton(
                 onPressed: () {
                   working.name = nameCtrl.text;
@@ -216,7 +228,7 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
                     }
                   });
                   widget.onProjectUpdated();
-                  Navigator.pop(ctx);
+                  Navigator.pop(context);
                 },
                 child: const Text('Save'),
               ),
@@ -227,7 +239,7 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
     );
   }
 
-  List<Widget> _behaviorParams(SimRule r, bool numeric, StateSetter setDlg) {
+  List<Widget> _behaviorParams(SimRule r, bool numeric, List<String> paths, StateSetter setDlg) {
     final w = <Widget>[];
     if (r.behavior == 'delayedSet') {
       w.add(_numField('Delay (ms)', r.delayMs.toDouble(), (v) => r.delayMs = v.toInt()));
@@ -241,6 +253,41 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
       if (r.behavior == 'ramp') {
         w.add(_numField('Target value', r.targetValue, (v) => r.targetValue = v));
       }
+      w.add(_numField('Min', r.minValue, (v) => r.minValue = v));
+      w.add(_numField('Max', r.maxValue, (v) => r.maxValue = v));
+      w.add(const Padding(
+        padding: EdgeInsets.only(top: 10, bottom: 2),
+        child: Text('Rate driven by tag (optional)', style: TextStyle(fontSize: 11, color: Colors.amberAccent)),
+      ));
+      w.add(Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: TagAutocompleteField(
+          options: paths,
+          initialValue: r.sourcePath,
+          label: 'Rate source tag (blank = fixed rate)',
+          allowFreeText: true,
+          onChanged: (v) => setDlg(() => r.sourcePath = v),
+        ),
+      ));
+      w.add(_numField('= 100% rate at', r.refValue, (v) => r.refValue = v));
+    }
+    if (r.behavior == 'firstOrderLag') {
+      w.add(_numField('Time constant τ (seconds)', r.tauSec, (v) => r.tauSec = v));
+      w.add(_numField('Target value', r.targetValue, (v) => r.targetValue = v));
+      w.add(const Padding(
+        padding: EdgeInsets.only(top: 10, bottom: 2),
+        child: Text('Target from tag (optional)', style: TextStyle(fontSize: 11, color: Colors.amberAccent)),
+      ));
+      w.add(Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: TagAutocompleteField(
+          options: paths,
+          initialValue: r.sourcePath,
+          label: 'Target source tag (blank = use Target value)',
+          allowFreeText: true,
+          onChanged: (v) => setDlg(() => r.sourcePath = v),
+        ),
+      ));
       w.add(_numField('Min', r.minValue, (v) => r.minValue = v));
       w.add(_numField('Max', r.maxValue, (v) => r.maxValue = v));
     }

@@ -228,6 +228,7 @@ abstract class DefaultProjects {
     tags: [
       PlcTag(name: 'Temp_PV', path: 'Inputs/Temp_PV', dataType: 'FLOAT64', value: 22.0, ioType: 'SimulatedInput', engineeringUnits: '°C', description: 'Reactor temperature process value'),
       PlcTag(name: 'Temp_SP', path: 'Internal/Temp_SP', dataType: 'FLOAT64', value: 75.0, ioType: 'Internal', engineeringUnits: '°C', description: 'Temperature setpoint'),
+      PlcTag(name: 'Temp_Ambient', path: 'Internal/Temp_Ambient', dataType: 'FLOAT64', value: 20.0, ioType: 'Internal', engineeringUnits: '°C', description: 'Ambient temperature the reactor drifts toward with no actuation'),
       PlcTag(name: 'Auto_Mode', path: 'Inputs/Auto_Mode', dataType: 'BOOL', value: true, ioType: 'SimulatedInput', description: 'Auto / Manual selector switch'),
       PlcTag(name: 'Heat_Cmd', path: 'Outputs/Heat_Cmd', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Heater element contactor'),
       PlcTag(name: 'Cool_Cmd', path: 'Outputs/Cool_Cmd', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Cooling water valve'),
@@ -237,15 +238,18 @@ abstract class DefaultProjects {
     ],
     structDefs: [],
     simRules: [
+      // First-order thermal process: ambient pull always acts (the loss
+      // term), heating/cooling add/remove energy while their contactors are
+      // closed. The deadband ST controller (below) closes the loop, cycling
+      // Heat_Cmd/Cool_Cmd to hold Temp_PV near Temp_SP.
       SimRule(id: 'sim0', name: 'Heating raises temp', targetPath: 'Temp_PV',
-          behavior: 'integrate', ratePerSec: 0.6, minValue: 0, maxValue: 105,
+          behavior: 'integrate', ratePerSec: 3.0, minValue: 0, maxValue: 150,
           condition: [SimClause(leftPath: 'Heat_Cmd', comparator: '==', operand: 'true')]),
       SimRule(id: 'sim1', name: 'Cooling lowers temp', targetPath: 'Temp_PV',
-          behavior: 'integrate', ratePerSec: -0.4, minValue: 0, maxValue: 105,
+          behavior: 'integrate', ratePerSec: -3.0, minValue: 0, maxValue: 150,
           condition: [SimClause(leftPath: 'Cool_Cmd', comparator: '==', operand: 'true')]),
-      SimRule(id: 'sim2', name: 'Ambient heat loss', targetPath: 'Temp_PV',
-          behavior: 'integrate', ratePerSec: -0.04, minValue: 20, maxValue: 105,
-          condition: [SimClause(leftPath: 'Heat_Cmd', comparator: '==', operand: 'false'), SimClause(leftPath: 'Cool_Cmd', comparator: '==', operand: 'false')]),
+      SimRule(id: 'sim2', name: 'Ambient pull (first-order lag)', targetPath: 'Temp_PV',
+          behavior: 'firstOrderLag', sourcePath: 'Temp_Ambient', tauSec: 30, minValue: 0, maxValue: 150),
     ],
     programs: [
       PlcProgram(
