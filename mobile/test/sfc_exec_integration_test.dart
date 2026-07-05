@@ -91,4 +91,39 @@ void main() {
     expect(sawBackwash, isTrue, reason: 'BackwashTimer (30s) should trip within 35s');
     expect(sawValve, isTrue, reason: 'SFC should open the backwash valve');
   });
+
+  test('water backwash does not strand the pump when quality never recovers',
+      () {
+    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_all_water');
+    final sim = SimRuntime();
+    final ld = LdExecRuntime();
+    final sfc = SfcRuntime();
+
+    // Stranding scenario: the reservoir drains below the Quality_OK level
+    // threshold during backwash, so Quality_OK never recovers. Force the
+    // backwash to stay active (LD rung 4 won't overwrite a forced tag) and pin
+    // Quality_OK false every scan. BACKWASH_PUMPING (bw2) must still advance
+    // via the STEP_T >= 30000 flush cap so Backwash_Pump does not latch on.
+    final ba = p.tags.firstWhere((t) => t.name == 'Backwash_Active');
+    ba.isForced = true;
+    ba.forcedValue = true;
+    ba.value = true;
+
+    bool pumpTurnedOn = false;
+    bool pumpTurnedOffAfterOn = false;
+    for (int i = 0; i < 90; i++) {
+      writePath(p, 'Quality_OK', false); // never recovers
+      _scan(p, sim, ld, sfc);
+      if (_b(p, 'Backwash_Pump')) {
+        pumpTurnedOn = true;
+      } else if (pumpTurnedOn) {
+        pumpTurnedOffAfterOn = true;
+      }
+    }
+    expect(pumpTurnedOn, isTrue,
+        reason: 'the sequence should reach BACKWASH_PUMPING');
+    expect(pumpTurnedOffAfterOn, isTrue,
+        reason: 'the 30s flush cap must advance past pumping even when '
+            'Quality_OK never recovers (no stranded pump)');
+  });
 }
