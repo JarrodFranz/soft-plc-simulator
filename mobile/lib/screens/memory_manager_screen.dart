@@ -378,7 +378,10 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
         isDeletable: true,
         depth: 0,
         rawValue: tag.value,
-        isBoolLeaf: tag.dataType == 'BOOL',
+        // Root rows render their value as static text (matching the pre-WS5
+        // desktop table); only child BOOL leaves toggle. Live BOOL toggling for
+        // root tags remains available in the Tag Inspector.
+        isBoolLeaf: false,
         hasChildren: expandable,
       ));
 
