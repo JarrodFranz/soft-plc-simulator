@@ -56,9 +56,9 @@
   - **Simulated I/O rules engine**: editable, condition-gated input behaviours (`pulse`, `ramp`, `integrate`, `delayedSet`, `setWhileCondition`) with per-second rates and a dedicated editor screen; the previously hardcoded per-project input physics migrated into visible default rules. ✅
   - **Ladder execution engine**: pure power-flow interpreter over the LD graph (series=AND, parallel=OR, evaluated in topological column order), latch/edge/pulse coil semantics, `TON`/`TOF` timers counting live in their `TIMER` struct tags (scan-tick clock), forcing always wins; hardcoded LD control logic replaced for the motor, conveyor, and water-pump projects; verified by end-to-end scan tests. ✅
   - **SFC execution engine**: pure ST-subset expression/assignment evaluator (`st_expr.dart` — the seed of the ST interpreter) runs step actions and transition conditions with an implicit `STEP_T` step timer; `sfc_exec.dart` drives one active step per program with N-action semantics, first-true-transition switching, and force-aware writes; the bottle filler and water-plant backwash migrated from hardcoded state machines to executed charts. ✅
-  - **FBD execution engine** (dataflow block evaluation). ⏳ Planned
-  - **ST interpreter** (full statement interpreter — `IF`/loops/functions — building on the `st_expr` expression core). ⏳ Planned
-- **Status**: 🔄 **ACTIVE — LD & SFC execution shipped; FBD execution next**
+  - **FBD execution engine**: pure topological dataflow evaluator (`fbd_exec.dart`) over the `FbdBlock`/`FbdWire` graph with a full block set (AND/OR/NOT, ADD/SUB/MUL/DIV, comparators GT/LT/GE/LE/EQ/NE, IEC `LIMIT` clamp, `CONST`, TAG_INPUT/TAG_OUTPUT), input order = wire order, never-throws/never-hangs; the HVAC zone controller and water-quality gate migrated from hardcoded logic to executed diagrams (with editor palette + `CONST` literal editing). ✅
+  - **ST interpreter** (full statement interpreter — `IF`/loops/functions — building on the `st_expr` expression core; must reconcile `proj_all_water`'s `Safety_ST` so it does not re-drive FBD/LD/hardcoded-owned tags `Quality_OK`/`Treat_Dosing`/`Alarm_Active`/`System_Ready`). ⏳ Planned
+- **Status**: 🔄 **ACTIVE — LD, SFC & FBD execution shipped; ST interpreter next**
 
 ---
 
