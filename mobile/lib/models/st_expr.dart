@@ -31,6 +31,9 @@ String _stripComments(String src) {
   return sb.toString();
 }
 
+/// Strips `(* *)` block and `// ` line comments (shared with the ST interpreter).
+String stripStComments(String src) => _stripComments(src);
+
 class _Tok {
   final String kind; // 'num','ident','op','kw'
   final String text;

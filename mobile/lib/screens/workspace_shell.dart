@@ -1,11 +1,11 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
-import '../models/tag_resolver.dart';
 import '../models/sim_engine.dart';
 import '../models/ld_exec.dart';
 import '../models/fbd_exec.dart';
 import '../models/sfc_exec.dart';
+import '../models/st_exec.dart';
 import '../data/default_projects.dart';
 import '../widgets/tag_inspector_dock.dart';
 import 'st_editor_screen.dart';
@@ -41,6 +41,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   final LdExecRuntime _ldRuntime = LdExecRuntime();
   final FbdRuntime _fbdRuntime = FbdRuntime();
   final SfcRuntime _sfcRuntime = SfcRuntime();
+  final StRuntime _stRuntime = StRuntime();
 
   // Side Dock Inspector State
   bool isTagDockVisible = true;
@@ -79,111 +80,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       executeLdPrograms(_activeProject, scanSpeedMs, _ldRuntime);
       executeFbdPrograms(_activeProject, scanSpeedMs, _fbdRuntime);
       executeSfcPrograms(_activeProject, scanSpeedMs, _sfcRuntime);
-      _evaluateActiveLogic();
+      executeStPrograms(_activeProject, scanSpeedMs, _stRuntime);
     });
-  }
-
-  void _evaluateActiveLogic() {
-    final id = _activeProject.id;
-
-    // ── 1. Basic Motor Start/Stop ─────────────────────────────────────────
-    // Now fully executed by MotorControl_LD rungs 0/1 (see executeLdPrograms).
-
-    // ── 2. Tank Level Simulation ──────────────────────────────────────────
-    // Now fully executed by TankLevel_FBD (see executeFbdPrograms): Fill_Valve
-    // = Auto AND Level_PV < Level_SP-5, Drain_Valve = Auto AND Level_PV >
-    // Level_SP+5, High_Alarm = Level_PV > 85.
-
-    // ── 3. ST Reactor Temperature Controller ─────────────────────────────
-    if (id == 'proj_st_reactor') {
-      double temp = _getTagDouble('Temp_PV');
-      double sp = _getTagDouble('Temp_SP');
-      bool auto = _getTagBool('Auto_Mode');
-      bool heat = false, cool = false;
-      if (auto) {
-        if (temp < sp - 2.0) { heat = true; }
-        else if (temp > sp + 2.0) { cool = true; }
-      }
-      _setTagBool('Heat_Cmd', heat);
-      _setTagBool('Cool_Cmd', cool);
-      _setTagBool('Alarm_High', temp > 95.0);
-      _setTagBool('Alarm_Low', temp < 5.0);
-      _setTagBool('Reactor_Ready', !heat && !cool && temp >= sp - 2.0 && temp <= sp + 2.0);
-
-    // ── 4. LD Conveyor Belt Control ───────────────────────────────────────
-    // Now fully executed by ConveyorBelt_LD rungs 0-5 (see executeLdPrograms):
-    // Belt_Motor (rung 0), Belt_Latch set/unlatch (rungs 1 & 5), Part_Present
-    // (rung 2), Belt_Jammed via JamTimer.DN (rungs 3-4).
-
-    // ── 5. FBD HVAC Zone Controller ───────────────────────────────────────
-    // Now fully executed by HvacZone_FBD (see executeFbdPrograms): Hvac_Active/
-    // Fan_Cmd/Heat_Cmd/Cool_Cmd are driven by the AND/NOT/SUB/ADD/LT/GT graph.
-
-    // ── 6. SFC Bottle Filling Sequence ────────────────────────────────────
-    // Now fully executed by BottleFill_SFC (see executeSfcPrograms): steps
-    // drive Fill_Valve/Cap_Solenoid/Eject_Cyl/Sequence_Running/Sfc_Step, and
-    // the COUNT step increments Filled_Count once per bottle.
-
-    // ── 7. All Languages — Water Treatment Plant ──────────────────────────
-    } else if (id == 'proj_all_water') {
-      // LD: Pump_Latch (rung 1 OTL) / Pump_Motor (rung 0) / Treat_Dosing
-      // (rung 2) are now executed by PumpControl_LD (see executeLdPrograms).
-      bool pumpRun = _getTagBool('Pump_Motor');
-      bool estop = _getTagBool('EStop');
-      double turbidity = _getTagDouble('Turbidity_PV');
-      double turbSP = _getTagDouble('Turbidity_SP');
-      double level = _getTagDouble('Level_PV');
-
-      // FBD: Quality_OK is now fully executed by WaterQuality_FBD (see
-      // executeFbdPrograms) — LT(Turbidity_PV,Turbidity_SP) AND GT(Level_PV,10.0).
-      bool qualityOk = _getTagBool('Quality_OK');
-
-      // SFC: Backwash_Active/Backwash_Valve/Backwash_Pump are now fully
-      // executed by FilterBackwash_SFC and PumpControl_LD rung 4
-      // (BackwashTimer.DN), see executeSfcPrograms/executeLdPrograms.
-
-      // ST: Safety supervisor alarm (WS4d — stays hardcoded here)
-      bool alarm = !estop || level < 5.0 || turbidity > turbSP + 8.0;
-      _setTagBool('Alarm_Active', alarm);
-      _setTagBool('System_Ready', pumpRun && qualityOk && !alarm);
-    }
-  }
-
-  PlcTag? _rootOf(String path) {
-    final rootName = path.split('.').first.split('[').first;
-    for (final t in _activeProject.tags) {
-      if (t.name == rootName) {
-        return t;
-      }
-    }
-    return null;
-  }
-
-  bool _getTagBool(String path) {
-    final root = _rootOf(path);
-    if (root != null && root.isForced && root.name == path) {
-      return root.forcedValue == true;
-    }
-    return readPath(_activeProject, path) == true;
-  }
-
-  double _getTagDouble(String path) {
-    final root = _rootOf(path);
-    if (root != null && root.isForced && root.name == path) {
-      return (root.forcedValue as num?)?.toDouble() ?? 0.0;
-    }
-    final v = readPath(_activeProject, path);
-    return v is num ? v.toDouble() : 0.0;
-  }
-
-  void _setTagBool(String path, bool val) => _writeIfNotForced(path, val);
-
-  void _writeIfNotForced(String path, dynamic val) {
-    final root = _rootOf(path);
-    if (root != null && root.isForced && root.name == path) {
-      return; // forced root value is not overwritten by logic
-    }
-    writePath(_activeProject, path, val);
   }
 
   void _switchActiveProject(PlcProject proj) {
@@ -199,6 +97,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _ldRuntime.clear();
       _fbdRuntime.clear();
       _sfcRuntime.clear();
+      _stRuntime.clear();
     });
   }
 
