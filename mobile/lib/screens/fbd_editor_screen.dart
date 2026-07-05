@@ -139,6 +139,8 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
                       _buildBlockPaletteItem('TON', 'Timer On Delay Block', Icons.timer, Colors.amberAccent),
                       _buildBlockPaletteItem('LIMIT', 'Limit Clamp (Min, In, Max)', Icons.tune, Colors.orangeAccent),
                       _buildBlockPaletteItem('CONST', 'Constant Value', Icons.pin, Colors.limeAccent),
+                      _buildBlockPaletteItem('ADD', 'Add (+)', Icons.add, Colors.tealAccent),
+                      _buildBlockPaletteItem('SUB', 'Subtract (-)', Icons.remove, Colors.tealAccent),
                       _buildBlockPaletteItem('MUL', 'Multiply (x)', Icons.close, Colors.tealAccent),
                       _buildBlockPaletteItem('DIV', 'Divide (/)', Icons.percent, Colors.tealAccent),
                       _buildBlockPaletteItem('GT', 'Greater Than (>)', Icons.chevron_right, Colors.lightBlueAccent),
