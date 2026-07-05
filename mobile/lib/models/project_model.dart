@@ -248,6 +248,7 @@ class FbdBlock {
   String tagBinding;
   double x;
   double y;
+  int inputCount; // extensible AND/OR/ADD/MUL input count (default 2); ignored otherwise
 
   FbdBlock({
     required this.id,
@@ -256,6 +257,7 @@ class FbdBlock {
     this.tagBinding = '',
     this.x = 100,
     this.y = 100,
+    this.inputCount = 2,
   });
 
   factory FbdBlock.fromJson(Map<String, dynamic> json) {
@@ -266,6 +268,7 @@ class FbdBlock {
       tagBinding: json['tag_binding'] ?? '',
       x: (json['x'] as num?)?.toDouble() ?? 100,
       y: (json['y'] as num?)?.toDouble() ?? 100,
+      inputCount: json['input_count'] ?? 2,
     );
   }
 
@@ -276,28 +279,42 @@ class FbdBlock {
     'tag_binding': tagBinding,
     'x': x,
     'y': y,
+    'input_count': inputCount,
   };
 }
 
 class FbdWire {
   String fromBlockId;
+  String fromPin;
   String toBlockId;
+  String toPin;
 
   FbdWire({
     required this.fromBlockId,
+    this.fromPin = '',
     required this.toBlockId,
+    this.toPin = '',
   });
 
+  /// Legacy JSON (no `from_pin`/`to_pin`) is read with empty pin fields; a
+  /// wire with an empty `fromPin`/`toPin` is resolved by callers (see
+  /// `fbd_exec.dart`) as the source's first output pin / target's first
+  /// input pin, per the block-type pin registry (`fbd_pins.dart`). This
+  /// model file intentionally has no dependency on that registry.
   factory FbdWire.fromJson(Map<String, dynamic> json) {
     return FbdWire(
       fromBlockId: json['from_block_id'] ?? '',
+      fromPin: json['from_pin'] ?? '',
       toBlockId: json['to_block_id'] ?? '',
+      toPin: json['to_pin'] ?? '',
     );
   }
 
   Map<String, dynamic> toJson() => {
     'from_block_id': fromBlockId,
+    'from_pin': fromPin,
     'to_block_id': toBlockId,
+    'to_pin': toPin,
   };
 }
 

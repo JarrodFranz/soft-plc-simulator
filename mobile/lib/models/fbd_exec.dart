@@ -1,10 +1,13 @@
 import 'project_model.dart';
+import 'fbd_pins.dart';
 import 'tag_resolver.dart';
 
-/// Reserved for stateful FBD blocks (e.g. TON); the combinational blocks the
-/// shipped diagrams use hold no state. Cleared on project switch.
+/// Per-block timer state for stateful FBD blocks (TON/TOF), keyed by block id
+/// (block ids are unique within a project's FBD programs). Cleared on project
+/// switch.
 class FbdRuntime {
-  void clear() {}
+  final Map<String, num> _elapsedMs = {};
+  void clear() => _elapsedMs.clear();
 }
 
 PlcTag? _rootTagOf(PlcProject p, String path) {
@@ -121,96 +124,179 @@ dynamic _compare(String op, List<dynamic> inputs) {
   return null;
 }
 
-dynamic _evalBlock(PlcProject p, FbdBlock b, List<dynamic> inputs) {
+/// Evaluates block [b] given its ordered input-pin values [inputs] (aligned
+/// with `fbdInputPins(b.type, inputCount: b.inputCount)`), returning a map of
+/// output-pin-name -> value. Single-output combinational blocks yield
+/// `{'OUT': v}`; TON/TOF yield `{'Q': bool, 'ET': num}`. Never throws.
+Map<String, dynamic> _evalBlock(
+  PlcProject p,
+  FbdBlock b,
+  List<dynamic> inputs,
+  int dtMs,
+  FbdRuntime rt,
+) {
   switch (b.type) {
     case 'TAG_INPUT':
-      return b.tagBinding.isEmpty ? null : readPath(p, b.tagBinding);
+      return {'OUT': b.tagBinding.isEmpty ? null : readPath(p, b.tagBinding)};
     case 'CONST':
-      return _parseConst(b.tagBinding);
+      return {'OUT': _parseConst(b.tagBinding)};
     case 'AND':
       if (inputs.isEmpty) {
-        return false;
+        return {'OUT': false};
       }
       for (final i in inputs) {
         final t = _truthy(i);
         if (t == null) {
-          return null;
+          return {'OUT': null};
         }
         if (!t) {
-          return false;
+          return {'OUT': false};
         }
       }
-      return true;
+      return {'OUT': true};
     case 'OR':
       if (inputs.isEmpty) {
-        return false;
+        return {'OUT': false};
       }
       bool any = false;
       for (final i in inputs) {
         final t = _truthy(i);
         if (t == null) {
-          return null;
+          return {'OUT': null};
         }
         if (t) {
           any = true;
         }
       }
-      return any;
+      return {'OUT': any};
     case 'NOT':
       if (inputs.isEmpty) {
-        return null;
+        return {'OUT': null};
       }
       final t = _truthy(inputs.first);
-      return t == null ? null : !t;
+      return {'OUT': t == null ? null : !t};
     case 'ADD':
     case 'SUB':
     case 'MUL':
     case 'DIV':
-      return _arith(b.type, inputs);
+      return {'OUT': _arith(b.type, inputs)};
     case 'GT':
     case 'LT':
     case 'GE':
     case 'LE':
     case 'EQ':
     case 'NE':
-      return _compare(b.type, inputs);
+      return {'OUT': _compare(b.type, inputs)};
     case 'LIMIT':
       if (inputs.length < 3) {
-        return null;
+        return {'OUT': null};
       }
       final mn = inputs[0];
       final inp = inputs[1];
       final mx = inputs[2];
       if (mn is num && inp is num && mx is num) {
         if (inp < mn) {
-          return mn;
+          return {'OUT': mn};
         }
         if (inp > mx) {
-          return mx;
+          return {'OUT': mx};
         }
-        return inp;
+        return {'OUT': inp};
       }
-      return null;
+      return {'OUT': null};
+    case 'SEL':
+      if (inputs.length < 3) {
+        return {'OUT': null};
+      }
+      final g = _truthy(inputs[0]);
+      if (g == null) {
+        return {'OUT': null};
+      }
+      return {'OUT': g ? inputs[2] : inputs[1]};
+    case 'TON':
+    case 'TOF':
+      {
+        final inVal = inputs.isNotEmpty ? _truthy(inputs[0]) ?? false : false;
+        final pt = (inputs.length > 1 && inputs[1] is num) ? (inputs[1] as num) : 0;
+        num et = rt._elapsedMs[b.id] ?? 0;
+        bool q;
+        if (b.type == 'TON') {
+          if (inVal) {
+            et = et + dtMs;
+            if (et > pt) {
+              et = pt;
+            }
+            q = et >= pt;
+          } else {
+            et = 0;
+            q = false;
+          }
+        } else {
+          // TOF: Q true immediately while IN, stays true for PT after IN falls.
+          if (inVal) {
+            et = 0;
+            q = true;
+          } else {
+            et = et + dtMs;
+            if (et > pt) {
+              et = pt;
+            }
+            q = et < pt;
+          }
+        }
+        rt._elapsedMs[b.id] = et;
+        return {'Q': q, 'ET': et};
+      }
     case 'TAG_OUTPUT':
       if (inputs.isEmpty) {
-        return null;
+        return {};
       }
       final v = inputs.first;
       if (v != null && b.tagBinding.isNotEmpty) {
         _forceAwareWrite(p, b.tagBinding, v);
       }
-      return v;
+      return {};
     default:
-      return null; // TON and unknown block types are not executed this release
+      return {}; // unknown block types are not executed
   }
 }
 
+/// Resolves a wire's effective source output pin, falling back to the source
+/// block's first output pin when the wire predates pin-addressing.
+String _resolvedFromPin(FbdWire w, FbdBlock? fromBlock) {
+  if (w.fromPin.isNotEmpty) {
+    return w.fromPin;
+  }
+  if (fromBlock == null) {
+    return '';
+  }
+  final outs = fbdOutputPins(fromBlock.type);
+  return outs.isNotEmpty ? outs.first : '';
+}
+
+/// Resolves a wire's effective target input pin, falling back to the target
+/// block's first input pin when the wire predates pin-addressing.
+String _resolvedToPin(FbdWire w, FbdBlock? toBlock) {
+  if (w.toPin.isNotEmpty) {
+    return w.toPin;
+  }
+  if (toBlock == null) {
+    return '';
+  }
+  final ins = fbdInputPins(toBlock.type, inputCount: toBlock.inputCount);
+  return ins.isNotEmpty ? ins.first : '';
+}
+
 /// Executes every FunctionBlockDiagram program: evaluates the block graph in
-/// dependency (topological) order — a block after all blocks feeding it — and
-/// TAG_OUTPUT blocks write their input to the bound tag (force-aware). Input
-/// order for a block is the order of the matching wires in `fbdWires`. Cycles
-/// (not present in shipped diagrams) terminate deterministically without
-/// hanging. Never throws.
+/// dependency (topological) order — a block after all blocks feeding any of
+/// its input pins — producing a `Map<String,dynamic>` of output-pin values
+/// per block. An input pin's value is resolved from the wire targeting
+/// `(block, pin)`, read from the source block's named output in the cache.
+/// Arithmetic/comparator operand order follows the registry's pin order
+/// (`IN1`, `IN2`, ... / `MN`, `IN`, `MX`), not wire-insertion order.
+/// TON/TOF are executed statefully (per-block state in [rt]), producing both
+/// `Q` and `ET` outputs. TAG_OUTPUT writes its `IN` force-aware. Cycles
+/// terminate deterministically without hanging. Never throws.
 void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt) {
   for (final prog in p.programs) {
     if (prog.language != 'FunctionBlockDiagram' || prog.fbdBlocks.isEmpty) {
@@ -220,19 +306,62 @@ void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt) {
     for (final b in prog.fbdBlocks) {
       byId[b.id] = b;
     }
-    final inputsOf = <String, List<String>>{};
+
+    // For each block, the ordered list of (fromBlockId, fromPin) feeding each
+    // of its input pins in registry order (null entry = unconnected input).
+    final inputWireFor = <String, List<FbdWire?>>{};
     for (final b in prog.fbdBlocks) {
-      inputsOf[b.id] = <String>[];
+      final pins = fbdInputPins(b.type, inputCount: b.inputCount);
+      inputWireFor[b.id] = List<FbdWire?>.filled(pins.length, null);
     }
     for (final w in prog.fbdWires) {
-      if (inputsOf.containsKey(w.toBlockId) && byId.containsKey(w.fromBlockId)) {
-        inputsOf[w.toBlockId]!.add(w.fromBlockId);
+      final toBlock = byId[w.toBlockId];
+      final fromBlock = byId[w.fromBlockId];
+      if (toBlock == null || fromBlock == null) {
+        continue;
       }
+      final toPin = _resolvedToPin(w, toBlock);
+      if (toPin.isEmpty) {
+        continue;
+      }
+      final pins = fbdInputPins(toBlock.type, inputCount: toBlock.inputCount);
+      final idx = pins.indexOf(toPin);
+      if (idx < 0) {
+        continue;
+      }
+      inputWireFor[toBlock.id]![idx] = w;
     }
-    final cache = <String, dynamic>{};
+
+    // Dependency ids (source block ids) per block, for the topological pass.
+    final depsOf = <String, List<String>>{};
+    for (final b in prog.fbdBlocks) {
+      depsOf[b.id] = [
+        for (final w in inputWireFor[b.id]!)
+          if (w != null) w.fromBlockId,
+      ];
+    }
+
+    final cache = <String, Map<String, dynamic>>{};
     final done = <String>{};
 
-    // Evaluate blocks whose inputs are all resolved; repeat until stable.
+    dynamic resolveInput(FbdWire? w) {
+      if (w == null) {
+        return null;
+      }
+      final fromBlock = byId[w.fromBlockId];
+      final fromPin = _resolvedFromPin(w, fromBlock);
+      final outMap = cache[w.fromBlockId];
+      if (outMap == null || fromPin.isEmpty) {
+        return null;
+      }
+      return outMap[fromPin];
+    }
+
+    List<dynamic> orderedInputs(FbdBlock b) =>
+        inputWireFor[b.id]!.map(resolveInput).toList();
+
+    // Evaluate blocks whose dependencies are all resolved; repeat until
+    // stable (topological worklist).
     bool progressed = true;
     while (progressed) {
       progressed = false;
@@ -240,11 +369,11 @@ void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt) {
         if (done.contains(b.id)) {
           continue;
         }
-        final srcs = inputsOf[b.id]!;
-        if (!srcs.every(done.contains)) {
+        final deps = depsOf[b.id]!;
+        if (!deps.every(done.contains)) {
           continue;
         }
-        cache[b.id] = _evalBlock(p, b, srcs.map((s) => cache[s]).toList());
+        cache[b.id] = _evalBlock(p, b, orderedInputs(b), dtMs, rt);
         done.add(b.id);
         progressed = true;
       }
@@ -255,7 +384,7 @@ void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt) {
       if (done.contains(b.id)) {
         continue;
       }
-      cache[b.id] = _evalBlock(p, b, inputsOf[b.id]!.map((s) => cache[s]).toList());
+      cache[b.id] = _evalBlock(p, b, orderedInputs(b), dtMs, rt);
       done.add(b.id);
     }
   }
