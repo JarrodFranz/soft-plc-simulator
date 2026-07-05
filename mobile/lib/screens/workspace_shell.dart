@@ -447,6 +447,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
           // Active Project Tree Navigation
           Expanded(
             child: ListView(
+              key: const Key('nav_tree'),
               padding: const EdgeInsets.all(8),
               children: [
                 // Project Header Info
