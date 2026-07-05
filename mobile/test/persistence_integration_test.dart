@@ -8,6 +8,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
+import 'package:shared_preferences_platform_interface/types.dart';
 import 'package:soft_plc_mobile/data/default_projects.dart';
 import 'package:soft_plc_mobile/data/project_repository.dart';
 import 'package:soft_plc_mobile/screens/workspace_shell.dart';
@@ -15,6 +17,35 @@ import 'package:soft_plc_mobile/widgets/tag_inspector_dock.dart';
 import 'support/responsive_test_utils.dart';
 
 Widget _app(ProjectRepository repo) => MaterialApp(home: WorkspaceShell(repository: repo));
+
+/// A [SharedPreferencesStorePlatform] whose `getAllWithParameters` always
+/// throws, simulating a genuinely-unavailable persistence backend (as
+/// opposed to just an unregistered platform channel, which never settles
+/// at all inside `testWidgets`' FakeAsync zone — see the "not saved"
+/// indicator test below for why this fake is needed instead).
+class _ThrowingSharedPreferencesStore extends SharedPreferencesStorePlatform {
+  @override
+  Future<Map<String, Object>> getAll() {
+    throw StateError('forced test failure: persistence backend unavailable');
+  }
+
+  @override
+  Future<Map<String, Object>> getAllWithParameters(GetAllParameters parameters) {
+    throw StateError('forced test failure: persistence backend unavailable');
+  }
+
+  @override
+  Future<bool> clear() async => true;
+
+  @override
+  Future<bool> clearWithParameters(ClearParameters parameters) async => true;
+
+  @override
+  Future<bool> setValue(String valueType, String key, Object value) async => true;
+
+  @override
+  Future<bool> remove(String key) async => true;
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -123,4 +154,106 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.textContaining(second.name), findsWidgets);
   });
+
+  testWidgets(
+    'non-injected boot with working prefs persists an edit (real getInstance path, no timeout race)',
+    (tester) async {
+      // Critical-finding regression: boot used to RACE SharedPreferences
+      // .getInstance() against a fixed ~5s timer. On a slow-but-working
+      // device the timer could win and _repo would be permanently null
+      // (in-memory only) for the whole session, even though prefs were
+      // available all along. This test builds WorkspaceShell() WITHOUT an
+      // injected repository (i.e. the shell must call
+      // SharedPreferences.getInstance() itself), but WITH mock initial
+      // values set first so the real getInstance() path resolves and
+      // works — proving the non-injected path uses real prefs whenever
+      // they're available, with no dependence on a timeout window.
+      SharedPreferences.setMockInitialValues({});
+
+      await setSurface(tester, desktopSize);
+      await tester.pumpWidget(const MaterialApp(home: WorkspaceShell()));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      // The "Not saved" fallback chip must NOT be showing — prefs are
+      // available, so _repo must be non-null.
+      expect(find.text('Not saved'), findsNothing);
+
+      // Boot seeded the defaults into real (mocked) SharedPreferences.
+      final verifyPrefs = await SharedPreferences.getInstance();
+      final verifyRepo = ProjectRepository(verifyPrefs);
+      final seeded = await verifyRepo.listProjects();
+      expect(seeded.length, DefaultProjects.all().length);
+
+      // Flip the first tag's value via the Tag Inspector, exactly like a
+      // user would, then let the autosave debounce elapse.
+      expect(find.byType(TagInspectorDock), findsOneWidget);
+      final startPbCard = find.ancestor(of: find.text('Start_PB'), matching: find.byType(Card)).first;
+      final valuePill = find.descendant(of: startPbCard, matching: find.text('false ')).first;
+      await tester.tap(valuePill);
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      // Reload via a FRESH ProjectRepository over the same real
+      // (mocked) SharedPreferences instance — proving the non-injected
+      // boot path persisted through the real getInstance() call, not an
+      // in-memory fallback.
+      final activeId = await verifyRepo.getActiveProjectId();
+      expect(activeId, isNotNull);
+      final reloaded = await verifyRepo.loadProject(activeId!);
+      expect(reloaded, isNotNull);
+      expect(reloaded!.tags.first.name, 'Start_PB');
+      expect(
+        reloaded.tags.first.value,
+        true,
+        reason: 'the non-injected boot path must use real SharedPreferences whenever it is available, '
+            'with no timeout race that could silently fall back to in-memory-only storage',
+      );
+    },
+  );
+
+  testWidgets(
+    'shows a visible "not saved" indicator (no overflow) when persistence is genuinely unavailable',
+    (tester) async {
+      // CRITICAL/IMPORTANT finding 3: when _repo == null (in-memory
+      // fallback truly engaged), the app must never silently pretend to
+      // save. Swap in a SharedPreferencesStorePlatform that genuinely
+      // throws so boot lands on the null-repo fallback, then assert the
+      // amber "not saved" indicator is showing and that it never causes
+      // an AppBar overflow — including at the narrowest supported phone
+      // widths (360/320).
+      //
+      // SharedPreferences.getInstance() memoizes its result in a static
+      // Completer, and setMockInitialValues() (used by earlier tests in
+      // this file) replaces SharedPreferencesStorePlatform.instance with
+      // an in-memory fake — so a MethodChannel-level mock would never
+      // even be consulted. resetStatic() clears the memoized Completer so
+      // getInstance() re-reads SharedPreferencesStorePlatform.instance,
+      // which we point at the throwing fake below.
+      final originalPlatform = SharedPreferencesStorePlatform.instance;
+      SharedPreferences.resetStatic();
+      SharedPreferencesStorePlatform.instance = _ThrowingSharedPreferencesStore();
+
+      for (final size in [phoneSize, smallPhoneSize, desktopSize]) {
+        await setSurface(tester, size);
+        await tester.pumpWidget(const MaterialApp(home: WorkspaceShell()));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull, reason: 'no overflow expected at ${size.width}');
+        expect(
+          find.byIcon(Icons.warning_amber_rounded),
+          findsOneWidget,
+          reason: '"not saved" indicator must be visible when _repo is null (forced store failure) at ${size.width}',
+        );
+      }
+
+      // Restore the platform instance and clear the memoized Completer so
+      // neither leaks into other tests in this file/run.
+      SharedPreferencesStorePlatform.instance = originalPlatform;
+      SharedPreferences.resetStatic();
+    },
+  );
 }

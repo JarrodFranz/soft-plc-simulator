@@ -62,17 +62,13 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   // Side Dock Inspector State
   bool isTagDockVisible = true;
 
-  // Autosave status: null = nothing pending/in-flight (fully saved, or the
-  // user hasn't edited anything yet this session).
+  // Autosave status. `_saveFailed` is a third state (alongside
+  // saving/saved) surfaced when a save actually throws, so a failure is
+  // visible instead of silently swallowed.
   Timer? _autosaveTimer;
   bool _saveInFlight = false;
   bool _savedIndicatorVisible = false;
-
-  // Cancellable guard against SharedPreferences.getInstance() hanging (e.g.
-  // the platform channel has no responder). Cancelled in dispose() so a
-  // still-pending Timer never trips flutter_test's post-dispose invariant
-  // check in tests that unmount before boot naturally resolves.
-  Timer? _bootTimeoutGuard;
+  bool _saveFailed = false;
 
   @override
   void initState() {
@@ -84,7 +80,6 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   void dispose() {
     _scanTimer?.cancel();
     _autosaveTimer?.cancel();
-    _bootTimeoutGuard?.cancel();
     super.dispose();
   }
 
@@ -93,56 +88,63 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     List<PlcProject> loadedProjects = [];
     PlcProject? active;
 
-    try {
-      if (widget.repository != null) {
-        repo = widget.repository;
-      } else {
-        final prefsCompleter = Completer<SharedPreferences>();
-        SharedPreferences.getInstance().then(
-          (p) {
-            if (!prefsCompleter.isCompleted) prefsCompleter.complete(p);
-          },
-          onError: (Object e, StackTrace st) {
-            if (!prefsCompleter.isCompleted) prefsCompleter.completeError(e, st);
-          },
-        );
-        _bootTimeoutGuard = Timer(const Duration(seconds: 5), () {
-          if (!prefsCompleter.isCompleted) {
-            prefsCompleter.completeError(TimeoutException('SharedPreferences.getInstance timed out'));
-          }
-        });
-        final prefs = await prefsCompleter.future;
-        _bootTimeoutGuard?.cancel();
-        repo = ProjectRepository(prefs);
+    if (widget.repository != null) {
+      // Test/caller-supplied seam: use it directly, never touch
+      // SharedPreferences.getInstance().
+      repo = widget.repository;
+    } else {
+      // Plain await + catch, no timeout race. A genuinely-missing platform
+      // channel (e.g. an unmocked widget test) throws promptly (typically
+      // MissingPluginException) so this resolves to null quickly and falls
+      // back to the in-memory defaults below. A slow-but-working device
+      // just awaits longer and ALWAYS gets a real, persistent repository —
+      // there is no arbitrary timeout that can cause a false fallback.
+      SharedPreferences? prefs;
+      try {
+        prefs = await SharedPreferences.getInstance();
+      } catch (_) {
+        prefs = null;
       }
-      await repo!.seedDefaultsIfEmpty();
-
-      final catalog = await repo.listProjects();
-      final activeId = await repo.getActiveProjectId();
-
-      if (activeId != null) {
-        active = await repo.loadProject(activeId);
-      }
-      active ??= catalog.isNotEmpty ? await repo.loadProject(catalog.first.id) : null;
-
-      for (final summary in catalog) {
-        if (active != null && summary.id == active.id) {
-          loadedProjects.add(active);
-          continue;
-        }
-        final p = await repo.loadProject(summary.id);
-        if (p != null) loadedProjects.add(p);
-      }
-    } catch (_) {
-      // No persistence backend available (e.g. the shared_preferences
-      // platform channel isn't wired up, such as in a widget test that
-      // doesn't mock it and didn't inject a repository). Fall back to
-      // pure in-memory defaults so the shell still boots and functions —
-      // just without cross-session persistence.
-      repo = null;
+      repo = prefs != null ? ProjectRepository(prefs) : null;
     }
 
-    if (repo == null || loadedProjects.isEmpty) {
+    if (repo != null) {
+      // Prefs (or an injected repository) are available. Keep `repo`
+      // non-null even if seeding/loading below throws, so the key
+      // invariant holds: prefs available => _repo stays non-null => edits
+      // persist. A failure here only affects what's shown THIS session,
+      // never whether autosave has somewhere to write.
+      try {
+        await repo.seedDefaultsIfEmpty();
+
+        final catalog = await repo.listProjects();
+        final activeId = await repo.getActiveProjectId();
+
+        if (activeId != null) {
+          active = await repo.loadProject(activeId);
+        }
+        active ??= catalog.isNotEmpty ? await repo.loadProject(catalog.first.id) : null;
+
+        for (final summary in catalog) {
+          if (active != null && summary.id == active.id) {
+            loadedProjects.add(active);
+            continue;
+          }
+          final p = await repo.loadProject(summary.id);
+          if (p != null) loadedProjects.add(p);
+        }
+      } catch (_) {
+        // A later boot step (seed/list/load) threw despite prefs being
+        // available. Don't revert to a null repo — that would silently
+        // disable persistence for the whole session. Just fall back to
+        // in-memory defaults for THIS session's initial view; `_repo`
+        // stays non-null so autosave still writes through.
+        loadedProjects = [];
+        active = null;
+      }
+    }
+
+    if (loadedProjects.isEmpty) {
       loadedProjects = DefaultProjects.all();
       active = loadedProjects.first;
     }
@@ -220,14 +222,29 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   Future<void> _runAutosave() async {
     final repo = _repo;
     if (repo == null) return;
-    setState(() => _saveInFlight = true);
-    final projectToSave = _activeProject;
-    await repo.saveProject(projectToSave);
-    if (!mounted) return;
     setState(() {
-      _saveInFlight = false;
-      _savedIndicatorVisible = true;
+      _saveInFlight = true;
+      _saveFailed = false;
     });
+    final projectToSave = _activeProject;
+    try {
+      await repo.saveProject(projectToSave);
+      if (!mounted) return;
+      setState(() {
+        _saveInFlight = false;
+        _savedIndicatorVisible = true;
+        _saveFailed = false;
+      });
+    } catch (_) {
+      // Don't let this become an unhandled Future error — reflect the
+      // failure in the indicator instead of masking it.
+      if (!mounted) return;
+      setState(() {
+        _saveInFlight = false;
+        _savedIndicatorVisible = false;
+        _saveFailed = true;
+      });
+    }
   }
 
   /// If a debounced autosave is pending, run it immediately instead of
@@ -405,6 +422,14 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         if (p != null) remaining.add(p);
       }
     }
+    if (remaining.isEmpty) {
+      // The catalog genuinely yields nothing even after reseeding (e.g. a
+      // corrupt store that can't be written/read back). Fall back to
+      // in-memory defaults for THIS session only rather than an unguarded
+      // `.first` — `repo` itself is left untouched so future saves still
+      // go through it.
+      remaining = DefaultProjects.all();
+    }
     final next = remaining.first;
     await repo.setActiveProjectId(next.id);
     if (!mounted) return;
@@ -441,10 +466,16 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     _autosaveTimer?.cancel();
     await repo.resetToDefaults();
     final catalog = await repo.listProjects();
-    final loaded = <PlcProject>[];
+    var loaded = <PlcProject>[];
     for (final s in catalog) {
       final p = await repo.loadProject(s.id);
       if (p != null) loaded.add(p);
+    }
+    if (loaded.isEmpty) {
+      // resetToDefaults should always leave the catalog non-empty, but
+      // guard against a corrupt store yielding nothing back rather than
+      // an unguarded `.first`.
+      loaded = DefaultProjects.all();
     }
     final first = loaded.first;
     await repo.setActiveProjectId(first.id);
@@ -480,24 +511,73 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     );
   }
 
-  Widget _buildSaveStatus() {
+  /// Renders the autosave status indicator. On [compact] widths the label
+  /// text is dropped (icon + tooltip only) so the indicator can't push the
+  /// AppBar title/actions into overflow on narrow phones (360/320px) —
+  /// the tooltip still carries the full message on long-press/hover.
+  Widget _buildSaveStatus({required bool compact}) {
+    if (_repo == null) {
+      // Persistence is genuinely unavailable this session (in-memory
+      // fallback truly engaged) — never pretend to save. Visible but
+      // unobtrusive so a real failure is surfaced rather than masked.
+      return Tooltip(
+        message: 'Storage unavailable — changes will not be saved between sessions',
+        child: Container(
+          padding: EdgeInsets.symmetric(horizontal: compact ? 4 : 6, vertical: 2),
+          decoration: BoxDecoration(
+            color: Colors.amber.withValues(alpha: 0.15),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.amber),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.warning_amber_rounded, size: 12, color: Colors.amberAccent),
+              if (!compact) ...[
+                const SizedBox(width: 4),
+                const Text('Not saved', style: TextStyle(fontSize: 11, color: Colors.amberAccent)),
+              ],
+            ],
+          ),
+        ),
+      );
+    }
     if (_saveInFlight) {
-      return const Row(
+      return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.amberAccent)),
-          SizedBox(width: 6),
-          Text('Saving…', style: TextStyle(fontSize: 11, color: Colors.amberAccent)),
+          const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.amberAccent)),
+          if (!compact) ...[
+            const SizedBox(width: 6),
+            const Text('Saving…', style: TextStyle(fontSize: 11, color: Colors.amberAccent)),
+          ],
         ],
       );
     }
+    if (_saveFailed) {
+      return Tooltip(
+        message: 'The last save attempt failed. Your edits are still in memory.',
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.error_outline, size: 12, color: Colors.redAccent),
+            if (!compact) ...[
+              const SizedBox(width: 4),
+              const Text('Save failed ⚠', style: TextStyle(fontSize: 11, color: Colors.redAccent)),
+            ],
+          ],
+        ),
+      );
+    }
     if (_savedIndicatorVisible) {
-      return const Row(
+      return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.check_circle, size: 12, color: Colors.greenAccent),
-          SizedBox(width: 4),
-          Text('Saved', style: TextStyle(fontSize: 11, color: Colors.greenAccent)),
+          const Icon(Icons.check_circle, size: 12, color: Colors.greenAccent),
+          if (!compact) ...[
+            const SizedBox(width: 4),
+            const Text('Saved', style: TextStyle(fontSize: 11, color: Colors.greenAccent)),
+          ],
         ],
       );
     }
@@ -600,7 +680,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
               ),
             ),
             const SizedBox(width: 10),
-            _buildSaveStatus(),
+            _buildSaveStatus(compact: compact),
           ],
         ),
         backgroundColor: const Color(0xFF1E293B),
