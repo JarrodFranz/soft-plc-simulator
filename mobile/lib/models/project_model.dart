@@ -454,6 +454,7 @@ class PlcTask {
     'type': type,
     'period_ms': periodMs,
     'programs': programNames,
+    'enabled': enabled,
   };
 }
 
