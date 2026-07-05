@@ -349,9 +349,10 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
             DropdownButtonFormField<String>(
               initialValue: block.tagBinding.isNotEmpty ? block.tagBinding : widget.currentProject.tags.first.name,
               isDense: true,
+              isExpanded: true, // fill the card width and ellipsize long tag names
               style: const TextStyle(fontSize: 11, color: Colors.white),
               decoration: const InputDecoration(isDense: true, border: InputBorder.none),
-              items: widget.currentProject.tags.map((t) => DropdownMenuItem(value: t.name, child: Text(t.name))).toList(),
+              items: widget.currentProject.tags.map((t) => DropdownMenuItem(value: t.name, child: Text(t.name, overflow: TextOverflow.ellipsis))).toList(),
               onChanged: (val) {
                 setState(() => block.tagBinding = val!);
                 widget.onProgramUpdated();

@@ -856,7 +856,15 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 const Text('0.0', style: TextStyle(fontSize: 10, color: Colors.grey)),
-                Text('${numVal.toStringAsFixed(1)} ${tag.engineeringUnits}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.white)),
+                Flexible(
+                  child: Text(
+                    '${numVal.toStringAsFixed(1)} ${tag.engineeringUnits}',
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.white),
+                  ),
+                ),
                 const Text('100.0', style: TextStyle(fontSize: 10, color: Colors.grey)),
               ],
             ),
