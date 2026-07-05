@@ -803,6 +803,18 @@ void main() {
       expect(readPath(p, 'CvOut'), equals(0));
     });
 
+    test('CTUD load of a negative preset is floored to 0 (CV never negative)', () {
+      // Guards the invariant that CV cannot go negative even via LD, not just
+      // via the decrement path.
+      final p = buildCtud(pv: '-5');
+      final rt = FbdRuntime();
+
+      writePath(p, 'LD', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(0));
+      expect(readPath(p, 'QdOut'), isTrue); // CV(0) <= 0
+    });
+
     test('CTUD simultaneous CU/CD rising edges in same scan net to no change', () {
       final p = buildCtud(pv: '3');
       final rt = FbdRuntime();

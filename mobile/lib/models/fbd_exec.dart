@@ -371,9 +371,10 @@ Map<String, dynamic> _evalBlock(
           if (cd && prevCD == 0) {
             cv = cv - 1;
           }
-          if (cv < 0) {
-            cv = 0;
-          }
+        }
+        // CV never goes negative — floors the down path and a negative preset load.
+        if (cv < 0) {
+          cv = 0;
         }
         rt._counters[b.id] = [cv, cu ? 1 : 0, cd ? 1 : 0];
         final qu = cv >= pv;
