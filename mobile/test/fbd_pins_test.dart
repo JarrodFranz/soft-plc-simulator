@@ -55,6 +55,10 @@ void main() {
       expect(fbdInputPins('TOF'), ['IN', 'PT']);
     });
 
+    test('PID is SP, PV, KP, KI, KD', () {
+      expect(fbdInputPins('PID'), ['SP', 'PV', 'KP', 'KI', 'KD']);
+    });
+
     test('unknown type -> empty, never throws', () {
       expect(fbdInputPins('NOT_A_REAL_TYPE'), isEmpty);
       expect(fbdInputPins(''), isEmpty);
@@ -83,6 +87,10 @@ void main() {
     test('TON/TOF -> Q, ET', () {
       expect(fbdOutputPins('TON'), ['Q', 'ET']);
       expect(fbdOutputPins('TOF'), ['Q', 'ET']);
+    });
+
+    test('PID -> CV', () {
+      expect(fbdOutputPins('PID'), ['CV']);
     });
 
     test('unknown type -> empty, never throws', () {
