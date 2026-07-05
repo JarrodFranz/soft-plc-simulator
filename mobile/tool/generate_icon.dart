@@ -50,9 +50,12 @@ void drawMark(img.Image im, {required bool transparentBg}) {
   for (var t = 1; t <= 3; t++) {
     img.drawCircle(im, x: coilX, y: midY, radius: coilR - t, color: rung);
   }
-  // Punch the coil ring's left/right open so it reads as ( ) not a full O.
-  img.fillRect(im, x1: coilX - 24, y1: midY - coilR - 6, x2: coilX + 24, y2: midY - coilR + 40, color: transparentBg ? img.ColorRgba8(0, 0, 0, 0) : bg);
-  img.fillRect(im, x1: coilX - 24, y1: midY + coilR - 40, x2: coilX + 24, y2: midY + coilR + 6, color: transparentBg ? img.ColorRgba8(0, 0, 0, 0) : bg);
+  // Punch the coil ring's top/bottom open so it reads as ( ) not a full O.
+  // alphaBlend:false so a fully-transparent punch actually clears pixels on the
+  // foreground variant (fillRect skips a 0-alpha color when alpha-blending).
+  final punch = transparentBg ? img.ColorRgba8(0, 0, 0, 0) : bg;
+  img.fillRect(im, x1: coilX - 24, y1: midY - coilR - 6, x2: coilX + 24, y2: midY - coilR + 40, color: punch, alphaBlend: false);
+  img.fillRect(im, x1: coilX - 24, y1: midY + coilR - 40, x2: coilX + 24, y2: midY + coilR + 6, color: punch, alphaBlend: false);
 }
 
 void main() {

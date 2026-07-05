@@ -121,3 +121,8 @@ permissions are required for the SAF/document-picker flows used here.
 - A professionally designed icon (current mark is a clean, brand-free
   placeholder — replace `mobile/assets/icon/app_icon*.png` and regenerate).
 - Registering `.splc.json` as a document type / deep links; push notifications.
+- A hard **minimum desktop window size** is intentionally not enforced: the
+  responsive layout (WS5) collapses to the compact drawer UI when a desktop
+  window is shrunk, so the app stays usable at any size. Add
+  `WM_GETMINMAXINFO` (Windows) / `gtk_widget_set_size_request` (Linux) if you
+  want a hard floor.
