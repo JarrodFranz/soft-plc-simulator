@@ -4,6 +4,7 @@ import '../models/project_model.dart';
 import '../models/tag_resolver.dart';
 import '../models/sim_engine.dart';
 import '../models/ld_exec.dart';
+import '../models/sfc_exec.dart';
 import '../data/default_projects.dart';
 import '../widgets/tag_inspector_dock.dart';
 import 'st_editor_screen.dart';
@@ -37,6 +38,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   Timer? _scanTimer;
   final SimRuntime _simRuntime = SimRuntime();
   final LdExecRuntime _ldRuntime = LdExecRuntime();
+  final SfcRuntime _sfcRuntime = SfcRuntime();
 
   // Side Dock Inspector State
   bool isTagDockVisible = true;
@@ -73,6 +75,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       scanCount++;
       applySimRules(_activeProject, _activeProject.simRules, scanSpeedMs, _simRuntime);
       executeLdPrograms(_activeProject, scanSpeedMs, _ldRuntime);
+      executeSfcPrograms(_activeProject, scanSpeedMs, _sfcRuntime);
       _evaluateActiveLogic();
     });
   }
@@ -135,56 +138,9 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _setTagBool('Cool_Cmd', cool);
 
     // ── 6. SFC Bottle Filling Sequence ────────────────────────────────────
-    } else if (id == 'proj_sfc_filling') {
-      int step = _getTagInt('Sfc_Step');
-      int delay = _getTagInt('Step_Delay');
-      bool startCmd = _getTagBool('Start_Cmd');
-      bool bottlePresent = _getTagBool('Bottle_Present');
-      double fillLevel = _getTagDouble('Fill_Level');
-
-      switch (step) {
-        case 0: // IDLE
-          _setTagBool('Fill_Valve', false);
-          _setTagBool('Cap_Solenoid', false);
-          _setTagBool('Eject_Cyl', false);
-          _setTagBool('Sequence_Running', false);
-          if (startCmd) { step = 1; delay = 0; }
-          break;
-        case 1: // WAIT_BOTTLE
-          _setTagBool('Sequence_Running', true);
-          _setTagBool('Eject_Cyl', false);
-          if (bottlePresent) {
-            step = 2;
-            delay = 0;
-            // Fill_Level is driven upward by a sim rule while Fill_Valve is
-            // on; reset it here on entry to FILLING so each new bottle
-            // ramps from zero instead of starting already full.
-            _writeIfNotForced('Fill_Level', 0.0);
-          }
-          break;
-        case 2: // FILLING
-          _setTagBool('Fill_Valve', true);
-          if (fillLevel >= 95.0) { step = 3; delay = 0; }
-          break;
-        case 3: // CAPPING — hold 6 scans (~1.2s)
-          _setTagBool('Fill_Valve', false);
-          _setTagBool('Cap_Solenoid', true);
-          delay++;
-          if (delay >= 6) { step = 4; delay = 0; }
-          break;
-        case 4: // EJECTING — hold 4 scans (~800ms)
-          _setTagBool('Cap_Solenoid', false);
-          _setTagBool('Eject_Cyl', true);
-          delay++;
-          if (delay >= 4) {
-            _setTagInt('Filled_Count', _getTagInt('Filled_Count') + 1);
-            step = 1;
-            delay = 0;
-          }
-          break;
-      }
-      _setTagInt('Sfc_Step', step);
-      _setTagInt('Step_Delay', delay);
+    // Now fully executed by BottleFill_SFC (see executeSfcPrograms): steps
+    // drive Fill_Valve/Cap_Solenoid/Eject_Cyl/Sequence_Running/Sfc_Step, and
+    // the COUNT step increments Filled_Count once per bottle.
 
     // ── 7. All Languages — Water Treatment Plant ──────────────────────────
     } else if (id == 'proj_all_water') {
@@ -193,24 +149,18 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       bool pumpRun = _getTagBool('Pump_Motor');
       bool estop = _getTagBool('EStop');
 
-      // FBD: Quality gate logic
+      // FBD: Quality gate logic (WS4c — stays hardcoded here)
       double turbidity = _getTagDouble('Turbidity_PV');
       double turbSP = _getTagDouble('Turbidity_SP');
       double level = _getTagDouble('Level_PV');
       bool qualityOk = turbidity < turbSP && level > 10.0;
       _setTagBool('Quality_OK', qualityOk);
 
-      // SFC: Backwash triggers when turbidity exceeds SP
-      // Backwash_Active stays hardcoded until SFC execution (WS4b): rung 4
-      // only sets it after BackwashTimer.DN (30s on-delay), which differs
-      // materially from this immediate trigger that FilterBackwash_SFC's
-      // valve/pump sequencing relies on to start promptly.
-      bool backwash = !qualityOk && pumpRun;
-      _setTagBool('Backwash_Active', backwash);
-      _setTagBool('Backwash_Valve', backwash);
-      _setTagBool('Backwash_Pump', backwash && turbidity > turbSP + 1.0);
+      // SFC: Backwash_Active/Backwash_Valve/Backwash_Pump are now fully
+      // executed by FilterBackwash_SFC and PumpControl_LD rung 4
+      // (BackwashTimer.DN), see executeSfcPrograms/executeLdPrograms.
 
-      // ST: Safety supervisor alarm
+      // ST: Safety supervisor alarm (WS4d — stays hardcoded here)
       bool alarm = !estop || level < 5.0 || turbidity > turbSP + 8.0;
       _setTagBool('Alarm_Active', alarm);
       _setTagBool('System_Ready', pumpRun && qualityOk && !alarm);
@@ -244,17 +194,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     return v is num ? v.toDouble() : 0.0;
   }
 
-  int _getTagInt(String path) {
-    final root = _rootOf(path);
-    if (root != null && root.isForced && root.name == path) {
-      return (root.forcedValue as num?)?.toInt() ?? 0;
-    }
-    final v = readPath(_activeProject, path);
-    return v is num ? v.toInt() : 0;
-  }
-
   void _setTagBool(String path, bool val) => _writeIfNotForced(path, val);
-  void _setTagInt(String path, int val) => _writeIfNotForced(path, val);
 
   void _writeIfNotForced(String path, dynamic val) {
     final root = _rootOf(path);
@@ -275,6 +215,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       scanCount = 0;
       _simRuntime.byRuleId.clear();
       _ldRuntime.clear();
+      _sfcRuntime.clear();
     });
   }
 
