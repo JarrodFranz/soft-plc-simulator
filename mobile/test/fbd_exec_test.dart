@@ -470,4 +470,258 @@ void main() {
       expect(readPath(p, 'CV'), equals(freshFirstScan));
     });
   });
+
+  group('CTU', () {
+    // Builds a CTU block fed by TAG_INPUT CU/R and CONST PV, with Q/CV wired
+    // to TAG_OUTPUTs. `withR`/`withPv` control whether those pins are wired.
+    PlcProject buildCtu({bool withR = true, String? pv = '3'}) {
+      final blocks = <FbdBlock>[
+        FbdBlock(id: 'cu', type: 'TAG_INPUT', title: '', tagBinding: 'CU'),
+        FbdBlock(id: 'ctu', type: 'CTU', title: ''),
+        FbdBlock(id: 'oq', type: 'TAG_OUTPUT', title: '', tagBinding: 'QOut'),
+        FbdBlock(id: 'ocv', type: 'TAG_OUTPUT', title: '', tagBinding: 'CvOut'),
+      ];
+      final wires = <FbdWire>[
+        FbdWire(fromBlockId: 'cu', fromPin: 'OUT', toBlockId: 'ctu', toPin: 'CU'),
+        FbdWire(fromBlockId: 'ctu', fromPin: 'Q', toBlockId: 'oq', toPin: 'IN'),
+        FbdWire(fromBlockId: 'ctu', fromPin: 'CV', toBlockId: 'ocv', toPin: 'IN'),
+      ];
+      if (withR) {
+        blocks.add(FbdBlock(id: 'r', type: 'TAG_INPUT', title: '', tagBinding: 'R'));
+        wires.add(FbdWire(fromBlockId: 'r', fromPin: 'OUT', toBlockId: 'ctu', toPin: 'R'));
+      }
+      if (pv != null) {
+        blocks.add(FbdBlock(id: 'pv', type: 'CONST', title: '', tagBinding: pv));
+        wires.add(FbdWire(fromBlockId: 'pv', fromPin: 'OUT', toBlockId: 'ctu', toPin: 'PV'));
+      }
+      final prog = _fbd(blocks, wires);
+      final tags = <PlcTag>[
+        _tag('CU', 'BOOL', false), _tag('QOut', 'BOOL', false), _tag('CvOut', 'INT32', -1),
+      ];
+      if (withR) {
+        tags.add(_tag('R', 'BOOL', false));
+      }
+      return _proj(tags, prog);
+    }
+
+    test('rising-edge counts once while held true (not level-triggered)', () {
+      final p = buildCtu();
+      final rt = FbdRuntime();
+
+      writePath(p, 'CU', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(1));
+      expect(readPath(p, 'QOut'), isFalse);
+
+      // Held true across further scans -> stays at 1 (edge, not level).
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(1));
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(1));
+
+      // Toggle false then true again -> increments to 2.
+      writePath(p, 'CU', false);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(1));
+      writePath(p, 'CU', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(2));
+
+      // One more rising edge -> CV=3 -> Q true (PV=3).
+      writePath(p, 'CU', false);
+      _run(p, rt);
+      writePath(p, 'CU', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(3));
+      expect(readPath(p, 'QOut'), isTrue);
+    });
+
+    test('reset priority: R=true zeroes CV even with a simultaneous CU rising edge', () {
+      final p = buildCtu();
+      final rt = FbdRuntime();
+      writePath(p, 'CU', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(1));
+
+      writePath(p, 'CU', false);
+      _run(p, rt);
+
+      // Simultaneous R=true and CU rising edge -> reset wins.
+      writePath(p, 'R', true);
+      writePath(p, 'CU', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(0));
+      expect(readPath(p, 'QOut'), isFalse);
+    });
+
+    test('unwired R/PV -> CV counts from 0 with PV=0, Q true immediately, no throw', () {
+      final p = buildCtu(withR: false, pv: null);
+      final rt = FbdRuntime();
+      writePath(p, 'CU', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(1));
+      expect(readPath(p, 'QOut'), isTrue); // PV unwired -> 0, CV(1) >= 0
+    });
+
+    test('rt.clear() resets CV and edge state', () {
+      final p = buildCtu();
+      final rt = FbdRuntime();
+      writePath(p, 'CU', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(1));
+
+      rt.clear();
+      writePath(p, 'CU', false);
+      _run(p, rt);
+      writePath(p, 'CU', true);
+      _run(p, rt);
+      // Fresh edge from 0 after clear -> CV=1, same as very first scan.
+      expect(readPath(p, 'CvOut'), equals(1));
+    });
+  });
+
+  group('CTD', () {
+    PlcProject buildCtd({String pv = '2'}) {
+      final blocks = <FbdBlock>[
+        FbdBlock(id: 'cd', type: 'TAG_INPUT', title: '', tagBinding: 'CD'),
+        FbdBlock(id: 'ld', type: 'TAG_INPUT', title: '', tagBinding: 'LD'),
+        FbdBlock(id: 'pv', type: 'CONST', title: '', tagBinding: pv),
+        FbdBlock(id: 'ctd', type: 'CTD', title: ''),
+        FbdBlock(id: 'oq', type: 'TAG_OUTPUT', title: '', tagBinding: 'QOut'),
+        FbdBlock(id: 'ocv', type: 'TAG_OUTPUT', title: '', tagBinding: 'CvOut'),
+      ];
+      final wires = <FbdWire>[
+        FbdWire(fromBlockId: 'cd', fromPin: 'OUT', toBlockId: 'ctd', toPin: 'CD'),
+        FbdWire(fromBlockId: 'ld', fromPin: 'OUT', toBlockId: 'ctd', toPin: 'LD'),
+        FbdWire(fromBlockId: 'pv', fromPin: 'OUT', toBlockId: 'ctd', toPin: 'PV'),
+        FbdWire(fromBlockId: 'ctd', fromPin: 'Q', toBlockId: 'oq', toPin: 'IN'),
+        FbdWire(fromBlockId: 'ctd', fromPin: 'CV', toBlockId: 'ocv', toPin: 'IN'),
+      ];
+      final prog = _fbd(blocks, wires);
+      return _proj([
+        _tag('CD', 'BOOL', false), _tag('LD', 'BOOL', false),
+        _tag('QOut', 'BOOL', false), _tag('CvOut', 'INT32', -1),
+      ], prog);
+    }
+
+    test('LD loads PV, CD edges decrement, floors at 0, Q true at CV<=0', () {
+      final p = buildCtd();
+      final rt = FbdRuntime();
+
+      writePath(p, 'LD', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(2));
+      expect(readPath(p, 'QOut'), isFalse);
+
+      writePath(p, 'LD', false);
+      writePath(p, 'CD', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(1));
+      expect(readPath(p, 'QOut'), isFalse);
+
+      writePath(p, 'CD', false);
+      _run(p, rt);
+      writePath(p, 'CD', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(0));
+      expect(readPath(p, 'QOut'), isTrue);
+
+      // Further rising edges must not go negative.
+      writePath(p, 'CD', false);
+      _run(p, rt);
+      writePath(p, 'CD', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(0));
+      expect(readPath(p, 'QOut'), isTrue);
+    });
+  });
+
+  group('CTUD', () {
+    PlcProject buildCtud({String pv = '2'}) {
+      final blocks = <FbdBlock>[
+        FbdBlock(id: 'cu', type: 'TAG_INPUT', title: '', tagBinding: 'CU'),
+        FbdBlock(id: 'cd', type: 'TAG_INPUT', title: '', tagBinding: 'CD'),
+        FbdBlock(id: 'r', type: 'TAG_INPUT', title: '', tagBinding: 'R'),
+        FbdBlock(id: 'ld', type: 'TAG_INPUT', title: '', tagBinding: 'LD'),
+        FbdBlock(id: 'pv', type: 'CONST', title: '', tagBinding: pv),
+        FbdBlock(id: 'ctud', type: 'CTUD', title: ''),
+        FbdBlock(id: 'oqu', type: 'TAG_OUTPUT', title: '', tagBinding: 'QuOut'),
+        FbdBlock(id: 'oqd', type: 'TAG_OUTPUT', title: '', tagBinding: 'QdOut'),
+        FbdBlock(id: 'ocv', type: 'TAG_OUTPUT', title: '', tagBinding: 'CvOut'),
+      ];
+      final wires = <FbdWire>[
+        FbdWire(fromBlockId: 'cu', fromPin: 'OUT', toBlockId: 'ctud', toPin: 'CU'),
+        FbdWire(fromBlockId: 'cd', fromPin: 'OUT', toBlockId: 'ctud', toPin: 'CD'),
+        FbdWire(fromBlockId: 'r', fromPin: 'OUT', toBlockId: 'ctud', toPin: 'R'),
+        FbdWire(fromBlockId: 'ld', fromPin: 'OUT', toBlockId: 'ctud', toPin: 'LD'),
+        FbdWire(fromBlockId: 'pv', fromPin: 'OUT', toBlockId: 'ctud', toPin: 'PV'),
+        FbdWire(fromBlockId: 'ctud', fromPin: 'QU', toBlockId: 'oqu', toPin: 'IN'),
+        FbdWire(fromBlockId: 'ctud', fromPin: 'QD', toBlockId: 'oqd', toPin: 'IN'),
+        FbdWire(fromBlockId: 'ctud', fromPin: 'CV', toBlockId: 'ocv', toPin: 'IN'),
+      ];
+      final prog = _fbd(blocks, wires);
+      return _proj([
+        _tag('CU', 'BOOL', false), _tag('CD', 'BOOL', false),
+        _tag('R', 'BOOL', false), _tag('LD', 'BOOL', false),
+        _tag('QuOut', 'BOOL', false), _tag('QdOut', 'BOOL', false), _tag('CvOut', 'INT32', -1),
+      ], prog);
+    }
+
+    test('CU up / CD down (floored), QU/QD thresholds, R priority, LD load', () {
+      final p = buildCtud();
+      final rt = FbdRuntime();
+
+      // Rising CU edges raise CV: 0 -> 1 -> 2.
+      writePath(p, 'CU', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(1));
+      expect(readPath(p, 'QuOut'), isFalse);
+      expect(readPath(p, 'QdOut'), isFalse);
+
+      writePath(p, 'CU', false);
+      _run(p, rt);
+      writePath(p, 'CU', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(2));
+      expect(readPath(p, 'QuOut'), isTrue); // CV(2) >= PV(2)
+
+      // Rising CD edges lower CV: 2 -> 1 -> 0, floored (never negative).
+      writePath(p, 'CU', false);
+      writePath(p, 'CD', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(1));
+      expect(readPath(p, 'QdOut'), isFalse);
+
+      writePath(p, 'CD', false);
+      _run(p, rt);
+      writePath(p, 'CD', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(0));
+      expect(readPath(p, 'QdOut'), isTrue);
+
+      writePath(p, 'CD', false);
+      _run(p, rt);
+      writePath(p, 'CD', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(0)); // floored, doesn't go negative
+
+      // R priority over LD and counting: even with LD/CU also asserted.
+      writePath(p, 'CD', false);
+      writePath(p, 'LD', true);
+      writePath(p, 'CU', true);
+      writePath(p, 'R', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(0));
+      expect(readPath(p, 'QuOut'), isFalse);
+      expect(readPath(p, 'QdOut'), isTrue);
+
+      // R false, LD true -> loads PV.
+      writePath(p, 'R', false);
+      writePath(p, 'CU', false);
+      _run(p, rt);
+      writePath(p, 'LD', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(2));
+    });
+  });
 }

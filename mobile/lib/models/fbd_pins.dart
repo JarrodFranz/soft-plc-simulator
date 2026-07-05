@@ -40,6 +40,12 @@ List<String> fbdInputPins(String type, {int inputCount = 2}) {
       return const ['IN', 'PT'];
     case 'PID':
       return const ['SP', 'PV', 'KP', 'KI', 'KD'];
+    case 'CTU':
+      return const ['CU', 'R', 'PV'];
+    case 'CTD':
+      return const ['CD', 'LD', 'PV'];
+    case 'CTUD':
+      return const ['CU', 'CD', 'R', 'LD', 'PV'];
     default:
       return const [];
   }
@@ -75,6 +81,11 @@ List<String> fbdOutputPins(String type) {
       return const ['Q', 'ET'];
     case 'PID':
       return const ['CV'];
+    case 'CTU':
+    case 'CTD':
+      return const ['Q', 'CV'];
+    case 'CTUD':
+      return const ['QU', 'QD', 'CV'];
     default:
       return const [];
   }
