@@ -4,6 +4,7 @@ import '../models/project_model.dart';
 import '../models/tag_resolver.dart';
 import '../models/sim_engine.dart';
 import '../models/ld_exec.dart';
+import '../models/fbd_exec.dart';
 import '../models/sfc_exec.dart';
 import '../data/default_projects.dart';
 import '../widgets/tag_inspector_dock.dart';
@@ -38,6 +39,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   Timer? _scanTimer;
   final SimRuntime _simRuntime = SimRuntime();
   final LdExecRuntime _ldRuntime = LdExecRuntime();
+  final FbdRuntime _fbdRuntime = FbdRuntime();
   final SfcRuntime _sfcRuntime = SfcRuntime();
 
   // Side Dock Inspector State
@@ -75,6 +77,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       scanCount++;
       applySimRules(_activeProject, _activeProject.simRules, scanSpeedMs, _simRuntime);
       executeLdPrograms(_activeProject, scanSpeedMs, _ldRuntime);
+      executeFbdPrograms(_activeProject, scanSpeedMs, _fbdRuntime);
       executeSfcPrograms(_activeProject, scanSpeedMs, _sfcRuntime);
       _evaluateActiveLogic();
     });
@@ -122,20 +125,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     // (rung 2), Belt_Jammed via JamTimer.DN (rungs 3-4).
 
     // ── 5. FBD HVAC Zone Controller ───────────────────────────────────────
-    } else if (id == 'proj_fbd_hvac') {
-      double temp = _getTagDouble('Room_Temp');
-      double sp = _getTagDouble('Setpoint');
-      bool occupied = _getTagBool('Occupied');
-      bool windowOpen = _getTagBool('Window_Open');
-
-      bool hvacEnable = occupied && !windowOpen;
-      bool heat = hvacEnable && temp < (sp - 1.0);
-      bool cool = hvacEnable && temp > (sp + 1.0);
-
-      _setTagBool('Hvac_Active', hvacEnable);
-      _setTagBool('Fan_Cmd', hvacEnable);
-      _setTagBool('Heat_Cmd', heat);
-      _setTagBool('Cool_Cmd', cool);
+    // Now fully executed by HvacZone_FBD (see executeFbdPrograms): Hvac_Active/
+    // Fan_Cmd/Heat_Cmd/Cool_Cmd are driven by the AND/NOT/SUB/ADD/LT/GT graph.
 
     // ── 6. SFC Bottle Filling Sequence ────────────────────────────────────
     // Now fully executed by BottleFill_SFC (see executeSfcPrograms): steps
@@ -148,13 +139,13 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       // (rung 2) are now executed by PumpControl_LD (see executeLdPrograms).
       bool pumpRun = _getTagBool('Pump_Motor');
       bool estop = _getTagBool('EStop');
-
-      // FBD: Quality gate logic (WS4c — stays hardcoded here)
       double turbidity = _getTagDouble('Turbidity_PV');
       double turbSP = _getTagDouble('Turbidity_SP');
       double level = _getTagDouble('Level_PV');
-      bool qualityOk = turbidity < turbSP && level > 10.0;
-      _setTagBool('Quality_OK', qualityOk);
+
+      // FBD: Quality_OK is now fully executed by WaterQuality_FBD (see
+      // executeFbdPrograms) — LT(Turbidity_PV,Turbidity_SP) AND GT(Level_PV,10.0).
+      bool qualityOk = _getTagBool('Quality_OK');
 
       // SFC: Backwash_Active/Backwash_Valve/Backwash_Pump are now fully
       // executed by FilterBackwash_SFC and PumpControl_LD rung 4
@@ -215,6 +206,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       scanCount = 0;
       _simRuntime.byRuleId.clear();
       _ldRuntime.clear();
+      _fbdRuntime.clear();
       _sfcRuntime.clear();
     });
   }

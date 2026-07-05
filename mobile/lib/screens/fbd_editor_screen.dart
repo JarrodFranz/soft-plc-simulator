@@ -138,6 +138,17 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
                       _buildBlockPaletteItem('NOT', 'NOT Inverter Gate', Icons.do_not_disturb_on, Colors.redAccent),
                       _buildBlockPaletteItem('TON', 'Timer On Delay Block', Icons.timer, Colors.amberAccent),
                       _buildBlockPaletteItem('LIMIT', 'Limit Clamp (Min, In, Max)', Icons.tune, Colors.orangeAccent),
+                      _buildBlockPaletteItem('CONST', 'Constant Value', Icons.pin, Colors.limeAccent),
+                      _buildBlockPaletteItem('ADD', 'Add (+)', Icons.add, Colors.tealAccent),
+                      _buildBlockPaletteItem('SUB', 'Subtract (-)', Icons.remove, Colors.tealAccent),
+                      _buildBlockPaletteItem('MUL', 'Multiply (x)', Icons.close, Colors.tealAccent),
+                      _buildBlockPaletteItem('DIV', 'Divide (/)', Icons.percent, Colors.tealAccent),
+                      _buildBlockPaletteItem('GT', 'Greater Than (>)', Icons.chevron_right, Colors.lightBlueAccent),
+                      _buildBlockPaletteItem('LT', 'Less Than (<)', Icons.chevron_left, Colors.lightBlueAccent),
+                      _buildBlockPaletteItem('GE', 'Greater or Equal (>=)', Icons.keyboard_double_arrow_right, Colors.lightBlueAccent),
+                      _buildBlockPaletteItem('LE', 'Less or Equal (<=)', Icons.keyboard_double_arrow_left, Colors.lightBlueAccent),
+                      _buildBlockPaletteItem('EQ', 'Equal (=)', Icons.drag_handle, Colors.lightBlueAccent),
+                      _buildBlockPaletteItem('NE', 'Not Equal (<>)', Icons.compare_arrows, Colors.lightBlueAccent),
                       _buildBlockPaletteItem('TAG_INPUT', 'Tag Input Pin', Icons.login, Colors.greenAccent),
                       _buildBlockPaletteItem('TAG_OUTPUT', 'Tag Output Pin', Icons.logout, Colors.cyanAccent),
                     ],
@@ -222,6 +233,16 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
               items: widget.currentProject.tags.map((t) => DropdownMenuItem(value: t.name, child: Text(t.name))).toList(),
               onChanged: (val) {
                 setState(() => block.tagBinding = val!);
+                widget.onProgramUpdated();
+              },
+            )
+          else if (block.type == 'CONST')
+            TextFormField(
+              initialValue: block.tagBinding,
+              style: const TextStyle(fontSize: 11, color: Colors.white),
+              decoration: const InputDecoration(isDense: true, border: InputBorder.none, labelText: 'Value'),
+              onChanged: (val) {
+                block.tagBinding = val;
                 widget.onProgramUpdated();
               },
             )

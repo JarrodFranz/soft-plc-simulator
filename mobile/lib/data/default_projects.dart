@@ -409,40 +409,50 @@ Reactor_Ready := NOT Alarm_High
       PlcProgram(
         name: 'HvacZone_FBD',
         language: 'FunctionBlockDiagram',
-        description: 'HVAC zone control using AND/NOT/OR signal flow gates',
+        description: 'HVAC zone control using AND/NOT/SUB/ADD/LT/GT signal flow gates',
         fbdBlocks: [
           // Occupancy & window chain → enable HVAC
           FbdBlock(id: 'f_i1', type: 'TAG_INPUT', title: 'Occupied', tagBinding: 'Occupied', x: 50, y: 80),
           FbdBlock(id: 'f_i2', type: 'TAG_INPUT', title: 'Window Open', tagBinding: 'Window_Open', x: 50, y: 200),
-          FbdBlock(id: 'f_n1', type: 'NOT', title: 'Window NOT Open', tagBinding: '', x: 240, y: 200),
+          FbdBlock(id: 'f_n1', type: 'NOT', title: 'Window Closed', tagBinding: '', x: 240, y: 200),
           FbdBlock(id: 'f_a1', type: 'AND', title: 'HVAC Enable', tagBinding: '', x: 420, y: 130),
           FbdBlock(id: 'f_o1', type: 'TAG_OUTPUT', title: 'Fan Cmd', tagBinding: 'Fan_Cmd', x: 620, y: 80),
           FbdBlock(id: 'f_o2', type: 'TAG_OUTPUT', title: 'HVAC Active', tagBinding: 'Hvac_Active', x: 620, y: 200),
-          // Temperature comparison chain → heating / cooling
-          FbdBlock(id: 'f_i3', type: 'TAG_INPUT', title: 'Room Temp', tagBinding: 'Room_Temp', x: 50, y: 380),
-          FbdBlock(id: 'f_i4', type: 'TAG_INPUT', title: 'Setpoint', tagBinding: 'Setpoint', x: 50, y: 480),
-          FbdBlock(id: 'f_l1', type: 'LIMIT', title: 'Temp In Range', tagBinding: '', x: 240, y: 430),
-          FbdBlock(id: 'f_n2', type: 'NOT', title: 'Temp NOT In Range', tagBinding: '', x: 420, y: 430),
-          FbdBlock(id: 'f_a2', type: 'AND', title: 'Heat Enable', tagBinding: '', x: 600, y: 370),
-          FbdBlock(id: 'f_a3', type: 'AND', title: 'Cool Enable', tagBinding: '', x: 600, y: 490),
-          FbdBlock(id: 'f_o3', type: 'TAG_OUTPUT', title: 'Heat Cmd', tagBinding: 'Heat_Cmd', x: 790, y: 370),
-          FbdBlock(id: 'f_o4', type: 'TAG_OUTPUT', title: 'Cool Cmd', tagBinding: 'Cool_Cmd', x: 790, y: 490),
+          // Temperature comparison chain → heating / cooling (±1.0 deadband)
+          FbdBlock(id: 'f_i3', type: 'TAG_INPUT', title: 'Room Temp', tagBinding: 'Room_Temp', x: 50, y: 360),
+          FbdBlock(id: 'f_i4', type: 'TAG_INPUT', title: 'Setpoint', tagBinding: 'Setpoint', x: 50, y: 470),
+          FbdBlock(id: 'f_c1', type: 'CONST', title: 'Deadband', tagBinding: '1.0', x: 50, y: 580),
+          FbdBlock(id: 'f_s1', type: 'SUB', title: 'SP - 1', tagBinding: '', x: 240, y: 520),
+          FbdBlock(id: 'f_lt', type: 'LT', title: 'Temp < SP-1', tagBinding: '', x: 420, y: 380),
+          FbdBlock(id: 'f_a2', type: 'AND', title: 'Heat Enable', tagBinding: '', x: 600, y: 360),
+          FbdBlock(id: 'f_o3', type: 'TAG_OUTPUT', title: 'Heat Cmd', tagBinding: 'Heat_Cmd', x: 790, y: 360),
+          FbdBlock(id: 'f_a3', type: 'ADD', title: 'SP + 1', tagBinding: '', x: 240, y: 650),
+          FbdBlock(id: 'f_gt', type: 'GT', title: 'Temp > SP+1', tagBinding: '', x: 420, y: 610),
+          FbdBlock(id: 'f_a4', type: 'AND', title: 'Cool Enable', tagBinding: '', x: 600, y: 590),
+          FbdBlock(id: 'f_o4', type: 'TAG_OUTPUT', title: 'Cool Cmd', tagBinding: 'Cool_Cmd', x: 790, y: 590),
         ],
         fbdWires: [
-          FbdWire(fromBlockId: 'f_i1', toBlockId: 'f_a1'),
           FbdWire(fromBlockId: 'f_i2', toBlockId: 'f_n1'),
+          FbdWire(fromBlockId: 'f_i1', toBlockId: 'f_a1'),
           FbdWire(fromBlockId: 'f_n1', toBlockId: 'f_a1'),
           FbdWire(fromBlockId: 'f_a1', toBlockId: 'f_o1'),
           FbdWire(fromBlockId: 'f_a1', toBlockId: 'f_o2'),
-          FbdWire(fromBlockId: 'f_i3', toBlockId: 'f_l1'),
-          FbdWire(fromBlockId: 'f_i4', toBlockId: 'f_l1'),
-          FbdWire(fromBlockId: 'f_l1', toBlockId: 'f_n2'),
-          FbdWire(fromBlockId: 'f_n2', toBlockId: 'f_a2'),
-          FbdWire(fromBlockId: 'f_n2', toBlockId: 'f_a3'),
+          // Heat: Room_Temp < (Setpoint - 1.0)
+          FbdWire(fromBlockId: 'f_i4', toBlockId: 'f_s1'), // Setpoint (left)
+          FbdWire(fromBlockId: 'f_c1', toBlockId: 'f_s1'), // 1.0 (right)
+          FbdWire(fromBlockId: 'f_i3', toBlockId: 'f_lt'), // Room_Temp (left)
+          FbdWire(fromBlockId: 'f_s1', toBlockId: 'f_lt'), // SP-1 (right)
           FbdWire(fromBlockId: 'f_a1', toBlockId: 'f_a2'),
-          FbdWire(fromBlockId: 'f_a1', toBlockId: 'f_a3'),
+          FbdWire(fromBlockId: 'f_lt', toBlockId: 'f_a2'),
           FbdWire(fromBlockId: 'f_a2', toBlockId: 'f_o3'),
-          FbdWire(fromBlockId: 'f_a3', toBlockId: 'f_o4'),
+          // Cool: Room_Temp > (Setpoint + 1.0)
+          FbdWire(fromBlockId: 'f_i4', toBlockId: 'f_a3'), // Setpoint (left)
+          FbdWire(fromBlockId: 'f_c1', toBlockId: 'f_a3'), // 1.0 (right)
+          FbdWire(fromBlockId: 'f_i3', toBlockId: 'f_gt'), // Room_Temp (left)
+          FbdWire(fromBlockId: 'f_a3', toBlockId: 'f_gt'), // SP+1 (right)
+          FbdWire(fromBlockId: 'f_a1', toBlockId: 'f_a4'),
+          FbdWire(fromBlockId: 'f_gt', toBlockId: 'f_a4'),
+          FbdWire(fromBlockId: 'f_a4', toBlockId: 'f_o4'),
         ],
       ),
     ],
@@ -720,30 +730,29 @@ END_IF;''',
           ),
         ],
       ),
-      // FBD: Flow and quality signal conditioning
+      // FBD: Water quality gate logic
       PlcProgram(
-        name: 'FlowCalc_FBD',
+        name: 'WaterQuality_FBD',
         language: 'FunctionBlockDiagram',
-        description: 'Flow signal conditioning and water quality gate logic',
+        description: 'Water quality gate logic using LT/GT/AND signal flow gates',
         fbdBlocks: [
           FbdBlock(id: 'wf_i1', type: 'TAG_INPUT', title: 'Turbidity PV', tagBinding: 'Turbidity_PV', x: 50, y: 80),
           FbdBlock(id: 'wf_i2', type: 'TAG_INPUT', title: 'Turbidity SP', tagBinding: 'Turbidity_SP', x: 50, y: 190),
-          FbdBlock(id: 'wf_l1', type: 'LIMIT', title: 'Turbidity OK?', tagBinding: '', x: 240, y: 130),
-          FbdBlock(id: 'wf_i3', type: 'TAG_INPUT', title: 'Level PV', tagBinding: 'Level_PV', x: 50, y: 340),
-          FbdBlock(id: 'wf_a1', type: 'AND', title: 'Quality AND Level', tagBinding: '', x: 440, y: 230),
-          FbdBlock(id: 'wf_o1', type: 'TAG_OUTPUT', title: 'Quality OK', tagBinding: 'Quality_OK', x: 640, y: 230),
-          FbdBlock(id: 'wf_i4', type: 'TAG_INPUT', title: 'Pump Motor', tagBinding: 'Pump_Motor', x: 50, y: 480),
-          FbdBlock(id: 'wf_a2', type: 'AND', title: 'Flow Enable', tagBinding: '', x: 240, y: 480),
-          FbdBlock(id: 'wf_o2', type: 'TAG_OUTPUT', title: 'Flow PV', tagBinding: 'Flow_PV', x: 440, y: 480),
+          FbdBlock(id: 'wf_lt', type: 'LT', title: 'Turbidity < SP', tagBinding: '', x: 260, y: 130),
+          FbdBlock(id: 'wf_i3', type: 'TAG_INPUT', title: 'Level PV', tagBinding: 'Level_PV', x: 50, y: 320),
+          FbdBlock(id: 'wf_c1', type: 'CONST', title: 'Min Level', tagBinding: '10.0', x: 50, y: 430),
+          FbdBlock(id: 'wf_gt', type: 'GT', title: 'Level > 10', tagBinding: '', x: 260, y: 360),
+          FbdBlock(id: 'wf_a1', type: 'AND', title: 'Quality OK', tagBinding: '', x: 460, y: 240),
+          FbdBlock(id: 'wf_o1', type: 'TAG_OUTPUT', title: 'Quality OK', tagBinding: 'Quality_OK', x: 660, y: 240),
         ],
         fbdWires: [
-          FbdWire(fromBlockId: 'wf_i1', toBlockId: 'wf_l1'),
-          FbdWire(fromBlockId: 'wf_i2', toBlockId: 'wf_l1'),
-          FbdWire(fromBlockId: 'wf_l1', toBlockId: 'wf_a1'),
-          FbdWire(fromBlockId: 'wf_i3', toBlockId: 'wf_a1'),
+          FbdWire(fromBlockId: 'wf_i1', toBlockId: 'wf_lt'), // Turbidity_PV (left)
+          FbdWire(fromBlockId: 'wf_i2', toBlockId: 'wf_lt'), // Turbidity_SP (right)
+          FbdWire(fromBlockId: 'wf_i3', toBlockId: 'wf_gt'), // Level_PV (left)
+          FbdWire(fromBlockId: 'wf_c1', toBlockId: 'wf_gt'), // 10.0 (right)
+          FbdWire(fromBlockId: 'wf_lt', toBlockId: 'wf_a1'),
+          FbdWire(fromBlockId: 'wf_gt', toBlockId: 'wf_a1'),
           FbdWire(fromBlockId: 'wf_a1', toBlockId: 'wf_o1'),
-          FbdWire(fromBlockId: 'wf_i4', toBlockId: 'wf_a2'),
-          FbdWire(fromBlockId: 'wf_a2', toBlockId: 'wf_o2'),
         ],
       ),
       // SFC: Filter backwash sequence
@@ -774,7 +783,7 @@ END_IF;''',
     ],
     tasks: [
       PlcTask(name: 'SafetyTask', type: 'Startup', periodMs: 100, programNames: ['Safety_ST']),
-      PlcTask(name: 'ContinuousTask', type: 'Continuous', periodMs: 100, programNames: ['Safety_ST', 'PumpControl_LD', 'FlowCalc_FBD']),
+      PlcTask(name: 'ContinuousTask', type: 'Continuous', periodMs: 100, programNames: ['Safety_ST', 'PumpControl_LD', 'WaterQuality_FBD']),
       PlcTask(name: 'BackwashTask', type: 'Periodic', periodMs: 1000, programNames: ['FilterBackwash_SFC']),
     ],
     hmis: [
