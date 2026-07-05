@@ -1,6 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/project_model.dart';
 import '../models/sim_engine.dart';
@@ -10,6 +14,7 @@ import '../models/sfc_exec.dart';
 import '../models/st_exec.dart';
 import '../data/default_projects.dart';
 import '../data/project_repository.dart';
+import '../data/project_transfer.dart';
 import '../ui/responsive.dart';
 import '../widgets/tag_inspector_dock.dart';
 import 'st_editor_screen.dart';
@@ -499,6 +504,120 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     });
   }
 
+  // ── Export / Import (cross-device transfer) ─────────────────────────
+  //
+  // There is no cloud sync in this app, so moving a project between a
+  // phone and a computer happens by hand: export writes the active
+  // project to a `.splc.json` file and hands it to the OS share/save
+  // sheet; import reads a `.splc.json` file back in. The actual
+  // encode/decode is the pure `ProjectTransfer` service (unit-tested
+  // without plugins); these two methods are the thin plugin-touching
+  // wrappers around it.
+
+  Future<void> _exportActiveProject() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final json = ProjectTransfer.encodeProject(_activeProject);
+      final fileName = ProjectTransfer.suggestFileName(_activeProject);
+      final bytes = Uint8List.fromList(utf8.encode(json));
+      await Share.shareXFiles(
+        [XFile.fromData(bytes, name: fileName, mimeType: 'application/json')],
+        fileNameOverrides: [fileName],
+        subject: fileName,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text("Couldn't export: something went wrong sharing the file")),
+      );
+    }
+  }
+
+  Future<void> _importProject() async {
+    final messenger = ScaffoldMessenger.of(context);
+    FilePickerResult? picked;
+    try {
+      picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        withData: true,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text("Couldn't open the file picker")),
+      );
+      return;
+    }
+    if (picked == null || picked.files.isEmpty) return; // user cancelled
+
+    final file = picked.files.single;
+    String? text;
+    try {
+      final bytes = file.bytes;
+      if (bytes != null) {
+        text = utf8.decode(bytes);
+      }
+    } catch (_) {
+      text = null;
+    }
+    if (text == null) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text("Couldn't import: unable to read the selected file")),
+      );
+      return;
+    }
+
+    PlcProject imported;
+    try {
+      imported = ProjectTransfer.decodeProject(text);
+    } on FormatException {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text("Couldn't import: not a valid project file")),
+      );
+      return;
+    } catch (_) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text("Couldn't import: not a valid project file")),
+      );
+      return;
+    }
+
+    final existingIds = _allProjects.map((p) => p.id).toSet();
+    imported = ProjectTransfer.reassignIdIfColliding(imported, existingIds);
+
+    _flushPendingAutosave();
+    final repo = _repo;
+    if (repo != null) {
+      await repo.saveProject(imported);
+      await repo.setActiveProjectId(imported.id);
+    }
+    // Import into the in-memory session either way (also covers the
+    // non-persistent fallback where `_repo` is null).
+    if (!mounted) return;
+    setState(() {
+      _allProjects.add(imported);
+      _activeProject = imported;
+      if (imported.hmis.isNotEmpty) {
+        _activeViewId = 'HMI:${imported.hmis.first.id}';
+      } else if (imported.programs.isNotEmpty) {
+        _activeViewId = 'PROGRAM:${imported.programs.first.name}';
+      } else {
+        _activeViewId = 'MEMORY';
+      }
+      scanCount = 0;
+      _simRuntime.byRuleId.clear();
+      _ldRuntime.clear();
+      _fbdRuntime.clear();
+      _sfcRuntime.clear();
+      _stRuntime.clear();
+    });
+    messenger.showSnackBar(SnackBar(content: Text('Imported "${imported.name}"')));
+  }
+
   Widget _projectCrudButton({required IconData icon, required String tooltip, required VoidCallback onTap}) {
     return touchable(
       IconButton(
@@ -949,6 +1068,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                     _projectCrudButton(icon: Icons.drive_file_rename_outline, tooltip: 'Rename Project', onTap: _renameActiveProject),
                     _projectCrudButton(icon: Icons.delete_outline, tooltip: 'Delete Project', onTap: _deleteActiveProject),
                     _projectCrudButton(icon: Icons.restore, tooltip: 'Reset to Defaults', onTap: _resetToDefaults),
+                    _projectCrudButton(icon: Icons.ios_share, tooltip: 'Export Project (.splc.json)', onTap: _exportActiveProject),
+                    _projectCrudButton(icon: Icons.file_open_outlined, tooltip: 'Import Project (.splc.json)', onTap: _importProject),
                   ],
                 ),
               ],
