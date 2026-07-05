@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/tag_resolver.dart';
 import '../ui/responsive.dart';
+import '../widgets/tag_autocomplete_field.dart';
 
 class SimulatedIoScreen extends StatefulWidget {
   final PlcProject currentProject;
@@ -170,12 +171,12 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
                       onChanged: (v) => working.name = v,
                     ),
                     const SizedBox(height: 8),
-                    DropdownButtonFormField<String>(
-                      initialValue: paths.contains(working.targetPath) ? working.targetPath : (paths.isNotEmpty ? paths.first : null),
-                      isExpanded: true,
-                      decoration: const InputDecoration(labelText: 'Target tag'),
-                      items: paths.map((p) => DropdownMenuItem(value: p, child: Text(p, overflow: TextOverflow.ellipsis))).toList(),
-                      onChanged: (v) => setDlg(() => working.targetPath = v ?? working.targetPath),
+                    TagAutocompleteField(
+                      options: paths,
+                      initialValue: working.targetPath,
+                      label: 'Target tag',
+                      allowFreeText: false,
+                      onChanged: (v) => setDlg(() => working.targetPath = v),
                     ),
                     const SizedBox(height: 8),
                     DropdownButtonFormField<String>(
@@ -264,12 +265,11 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
       final c = e.value;
       final isTagOperand = c.operandKind == 'tag';
 
-      final leftField = DropdownButtonFormField<String>(
-        initialValue: paths.contains(c.leftPath) ? c.leftPath : (paths.isNotEmpty ? paths.first : null),
-        isExpanded: true,
-        decoration: const InputDecoration(isDense: true),
-        items: paths.map((p) => DropdownMenuItem(value: p, child: Text(p, overflow: TextOverflow.ellipsis))).toList(),
-        onChanged: (v) => setDlg(() => c.leftPath = v ?? c.leftPath),
+      final leftField = TagAutocompleteField(
+        options: paths,
+        initialValue: c.leftPath,
+        allowFreeText: false,
+        onChanged: (v) => setDlg(() => c.leftPath = v),
       );
       final comparatorField = DropdownButtonFormField<String>(
         initialValue: c.comparator,
@@ -294,12 +294,10 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
         }),
       );
       final operandField = isTagOperand
-          ? DropdownButtonFormField<String>(
-              initialValue: paths.contains(c.operand) ? c.operand : (paths.isNotEmpty ? paths.first : null),
-              isExpanded: true,
-              decoration: const InputDecoration(isDense: true),
-              items: paths.map((p) => DropdownMenuItem(value: p, child: Text(p, overflow: TextOverflow.ellipsis))).toList(),
-              onChanged: (v) => setDlg(() => c.operand = v ?? c.operand),
+          ? TagAutocompleteField(
+              options: paths,
+              initialValue: c.operand,
+              onChanged: (v) => setDlg(() => c.operand = v),
             )
           : TextFormField(
               initialValue: c.operand,

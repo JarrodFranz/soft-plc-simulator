@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../ui/responsive.dart';
+import '../widgets/tag_autocomplete_field.dart';
 
 class HmiDashboardBuilderScreen extends StatefulWidget {
   final PlcProject currentProject;
@@ -79,14 +80,11 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
                   ),
                   const SizedBox(height: 12),
 
-                  DropdownButtonFormField<String>(
-                    initialValue: selectedTag.isNotEmpty ? selectedTag : null,
-                    decoration: const InputDecoration(labelText: 'Link / Bind to PLC Tag'),
-                    items: widget.currentProject.tags.map((t) => DropdownMenuItem(
-                      value: t.name,
-                      child: Text('${t.name} [${t.dataType}] — ${t.path}'),
-                    )).toList(),
-                    onChanged: (val) => setDlgState(() => selectedTag = val!),
+                  TagAutocompleteField(
+                    options: widget.currentProject.tags.map((t) => t.name).toList(),
+                    initialValue: selectedTag,
+                    label: 'Link / Bind to PLC Tag',
+                    onChanged: (val) => setDlgState(() => selectedTag = val),
                   ),
                   const SizedBox(height: 12),
 

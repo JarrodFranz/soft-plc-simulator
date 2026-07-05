@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../ui/responsive.dart';
+import '../widgets/tag_autocomplete_field.dart';
 
 class FbdEditorScreen extends StatefulWidget {
   final PlcProject currentProject;
@@ -146,12 +147,11 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
               Text('Block Type: ${block.type}', style: const TextStyle(fontSize: 12, color: Colors.grey)),
               const SizedBox(height: 12),
               if (block.type.startsWith('TAG_'))
-                DropdownButtonFormField<String>(
+                TagAutocompleteField(
+                  options: widget.currentProject.tags.map((t) => t.name).toList(),
                   initialValue: block.tagBinding.isNotEmpty ? block.tagBinding : widget.currentProject.tags.first.name,
-                  isExpanded: true,
-                  decoration: const InputDecoration(labelText: 'Tag Binding'),
-                  items: widget.currentProject.tags.map((t) => DropdownMenuItem(value: t.name, child: Text(t.name))).toList(),
-                  onChanged: (val) => setDlgState(() => block.tagBinding = val!),
+                  label: 'Tag Binding',
+                  onChanged: (val) => setDlgState(() => block.tagBinding = val),
                 )
               else if (block.type == 'CONST')
                 TextFormField(
@@ -346,15 +346,11 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
             Text('Block Function: ${block.type}\n${block.tagBinding.isNotEmpty ? "Tag/Value: ${block.tagBinding}" : ""}',
                 style: const TextStyle(fontSize: 10, color: Colors.grey))
           else if (block.type.startsWith('TAG_'))
-            DropdownButtonFormField<String>(
+            TagAutocompleteField(
+              options: widget.currentProject.tags.map((t) => t.name).toList(),
               initialValue: block.tagBinding.isNotEmpty ? block.tagBinding : widget.currentProject.tags.first.name,
-              isDense: true,
-              isExpanded: true, // fill the card width and ellipsize long tag names
-              style: const TextStyle(fontSize: 11, color: Colors.white),
-              decoration: const InputDecoration(isDense: true, border: InputBorder.none),
-              items: widget.currentProject.tags.map((t) => DropdownMenuItem(value: t.name, child: Text(t.name, overflow: TextOverflow.ellipsis))).toList(),
               onChanged: (val) {
-                setState(() => block.tagBinding = val!);
+                setState(() => block.tagBinding = val);
                 widget.onProgramUpdated();
               },
             )

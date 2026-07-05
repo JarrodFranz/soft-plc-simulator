@@ -6,6 +6,7 @@ import '../models/ld_graph.dart';
 import '../models/ld_layout.dart';
 import '../models/tag_resolver.dart';
 import '../ui/responsive.dart';
+import '../widgets/tag_autocomplete_field.dart';
 
 const double _kContactH = 54.0;
 const double _kBlockH = 92.0;
@@ -640,19 +641,11 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                DropdownButtonFormField<String>(
-                  initialValue: leafAndNodePaths(widget.currentProject).contains(n.variable) ? n.variable : null,
-                  isExpanded: true,
-                  decoration: const InputDecoration(labelText: 'Tag'),
-                  items: leafAndNodePaths(widget.currentProject)
-                      .map((p) => DropdownMenuItem(value: p, child: Text(p, overflow: TextOverflow.ellipsis)))
-                      .toList(),
-                  onChanged: (v) => tagCtrl.text = v ?? tagCtrl.text,
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: tagCtrl,
-                  decoration: const InputDecoration(labelText: 'Tag / literal', isDense: true, border: OutlineInputBorder()),
+                TagAutocompleteField(
+                  options: leafAndNodePaths(widget.currentProject),
+                  initialValue: tagCtrl.text,
+                  label: 'Tag / literal',
+                  onChanged: (v) => tagCtrl.text = v,
                 ),
                 if (!isBlock) ...[
                   const SizedBox(height: 12),
