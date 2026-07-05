@@ -243,7 +243,7 @@ class LdRung {
 // -------------------------------------------------------------
 class FbdBlock {
   String id;
-  String type; // 'AND', 'OR', 'NOT', 'ADD', 'SUB', 'TON', 'LIMIT', 'TAG_INPUT', 'TAG_OUTPUT'
+  String type; // e.g. 'AND','OR','NOT','ADD','SUB','MUL','DIV', comparators, 'LIMIT','SEL','TON','TOF','PID','CTU','CTD','CTUD','CONST','TAG_INPUT','TAG_OUTPUT'
   String title;
   String tagBinding;
   double x;

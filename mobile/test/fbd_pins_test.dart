@@ -59,6 +59,18 @@ void main() {
       expect(fbdInputPins('PID'), ['SP', 'PV', 'KP', 'KI', 'KD']);
     });
 
+    test('CTU is CU, R, PV', () {
+      expect(fbdInputPins('CTU'), ['CU', 'R', 'PV']);
+    });
+
+    test('CTD is CD, LD, PV', () {
+      expect(fbdInputPins('CTD'), ['CD', 'LD', 'PV']);
+    });
+
+    test('CTUD is CU, CD, R, LD, PV', () {
+      expect(fbdInputPins('CTUD'), ['CU', 'CD', 'R', 'LD', 'PV']);
+    });
+
     test('unknown type -> empty, never throws', () {
       expect(fbdInputPins('NOT_A_REAL_TYPE'), isEmpty);
       expect(fbdInputPins(''), isEmpty);
@@ -91,6 +103,18 @@ void main() {
 
     test('PID -> CV', () {
       expect(fbdOutputPins('PID'), ['CV']);
+    });
+
+    test('CTU -> Q, CV', () {
+      expect(fbdOutputPins('CTU'), ['Q', 'CV']);
+    });
+
+    test('CTD -> Q, CV', () {
+      expect(fbdOutputPins('CTD'), ['Q', 'CV']);
+    });
+
+    test('CTUD -> QU, QD, CV', () {
+      expect(fbdOutputPins('CTUD'), ['QU', 'QD', 'CV']);
     });
 
     test('unknown type -> empty, never throws', () {

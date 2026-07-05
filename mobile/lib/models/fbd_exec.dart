@@ -11,9 +11,16 @@ class FbdRuntime {
   /// Per-block PID state keyed by block id: `[integral, prevError]`.
   final Map<String, List<double>> _pid = {};
 
+  /// Per-block counter state keyed by block id: `[cv, prevCU, prevCD]`. The
+  /// prev-CU/prev-CD levels are stored as 0/1 so a rising edge is detected as
+  /// "input true now AND stored prev level 0". CTU only tracks/uses prevCU,
+  /// CTD only prevCD, CTUD uses both.
+  final Map<String, List<num>> _counters = {};
+
   void clear() {
     _elapsedMs.clear();
     _pid.clear();
+    _counters.clear();
   }
 }
 
@@ -140,6 +147,9 @@ dynamic _compare(String op, List<dynamic> inputs) {
 /// output-pin-name -> value. Single-output combinational blocks yield
 /// `{'OUT': v}`; TON/TOF yield `{'Q': bool, 'ET': num}`; PID yields
 /// `{'CV': double}` (stateful, conditional-anti-windup, clamped 0-100).
+/// CTU/CTD/CTUD are stateful, edge-triggered counters (clock-independent,
+/// `dtMs` unused): CTU/CTD yield `{'Q': bool, 'CV': int}`, CTUD yields
+/// `{'QU': bool, 'QD': bool, 'CV': int}`.
 /// Never throws.
 Map<String, dynamic> _evalBlock(
   PlcProject p,
@@ -292,6 +302,84 @@ Map<String, dynamic> _evalBlock(
         final cv = raw.clamp(0.0, 100.0);
         rt._pid[b.id] = [integ, e];
         return {'CV': cv};
+      }
+    case 'CTU':
+      {
+        // Ordered inputs follow fbdInputPins('CTU'): CU, R, PV.
+        final cu = inputs.isNotEmpty ? _truthy(inputs[0]) ?? false : false;
+        final r = inputs.length > 1 ? _truthy(inputs[1]) ?? false : false;
+        final pv = _asNum(inputs.length > 2 ? inputs[2] : null).toInt();
+
+        final state = rt._counters[b.id] ?? [0, 0, 0];
+        num cv = state[0];
+        final prevCU = state[1];
+
+        if (r) {
+          cv = 0;
+        } else if (cu && prevCU == 0) {
+          cv = cv + 1;
+        }
+        rt._counters[b.id] = [cv, cu ? 1 : 0, state[2]];
+        final q = cv >= pv;
+        return {'Q': q, 'CV': cv.toInt()};
+      }
+    case 'CTD':
+      {
+        // Ordered inputs follow fbdInputPins('CTD'): CD, LD, PV.
+        final cd = inputs.isNotEmpty ? _truthy(inputs[0]) ?? false : false;
+        final ld = inputs.length > 1 ? _truthy(inputs[1]) ?? false : false;
+        final pv = _asNum(inputs.length > 2 ? inputs[2] : null).toInt();
+
+        final state = rt._counters[b.id] ?? [0, 0, 0];
+        num cv = state[0];
+        final prevCD = state[2];
+
+        if (ld) {
+          cv = pv;
+        } else if (cd && prevCD == 0 && cv > 0) {
+          cv = cv - 1;
+        }
+        if (cv < 0) {
+          cv = 0;
+        }
+        rt._counters[b.id] = [cv, state[1], cd ? 1 : 0];
+        final q = cv <= 0;
+        return {'Q': q, 'CV': cv.toInt()};
+      }
+    case 'CTUD':
+      {
+        // Ordered inputs follow fbdInputPins('CTUD'): CU, CD, R, LD, PV.
+        final cu = inputs.isNotEmpty ? _truthy(inputs[0]) ?? false : false;
+        final cd = inputs.length > 1 ? _truthy(inputs[1]) ?? false : false;
+        final r = inputs.length > 2 ? _truthy(inputs[2]) ?? false : false;
+        final ld = inputs.length > 3 ? _truthy(inputs[3]) ?? false : false;
+        final pv = _asNum(inputs.length > 4 ? inputs[4] : null).toInt();
+
+        final state = rt._counters[b.id] ?? [0, 0, 0];
+        num cv = state[0];
+        final prevCU = state[1];
+        final prevCD = state[2];
+
+        if (r) {
+          cv = 0;
+        } else if (ld) {
+          cv = pv;
+        } else {
+          if (cu && prevCU == 0) {
+            cv = cv + 1;
+          }
+          if (cd && prevCD == 0) {
+            cv = cv - 1;
+          }
+        }
+        // CV never goes negative — floors the down path and a negative preset load.
+        if (cv < 0) {
+          cv = 0;
+        }
+        rt._counters[b.id] = [cv, cu ? 1 : 0, cd ? 1 : 0];
+        final qu = cv >= pv;
+        final qd = cv <= 0;
+        return {'QU': qu, 'QD': qd, 'CV': cv.toInt()};
       }
     case 'TAG_OUTPUT':
       if (inputs.isEmpty) {

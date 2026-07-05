@@ -39,6 +39,7 @@ abstract class DefaultProjects {
     _sfcFillingProject(),
     _allWaterProject(),
     _fbdPidTankLevelProject(),
+    _fbdBatchCounterProject(),
   ];
 
   // ── 1. Basic Motor Start/Stop (LD) ──────────────────────────────────────
@@ -922,6 +923,83 @@ System_Ready := Pump_Motor AND Quality_OK AND NOT Alarm_Active;''',
           HmiComponent(id: 'tp1', title: 'Tank Level (%)', type: 'TankGraphicDisplay', tagBinding: 'Level_PV', gridSpanWidth: 4, accentColor: 'cyan'),
           HmiComponent(id: 'tp2', title: 'Level Setpoint', type: 'NumericSliderInput', tagBinding: 'Level_SP', gridSpanWidth: 4, accentColor: 'teal'),
           HmiComponent(id: 'tp3', title: 'Valve CV (%)', type: 'DigitalGaugeDisplay', tagBinding: 'Valve_CV', gridSpanWidth: 4, accentColor: 'amber'),
+        ],
+      ),
+    ],
+  );
+
+  // ── 9. FBD — Batch Counter (CTU) ─────────────────────────────────────────
+  //
+  // Showcase for the CTU (count-up) function block: Part_Sensor pulses
+  // (simulated part arrivals passing a photo eye) drive CTU.CU. Each rising
+  // edge increments CV by exactly one — holding the sensor true does not
+  // over-count, because CTU is edge-triggered, not level-triggered. CV feeds
+  // Count (SimulatedOutput) and Q feeds Batch_Done once CV reaches
+  // Batch_Size.
+  //
+  // Self-reset is wired through tag feedback, not a same-scan topological
+  // cycle: a SECOND TAG_INPUT block reads Batch_Done and drives CTU.R. When
+  // Q fires, Batch_Done goes true THIS scan; the second TAG_INPUT block reads
+  // that new value only on the NEXT scan (the executor resolves each block
+  // once per scan from the previous scan's committed tag values for
+  // TAG_INPUT sources), so R resets CV to 0 one scan later — a clean,
+  // cycle-free, one-scan-delayed feedback reset. See
+  // test/counter_loop_integration_test.dart for the exact scan-by-scan
+  // behavior this produces.
+  static PlcProject _fbdBatchCounterProject() => PlcProject(
+    id: 'proj_batch_counter',
+    name: 'Batch Counter',
+    controllerName: 'PLC_CTU',
+    scanPeriodMs: 100,
+    tags: [
+      PlcTag(name: 'Part_Sensor', path: 'Inputs/Part_Sensor', dataType: 'BOOL', value: false, ioType: 'SimulatedInput', description: 'Photo-eye part detection sensor'),
+      PlcTag(name: 'Batch_Size', path: 'Internal/Batch_Size', dataType: 'INT32', value: 5, ioType: 'Internal', description: 'Number of parts per batch (CTU preset)'),
+      PlcTag(name: 'Batch_Done', path: 'Outputs/Batch_Done', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Batch complete (CTU.Q); also feeds the one-scan-delayed self-reset'),
+      PlcTag(name: 'Count', path: 'Outputs/Count', dataType: 'INT32', value: 0, ioType: 'SimulatedOutput', description: 'Parts counted this batch (CTU.CV)'),
+    ],
+    structDefs: [],
+    simRules: [
+      // Part arrivals: on 250ms (~2-3 scans at 100ms/scan), off 350ms
+      // (~3-4 scans) — clear, well-separated rising edges rather than
+      // chattering every scan.
+      SimRule(id: 'sim0', name: 'Part arrivals at the photo eye', targetPath: 'Part_Sensor',
+          behavior: 'pulse', onMs: 250, offMs: 350),
+    ],
+    programs: [
+      PlcProgram(
+        name: 'BatchCount_FBD',
+        language: 'FunctionBlockDiagram',
+        description: 'CTU counts parts to Batch_Size, then self-resets via one-scan-delayed tag feedback',
+        fbdBlocks: [
+          FbdBlock(id: 'c_cu', type: 'TAG_INPUT', title: 'Part Sensor', tagBinding: 'Part_Sensor', x: 50, y: 80),
+          FbdBlock(id: 'c_pv', type: 'TAG_INPUT', title: 'Batch Size', tagBinding: 'Batch_Size', x: 50, y: 200),
+          FbdBlock(id: 'c_r', type: 'TAG_INPUT', title: 'Batch Done (feedback)', tagBinding: 'Batch_Done', x: 50, y: 320),
+          FbdBlock(id: 'c_ctu', type: 'CTU', title: 'Batch CTU', tagBinding: '', x: 320, y: 200),
+          FbdBlock(id: 'c_q', type: 'TAG_OUTPUT', title: 'Batch Done', tagBinding: 'Batch_Done', x: 560, y: 150),
+          FbdBlock(id: 'c_cv', type: 'TAG_OUTPUT', title: 'Count', tagBinding: 'Count', x: 560, y: 260),
+        ],
+        fbdWires: [
+          FbdWire(fromBlockId: 'c_cu', fromPin: 'OUT', toBlockId: 'c_ctu', toPin: 'CU'),
+          FbdWire(fromBlockId: 'c_r', fromPin: 'OUT', toBlockId: 'c_ctu', toPin: 'R'),
+          FbdWire(fromBlockId: 'c_pv', fromPin: 'OUT', toBlockId: 'c_ctu', toPin: 'PV'),
+          FbdWire(fromBlockId: 'c_ctu', fromPin: 'Q', toBlockId: 'c_q', toPin: 'IN'),
+          FbdWire(fromBlockId: 'c_ctu', fromPin: 'CV', toBlockId: 'c_cv', toPin: 'IN'),
+        ],
+      ),
+    ],
+    tasks: [
+      PlcTask(name: 'BatchCountTask', type: 'Continuous', periodMs: 100, programNames: ['BatchCount_FBD']),
+    ],
+    hmis: [
+      HmiScreenDef(
+        id: 'hmi_batch_counter',
+        title: 'Batch Counter Dashboard',
+        layoutType: 'GridDashboard',
+        components: [
+          HmiComponent(id: 'bc1', title: 'Parts Counted', type: 'DigitalGaugeDisplay', tagBinding: 'Count', gridSpanWidth: 4, accentColor: 'cyan'),
+          HmiComponent(id: 'bc2', title: 'Batch Size', type: 'NumericSliderInput', tagBinding: 'Batch_Size', gridSpanWidth: 4, accentColor: 'teal'),
+          HmiComponent(id: 'bc3', title: 'Batch Done', type: 'LedIndicatorLight', tagBinding: 'Batch_Done', gridSpanWidth: 1, accentColor: 'green'),
+          HmiComponent(id: 'bc4', title: 'Part Sensor', type: 'LedIndicatorLight', tagBinding: 'Part_Sensor', gridSpanWidth: 1, accentColor: 'amber'),
         ],
       ),
     ],
