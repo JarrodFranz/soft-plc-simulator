@@ -152,12 +152,6 @@ abstract class DefaultProjects {
     ],
     programs: [
       PlcProgram(
-        name: 'TankLevelControl_ST',
-        language: 'StructuredText',
-        description: 'On/Off tank level fill/drain control',
-        stSource: '// Tank Level Fill/Drain Logic\nIF Auto_Mode THEN\n    IF Level_PV < (Level_SP - 5.0) THEN\n        Fill_Valve := TRUE;\n        Drain_Valve := FALSE;\n    ELSIF Level_PV > (Level_SP + 5.0) THEN\n        Fill_Valve := FALSE;\n        Drain_Valve := TRUE;\n    ELSE\n        Fill_Valve := FALSE;\n        Drain_Valve := FALSE;\n    END_IF;\nEND_IF;\nHigh_Alarm := Level_PV > 85.0;',
-      ),
-      PlcProgram(
         name: 'TankLevel_FBD',
         language: 'FunctionBlockDiagram',
         description: 'Tank level on/off fill/drain control',
@@ -204,7 +198,7 @@ abstract class DefaultProjects {
       PlcProgram(name: 'TankSequence_SFC', language: 'SequentialFunctionChart', description: 'Tank fill/drain sequence state machine'),
     ],
     tasks: [
-      PlcTask(name: 'ProcessLoopTask', type: 'Continuous', periodMs: 100, programNames: ['TankLevelControl_ST', 'TankLevel_FBD', 'TankSequence_SFC']),
+      PlcTask(name: 'ProcessLoopTask', type: 'Continuous', periodMs: 100, programNames: ['TankLevel_FBD', 'TankSequence_SFC']),
     ],
     hmis: [
       HmiScreenDef(
@@ -711,17 +705,11 @@ Reactor_Ready := NOT Alarm_High
         language: 'StructuredText',
         description: 'Safety supervisor: permissive checks, alarms, quality assessment',
         stSource: r'''// IEC 61131-3 Structured Text — WTP Safety Supervisor
-// Runs every scan — checks all permissives and raises alarms
+// Runs every scan — supervisory alarms and system-ready permissive.
+// (Quality_OK is computed by WaterQuality_FBD; Treat_Dosing by PumpControl_LD.)
 
-Quality_OK   := (Turbidity_PV < Turbidity_SP) AND (Level_PV > 10.0);
 Alarm_Active := (NOT EStop) OR (Level_PV < 5.0) OR (Turbidity_PV > (Turbidity_SP + 5.0));
-System_Ready := Pump_Motor AND Quality_OK AND NOT Alarm_Active;
-
-IF Pump_Motor AND NOT Quality_OK THEN
-    Treat_Dosing := TRUE;   // dose when running with bad water
-ELSIF Quality_OK THEN
-    Treat_Dosing := FALSE;
-END_IF;''',
+System_Ready := Pump_Motor AND Quality_OK AND NOT Alarm_Active;''',
       ),
       // LD: Pump start/stop seal-in rungs
       PlcProgram(
