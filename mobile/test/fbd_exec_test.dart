@@ -554,6 +554,31 @@ void main() {
       expect(readPath(p, 'QOut'), isFalse);
     });
 
+    test('reset-then-held: CU held true through and after R -> no spurious re-fire', () {
+      final p = buildCtu();
+      final rt = FbdRuntime();
+      writePath(p, 'CU', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(1));
+
+      writePath(p, 'CU', false);
+      _run(p, rt);
+
+      // Simultaneous R=true and CU rising edge -> reset wins, CV=0.
+      writePath(p, 'R', true);
+      writePath(p, 'CU', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(0));
+      expect(readPath(p, 'QOut'), isFalse);
+
+      // One more scan: R=false, CU STILL held true (no new edge, since CU was
+      // already true last scan) -> must NOT spuriously re-fire. CV stays 0.
+      writePath(p, 'R', false);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(0));
+      expect(readPath(p, 'QOut'), isFalse);
+    });
+
     test('unwired R/PV -> CV counts from 0 with PV=0, Q true immediately, no throw', () {
       final p = buildCtu(withR: false, pv: null);
       final rt = FbdRuntime();
@@ -633,6 +658,31 @@ void main() {
       _run(p, rt);
       expect(readPath(p, 'CvOut'), equals(0));
       expect(readPath(p, 'QOut'), isTrue);
+    });
+
+    test('CTD does not keep counting while CD held true', () {
+      final p = buildCtd(pv: '3');
+      final rt = FbdRuntime();
+
+      // Load PV=3 so CV>0.
+      writePath(p, 'LD', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(3));
+
+      writePath(p, 'LD', false);
+
+      // Hold CD true across 2+ consecutive scans -> decrements exactly ONCE
+      // (3 -> 2), then STAYS at 2 (edge-triggered, not level-triggered).
+      writePath(p, 'CD', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(2));
+      expect(readPath(p, 'QOut'), isFalse);
+
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(2));
+
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(2));
     });
   });
 
@@ -722,6 +772,74 @@ void main() {
       writePath(p, 'LD', true);
       _run(p, rt);
       expect(readPath(p, 'CvOut'), equals(2));
+    });
+
+    test('CTUD does not keep counting up while CU held true', () {
+      final p = buildCtud(pv: '3');
+      final rt = FbdRuntime();
+
+      // Hold CU true across 2+ consecutive scans with CD=R=LD=false ->
+      // CV goes up exactly ONCE (0 -> 1), then STAYS at 1.
+      writePath(p, 'CU', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(1));
+      expect(readPath(p, 'QuOut'), isFalse);
+      expect(readPath(p, 'QdOut'), isFalse);
+
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(1));
+
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(1));
+
+      // Now hold CD true from that loaded level -> one decrement then hold.
+      writePath(p, 'CU', false);
+      _run(p, rt);
+      writePath(p, 'CD', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(0));
+
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(0));
+    });
+
+    test('CTUD simultaneous CU/CD rising edges in same scan net to no change', () {
+      final p = buildCtud(pv: '3');
+      final rt = FbdRuntime();
+
+      // Count up twice to CV=2 (each edge isolated by a false scan in between).
+      writePath(p, 'CU', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(1));
+
+      writePath(p, 'CU', false);
+      _run(p, rt);
+      writePath(p, 'CU', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(2));
+
+      // Both CU and CD were false last scan (CU is true, so first make CU
+      // false and let CD settle false too before the simultaneous-edge scan).
+      writePath(p, 'CU', false);
+      writePath(p, 'CD', false);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(2));
+
+      // Simultaneous rising edges on CU and CD in the SAME scan (both were
+      // false last scan) -> net +1 -1 = 0, CV unchanged.
+      writePath(p, 'CU', true);
+      writePath(p, 'CD', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(2));
+
+      // Prove independence (not mutually-exclusive if/else-if): a following
+      // scan with only CU rising (CD dropped first) should still +1.
+      writePath(p, 'CU', false);
+      writePath(p, 'CD', false);
+      _run(p, rt);
+      writePath(p, 'CU', true);
+      _run(p, rt);
+      expect(readPath(p, 'CvOut'), equals(3));
     });
   });
 }
