@@ -38,6 +38,7 @@ abstract class DefaultProjects {
     _fbdHvacProject(),
     _sfcFillingProject(),
     _allWaterProject(),
+    _fbdPidTankLevelProject(),
   ];
 
   // ── 1. Basic Motor Start/Stop (LD) ──────────────────────────────────────
@@ -845,4 +846,84 @@ System_Ready := Pump_Motor AND Quality_OK AND NOT Alarm_Active;''',
     ],
     );
   }
+
+  // ── 7. FBD — Tank Level PID Control ─────────────────────────────────────
+  //
+  // Closed-loop showcase for the PID function block: a PID compares
+  // Level_SP against Level_PV and drives Valve_CV (0-100%), which controls
+  // an analog-scaled inflow into the tank (sim rule keyed off Valve_CV via
+  // sourcePath/refValue). A constant outflow disturbance means the valve
+  // must hold open at a non-zero, non-saturated position for Level_PV to
+  // sit at Level_SP — proof the loop is actually regulating, not just
+  // full-opening once and coasting.
+  //
+  // Gains (Kp=1.0, Ki=0.2, Kd=0.05) were tuned by running the closed-loop
+  // scan pipeline (see test/pid_loop_integration_test.dart): starting at
+  // Level_PV=10 against Level_SP=60, the loop overshoots modestly to ~77%
+  // around scan 40 then damps, settling within +/-4% of setpoint well before
+  // scan 300 (of the test's 600) and holding there, with Valve_CV modulating
+  // near ~16.7% (the inflow/outflow balance point) rather than sticking at a
+  // rail. Zeroing the gains would pin Valve_CV at 0 and leave Level_PV at its
+  // initial value forever — this is what makes the loop test falsifiable.
+  static PlcProject _fbdPidTankLevelProject() => PlcProject(
+    id: 'proj_tank_level_pid',
+    name: 'Tank Level PID Control',
+    controllerName: 'PLC_PID',
+    scanPeriodMs: 500,
+    tags: [
+      PlcTag(name: 'Level_PV', path: 'Inputs/Level_PV', dataType: 'FLOAT64', value: 10.0, ioType: 'SimulatedInput', engineeringUnits: '%', description: 'Tank level process value'),
+      PlcTag(name: 'Level_SP', path: 'Internal/Level_SP', dataType: 'FLOAT64', value: 60.0, ioType: 'Internal', engineeringUnits: '%', description: 'Tank level setpoint'),
+      PlcTag(name: 'Valve_CV', path: 'Outputs/Valve_CV', dataType: 'FLOAT64', value: 0.0, ioType: 'SimulatedOutput', engineeringUnits: '%', description: 'Inlet valve control variable (PID output)'),
+    ],
+    structDefs: [],
+    simRules: [
+      // Inflow: analog-scaled by Valve_CV — effective rate = 6.0 %/s * (Valve_CV/100).
+      // Full-open valve fills the tank at 6%/s.
+      SimRule(id: 'sim0', name: 'Inflow scaled by valve position', targetPath: 'Level_PV',
+          behavior: 'integrate', ratePerSec: 6.0, sourcePath: 'Valve_CV', refValue: 100.0,
+          minValue: 0, maxValue: 100),
+      // Constant outflow disturbance the loop must hold against.
+      SimRule(id: 'sim1', name: 'Constant outflow disturbance', targetPath: 'Level_PV',
+          behavior: 'integrate', ratePerSec: -1.0, minValue: 0, maxValue: 100),
+    ],
+    programs: [
+      PlcProgram(
+        name: 'LevelPID_FBD',
+        language: 'FunctionBlockDiagram',
+        description: 'PID control block holds Level_PV at Level_SP by driving Valve_CV',
+        fbdBlocks: [
+          FbdBlock(id: 'p_sp', type: 'TAG_INPUT', title: 'Level SP', tagBinding: 'Level_SP', x: 50, y: 80),
+          FbdBlock(id: 'p_pv', type: 'TAG_INPUT', title: 'Level PV', tagBinding: 'Level_PV', x: 50, y: 200),
+          FbdBlock(id: 'p_kp', type: 'CONST', title: 'Kp', tagBinding: '1.0', x: 50, y: 320),
+          FbdBlock(id: 'p_ki', type: 'CONST', title: 'Ki', tagBinding: '0.2', x: 50, y: 400),
+          FbdBlock(id: 'p_kd', type: 'CONST', title: 'Kd', tagBinding: '0.05', x: 50, y: 480),
+          FbdBlock(id: 'p_pid', type: 'PID', title: 'Level PID', tagBinding: '', x: 320, y: 250),
+          FbdBlock(id: 'p_cv', type: 'TAG_OUTPUT', title: 'Valve CV', tagBinding: 'Valve_CV', x: 560, y: 250),
+        ],
+        fbdWires: [
+          FbdWire(fromBlockId: 'p_sp', fromPin: 'OUT', toBlockId: 'p_pid', toPin: 'SP'),
+          FbdWire(fromBlockId: 'p_pv', fromPin: 'OUT', toBlockId: 'p_pid', toPin: 'PV'),
+          FbdWire(fromBlockId: 'p_kp', fromPin: 'OUT', toBlockId: 'p_pid', toPin: 'KP'),
+          FbdWire(fromBlockId: 'p_ki', fromPin: 'OUT', toBlockId: 'p_pid', toPin: 'KI'),
+          FbdWire(fromBlockId: 'p_kd', fromPin: 'OUT', toBlockId: 'p_pid', toPin: 'KD'),
+          FbdWire(fromBlockId: 'p_pid', fromPin: 'CV', toBlockId: 'p_cv', toPin: 'IN'),
+        ],
+      ),
+    ],
+    tasks: [
+      PlcTask(name: 'LevelPidTask', type: 'Continuous', periodMs: 500, programNames: ['LevelPID_FBD']),
+    ],
+    hmis: [
+      HmiScreenDef(
+        id: 'hmi_tank_level_pid',
+        title: 'Tank Level PID Dashboard',
+        layoutType: 'GridDashboard',
+        components: [
+          HmiComponent(id: 'tp1', title: 'Tank Level (%)', type: 'TankGraphicDisplay', tagBinding: 'Level_PV', gridSpanWidth: 4, accentColor: 'cyan'),
+          HmiComponent(id: 'tp2', title: 'Level Setpoint', type: 'NumericSliderInput', tagBinding: 'Level_SP', gridSpanWidth: 4, accentColor: 'teal'),
+          HmiComponent(id: 'tp3', title: 'Valve CV (%)', type: 'DigitalGaugeDisplay', tagBinding: 'Valve_CV', gridSpanWidth: 4, accentColor: 'amber'),
+        ],
+      ),
+    ],
+  );
 }
