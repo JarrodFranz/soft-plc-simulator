@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:soft_plc_mobile/screens/workspace_shell.dart';
 import 'package:soft_plc_mobile/widgets/tag_inspector_dock.dart';
 import 'support/responsive_test_utils.dart';
@@ -7,6 +8,16 @@ import 'support/responsive_test_utils.dart';
 Widget _app() => const MaterialApp(home: WorkspaceShell());
 
 void main() {
+  // WorkspaceShell() boots via the real (non-injected) SharedPreferences
+  // .getInstance() path. Mock initial values so that call actually
+  // resolves inside the test's FakeAsync zone — an unmocked platform
+  // channel invocation never completes there at all (neither resolving
+  // nor throwing), so without this the boot Future would hang forever
+  // and every pumpAndSettle() below would time out.
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
+
   testWidgets('phone: shell exposes a Drawer and no overflow', (tester) async {
     await setSurface(tester, phoneSize);
     await tester.pumpWidget(_app());

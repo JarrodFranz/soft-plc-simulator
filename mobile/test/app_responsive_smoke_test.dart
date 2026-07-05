@@ -9,6 +9,7 @@
 // tests (shell/forms/memory/editors).
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:soft_plc_mobile/data/default_projects.dart';
 import 'package:soft_plc_mobile/screens/workspace_shell.dart';
 import 'support/responsive_test_utils.dart';
@@ -147,6 +148,16 @@ Future<void> _switchProject(WidgetTester tester, {required bool compact, require
 }
 
 void main() {
+  // WorkspaceShell() boots via the real (non-injected) SharedPreferences
+  // .getInstance() path. Mock initial values so that call actually
+  // resolves inside the test's FakeAsync zone — an unmocked platform
+  // channel invocation never completes there at all (neither resolving
+  // nor throwing), so without this the boot Future would hang forever
+  // and every pumpAndSettle() below would time out.
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
+
   // Sanity: confirm the "all languages" water project actually has every
   // view type this smoke test claims to exercise, so the test can't silently
   // degrade if default_projects.dart changes shape.
