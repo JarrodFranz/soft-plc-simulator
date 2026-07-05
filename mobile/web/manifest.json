@@ -1,6 +1,6 @@
 {
-    "name": "soft_plc_mobile",
-    "short_name": "soft_plc_mobile",
+    "name": "Soft PLC Simulator",
+    "short_name": "Soft PLC Sim",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

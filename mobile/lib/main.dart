@@ -11,7 +11,7 @@ class SoftPlcApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Mobile Soft PLC Simulator',
+      title: 'Soft PLC Simulator',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: const Color(0xFF0F172A), // Dark slate
