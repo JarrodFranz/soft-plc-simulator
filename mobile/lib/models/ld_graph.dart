@@ -19,14 +19,20 @@ class LdBranchView {
 const String kLeftRailId = 'L';
 const String kRightRailId = 'R';
 
-/// Generates a node id not already present in [rung].
+/// Generates a node id not already present in [rung]. Monotonic (max+1) so a
+/// deleted node's id is never reused — freed ids would resurrect stale
+/// edge/pulse state in the execution runtime.
 String newNodeId(LdRung rung) {
-  int i = 0;
-  final used = rung.nodes.map((n) => n.id).toSet();
-  while (used.contains('n$i')) {
-    i++;
+  int next = 0;
+  for (final t in rung.nodes) {
+    if (t.id.startsWith('n')) {
+      final num = int.tryParse(t.id.substring(1));
+      if (num != null && num >= next) {
+        next = num + 1;
+      }
+    }
   }
-  return 'n$i';
+  return 'n$next';
 }
 
 int maxLane(LdRung rung) {

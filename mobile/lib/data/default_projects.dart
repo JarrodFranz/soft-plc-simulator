@@ -84,6 +84,8 @@ abstract class DefaultProjects {
               main: [
                 _xic('Start_PB', 'Start NO'),
                 _xio('Stop_PB', 'Stop NC'),
+                _xic('EStop_OK', 'E-Stop healthy'),
+                _xic('Overload_OK', 'Overload healthy'),
                 _ote('Motor_Latch', 'Seal-in latch'),
               ],
               branches: [
@@ -291,7 +293,8 @@ Reactor_Ready := NOT Alarm_High
     structDefs: [],
     simRules: [
       SimRule(id: 'sim0', name: 'Photo eye blips while belt runs', targetPath: 'Photo_Eye',
-          behavior: 'pulse', onMs: 2000, offMs: 9000,
+          behavior: 'pulse', onMs: 2000, offMs: 2500,
+          // parts every ~4.5s; the 5s no-part jam threshold only trips when parts stop
           condition: [SimClause(leftPath: 'Belt_Motor', comparator: '==', operand: 'true')]),
     ],
     programs: [
@@ -336,13 +339,13 @@ Reactor_Ready := NOT Alarm_High
           ),
           buildRung(
             index: 4,
-            comment: 'Rung 4: Belt Jammed Alarm Output',
-            main: [_xic('JamTimer.DN', 'Timer done'), _ote('Belt_Jammed', 'Jam beacon')],
+            comment: 'Rung 4: Belt Jammed Alarm Latch',
+            main: [_xic('JamTimer.DN', 'Timer done'), _otl('Belt_Jammed', 'Latch jam alarm')],
           ),
           buildRung(
             index: 5,
-            comment: 'Rung 5: Jam Reset — Photo Eye Clears Jam and Unlatches Seal-In',
-            main: [_xic('Photo_Eye', 'Part resets jam'), _otu('Belt_Latch', 'Unlatch')],
+            comment: 'Rung 5: Photo Eye Clears the Jam Alarm',
+            main: [_xic('Photo_Eye', 'Part seen'), _otu('Belt_Jammed', 'Unlatch jam alarm')],
           ),
         ],
       ),

@@ -66,6 +66,32 @@ void main() {
     expect(_b(p, 'Belt_Jammed'), isTrue);
     _scan(p, simRt, ldRt); // next scan, rung 0's jam interlock opens
     expect(_b(p, 'Belt_Motor'), isFalse);
+
+    _scan(p, simRt, ldRt);
+    expect(_b(p, 'Belt_Jammed'), isTrue, reason: 'jam alarm latches until a part is seen');
+  });
+
+  test('conveyor: belt keeps running through part passages (sim rules ON)', () {
+    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_ld_conveyor');
+    final simRt = SimRuntime();
+    final ldRt = LdExecRuntime();
+
+    writePath(p, 'Start_PB', true);
+    _scan(p, simRt, ldRt);
+    writePath(p, 'Start_PB', false); // seal-in takes over
+
+    bool sawPart = false;
+    for (int i = 0; i < 30; i++) {
+      _scan(p, simRt, ldRt);
+      if (_b(p, 'Photo_Eye')) {
+        sawPart = true;
+      }
+      expect(_b(p, 'Belt_Motor'), isTrue,
+          reason: 'belt must survive normal part passage (scan $i)');
+      expect(_b(p, 'Belt_Jammed'), isFalse,
+          reason: 'no jam while parts keep arriving (scan $i)');
+    }
+    expect(sawPart, isTrue); // the photo eye genuinely pulsed during the run
   });
 
   test('water project: ladder runs the pump and doses on bad quality', () {
