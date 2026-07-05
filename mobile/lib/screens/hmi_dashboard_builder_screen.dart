@@ -664,7 +664,14 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
         return Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(isTrue ? 'State: ON' : 'State: OFF', style: TextStyle(fontWeight: FontWeight.bold, color: isTrue ? Colors.greenAccent : Colors.grey)),
+            Flexible(
+              child: Text(
+                isTrue ? 'State: ON' : 'State: OFF',
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+                style: TextStyle(fontWeight: FontWeight.bold, color: isTrue ? Colors.greenAccent : Colors.grey),
+              ),
+            ),
             Switch(
               value: isTrue,
               activeTrackColor: Colors.green,
@@ -776,8 +783,23 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(tag.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-              Text('$effectiveVal ${tag.engineeringUnits}', style: TextStyle(fontWeight: FontWeight.bold, color: _getColor(comp.accentColor), fontSize: 13)),
+              Flexible(
+                child: Text(
+                  tag.name,
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  '$effectiveVal ${tag.engineeringUnits}',
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                  style: TextStyle(fontWeight: FontWeight.bold, color: _getColor(comp.accentColor), fontSize: 13),
+                ),
+              ),
             ],
           ),
         );
