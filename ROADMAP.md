@@ -92,9 +92,10 @@
 ## Phase 7: Touch HMI Controls & Mobile UI Polish
 - **Objective**: Mobile gesture optimizations, responsive touch HMI controls, and mobile packaging.
 - **Deliverables**:
-  - Haptic feedback on pushbutton press.
-  - Mobile layout adaptations for iOS and Android screen sizes.
-- **Status**: ⏳ Planned
+  - **Responsive & adaptive layout** (width-based, not platform-based; shared `mobile/lib/ui/responsive.dart` with breakpoints 640/840, `context.isCompact`/`isExpanded`, viewport-clamped dialogs, 44px touch targets): the desktop 3-pane IDE is preserved at ≥840 px, and on a phone/narrow window the project tree becomes a `Drawer`, the Tag Inspector an end-drawer, editor palettes on-demand bottom sheets, graphical canvases pan/zoom viewers with tap-to-configure, and the Memory Manager a card list — verified by widget tests at fixed surface sizes plus a whole-app overflow smoke test (155 tests). ✅
+  - Haptic feedback on pushbutton press. ⏳
+  - Native mobile packaging (iOS/Android). ⏳ (see Phase 10)
+- **Status**: 🔄 **ACTIVE — responsive/adaptive layout shipped (phone + web-on-monitor); haptics & native packaging remain**
 
 ---
 
