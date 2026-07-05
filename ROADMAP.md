@@ -123,5 +123,8 @@
 ---
 
 ## Phase 10: Packaging, Multi-Platform Clean Builds & Documentation
-- **Objective**: Native installers for Windows (`.msi`), macOS (`.dmg`), Linux (`.AppImage`), Android (`.apk`), and iOS (`.ipa`).
-- **Status**: ⏳ Planned
+- **Objective**: Native installers for Windows (`.msi`), macOS (`.dmg`), Linux (`.AppImage`), Android (`.apk`/`.aab`), and iOS (`.ipa`).
+- **Deliverables**:
+  - **Native app readiness** ✅ — the single Flutter codebase now has all five platform targets scaffolded (android/ios/windows/macos/linux + web), consistent app identity (**Soft PLC Simulator**, `com.jarrodfranz.softplcsimulator`, `0.1.0+1`), a brand-free ladder-logic launcher icon + dark splash generated for every platform, and a [SHIPPING.md](../../SHIPPING.md) guide covering the build commands and the user-owned steps (developer accounts, signing keys, store uploads) plus the local toolchain gaps. Web builds today.
+  - Signed store binaries + installers, and completing the local/CI build toolchains. ⏳ (user-owned: accounts, certificates, uploads; iOS/macOS need a Mac).
+- **Status**: 🔄 **ACTIVE — native scaffolding/identity/icons/splash + shipping docs done; signed store builds remain (user-owned toolchain + accounts)**
