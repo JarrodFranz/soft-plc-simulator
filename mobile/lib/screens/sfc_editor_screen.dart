@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
+import '../ui/responsive.dart';
 
 class SfcEditorScreen extends StatefulWidget {
   final PlcProject currentProject;
@@ -54,13 +55,70 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
     widget.onProgramUpdated();
   }
 
+  void _openTagPaletteSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF0F172A),
+      builder: (ctx) => SafeArea(
+        child: SizedBox(
+          height: MediaQuery.of(ctx).size.height * 0.75,
+          child: _buildTagPaletteDock(),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCenterWorkspace(bool expanded) {
+    return Container(
+      color: const Color(0xFF0F172A),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final cardWidth = _cardWidth(constraints.maxWidth);
+          return ListView.builder(
+            padding: const EdgeInsets.all(24),
+            itemCount: widget.program.sfcSteps.length,
+            itemBuilder: (context, index) {
+              final step = widget.program.sfcSteps[index];
+              final transition = index < widget.program.sfcTransitions.length ? widget.program.sfcTransitions[index] : null;
+
+              return Column(
+                children: [
+                  _buildSfcStepCard(step, index, cardWidth),
+                  if (transition != null) _buildSfcTransitionGraphic(transition, cardWidth),
+                ],
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  double _cardWidth(double availableWidth) {
+    const margins = 24.0 * 2; // ListView padding, left + right
+    final maxW = availableWidth - margins;
+    if (maxW <= 0) {
+      return 0.0;
+    }
+    return maxW < 450 ? maxW : 450.0;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final expanded = context.isExpanded;
+
     return Scaffold(
       appBar: AppBar(
         title: Text('${widget.program.name} — Sequential Function Chart (SFC) Editor'),
         backgroundColor: const Color(0xFF1E293B),
         actions: [
+          if (!expanded)
+            IconButton(
+              icon: const Icon(Icons.label_important, color: Colors.purpleAccent),
+              tooltip: 'Tag & Condition Autocomplete',
+              onPressed: _openTagPaletteSheet,
+            ),
           IconButton(
             icon: const Icon(Icons.add_circle, color: Colors.purpleAccent),
             tooltip: 'Add SFC Step',
@@ -69,63 +127,50 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
           const SizedBox(width: 12),
         ],
       ),
-      body: Row(
-        children: [
-          // CENTER WORKSPACE: Visual SFC Step Transition Chart
-          Expanded(
-            child: Container(
-              color: const Color(0xFF0F172A),
-              child: ListView.builder(
-                padding: const EdgeInsets.all(24),
-                itemCount: widget.program.sfcSteps.length,
-                itemBuilder: (context, index) {
-                  final step = widget.program.sfcSteps[index];
-                  final transition = index < widget.program.sfcTransitions.length ? widget.program.sfcTransitions[index] : null;
-
-                  return Column(
-                    children: [
-                      _buildSfcStepCard(step, index),
-                      if (transition != null) _buildSfcTransitionGraphic(transition),
-                    ],
-                  );
-                },
-              ),
-            ),
-          ),
-
-          const VerticalDivider(width: 1, color: Colors.white12),
-
-          // RIGHT DOCK: Action & Condition Tag Autocomplete Palette
-          Container(
-            width: 260,
-            color: const Color(0xFF0F172A),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+      body: expanded
+          ? Row(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  color: const Color(0xFF1E293B),
-                  child: const Text('SFC TAG & CONDITION AUTOCOMPLETE', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.purpleAccent)),
-                ),
-                Expanded(
-                  child: ListView(
-                    padding: const EdgeInsets.all(8),
-                    children: widget.currentProject.tags.map((tag) => Card(
-                      color: const Color(0xFF1E293B),
-                      margin: const EdgeInsets.only(bottom: 6),
-                      child: Material(
-                        color: Colors.transparent,
-                        child: ListTile(
-                          dense: true,
-                          leading: const Icon(Icons.label_important, color: Colors.purpleAccent, size: 16),
-                          title: Text(tag.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                          subtitle: Text('${tag.path} [${tag.dataType}]', style: const TextStyle(fontSize: 10, color: Colors.grey)),
-                        ),
-                      ),
-                    )).toList(),
+                // CENTER WORKSPACE: Visual SFC Step Transition Chart
+                Expanded(child: _buildCenterWorkspace(true)),
+
+                const VerticalDivider(width: 1, color: Colors.white12),
+
+                // RIGHT DOCK: Action & Condition Tag Autocomplete Palette
+                _buildTagPaletteDock(),
+              ],
+            )
+          : _buildCenterWorkspace(false),
+    );
+  }
+
+  Widget _buildTagPaletteDock() {
+    return Container(
+      width: 260,
+      color: const Color(0xFF0F172A),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            color: const Color(0xFF1E293B),
+            child: const Text('SFC TAG & CONDITION AUTOCOMPLETE', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.purpleAccent)),
+          ),
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.all(8),
+              children: widget.currentProject.tags.map((tag) => Card(
+                color: const Color(0xFF1E293B),
+                margin: const EdgeInsets.only(bottom: 6),
+                child: Material(
+                  color: Colors.transparent,
+                  child: ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.label_important, color: Colors.purpleAccent, size: 16),
+                    title: Text(tag.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                    subtitle: Text('${tag.path} [${tag.dataType}]', style: const TextStyle(fontSize: 10, color: Colors.grey)),
                   ),
                 ),
-              ],
+              )).toList(),
             ),
           ),
         ],
@@ -133,9 +178,9 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
     );
   }
 
-  Widget _buildSfcStepCard(SfcStep step, int index) {
+  Widget _buildSfcStepCard(SfcStep step, int index, double width) {
     return Container(
-      width: 450,
+      width: width,
       margin: const EdgeInsets.symmetric(vertical: 4),
       decoration: BoxDecoration(
         color: const Color(0xFF1E293B),
@@ -192,9 +237,9 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
     );
   }
 
-  Widget _buildSfcTransitionGraphic(SfcTransition transition) {
+  Widget _buildSfcTransitionGraphic(SfcTransition transition, double width) {
     return Container(
-      width: 450,
+      width: width,
       margin: const EdgeInsets.symmetric(vertical: 4),
       child: Column(
         children: [

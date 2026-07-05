@@ -3,6 +3,7 @@ import '../models/project_model.dart';
 import '../models/ld_graph.dart';
 import '../models/ld_layout.dart';
 import '../models/tag_resolver.dart';
+import '../ui/responsive.dart';
 
 const double _kContactH = 54.0;
 const double _kBlockH = 92.0;
@@ -177,28 +178,49 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       );
     }
 
+    final modeButtons = [
+      modeBtn('select', Icons.near_me, 'Select'),
+      modeBtn('contact', Icons.horizontal_rule, 'Contact'),
+      modeBtn('coil', Icons.radio_button_unchecked, 'Coil'),
+      modeBtn('block', Icons.widgets, 'Block'),
+      modeBtn('branch', Icons.account_tree, 'Branch'),
+    ];
+    final addRungBtn = TextButton.icon(
+      icon: const Icon(Icons.add, size: 15, color: Colors.greenAccent),
+      label: const Text('Add Rung', style: TextStyle(fontSize: 11, color: Colors.greenAccent)),
+      onPressed: _addRung,
+    );
+    const branchHint = Padding(
+      padding: EdgeInsets.only(left: 8),
+      child: Text('Tap span start, then span end', style: TextStyle(fontSize: 10, color: Colors.amberAccent)),
+    );
+
+    if (!context.isExpanded) {
+      // Compact: never overflow — wrap the toolbar buttons onto multiple lines.
+      return Container(
+        color: const Color(0xFF1E293B),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            ...modeButtons,
+            addRungBtn,
+            if (_editMode == 'branch') branchHint,
+          ],
+        ),
+      );
+    }
+
     return Container(
       height: 44,
       color: const Color(0xFF1E293B),
       alignment: Alignment.centerLeft,
       padding: const EdgeInsets.symmetric(horizontal: 8),
       child: Row(children: [
-        modeBtn('select', Icons.near_me, 'Select'),
-        modeBtn('contact', Icons.horizontal_rule, 'Contact'),
-        modeBtn('coil', Icons.radio_button_unchecked, 'Coil'),
-        modeBtn('block', Icons.widgets, 'Block'),
-        modeBtn('branch', Icons.account_tree, 'Branch'),
+        ...modeButtons,
         const Spacer(),
-        TextButton.icon(
-          icon: const Icon(Icons.add, size: 15, color: Colors.greenAccent),
-          label: const Text('Add Rung', style: TextStyle(fontSize: 11, color: Colors.greenAccent)),
-          onPressed: _addRung,
-        ),
-        if (_editMode == 'branch')
-          const Padding(
-            padding: EdgeInsets.only(left: 8),
-            child: Text('Tap span start, then span end', style: TextStyle(fontSize: 10, color: Colors.amberAccent)),
-          ),
+        addRungBtn,
+        if (_editMode == 'branch') branchHint,
       ]),
     );
   }
@@ -240,7 +262,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
             builder: (context, constraints) {
               final minW = ldMinContentWidth(rung, col);
               final width = constraints.maxWidth > minW ? constraints.maxWidth : minW;
-              return SizedBox(
+              final needsScroll = minW > constraints.maxWidth;
+              final canvas = SizedBox(
                 height: height,
                 width: width,
                 child: Stack(
@@ -270,6 +293,17 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     ...findBranches(rung).expand((br) => _branchHandles(rung, br, col, width)),
                   ],
                 ),
+              );
+
+              if (!needsScroll) {
+                return canvas;
+              }
+              // The rung's minimum content width exceeds the available space
+              // (typical on a phone) — let this rung scroll horizontally on
+              // its own rather than overflow the enclosing column.
+              return SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: canvas,
               );
             },
           ),
@@ -384,22 +418,29 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       {required VoidCallback onStart,
       required void Function(double delta) onUpdate,
       required VoidCallback onEnd}) {
-    return Positioned(
-      left: at.dx - 8,
-      top: at.dy - 8,
+    final dot = SizedBox(
       width: 16,
       height: 16,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.tealAccent,
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.black, width: 1),
+        ),
+      ),
+    );
+    // The visible dot stays 16px, but the touch target is enlarged to the
+    // Material minimum (44px) via `touchable`, centered on the wire point.
+    return Positioned(
+      left: at.dx - kMinTouch / 2,
+      top: at.dy - kMinTouch / 2,
+      width: kMinTouch,
+      height: kMinTouch,
       child: GestureDetector(
         onHorizontalDragStart: (_) => onStart(),
         onHorizontalDragUpdate: (d) => onUpdate(d.delta.dx),
         onHorizontalDragEnd: (_) => onEnd(),
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.tealAccent,
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.black, width: 1),
-          ),
-        ),
+        child: touchable(dot),
       ),
     );
   }
@@ -509,13 +550,13 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       DropdownMenuItem(value: 'falling', child: Text('Falling  -(N)-')),
     ];
 
-    showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
+    showAdaptiveWidthDialog(
+      context,
+      desiredWidth: 420,
+      child: StatefulBuilder(
         builder: (context, setDlg) => AlertDialog(
           title: Text('Edit ${isBlock ? n.blockType : (isCoil ? "Coil" : "Contact")}'),
-          content: SizedBox(
-            width: 420,
+          content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -560,11 +601,11 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
               onPressed: () {
                 setState(() => deleteNode(rung, n));
                 widget.onProgramUpdated();
-                Navigator.pop(ctx);
+                Navigator.pop(context);
               },
               child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
             ),
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
             ElevatedButton(
               onPressed: () {
                 setState(() {
@@ -573,7 +614,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                   n.presetMs = int.tryParse(presetCtrl.text) ?? n.presetMs;
                 });
                 widget.onProgramUpdated();
-                Navigator.pop(ctx);
+                Navigator.pop(context);
               },
               child: const Text('Apply'),
             ),
