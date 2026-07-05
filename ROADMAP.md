@@ -62,6 +62,17 @@
 
 ---
 
+## Phase 3.6: Project Persistence & Portability ✅
+- **Objective**: Make projects survive restarts and move between devices — one cross-platform storage path for the single app targeting the iOS/Android stores and desktop.
+- **Deliverables**:
+  - **Lossless serialization** of the whole `PlcProject` graph (LD rungs, FBD blocks/wires, SFC steps/transitions, struct defs, and the structured tag value tree + forcing were previously dropped on save) — proven by a 20-scan scan-equivalence round-trip per default project. ✅
+  - **`ProjectRepository`** over `shared_preferences` (universal backend — Android/iOS/desktop/web, one code path): catalog + defensive reads, seed-defaults-on-first-run, and full project CRUD. ✅
+  - **Shell integration**: boot from the repository with the last active project restored; debounced autosave with a Saving/Saved/Save-failed (and a visible "not saved — storage unavailable") indicator; New/Duplicate/Rename/Delete/Reset in the project switcher. Boot uses try/catch channel detection (no timeout race), so a slow-but-working device always persists. ✅
+  - **Export/Import** of `.splc.json` files (`share_plus`/`file_picker`) for cross-device transfer with no cloud; crash-proof import (malformed files raise a typed error, never crash) and id-collision reassignment. ✅
+- **Status**: ✅ **COMPLETED**
+
+---
+
 ## Phase 4: Industrial OPC UA Server Adapter
 - **Objective**: Embed an OPC UA server in the gateway/runtime exposing tag database as standard OPC UA variable nodes.
 - **Deliverables**:
