@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
+import '../ui/responsive.dart';
 
 class HmiDashboardBuilderScreen extends StatefulWidget {
   final PlcProject currentProject;
@@ -54,14 +55,13 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
       {'type': 'TankGraphicDisplay', 'label': 'Process Vessel Graphic (NUMERIC Display)'},
     ];
 
-    showDialog(
-      context: context,
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (context, setDlgState) => AlertDialog(
+    showAdaptiveWidthDialog(
+      context,
+      desiredWidth: 440,
+      child: StatefulBuilder(
+        builder: (context, setDlgState) => AlertDialog(
             title: Text(existingComp == null ? 'Add HMI Grid Component' : 'Configure Component: ${existingComp.title}'),
-            content: SizedBox(
-              width: 440,
+            content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -126,7 +126,7 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
               ),
             ),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
               ElevatedButton(
                 onPressed: () {
                   setState(() {
@@ -149,15 +149,78 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
                     }
                   });
                   widget.onProjectUpdated();
-                  Navigator.pop(ctx);
+                  Navigator.pop(context);
                 },
                 child: Text(existingComp == null ? 'Add Component' : 'Save Changes'),
               ),
             ],
           ),
-        );
-      },
+      ),
     );
+  }
+
+  /// Grid-width resizer, reconfigure (gear), and delete controls for a grid
+  /// component's header — shared between the expanded inline Row layout and
+  /// the compact Wrap layout (see the card header builder in `build`).
+  List<Widget> _componentHeaderControls(HmiComponent comp, int index, List<HmiComponent> components) {
+    return [
+      // Snap Grid Resizer Controls ([–] 1..4 Col [+])
+      IconButton(
+        icon: const Icon(Icons.remove, size: 14, color: Colors.amber),
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(),
+        tooltip: 'Decrease Grid Width',
+        onPressed: comp.gridSpanWidth > 1
+            ? () {
+                setState(() => comp.gridSpanWidth--);
+                widget.onProjectUpdated();
+              }
+            : null,
+      ),
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: Colors.amber.withValues(alpha: 0.2),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text('${comp.gridSpanWidth} Col', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.amber)),
+      ),
+      IconButton(
+        icon: const Icon(Icons.add, size: 14, color: Colors.amber),
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(),
+        tooltip: 'Increase Grid Width',
+        onPressed: comp.gridSpanWidth < 4
+            ? () {
+                setState(() => comp.gridSpanWidth++);
+                widget.onProjectUpdated();
+              }
+            : null,
+      ),
+
+      // Reconfigure Settings (Gear)
+      IconButton(
+        icon: const Icon(Icons.settings, size: 16, color: Colors.cyan),
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(),
+        tooltip: 'Reconfigure Component',
+        onPressed: () => _showAddComponentDialog(comp),
+      ),
+
+      // Delete Component
+      IconButton(
+        icon: const Icon(Icons.delete, size: 16, color: Colors.redAccent),
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(),
+        tooltip: 'Delete Component',
+        onPressed: () {
+          setState(() {
+            components.removeAt(index);
+          });
+          widget.onProjectUpdated();
+        },
+      ),
+    ];
   }
 
   void _addDroppedTemplate(HmiComponent tmpl, [int? targetIndex]) {
@@ -212,72 +275,86 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
     widget.onScanTriggered();
   }
 
+  Widget _buildModeSwitcher() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.cyan),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            onTap: () => setState(() => isEditMode = false),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+              decoration: BoxDecoration(
+                color: !isEditMode ? Colors.cyan : Colors.transparent,
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: Text(
+                'RUN MODE',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  color: !isEditMode ? Colors.black : Colors.grey,
+                ),
+              ),
+            ),
+          ),
+          InkWell(
+            onTap: () => setState(() => isEditMode = true),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+              decoration: BoxDecoration(
+                color: isEditMode ? Colors.amber : Colors.transparent,
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: Text(
+                'EDIT BUILDER',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  color: isEditMode ? Colors.black : Colors.grey,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final components = widget.hmiScreen.components;
+    final expanded = context.isExpanded;
 
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.hmiScreen.title),
         backgroundColor: const Color(0xFF1E293B),
         elevation: 0,
+        // On compact, the mode switcher pill is too wide to share the AppBar
+        // row with the title and action icons — it moves to its own row below.
+        bottom: expanded
+            ? null
+            : PreferredSize(
+                preferredSize: const Size.fromHeight(48),
+                child: Align(alignment: Alignment.centerLeft, child: _buildModeSwitcher()),
+              ),
         actions: [
-          // Mode Switcher: RUN MODE vs EDIT HMI BUILDER MODE
-          Container(
-            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(
-              color: const Color(0xFF0F172A),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: Colors.cyan),
-            ),
-            child: Row(
-              children: [
-                InkWell(
-                  onTap: () => setState(() => isEditMode = false),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: !isEditMode ? Colors.cyan : Colors.transparent,
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    child: Text(
-                      'RUN MODE',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: !isEditMode ? Colors.black : Colors.grey,
-                      ),
-                    ),
-                  ),
-                ),
-                InkWell(
-                  onTap: () => setState(() => isEditMode = true),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: isEditMode ? Colors.amber : Colors.transparent,
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    child: Text(
-                      'EDIT BUILDER',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: isEditMode ? Colors.black : Colors.grey,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
+          if (expanded) _buildModeSwitcher(),
 
           if (isEditMode) ...[
-            IconButton(
-              icon: Icon(Icons.view_sidebar, color: isPaletteVisible ? Colors.amberAccent : Colors.grey),
-              tooltip: 'Toggle Component Palette',
-              onPressed: () => setState(() => isPaletteVisible = !isPaletteVisible),
-            ),
+            if (expanded)
+              IconButton(
+                icon: Icon(Icons.view_sidebar, color: isPaletteVisible ? Colors.amberAccent : Colors.grey),
+                tooltip: 'Toggle Component Palette',
+                onPressed: () => setState(() => isPaletteVisible = !isPaletteVisible),
+              ),
             IconButton(
               icon: const Icon(Icons.add_circle, color: Colors.greenAccent),
               tooltip: 'Add HMI Component via Dialog',
@@ -301,6 +378,45 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
               builder: (context, candidateData, rejectedData) {
                 final isDragHover = candidateData.isNotEmpty;
 
+                return LayoutBuilder(
+                  builder: (context, constraints) => _buildCanvasBody(context, constraints.maxWidth, isDragHover, components),
+                );
+              },
+            ),
+          ),
+
+          // RIGHT DOCK: Component Library Palette Panel (Visible in EDIT BUILDER mode, expanded only)
+          if (isEditMode && isPaletteVisible && context.isExpanded) ...[
+            const VerticalDivider(width: 1, color: Colors.white12),
+            _buildComponentPaletteDock(),
+          ],
+        ],
+      ),
+      floatingActionButton: (isEditMode && !context.isExpanded)
+          ? FloatingActionButton.extended(
+              onPressed: _openPaletteSheet,
+              icon: const Icon(Icons.widgets),
+              label: const Text('Add component'),
+            )
+          : null,
+    );
+  }
+
+  void _openPaletteSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF0F172A),
+      builder: (ctx) => SafeArea(
+        child: SizedBox(
+          height: MediaQuery.of(ctx).size.height * 0.75,
+          child: _buildComponentPaletteDock(showCloseButton: false),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCanvasBody(BuildContext context, double availableWidth, bool isDragHover, List<HmiComponent> components) {
                 return Container(
                   color: isDragHover ? Colors.cyan.withValues(alpha: 0.1) : const Color(0xFF0F172A),
                   child: components.isEmpty
@@ -335,7 +451,11 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
                             children: List.generate(components.length, (index) {
                               final comp = components[index];
                               final boundTag = _getBoundTag(comp.tagBinding);
-                              final double cardWidth = (MediaQuery.of(context).size.width - 320 - 48) * (comp.gridSpanWidth / 4.0);
+                              // availableWidth is the TRUE canvas width (from the LayoutBuilder
+                              // around this DragTarget), so this never goes negative even when
+                              // there is no left/right dock present (e.g. on a phone).
+                              const gridPadding = 32.0; // SingleChildScrollView padding, left + right
+                              final double cardWidth = (availableWidth - gridPadding) * (comp.gridSpanWidth / 4.0);
                               final double actualWidth = cardWidth < 220 ? 220 : cardWidth;
 
                               // Target slot for Drag and Drop placement on the grid
@@ -385,87 +505,53 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
                                         child: Column(
                                           crossAxisAlignment: CrossAxisAlignment.start,
                                           children: [
-                                            // Header Bar with Grab Drag Handle, Title, Snap Resizer, Gear Config, & Delete Icon
-                                            Row(
-                                              children: [
-                                                if (isEditMode) ...[
-                                                  const Icon(Icons.drag_indicator, size: 20, color: Colors.amber),
+                                            // Header Bar with Grab Drag Handle, Title, Snap Resizer, Gear Config, & Delete Icon.
+                                            // On a narrow card (1-col span, or any compact layout),
+                                            // the title sits on its own line above the icon cluster
+                                            // (which wraps) instead of overflowing the card.
+                                            if (actualWidth >= 360)
+                                              Row(
+                                                children: [
+                                                  if (isEditMode) ...[
+                                                    const Icon(Icons.drag_indicator, size: 20, color: Colors.amber),
+                                                    const SizedBox(width: 6),
+                                                  ],
+                                                  Icon(_getIconForComponent(comp.type), size: 16, color: _getColor(comp.accentColor)),
                                                   const SizedBox(width: 6),
-                                                ],
-                                                Icon(_getIconForComponent(comp.type), size: 16, color: _getColor(comp.accentColor)),
-                                                const SizedBox(width: 6),
-                                                Expanded(
-                                                  child: Text(
-                                                    comp.title,
-                                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                                                    overflow: TextOverflow.ellipsis,
-                                                  ),
-                                                ),
-
-                                                if (isEditMode) ...[
-                                                  // Snap Grid Resizer Controls ([–] 1..4 Col [+])
-                                                  IconButton(
-                                                    icon: const Icon(Icons.remove, size: 14, color: Colors.amber),
-                                                    padding: EdgeInsets.zero,
-                                                    constraints: const BoxConstraints(),
-                                                    tooltip: 'Decrease Grid Width',
-                                                    onPressed: comp.gridSpanWidth > 1
-                                                        ? () {
-                                                            setState(() => comp.gridSpanWidth--);
-                                                            widget.onProjectUpdated();
-                                                          }
-                                                        : null,
-                                                  ),
-                                                  Container(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                    decoration: BoxDecoration(
-                                                      color: Colors.amber.withValues(alpha: 0.2),
-                                                      borderRadius: BorderRadius.circular(4),
+                                                  Expanded(
+                                                    child: Text(
+                                                      comp.title,
+                                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                                      overflow: TextOverflow.ellipsis,
                                                     ),
-                                                    child: Text('${comp.gridSpanWidth} Col', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.amber)),
                                                   ),
-                                                  IconButton(
-                                                    icon: const Icon(Icons.add, size: 14, color: Colors.amber),
-                                                    padding: EdgeInsets.zero,
-                                                    constraints: const BoxConstraints(),
-                                                    tooltip: 'Increase Grid Width',
-                                                    onPressed: comp.gridSpanWidth < 4
-                                                        ? () {
-                                                            setState(() => comp.gridSpanWidth++);
-                                                            widget.onProjectUpdated();
-                                                          }
-                                                        : null,
-                                                  ),
-
+                                                  ..._componentHeaderControls(comp, index, components),
+                                                ],
+                                              )
+                                            else ...[
+                                              Row(
+                                                children: [
+                                                  Icon(_getIconForComponent(comp.type), size: 16, color: _getColor(comp.accentColor)),
                                                   const SizedBox(width: 6),
-
-                                                  // Reconfigure Settings (Gear)
-                                                  IconButton(
-                                                    icon: const Icon(Icons.settings, size: 16, color: Colors.cyan),
-                                                    padding: EdgeInsets.zero,
-                                                    constraints: const BoxConstraints(),
-                                                    tooltip: 'Reconfigure Component',
-                                                    onPressed: () => _showAddComponentDialog(comp),
-                                                  ),
-                                                  const SizedBox(width: 6),
-
-                                                  // Delete Component
-                                                  IconButton(
-                                                    icon: const Icon(Icons.delete, size: 16, color: Colors.redAccent),
-                                                    padding: EdgeInsets.zero,
-                                                    constraints: const BoxConstraints(),
-                                                    tooltip: 'Delete Component',
-                                                    onPressed: () {
-                                                      setState(() {
-                                                        components.removeAt(index);
-                                                      });
-                                                      widget.onProjectUpdated();
-                                                    },
+                                                  Expanded(
+                                                    child: Text(
+                                                      comp.title,
+                                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                                      overflow: TextOverflow.ellipsis,
+                                                    ),
                                                   ),
                                                 ],
+                                              ),
+                                              if (isEditMode) ...[
+                                                const SizedBox(height: 4),
+                                                Wrap(
+                                                  spacing: 4,
+                                                  runSpacing: 4,
+                                                  crossAxisAlignment: WrapCrossAlignment.center,
+                                                  children: _componentHeaderControls(comp, index, components),
+                                                ),
                                               ],
-                                            ),
-
+                                            ],
                                             if (comp.tagBinding.isNotEmpty)
                                               Padding(
                                                 padding: const EdgeInsets.only(top: 2, bottom: 10),
@@ -517,23 +603,11 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
                           ),
                         ),
                 );
-              },
-            ),
-          ),
-
-          // RIGHT DOCK: Component Library Palette Panel (Visible in EDIT BUILDER mode)
-          if (isEditMode && isPaletteVisible) ...[
-            const VerticalDivider(width: 1, color: Colors.white12),
-            _buildComponentPaletteDock(),
-          ],
-        ],
-      ),
-    );
   }
 
-  Widget _buildComponentPaletteDock() {
+  Widget _buildComponentPaletteDock({bool showCloseButton = true}) {
     return Container(
-      width: 260,
+      width: showCloseButton ? 260 : double.infinity,
       color: const Color(0xFF0F172A),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -545,14 +619,21 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
               children: [
                 const Icon(Icons.widgets, color: Colors.amber, size: 18),
                 const SizedBox(width: 8),
-                const Text('COMPONENT PALETTE', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.amber, letterSpacing: 0.5)),
-                const Spacer(),
-                IconButton(
-                  icon: const Icon(Icons.close, size: 16),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                  onPressed: () => setState(() => isPaletteVisible = false),
+                const Expanded(
+                  child: Text(
+                    'COMPONENT PALETTE',
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.amber, letterSpacing: 0.5),
+                  ),
                 ),
+                if (showCloseButton)
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 16),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    onPressed: () => setState(() => isPaletteVisible = false),
+                  ),
               ],
             ),
           ),
@@ -567,6 +648,17 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
               separatorBuilder: (ctx, idx) => const SizedBox(height: 8),
               itemBuilder: (context, index) {
                 final tmpl = _paletteTemplates[index];
+
+                if (!showCloseButton) {
+                  // Compact / bottom-sheet mode: tap-to-add instead of drag-drop.
+                  return InkWell(
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      _addDroppedTemplate(tmpl);
+                    },
+                    child: _buildPaletteCardItem(tmpl),
+                  );
+                }
 
                 return Draggable<Map<String, dynamic>>(
                   data: {'source': 'PALETTE', 'component': tmpl},
@@ -664,7 +756,14 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
         return Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(isTrue ? 'State: ON' : 'State: OFF', style: TextStyle(fontWeight: FontWeight.bold, color: isTrue ? Colors.greenAccent : Colors.grey)),
+            Flexible(
+              child: Text(
+                isTrue ? 'State: ON' : 'State: OFF',
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+                style: TextStyle(fontWeight: FontWeight.bold, color: isTrue ? Colors.greenAccent : Colors.grey),
+              ),
+            ),
             Switch(
               value: isTrue,
               activeTrackColor: Colors.green,
@@ -757,7 +856,15 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 const Text('0.0', style: TextStyle(fontSize: 10, color: Colors.grey)),
-                Text('${numVal.toStringAsFixed(1)} ${tag.engineeringUnits}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.white)),
+                Flexible(
+                  child: Text(
+                    '${numVal.toStringAsFixed(1)} ${tag.engineeringUnits}',
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.white),
+                  ),
+                ),
                 const Text('100.0', style: TextStyle(fontSize: 10, color: Colors.grey)),
               ],
             ),
@@ -776,8 +883,23 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(tag.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-              Text('$effectiveVal ${tag.engineeringUnits}', style: TextStyle(fontWeight: FontWeight.bold, color: _getColor(comp.accentColor), fontSize: 13)),
+              Flexible(
+                child: Text(
+                  tag.name,
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  '$effectiveVal ${tag.engineeringUnits}',
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                  style: TextStyle(fontWeight: FontWeight.bold, color: _getColor(comp.accentColor), fontSize: 13),
+                ),
+              ),
             ],
           ),
         );

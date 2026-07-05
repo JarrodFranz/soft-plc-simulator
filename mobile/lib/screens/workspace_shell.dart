@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/sim_engine.dart';
@@ -7,6 +8,7 @@ import '../models/fbd_exec.dart';
 import '../models/sfc_exec.dart';
 import '../models/st_exec.dart';
 import '../data/default_projects.dart';
+import '../ui/responsive.dart';
 import '../widgets/tag_inspector_dock.dart';
 import 'st_editor_screen.dart';
 import 'ld_editor_screen.dart';
@@ -24,6 +26,8 @@ class WorkspaceShell extends StatefulWidget {
 }
 
 class _WorkspaceShellState extends State<WorkspaceShell> {
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
   // Project Workspace Repository
   late List<PlcProject> _allProjects;
   late PlcProject _activeProject;
@@ -150,73 +154,54 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     );
   }
 
+  void _openTagDock(BuildContext context) {
+    if (context.isExpanded) {
+      setState(() => isTagDockVisible = !isTagDockVisible);
+    } else {
+      _scaffoldKey.currentState?.openEndDrawer();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final expanded = context.isExpanded;
+    final compact = context.isCompact;
+
     return Scaffold(
+      key: _scaffoldKey,
       appBar: AppBar(
         title: Row(
           children: [
             const Icon(Icons.memory, color: Colors.cyan, size: 22),
             const SizedBox(width: 10),
-            Text(
-              'Soft PLC Simulator — ${_activeProject.name}',
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            Flexible(
+              child: Text(
+                'Soft PLC Simulator — ${_activeProject.name}',
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
             ),
           ],
         ),
         backgroundColor: const Color(0xFF1E293B),
         elevation: 0,
-        actions: [
-          // Run / Pause Toggle
-          IconButton(
-            icon: Icon(
-              isRunning ? Icons.pause_circle_filled : Icons.play_circle_fill,
-              color: isRunning ? Colors.amber : Colors.greenAccent,
-              size: 26,
-            ),
-            tooltip: isRunning ? 'Pause Scan Loop' : 'Run Scan Loop',
-            onPressed: () {
-              setState(() {
-                isRunning = !isRunning;
-              });
-            },
-          ),
-
-          // Step Scan Button (for step-by-step debugging)
-          IconButton(
-            icon: const Icon(Icons.skip_next, color: Colors.cyanAccent, size: 26),
-            tooltip: 'Execute Single Scan Step (Step Scan)',
-            onPressed: () => _executeScan(),
-          ),
-
-          const SizedBox(width: 12),
-
-          // Status Badge
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: isRunning ? Colors.green.withValues(alpha: 0.2) : Colors.amber.withValues(alpha: 0.2),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: isRunning ? Colors.green : Colors.amber),
-            ),
-            child: Text(
-              isRunning ? 'RUNNING' : 'PAUSED',
-              style: TextStyle(color: isRunning ? Colors.green : Colors.amber, fontWeight: FontWeight.bold, fontSize: 11),
-            ),
-          ),
-
-          const SizedBox(width: 16),
-
-          // Toggle Tag Inspector Side Dock
-          IconButton(
-            icon: Icon(Icons.table_chart, color: isTagDockVisible ? Colors.cyanAccent : Colors.grey, size: 24),
-            tooltip: 'Toggle Tag Inspector Side Dock',
-            onPressed: () => setState(() => isTagDockVisible = !isTagDockVisible),
-          ),
-
-          const SizedBox(width: 12),
-        ],
+        actions: _buildAppBarActions(context, compact: compact),
       ),
+      drawer: expanded ? null : Drawer(child: _buildLeftDockContent()),
+      endDrawer: expanded
+          ? null
+          : Drawer(
+              width: math.min(340, MediaQuery.sizeOf(context).width * 0.9),
+              child: TagInspectorDock(
+                tags: _activeProject.tags,
+                onTagStateChanged: () => setState(() {}),
+                onClose: () {
+                  Navigator.pop(context);
+                  setState(() => isTagDockVisible = false);
+                },
+              ),
+            ),
       body: Column(
         children: [
           // PLC Execution Controls Toolbar (Scan Speed Slider cleanly placed to avoid clipping)
@@ -227,10 +212,11 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
               children: [
                 const Icon(Icons.speed, size: 16, color: Colors.grey),
                 const SizedBox(width: 8),
-                const Text('SCAN LOOP SPEED:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey)),
-                const SizedBox(width: 12),
-                SizedBox(
-                  width: 220,
+                if (!compact) ...[
+                  const Text('SCAN LOOP SPEED:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey)),
+                  const SizedBox(width: 12),
+                ],
+                Expanded(
                   child: Slider(
                     value: scanSpeedMs.toDouble(),
                     min: 50.0,
@@ -246,7 +232,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                   ),
                 ),
                 Text(
-                  '${scanSpeedMs}ms ${scanSpeedMs >= 500 ? "(Slow Mo Step)" : ""}',
+                  compact ? '${scanSpeedMs}ms' : '${scanSpeedMs}ms ${scanSpeedMs >= 500 ? "(Slow Mo Step)" : ""}',
                   style: TextStyle(
                     fontSize: 12,
                     fontFamily: 'monospace',
@@ -254,8 +240,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                     color: scanSpeedMs >= 500 ? Colors.amberAccent : Colors.cyanAccent,
                   ),
                 ),
-                const Spacer(),
-                Text('Scan Count: $scanCount', style: const TextStyle(fontSize: 12, color: Colors.grey, fontFamily: 'monospace')),
+                if (!compact) ...[
+                  const Spacer(),
+                  Text('Scan Count: $scanCount', style: const TextStyle(fontSize: 12, color: Colors.grey, fontFamily: 'monospace')),
+                ],
               ],
             ),
           ),
@@ -263,38 +251,157 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
 
           // Main Shell Layout
           Expanded(
-            child: Row(
-              children: [
-                // LEFT DOCK: Project Tree & Navigation Explorer
-                _buildLeftDockExplorer(),
+            child: expanded
+                ? Row(
+                    children: [
+                      // LEFT DOCK: Project Tree & Navigation Explorer
+                      _buildLeftDockExplorer(),
 
-                const VerticalDivider(width: 1, color: Colors.white12),
+                      const VerticalDivider(width: 1, color: Colors.white12),
 
-                // CENTER WORKSPACE: Active View (HMI, Language Editors, or Memory Manager)
-                Expanded(
-                  child: _buildCenterWorkspace(),
-                ),
+                      // CENTER WORKSPACE: Active View (HMI, Language Editors, or Memory Manager)
+                      Expanded(
+                        child: _buildCenterWorkspace(),
+                      ),
 
-                // RIGHT DOCK: Toggleable Tag Inspector & Forcing Matrix
-                if (isTagDockVisible) ...[
-                  const VerticalDivider(width: 1, color: Colors.white12),
-                  TagInspectorDock(
-                    tags: _activeProject.tags,
-                    onTagStateChanged: () => setState(() {}),
-                    onClose: () => setState(() => isTagDockVisible = false),
-                  ),
-                ],
-              ],
-            ),
+                      // RIGHT DOCK: Toggleable Tag Inspector & Forcing Matrix
+                      if (isTagDockVisible) ...[
+                        const VerticalDivider(width: 1, color: Colors.white12),
+                        TagInspectorDock(
+                          tags: _activeProject.tags,
+                          onTagStateChanged: () => setState(() {}),
+                          onClose: () => setState(() => isTagDockVisible = false),
+                        ),
+                      ],
+                    ],
+                  )
+                : _buildCenterWorkspace(),
           ),
         ],
       ),
     );
   }
 
+  List<Widget> _buildAppBarActions(BuildContext context, {required bool compact}) {
+    // Run / Pause Toggle
+    final runToggle = IconButton(
+      icon: Icon(
+        isRunning ? Icons.pause_circle_filled : Icons.play_circle_fill,
+        color: isRunning ? Colors.amber : Colors.greenAccent,
+        size: 26,
+      ),
+      tooltip: isRunning ? 'Pause Scan Loop' : 'Run Scan Loop',
+      onPressed: () {
+        setState(() {
+          isRunning = !isRunning;
+        });
+      },
+    );
+
+    // Toggle Tag Inspector Side Dock / End Drawer
+    final tagToggle = IconButton(
+      icon: Icon(Icons.table_chart, color: isTagDockVisible ? Colors.cyanAccent : Colors.grey, size: 24),
+      tooltip: 'Toggle Tag Inspector Side Dock',
+      onPressed: () => _openTagDock(context),
+    );
+
+    if (!compact) {
+      // Expanded / medium: keep the full original action set.
+      return [
+        runToggle,
+
+        // Step Scan Button (for step-by-step debugging)
+        IconButton(
+          icon: const Icon(Icons.skip_next, color: Colors.cyanAccent, size: 26),
+          tooltip: 'Execute Single Scan Step (Step Scan)',
+          onPressed: () => _executeScan(),
+        ),
+
+        const SizedBox(width: 12),
+
+        // Status Badge
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: isRunning ? Colors.green.withValues(alpha: 0.2) : Colors.amber.withValues(alpha: 0.2),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: isRunning ? Colors.green : Colors.amber),
+          ),
+          child: Text(
+            isRunning ? 'RUNNING' : 'PAUSED',
+            style: TextStyle(color: isRunning ? Colors.green : Colors.amber, fontWeight: FontWeight.bold, fontSize: 11),
+          ),
+        ),
+
+        const SizedBox(width: 16),
+
+        tagToggle,
+
+        const SizedBox(width: 12),
+      ];
+    }
+
+    // Compact: keep only run/stop + tag-toggle inline; overflow the rest into a menu.
+    return [
+      runToggle,
+      tagToggle,
+      PopupMenuButton<String>(
+        tooltip: 'More actions',
+        icon: const Icon(Icons.more_vert),
+        onSelected: (value) {
+          if (value == 'step') {
+            _executeScan();
+          }
+        },
+        itemBuilder: (ctx) => [
+          const PopupMenuItem(
+            value: 'step',
+            child: ListTile(
+              leading: Icon(Icons.skip_next),
+              title: Text('Step Scan'),
+            ),
+          ),
+          PopupMenuItem(
+            enabled: false,
+            child: ListTile(
+              leading: Icon(
+                isRunning ? Icons.circle : Icons.pause_circle,
+                color: isRunning ? Colors.green : Colors.amber,
+                size: 16,
+              ),
+              title: Text(isRunning ? 'RUNNING' : 'PAUSED'),
+            ),
+          ),
+        ],
+      ),
+      const SizedBox(width: 4),
+    ];
+  }
+
   Widget _buildLeftDockExplorer() {
     return Container(
       width: 280,
+      color: const Color(0xFF0F172A),
+      child: _buildLeftDockContent(),
+    );
+  }
+
+  /// Selects [viewId] and, if this content is hosted inside a [Drawer]
+  /// (i.e. we're on a compact width where the drawer is the only way the
+  /// left dock is shown), closes the drawer first so the newly active view
+  /// is visible immediately.
+  void _selectView(BuildContext context, String viewId) {
+    if (!context.isExpanded) {
+      Navigator.pop(context);
+    }
+    setState(() => _activeViewId = viewId);
+  }
+
+  /// The inner content of the left dock — shared by the inline (expanded,
+  /// fixed width 280) dock and the compact `Drawer` (which supplies its own
+  /// width), so it must not declare a fixed width itself.
+  Widget _buildLeftDockContent() {
+    return Container(
       color: const Color(0xFF0F172A),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -340,6 +447,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
           // Active Project Tree Navigation
           Expanded(
             child: ListView(
+              key: const Key('nav_tree'),
               padding: const EdgeInsets.all(8),
               children: [
                 // Project Header Info
@@ -371,7 +479,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                         dense: true,
                         leading: Icon(Icons.monitor, size: 16, color: isSelected ? Colors.cyanAccent : Colors.grey),
                         title: Text(hmi.title, style: TextStyle(fontSize: 12, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
-                        onTap: () => setState(() => _activeViewId = 'HMI:${hmi.id}'),
+                        onTap: () => _selectView(context, 'HMI:${hmi.id}'),
                       ),
                     ),
                   );
@@ -410,7 +518,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                         'Tags & Structs (${_activeProject.tags.length} Tags, ${_activeProject.structDefs.length} Structs)',
                         style: TextStyle(fontSize: 11, fontWeight: _activeViewId == 'MEMORY' ? FontWeight.bold : FontWeight.normal),
                       ),
-                      onTap: () => setState(() => _activeViewId = 'MEMORY'),
+                      onTap: () => _selectView(context, 'MEMORY'),
                     ),
                   ),
                 ),
@@ -432,7 +540,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                         'SIMULATED I/O (${_activeProject.simRules.length})',
                         style: TextStyle(fontSize: 11, fontWeight: _activeViewId == 'SIMIO:rules' ? FontWeight.bold : FontWeight.normal),
                       ),
-                      onTap: () => setState(() => _activeViewId = 'SIMIO:rules'),
+                      onTap: () => _selectView(context, 'SIMIO:rules'),
                     ),
                   ),
                 ),
@@ -548,7 +656,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                       tooltip: 'Delete Program',
                       onPressed: () => _deleteProgram(prog.name),
                     ),
-                    onTap: () => setState(() => _activeViewId = 'PROGRAM:$progName'),
+                    onTap: () => _selectView(context, 'PROGRAM:$progName'),
                   ),
                 ),
               );

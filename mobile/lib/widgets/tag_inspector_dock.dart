@@ -1,5 +1,7 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
+import '../ui/responsive.dart';
 
 class TagInspectorDock extends StatefulWidget {
   final List<PlcTag> tags;
@@ -30,10 +32,19 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
       return matchesSearch && matchesIo;
     }).toList();
 
-    return Container(
-      width: 340,
-      color: const Color(0xFF0F172A),
-      child: Column(
+    // 340 wide when the parent gives unbounded width (inline dock in the
+    // desktop Row); when the parent constrains the width (e.g. inside the
+    // compact end-drawer, which is min(340, screenWidth*0.9)), shrink to fit so
+    // the dock's content never overflows a narrow screen.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth.isFinite
+            ? math.min(340.0, constraints.maxWidth)
+            : 340.0;
+        return Container(
+          width: width,
+          color: const Color(0xFF0F172A),
+          child: Column(
         children: [
           // Header Bar
           Container(
@@ -52,11 +63,9 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                   ),
                 ),
                 const Spacer(),
-                IconButton(
-                  icon: const Icon(Icons.close, size: 18),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                  onPressed: widget.onClose,
+                touchable(
+                  const Icon(Icons.close, size: 18),
+                  onTap: widget.onClose,
                 ),
               ],
             ),
@@ -131,8 +140,18 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                                     child: Column(
                                       crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
-                                        Text(tag.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                                        Text('${tag.path} [${tag.dataType}]', style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                                        Text(
+                                          tag.name,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                        ),
+                                        Text(
+                                          '${tag.path} [${tag.dataType}]',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(fontSize: 10, color: Colors.grey),
+                                        ),
                                       ],
                                     ),
                                   ),
@@ -197,25 +216,27 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                                   const SizedBox(width: 8),
 
                                   // Force Toggle Lock
-                                  ElevatedButton.icon(
-                                    icon: Icon(tag.isForced ? Icons.lock : Icons.lock_open, size: 14),
-                                    label: Text(tag.isForced ? 'Unforce' : 'Force', style: const TextStyle(fontSize: 11)),
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: tag.isForced ? Colors.amber.shade800 : const Color(0xFF334155),
-                                      foregroundColor: Colors.white,
-                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                      minimumSize: Size.zero,
-                                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  touchable(
+                                    ElevatedButton.icon(
+                                      icon: Icon(tag.isForced ? Icons.lock : Icons.lock_open, size: 14),
+                                      label: Text(tag.isForced ? 'Unforce' : 'Force', style: const TextStyle(fontSize: 11)),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: tag.isForced ? Colors.amber.shade800 : const Color(0xFF334155),
+                                        foregroundColor: Colors.white,
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                        minimumSize: Size.zero,
+                                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                      ),
+                                      onPressed: () {
+                                        setState(() {
+                                          tag.isForced = !tag.isForced;
+                                          if (tag.isForced) {
+                                            tag.forcedValue = isBool ? !(tag.value == true) : tag.value;
+                                          }
+                                        });
+                                        widget.onTagStateChanged();
+                                      },
                                     ),
-                                    onPressed: () {
-                                      setState(() {
-                                        tag.isForced = !tag.isForced;
-                                        if (tag.isForced) {
-                                          tag.forcedValue = isBool ? !(tag.value == true) : tag.value;
-                                        }
-                                      });
-                                      widget.onTagStateChanged();
-                                    },
                                   ),
                                 ],
                               ),
@@ -226,8 +247,10 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                     },
                   ),
           ),
-        ],
-      ),
+            ],
+          ),
+        );
+      },
     );
   }
 

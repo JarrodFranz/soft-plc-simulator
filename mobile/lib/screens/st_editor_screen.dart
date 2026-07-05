@@ -1,5 +1,7 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
+import '../ui/responsive.dart';
 
 class StEditorScreen extends StatefulWidget {
   final PlcProject currentProject;
@@ -305,10 +307,74 @@ END_FOR;''',
     );
   }
 
+  /// Closes the enclosing Drawer first when hosted there (compact width),
+  /// so the newly selected program is visible immediately.
+  void _selectProgram(BuildContext context, PlcProgram prog) {
+    if (!context.isExpanded) {
+      Navigator.pop(context);
+    }
+    _loadProgram(prog);
+  }
+
+  void _selectTemplate(BuildContext context, String title) {
+    if (!context.isExpanded) {
+      Navigator.pop(context);
+    }
+    _loadTemplate(title);
+  }
+
+  /// The inner content of the program-selector sidebar — shared by the
+  /// inline (expanded, fixed width 280) dock and the compact `Drawer`
+  /// (which supplies its own width), so it must not declare a fixed width.
+  Widget _buildSidebarContent(BuildContext context, List<PlcProgram> stPrograms) {
+    return Container(
+      color: const Color(0xFF0F172A),
+      child: ListView(
+        padding: const EdgeInsets.all(12),
+        children: [
+          const Text('PROJECT ST PROGRAMS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 8),
+
+          if (stPrograms.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text('No ST programs yet. Create one or pick a template!', style: TextStyle(fontSize: 12, color: Colors.grey)),
+            )
+          else
+            ...stPrograms.map((prog) => Card(
+              color: _selectedProgram?.name == prog.name ? Colors.cyan.withValues(alpha: 0.2) : const Color(0xFF1E293B),
+              child: ListTile(
+                dense: true,
+                title: Text(prog.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Text(prog.description, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10)),
+                onTap: () => _selectProgram(context, prog),
+              ),
+            )),
+
+          const Divider(height: 24),
+          const Text('CODE TEMPLATES', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 8),
+
+          ..._stTemplates.keys.map((title) => Card(
+            color: const Color(0xFF1E293B),
+            child: ListTile(
+              dense: true,
+              leading: const Icon(Icons.code, size: 16, color: Colors.cyan),
+              title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+              onTap: () => _selectTemplate(context, title),
+            ),
+          )),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final stPrograms = widget.currentProject.programs.where((p) => p.language == 'StructuredText').toList();
     final allItems = _buildAllAutocompleteItems();
+    final expanded = context.isExpanded;
+    final compact = context.isCompact;
 
     return Scaffold(
       appBar: AppBar(
@@ -327,52 +393,20 @@ END_FOR;''',
           ),
         ],
       ),
+      // On compact widths the program-selector sidebar moves into a Drawer
+      // (with a hamburger the AppBar provides automatically) so the code
+      // editor can use the full window width.
+      drawer: expanded ? null : Drawer(child: _buildSidebarContent(context, stPrograms)),
       body: Row(
         children: [
-          // Sidebar: Program selector & Templates
-          Container(
-            width: 280,
-            color: const Color(0xFF0F172A),
-            child: ListView(
-              padding: const EdgeInsets.all(12),
-              children: [
-                const Text('PROJECT ST PROGRAMS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
-                const SizedBox(height: 8),
-
-                if (stPrograms.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 8),
-                    child: Text('No ST programs yet. Create one or pick a template!', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                  )
-                else
-                  ...stPrograms.map((prog) => Card(
-                    color: _selectedProgram?.name == prog.name ? Colors.cyan.withValues(alpha: 0.2) : const Color(0xFF1E293B),
-                    child: ListTile(
-                      dense: true,
-                      title: Text(prog.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                      subtitle: Text(prog.description, style: const TextStyle(fontSize: 10)),
-                      onTap: () => _loadProgram(prog),
-                    ),
-                  )),
-
-                const Divider(height: 24),
-                const Text('CODE TEMPLATES', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
-                const SizedBox(height: 8),
-
-                ..._stTemplates.keys.map((title) => Card(
-                  color: const Color(0xFF1E293B),
-                  child: ListTile(
-                    dense: true,
-                    leading: const Icon(Icons.code, size: 16, color: Colors.cyan),
-                    title: Text(title, style: const TextStyle(fontSize: 12)),
-                    onTap: () => _loadTemplate(title),
-                  ),
-                )),
-              ],
+          // Sidebar: Program selector & Templates (inline only when expanded)
+          if (expanded) ...[
+            SizedBox(
+              width: 280,
+              child: _buildSidebarContent(context, stPrograms),
             ),
-          ),
-
-          const VerticalDivider(width: 1, color: Colors.white12),
+            const VerticalDivider(width: 1, color: Colors.white12),
+          ],
 
           // Main Editor Area with Autocomplete Palette & Quick Symbol Bar
           Expanded(
@@ -467,7 +501,13 @@ END_FOR;''',
                           bottom: 12,
                           left: 12,
                           right: 12,
-                          child: Material(
+                          child: Align(
+                            alignment: Alignment.bottomLeft,
+                            child: ConstrainedBox(
+                              constraints: BoxConstraints(
+                                maxWidth: math.min(360.0, MediaQuery.sizeOf(context).width - 32),
+                              ),
+                              child: Material(
                             elevation: 8,
                             color: const Color(0xFF1E293B),
                             shape: RoundedRectangleBorder(
@@ -529,6 +569,8 @@ END_FOR;''',
                                 ],
                               ),
                             ),
+                              ),
+                            ),
                           ),
                         ),
                     ],
@@ -549,18 +591,22 @@ END_FOR;''',
                         color: _compilationStatus.startsWith('✅') ? Colors.greenAccent : Colors.cyan,
                       ),
                       const SizedBox(width: 10),
-                      Text(
-                        _compilationStatus,
-                        style: TextStyle(
-                          color: _compilationStatus.startsWith('✅') ? Colors.greenAccent : Colors.white70,
-                          fontFamily: 'monospace',
-                          fontSize: 12,
+                      Expanded(
+                        child: Text(
+                          _compilationStatus,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: _compilationStatus.startsWith('✅') ? Colors.greenAccent : Colors.white70,
+                            fontFamily: 'monospace',
+                            fontSize: 12,
+                          ),
                         ),
                       ),
-                      const Spacer(),
+                      const SizedBox(width: 8),
                       ElevatedButton.icon(
                         icon: const Icon(Icons.flash_on, size: 16),
-                        label: const Text('Compile & Apply to PLC'),
+                        label: Text(compact ? 'Apply' : 'Compile & Apply to PLC'),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.cyan.shade700,
                           foregroundColor: Colors.white,

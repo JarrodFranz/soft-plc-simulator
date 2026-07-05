@@ -1,6 +1,54 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/tag_resolver.dart';
+import '../ui/responsive.dart';
+
+/// Resolved, display-ready data for one row of the hierarchical tag tree —
+/// shared by both the desktop [DataTable] and the compact card list so the
+/// two layouts always render identical values from a single source.
+class _TagRowData {
+  final String name; // display name/label (root name or '.field'/'[i]'/'.bit')
+  final String path; // full dotted/bracketed path from the root tag
+  final String displayType; // 'INT32[8]' etc.
+  final String quality;
+  final String ioClass;
+  final bool isTimer;
+  final bool expandable;
+  final bool isExpanded;
+  final bool isDeletable; // only root-level tags can be deleted
+  final int depth; // 0 = root tag, 1+ = nested child
+  final dynamic rawValue;
+  final bool isBoolLeaf;
+  final bool hasChildren; // used to pick the value renderer (leaf vs subtree)
+
+  _TagRowData({
+    required this.name,
+    required this.path,
+    required this.displayType,
+    required this.quality,
+    required this.ioClass,
+    required this.isTimer,
+    required this.expandable,
+    required this.isExpanded,
+    required this.isDeletable,
+    required this.depth,
+    required this.rawValue,
+    required this.isBoolLeaf,
+    required this.hasChildren,
+  });
+
+  String get valueText {
+    if (hasChildren) {
+      return rawValue is Map
+          ? '{...}'
+          : (rawValue is List ? '[${(rawValue as List).length}]' : '$rawValue');
+    }
+    if (isBoolLeaf) {
+      return (rawValue == true) ? 'TRUE (1)' : 'FALSE (0)';
+    }
+    return '$rawValue';
+  }
+}
 
 class MemoryManagerScreen extends StatefulWidget {
   final PlcProject currentProject;
@@ -176,158 +224,295 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
             const Text('Expand structured tags (timers, DUTs, arrays) to see their members. Expand integer tags to view individual bits.', style: TextStyle(color: Colors.grey, fontSize: 11)),
             const SizedBox(height: 16),
 
-            Card(
-              color: const Color(0xFF1E293B),
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: DataTable(
-                  sortColumnIndex: _sortColumnIndex,
-                  sortAscending: _isAscending,
-                  columns: [
-                    DataColumn(label: const Text('Tag / Member Name'), onSort: _sortTags),
-                    DataColumn(label: const Text('Browse Path'), onSort: _sortTags),
-                    DataColumn(label: const Text('Data Type'), onSort: _sortTags),
-                    DataColumn(label: const Text('Live Value'), onSort: _sortTags),
-                    DataColumn(label: const Text('Quality'), onSort: _sortTags),
-                    DataColumn(label: const Text('I/O Classification'), onSort: _sortTags),
-                    const DataColumn(label: Text('Actions / Expand')),
-                  ],
-                  rows: _buildHierarchicalRows(),
-                ),
-              ),
-            ),
+            Builder(builder: (context) {
+              final data = _buildRowData();
+              if (context.isExpanded) {
+                return Card(
+                  color: const Color(0xFF1E293B),
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: DataTable(
+                      sortColumnIndex: _sortColumnIndex,
+                      sortAscending: _isAscending,
+                      columns: [
+                        DataColumn(label: const Text('Tag / Member Name'), onSort: _sortTags),
+                        DataColumn(label: const Text('Browse Path'), onSort: _sortTags),
+                        DataColumn(label: const Text('Data Type'), onSort: _sortTags),
+                        DataColumn(label: const Text('Live Value'), onSort: _sortTags),
+                        DataColumn(label: const Text('Quality'), onSort: _sortTags),
+                        DataColumn(label: const Text('I/O Classification'), onSort: _sortTags),
+                        const DataColumn(label: Text('Actions / Expand')),
+                      ],
+                      rows: _buildHierarchicalRows(data),
+                    ),
+                  ),
+                );
+              }
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: _buildRowCards(data),
+              );
+            }),
           ],
         ),
       ),
     );
   }
 
-  List<DataRow> _buildHierarchicalRows() {
-    final rows = <DataRow>[];
+  // Renders the same row data as a vertical list of Cards for compact widths.
+  List<Widget> _buildRowCards(List<_TagRowData> data) {
+    return data.map((row) => _tagCard(row)).toList();
+  }
+
+  Widget _tagCard(_TagRowData row) {
+    final accent = row.isTimer ? Colors.purpleAccent : Colors.amberAccent;
+    return Padding(
+      padding: EdgeInsets.only(left: 16.0 * row.depth, bottom: 8),
+      child: Card(
+        color: const Color(0xFF1E293B),
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  if (row.expandable)
+                    touchable(
+                      Icon(row.isExpanded ? Icons.arrow_drop_down_circle : Icons.play_arrow, size: 18, color: accent),
+                      onTap: () => _toggleExpand(row.path),
+                    )
+                  else
+                    const SizedBox(width: kMinTouch, height: kMinTouch),
+                  Expanded(
+                    child: Text(row.name,
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace', fontSize: 14),
+                        overflow: TextOverflow.ellipsis),
+                  ),
+                  if (row.isDeletable)
+                    touchable(
+                      const Icon(Icons.delete, color: Colors.redAccent, size: 18),
+                      onTap: () => _deleteTag(row.name),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              _cardField('Path', row.path),
+              _cardField('Data Type', row.displayType),
+              _cardValueField(row),
+              _cardField('Quality', row.quality),
+              _cardField('I/O Class', row.ioClass),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _cardField(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 90,
+            child: Text(label, style: const TextStyle(color: Colors.grey, fontSize: 11)),
+          ),
+          Expanded(
+            child: Text(value,
+                style: const TextStyle(color: Colors.white, fontSize: 12),
+                overflow: TextOverflow.ellipsis),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _cardValueField(_TagRowData row) {
+    if (!row.hasChildren && row.isBoolLeaf) {
+      final on = row.rawValue == true;
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 90,
+              child: Text('Live Value', style: TextStyle(color: Colors.grey, fontSize: 11)),
+            ),
+            touchable(
+              Text(row.valueText,
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 12, color: on ? Colors.greenAccent : Colors.grey)),
+              onTap: () => _toggleBoolValue(row),
+            ),
+          ],
+        ),
+      );
+    }
+    return _cardField('Live Value', row.valueText);
+  }
+
+  // Builds the flat, depth-annotated list of resolved row data for the whole
+  // tag tree (root tags + expanded descendants). This is the single source
+  // of truth consumed by both the DataTable and the compact card list.
+  List<_TagRowData> _buildRowData() {
+    final out = <_TagRowData>[];
     // Filter out child tags that belong under parent structs (e.g. TONTimer.EN) so they render under parent!
     final topLevelTags = widget.currentProject.tags.where((t) => !t.name.contains('.')).toList();
 
-    for (var tag in topLevelTags) {
+    for (final tag in topLevelTags) {
       final isTimer = tag.dataType == 'TIMER';
       final expandable = childrenOf(widget.currentProject, tag.name).isNotEmpty;
-      final isParentExpanded = _expandedTagKeys.contains(tag.name);
+      final isExpanded = _expandedTagKeys.contains(tag.name);
 
-      rows.add(DataRow(
-        cells: [
-          DataCell(Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (expandable)
-                IconButton(
-                  icon: Icon(isParentExpanded ? Icons.arrow_drop_down_circle : Icons.play_arrow, size: 16, color: isTimer ? Colors.purpleAccent : Colors.amberAccent),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                  tooltip: 'Expand Structure Members',
-                  onPressed: () {
-                    setState(() {
-                      if (isParentExpanded) {
-                        _expandedTagKeys.remove(tag.name);
-                      } else {
-                        _expandedTagKeys.add(tag.name);
-                      }
-                    });
-                  },
-                ),
-              const SizedBox(width: 6),
-              Text(tag.name, style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace')),
-            ],
-          )),
-          DataCell(Text(tag.path, style: const TextStyle(color: Colors.grey, fontSize: 11))),
-          DataCell(Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(color: (isTimer ? Colors.purple : Colors.cyan).withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4)),
-            child: Text('${tag.dataType}${tag.arrayLength > 0 ? '[${tag.arrayLength}]' : ''}', style: TextStyle(color: isTimer ? Colors.purpleAccent : Colors.cyanAccent, fontWeight: FontWeight.bold, fontSize: 11)),
-          )),
-          DataCell(Text(tag.value.toString(), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.greenAccent, fontFamily: 'monospace'))),
-          DataCell(Text(tag.quality, style: const TextStyle(color: Colors.green, fontSize: 11))),
-          DataCell(Text(tag.ioType, style: const TextStyle(color: Colors.grey, fontSize: 11))),
-          DataCell(IconButton(
-            icon: const Icon(Icons.delete, color: Colors.redAccent, size: 16),
-            onPressed: () {
-              setState(() {
-                widget.currentProject.tags.removeWhere((t) => t.name == tag.name || t.name.startsWith('${tag.name}.'));
-              });
-              widget.onProjectUpdated();
-            },
-          )),
-        ],
+      out.add(_TagRowData(
+        name: tag.name,
+        path: tag.name,
+        displayType: '${tag.dataType}${tag.arrayLength > 0 ? '[${tag.arrayLength}]' : ''}',
+        quality: tag.quality,
+        ioClass: tag.ioType,
+        isTimer: isTimer,
+        expandable: expandable,
+        isExpanded: isExpanded,
+        isDeletable: true,
+        depth: 0,
+        rawValue: tag.value,
+        // Root rows render their value as static text (matching the pre-WS5
+        // desktop table); only child BOOL leaves toggle. Live BOOL toggling for
+        // root tags remains available in the Tag Inspector.
+        isBoolLeaf: false,
+        hasChildren: expandable,
       ));
 
-      rows.addAll(_childRows(tag.name, 1));
+      out.addAll(_childRowData(tag.name, 1));
     }
 
-    return rows;
+    return out;
   }
 
-  // Emits DataRows for the children of [path] when it is expanded, recursing
-  // into any expanded descendant. `depth` drives the indent.
-  List<DataRow> _childRows(String path, int depth) {
-    final rows = <DataRow>[];
+  // Resolves the rows for the children of [path] when it is expanded,
+  // recursing into any expanded descendant. `depth` drives the indent.
+  List<_TagRowData> _childRowData(String path, int depth) {
+    final out = <_TagRowData>[];
     if (!_expandedTagKeys.contains(path)) {
-      return rows;
+      return out;
     }
     for (final child in childrenOf(widget.currentProject, path)) {
-      final expandable = child.hasChildren;
       final isExpanded = _expandedTagKeys.contains(child.path);
-      rows.add(DataRow(cells: [
-        DataCell(Padding(
-          padding: EdgeInsets.only(left: 16.0 * depth),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            if (expandable)
-              IconButton(
-                icon: Icon(isExpanded ? Icons.arrow_drop_down_circle : Icons.play_arrow,
-                    size: 14, color: Colors.amberAccent),
-                onPressed: () => setState(() {
-                  if (isExpanded) {
-                    _expandedTagKeys.remove(child.path);
-                  } else {
-                    _expandedTagKeys.add(child.path);
-                  }
-                }),
-              )
-            else
-              const SizedBox(width: 14),
-            Text(child.label,
-                style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.bold, fontSize: 12)),
-          ]),
-        )),
-        DataCell(Text(child.path, style: const TextStyle(fontSize: 10, color: Colors.grey))),
-        DataCell(Text('${child.dataType}${child.arrayLength > 0 ? '[${child.arrayLength}]' : ''}',
-            style: const TextStyle(fontSize: 10, color: Colors.cyanAccent))),
-        DataCell(_leafValueCell(child)),
-        const DataCell(Text('Good', style: TextStyle(color: Colors.greenAccent, fontSize: 10))),
-        const DataCell(Text('Derived', style: TextStyle(fontSize: 10, color: Colors.grey))),
-        const DataCell(SizedBox()),
-      ]));
-      rows.addAll(_childRows(child.path, depth + 1));
+      out.add(_TagRowData(
+        name: child.label,
+        path: child.path,
+        displayType: '${child.dataType}${child.arrayLength > 0 ? '[${child.arrayLength}]' : ''}',
+        quality: 'Good',
+        ioClass: 'Derived',
+        isTimer: false,
+        expandable: child.hasChildren,
+        isExpanded: isExpanded,
+        isDeletable: false,
+        depth: depth,
+        rawValue: child.value,
+        isBoolLeaf: !child.hasChildren && child.dataType == 'BOOL',
+        hasChildren: child.hasChildren,
+      ));
+      out.addAll(_childRowData(child.path, depth + 1));
     }
-    return rows;
+    return out;
   }
 
-  // A value cell for a leaf child: BOOL toggles, integers/others show value.
-  Widget _leafValueCell(TagChild child) {
-    if (child.hasChildren) {
-      return Text(child.value is Map ? '{...}' : (child.value is List ? '[${(child.value as List).length}]' : '${child.value}'),
-          style: const TextStyle(fontSize: 10, color: Colors.grey));
-    }
-    if (child.dataType == 'BOOL') {
-      final on = child.value == true;
+  void _toggleExpand(String path) {
+    setState(() {
+      if (_expandedTagKeys.contains(path)) {
+        _expandedTagKeys.remove(path);
+      } else {
+        _expandedTagKeys.add(path);
+      }
+    });
+  }
+
+  void _deleteTag(String name) {
+    setState(() {
+      widget.currentProject.tags.removeWhere((t) => t.name == name || t.name.startsWith('$name.'));
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _toggleBoolValue(_TagRowData row) {
+    writePath(widget.currentProject, row.path, !(row.rawValue == true));
+    setState(() {});
+    widget.onProjectUpdated();
+  }
+
+  List<DataRow> _buildHierarchicalRows(List<_TagRowData> data) {
+    return data.map((row) {
+      final expandIconColor = row.isTimer ? Colors.purpleAccent : Colors.amberAccent;
+      return DataRow(cells: [
+        DataCell(Padding(
+          padding: EdgeInsets.only(left: row.depth == 0 ? 0 : 16.0 * row.depth),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            if (row.expandable)
+              IconButton(
+                icon: Icon(row.isExpanded ? Icons.arrow_drop_down_circle : Icons.play_arrow,
+                    size: row.depth == 0 ? 16 : 14, color: expandIconColor),
+                padding: EdgeInsets.zero,
+                constraints: row.depth == 0 ? const BoxConstraints() : null,
+                tooltip: 'Expand Structure Members',
+                onPressed: () => _toggleExpand(row.path),
+              )
+            else if (row.depth > 0)
+              const SizedBox(width: 14),
+            if (row.depth == 0) const SizedBox(width: 6),
+            Text(row.name,
+                style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontFamily: 'monospace',
+                    fontSize: row.depth == 0 ? 14 : 12)),
+          ]),
+        )),
+        DataCell(Text(row.path, style: TextStyle(color: Colors.grey, fontSize: row.depth == 0 ? 11 : 10))),
+        DataCell(Container(
+          padding: row.depth == 0 ? const EdgeInsets.symmetric(horizontal: 6, vertical: 2) : EdgeInsets.zero,
+          decoration: row.depth == 0
+              ? BoxDecoration(color: (row.isTimer ? Colors.purple : Colors.cyan).withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4))
+              : null,
+          child: Text(row.displayType,
+              style: TextStyle(
+                  color: row.depth == 0 ? (row.isTimer ? Colors.purpleAccent : Colors.cyanAccent) : Colors.cyanAccent,
+                  fontWeight: row.depth == 0 ? FontWeight.bold : FontWeight.normal,
+                  fontSize: row.depth == 0 ? 11 : 10)),
+        )),
+        DataCell(_valueCellForTable(row)),
+        DataCell(Text(row.quality, style: TextStyle(color: row.depth == 0 ? Colors.green : Colors.greenAccent, fontSize: row.depth == 0 ? 11 : 10))),
+        DataCell(Text(row.ioClass, style: TextStyle(color: Colors.grey, fontSize: row.depth == 0 ? 11 : 10))),
+        DataCell(row.isDeletable
+            ? IconButton(
+                icon: const Icon(Icons.delete, color: Colors.redAccent, size: 16),
+                onPressed: () => _deleteTag(row.name),
+              )
+            : const SizedBox()),
+      ]);
+    }).toList();
+  }
+
+  // The Live Value cell for the DataTable: BOOL leaves toggle, others display text.
+  Widget _valueCellForTable(_TagRowData row) {
+    if (!row.hasChildren && row.isBoolLeaf) {
+      final on = row.rawValue == true;
       return TextButton(
-        onPressed: () {
-          writePath(widget.currentProject, child.path, !on);
-          setState(() {});
-          widget.onProjectUpdated();
-        },
-        child: Text(on ? 'TRUE (1)' : 'FALSE (0)',
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: on ? Colors.greenAccent : Colors.grey)),
+        onPressed: () => _toggleBoolValue(row),
+        child: Text(row.valueText,
+            style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: row.depth == 0 ? 12 : 10,
+                color: on ? Colors.greenAccent : Colors.grey)),
       );
     }
-    return Text('${child.value}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.white));
+    return Text(row.valueText,
+        style: TextStyle(
+            fontWeight: FontWeight.bold,
+            color: row.hasChildren ? Colors.grey : (row.depth == 0 ? Colors.greenAccent : Colors.white),
+            fontFamily: row.depth == 0 ? 'monospace' : null,
+            fontSize: row.depth == 0 ? 13 : 11));
   }
 
   Widget _buildStructDefsTab() {
@@ -349,8 +534,8 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
                     children: s.fields.map((f) => ListTile(
                       dense: true,
                       contentPadding: const EdgeInsets.only(left: 32, right: 16),
-                      title: Text(f.name, style: const TextStyle(fontFamily: 'monospace')),
-                      trailing: Text(f.dataType, style: const TextStyle(color: Colors.cyan)),
+                      title: Text(f.name, style: const TextStyle(fontFamily: 'monospace'), overflow: TextOverflow.ellipsis),
+                      trailing: Text(f.dataType, style: const TextStyle(color: Colors.cyan), overflow: TextOverflow.ellipsis),
                     )).toList(),
                   ),
                 );
