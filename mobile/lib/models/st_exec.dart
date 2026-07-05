@@ -193,7 +193,14 @@ class _Parser {
         return null;
       }
     }
-    // Unrecognized token: skip to the next ';' or terminator to recover.
+    // Unrecognized/misplaced token (a bare expression, or a stray keyword such
+    // as a duplicated THEN reaching statement position): consume at least one
+    // token to guarantee forward progress, then skip to the next statement
+    // boundary. Without the unconditional advance, a stray keyword would spin
+    // parseBlock forever (_skipToStatementEnd stops on any keyword). Terminators
+    // (ELSIF/ELSE/END_IF) are handled by parseBlock before reaching here, so
+    // this never consumes a token another parser level still needs.
+    pos++;
     _skipToStatementEnd();
     return null;
   }

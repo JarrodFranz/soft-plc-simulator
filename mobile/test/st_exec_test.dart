@@ -125,4 +125,22 @@ A := TRUE; // line comment
     _run(p2);
     expect(true, isTrue);
   });
+
+  // Regression: a stray or duplicated keyword at statement position must not
+  // hang the parser (the executor runs every scan over user-editable source, so
+  // an ordinary typo cannot be allowed to freeze the scan loop). Each of these
+  // would previously spin parseBlock forever; the test simply completing (the
+  // suite has a per-test timeout) is the guard, plus we assert recovery.
+  test('stray/misplaced keywords terminate without hanging', () {
+    _run(_proj([_tag('A', 'BOOL', false)], _st('THEN')));
+    _run(_proj([_tag('A', 'BOOL', false)], _st('THEN THEN')));
+    _run(_proj([_tag('A', 'BOOL', false)], _st('END_IF ELSE THEN')));
+
+    // A duplicated-THEN typo: the malformed IF is recovered from and a later
+    // valid statement still executes.
+    final p = _proj([_tag('A', 'BOOL', false), _tag('B', 'BOOL', false)],
+        _st('IF A THEN THEN B := TRUE; END_IF;\nB := TRUE;'));
+    _run(p);
+    expect(_v(p, 'B'), isTrue); // the trailing valid assignment ran
+  });
 }
