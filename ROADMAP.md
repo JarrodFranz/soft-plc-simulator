@@ -38,14 +38,27 @@
 
 ---
 
-## Phase 3: Complete IEC 61131-3 Languages & Autocomplete Suite (ST, LD, FBD, SFC)
+## Phase 3: Complete IEC 61131-3 Language Editors & Autocomplete Suite (ST, LD, FBD, SFC)
 - **Objective**: Full graphical and textual IDE support for ALL 4 IEC 61131-3 programming languages with dedicated autocomplete palettes.
 - **Deliverables**:
   - **Structured Text (ST)**: Textual IDE with live autocomplete suggestions, templates, and AST verification.
-  - **Ladder Logic (LD)**: Graphical Rung Diagram Editor with power rails (`L1`/`L2`), contacts (`XIC`/`XIO`), coils (`OTE`/`OTL`/`OTU`), timers, and live tag autocomplete palette.
+  - **Ladder Logic (LD)**: Node-and-wire graph rung editor with a continuous `L1`/`L2` power-rail frame, contacts (NO/NC/rising/falling), coils (coil/negated/set/reset) pinned terminal against the right rail, parallel (OR) branches over any element span with draggable snap endpoints, and `TON`/`TOF` timer blocks.
   - **Function Block Diagram (FBD)**: Graphical Signal Flow Diagram Editor with drag-and-drop block placement (`AND`, `OR`, `NOT`, `TON`, `LIMIT`, `TAG_INPUT`, `TAG_OUTPUT`), signal wires, and FBD block autocomplete palette.
   - **Sequential Function Chart (SFC)**: State Machine Chart Editor with Initial Steps, Steps, Transitions, ST Actions, and Condition Autocomplete Palette.
-- **Status**: 🔄 **ACTIVE / IN PROGRESS**
+- **Status**: ✅ **COMPLETED**
+
+---
+
+## Phase 3.5: Structured Tag System, Simulated I/O & In-App Execution Engines
+- **Objective**: Make the in-app simulator real — structured tags resolved by path, data-driven input simulation, and actual execution of the programs built in the editors (in-app Dart engines; see ADR-009).
+- **Deliverables**:
+  - **Structured tag & type system**: `PlcTag` values as real trees (struct `Map`s, array `List`s); DUT-typed tags replace the retired Data Blocks concept; built-in `TIMER` composite; a pure path resolver (`readPath`/`writePath`/`childrenOf`) for members (`TONTimer.DN`), integer bits (`Word.5`), and array elements (`Recipe[3]`); recursive Memory Manager expansion; path-aware scan accessors and editor tag pickers. ✅
+  - **Simulated I/O rules engine**: editable, condition-gated input behaviours (`pulse`, `ramp`, `integrate`, `delayedSet`, `setWhileCondition`) with per-second rates and a dedicated editor screen; the previously hardcoded per-project input physics migrated into visible default rules. ✅
+  - **Ladder execution engine**: pure power-flow interpreter over the LD graph (series=AND, parallel=OR, evaluated in topological column order), latch/edge/pulse coil semantics, `TON`/`TOF` timers counting live in their `TIMER` struct tags (scan-tick clock), forcing always wins; hardcoded LD control logic replaced for the motor, conveyor, and water-pump projects; verified by end-to-end scan tests. ✅
+  - **SFC execution engine** (step activation, ST-subset transition conditions & actions). 🔄 **IN PROGRESS**
+  - **FBD execution engine** (dataflow block evaluation). ⏳ Planned
+  - **ST interpreter** (expression/statement interpreter for the in-app simulator). ⏳ Planned
+- **Status**: 🔄 **ACTIVE — LD execution shipped; SFC execution next**
 
 ---
 

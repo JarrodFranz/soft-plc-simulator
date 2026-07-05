@@ -42,6 +42,15 @@ The Mobile Soft PLC Simulator is architected as a modular, decoupled system sepa
   - **I/O Control Surface**: Pushbutton switches, sliders for analog inputs, LED output indicators.
   - **Logic Viewer**: Rendered Ladder Logic rungs and Structured Text source editor.
 
+### 1b. In-App Dart Simulation Stack (`/mobile/lib/models`) — current standalone engine
+- **Technology**: Pure Dart (no Flutter imports) — widget-free modules unit-tested in isolation.
+- **Responsibility**: Powers the standalone/web simulator today, ahead of the Rust core being wired in via FFI. Runs a PLC-faithful scan pipeline each tick: **drive simulated inputs → execute ladder programs → remaining auxiliary logic**.
+- **Key Modules**:
+  - `tag_resolver.dart`: structured tag values (struct `Map`s, array `List`s, bit-addressable ints) resolved by dotted/indexed path (`TONTimer.DN`, `Word.5`, `Recipe[3]`); DUT-typed tags are the struct instances (no separate data-block concept).
+  - `sim_engine.dart`: data-driven Simulated I/O rules (`pulse`, `ramp`, `integrate`, `delayedSet`, `setWhileCondition`), condition-gated, per-second rates, forcing-aware.
+  - `ld_exec.dart`: ladder execution — power-flow interpretation of the LD node/wire graph in topological order (series=AND, parallel=OR), latch/edge/pulse coils, `TON`/`TOF` timers whose state lives in the real `TIMER` struct tags, advanced by scan ticks.
+- **Relationship to the Rust core**: these engines reproduce the same scan-cycle semantics the Rust runtime targets (read inputs → execute → write outputs; tick-based timer clock). When Mode A/B wiring lands, the Rust core becomes the authoritative engine for native/protocol deployments; the Dart stack remains the zero-install web/demo engine.
+
 ### 2. Runtime Core Layer (`/runtime`)
 - **Technology**: Rust
 - **Responsibility**: Houses the scan cycle execution engine, task manager, and program interpreter.

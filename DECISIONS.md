@@ -59,3 +59,43 @@
 - **Context**: Need a human-readable, portable, and easily editable project format for saving controller configurations, tag tables, logic programs, and protocol mappings.
 - **Decision**: Use standard **JSON** format validated against JSON Schemas (`/shared/schemas`).
 - **Rationale**: Easily inspected, edited in text editors, parsed in Rust (`serde_json`) and Dart (`dart:convert`), and versioned in Git.
+
+---
+
+## ADR-006: Node-and-Wire Graph Model for Ladder Diagrams
+
+- **Status**: Accepted
+- **Context**: The original LD model stored rungs as flat instruction lists with whole-row "parallel branches," which could not express an OR wrapped around an arbitrary span of contacts.
+- **Decision**: Represent each rung as a **graph of nodes** (rails, contacts, coils, blocks) joined by **wires** referencing node ports — series is a wire chain; a parallel (OR) branch is multiple wires converging on one input.
+- **Rationale**: Mirrors the PLCopen TC6 `connectionPointIn`/`refLocalId` structure used by standard IEC tooling; branches can span any element range and their endpoints can be re-pointed (draggable re-span); layout is derived (columns via longest-path), not stored.
+- **Consequences**: Editor enforces the coil-terminal invariant (nothing after a coil; coils pinned against the right rail); execution evaluates the same graph directly (ADR-009).
+
+---
+
+## ADR-007: Derived Path-Resolved Structured Tags (DUT-Typed Tags Replace Data Blocks)
+
+- **Status**: Accepted
+- **Context**: Struct members (`TONTimer.DN`), integer bits, and array elements were faked or hardcoded; "Data Blocks" duplicated the struct-instance concept alongside tags.
+- **Decision**: A tag's `value` holds a real tree (struct = `Map`, array = `List`, bit-holder = `int`); members/bits/elements are addressed by path (`.field`, `.N`, `[i]`) and resolved on demand by a pure resolver (`readPath`/`writePath`/`childrenOf`). A struct-typed tag **is** the instance; the separate Data Block concept was removed. Built-in composites (`TIMER`) are implicit DUTs.
+- **Rationale**: Single source of truth, no parent/child sync, recursive nesting for free, one addressing scheme shared by logic, HMI bindings, forcing, and UI expansion.
+- **Consequences**: Numeric struct-field names are reserved (bit disambiguation); persistence must eventually serialize `structDefs`/`arrayLength` (deferred to the persistence phase).
+
+---
+
+## ADR-008: Data-Driven Simulated I/O Rules Engine
+
+- **Status**: Accepted
+- **Context**: How simulated inputs behaved (photo-eye pulses, temperature ramps) was hardcoded per project inside the scan loop — invisible and uneditable.
+- **Decision**: A per-project list of **SimRules** (behaviours: `pulse`, `ramp`, `integrate`, `delayedSet`, `setWhileCondition`; AND-combined conditions with literal or tag operands) applied each scan by a pure engine, edited in a dedicated Simulated I/O screen.
+- **Rationale**: Rates are **per-second** (scan-speed independent); rules are visible, editable, and per-rule toggleable; manual forcing always overrides; the hardcoded physics migrated into default rules with behavior parity.
+- **Consequences**: Only rate/condition behaviours are expressible (no random jitter primitive); OR/grouped conditions deferred.
+
+---
+
+## ADR-009: Direct Graph Interpretation for In-App Execution (vs. Compile-to-ST/C)
+
+- **Status**: Accepted
+- **Context**: Reference IEC runtimes compile graphical languages to Structured Text, then to C, executed in a fixed scan cycle with a per-tick PLC clock. The in-app simulator runs in Flutter (incl. web) with no C toolchain and needs an instant edit→run loop plus meaningful pause/step debugging.
+- **Decision**: Execute the LD graph **directly** with a pure Dart power-flow interpreter: nodes evaluated in topological (column) order, input power = OR of inbound wires (series therefore ANDs), writes visible to later rungs, `TON`/`TOF` state living in the real `TIMER` struct tags, and **timer time advancing by scan ticks** (dt per scan).
+- **Rationale**: Mathematically identical boolean semantics to the compile-to-ST route; interpretation gives live editing and deterministic step debugging (time freezes when paused — matching the reference runtime's per-tick clock advance); performance is ample at simulator scale.
+- **Consequences**: Complements ADR-004 — the unified-ISA compilation strategy remains the Rust core's design for native deployments, while the in-app Dart engines interpret; the two must preserve identical observable scan semantics.
