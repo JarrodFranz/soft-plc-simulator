@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/screens/workspace_shell.dart';
+import 'package:soft_plc_mobile/widgets/tag_inspector_dock.dart';
 import 'support/responsive_test_utils.dart';
 
 Widget _app() => const MaterialApp(home: WorkspaceShell());
@@ -35,4 +36,25 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   });
+
+  // The Tag Inspector moves to an end-drawer on compact. Exercise that actual
+  // content path (not just the closed-drawer registration) at the two smallest
+  // supported widths and assert its content renders without overflow.
+  for (final size in const [phoneSize, smallPhoneSize]) {
+    testWidgets('phone ${size.width.toInt()}: end-drawer tag inspector opens '
+        'without overflow', (tester) async {
+      await setSurface(tester, size);
+      await tester.pumpWidget(_app());
+      await tester.pumpAndSettle();
+      // Open the end-drawer directly via the shell's (outermost) Scaffold,
+      // independent of which AppBar control triggers it. The center workspace
+      // screens nest their own Scaffolds, so target the first (root) one.
+      final scaffoldState =
+          tester.state<ScaffoldState>(find.byType(Scaffold).first);
+      scaffoldState.openEndDrawer();
+      await tester.pumpAndSettle();
+      expect(find.byType(TagInspectorDock), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  }
 }

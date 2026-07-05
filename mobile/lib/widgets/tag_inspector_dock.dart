@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 
@@ -30,10 +31,19 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
       return matchesSearch && matchesIo;
     }).toList();
 
-    return Container(
-      width: 340,
-      color: const Color(0xFF0F172A),
-      child: Column(
+    // 340 wide when the parent gives unbounded width (inline dock in the
+    // desktop Row); when the parent constrains the width (e.g. inside the
+    // compact end-drawer, which is min(340, screenWidth*0.9)), shrink to fit so
+    // the dock's content never overflows a narrow screen.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth.isFinite
+            ? math.min(340.0, constraints.maxWidth)
+            : 340.0;
+        return Container(
+          width: width,
+          color: const Color(0xFF0F172A),
+          child: Column(
         children: [
           // Header Bar
           Container(
@@ -226,8 +236,10 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                     },
                   ),
           ),
-        ],
-      ),
+            ],
+          ),
+        );
+      },
     );
   }
 
