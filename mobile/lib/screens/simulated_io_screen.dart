@@ -1,6 +1,8 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/tag_resolver.dart';
+import '../ui/responsive.dart';
 
 class SimulatedIoScreen extends StatefulWidget {
   final PlcProject currentProject;
@@ -102,6 +104,8 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
           },
         ),
         title: Text('${r.name}  →  ${r.targetPath}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -148,11 +152,13 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (context, setDlg) {
           final numeric = working.behavior == 'ramp' || working.behavior == 'integrate';
+          final maxDialogWidth =
+              math.min(460.0, MediaQuery.sizeOf(context).width - 32);
           return AlertDialog(
             backgroundColor: const Color(0xFF1E293B),
             title: Text(isNew ? 'Add Simulated Input' : 'Edit Simulated Input'),
-            content: SizedBox(
-              width: 460,
+            content: ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: maxDialogWidth),
               child: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -183,7 +189,7 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
                     ..._behaviorParams(working, numeric, setDlg),
                     const Divider(color: Colors.white24),
                     const Text('Condition (AND — empty = Always)', style: TextStyle(fontSize: 11, color: Colors.amberAccent)),
-                    ..._conditionRows(working, paths, setDlg),
+                    ..._conditionRows(context, working, paths, setDlg),
                     TextButton.icon(
                       icon: const Icon(Icons.add, size: 14),
                       label: const Text('Add condition clause'),
@@ -252,74 +258,95 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
     );
   }
 
-  List<Widget> _conditionRows(SimRule r, List<String> paths, StateSetter setDlg) {
+  List<Widget> _conditionRows(BuildContext context, SimRule r, List<String> paths, StateSetter setDlg) {
+    final compact = context.isCompact;
     return r.condition.asMap().entries.map((e) {
       final c = e.value;
       final isTagOperand = c.operandKind == 'tag';
-      return Padding(
-        padding: const EdgeInsets.only(top: 6),
-        child: Row(children: [
-          Expanded(
-            flex: 3,
-            child: DropdownButtonFormField<String>(
-              initialValue: paths.contains(c.leftPath) ? c.leftPath : (paths.isNotEmpty ? paths.first : null),
+
+      final leftField = DropdownButtonFormField<String>(
+        initialValue: paths.contains(c.leftPath) ? c.leftPath : (paths.isNotEmpty ? paths.first : null),
+        isExpanded: true,
+        decoration: const InputDecoration(isDense: true),
+        items: paths.map((p) => DropdownMenuItem(value: p, child: Text(p, overflow: TextOverflow.ellipsis))).toList(),
+        onChanged: (v) => setDlg(() => c.leftPath = v ?? c.leftPath),
+      );
+      final comparatorField = DropdownButtonFormField<String>(
+        initialValue: c.comparator,
+        isExpanded: true,
+        decoration: const InputDecoration(isDense: true),
+        items: _comparators.map((o) => DropdownMenuItem(value: o, child: Text(o))).toList(),
+        onChanged: (v) => setDlg(() => c.comparator = v ?? c.comparator),
+      );
+      final operandKindField = DropdownButtonFormField<String>(
+        initialValue: c.operandKind,
+        isExpanded: true,
+        decoration: const InputDecoration(isDense: true),
+        items: const [
+          DropdownMenuItem(value: 'literal', child: Text('val', style: TextStyle(fontSize: 11))),
+          DropdownMenuItem(value: 'tag', child: Text('tag', style: TextStyle(fontSize: 11))),
+        ],
+        onChanged: (v) => setDlg(() {
+          c.operandKind = v ?? c.operandKind;
+          if (c.operandKind == 'tag' && !paths.contains(c.operand)) {
+            c.operand = paths.isNotEmpty ? paths.first : '';
+          }
+        }),
+      );
+      final operandField = isTagOperand
+          ? DropdownButtonFormField<String>(
+              initialValue: paths.contains(c.operand) ? c.operand : (paths.isNotEmpty ? paths.first : null),
               isExpanded: true,
               decoration: const InputDecoration(isDense: true),
               items: paths.map((p) => DropdownMenuItem(value: p, child: Text(p, overflow: TextOverflow.ellipsis))).toList(),
-              onChanged: (v) => setDlg(() => c.leftPath = v ?? c.leftPath),
-            ),
+              onChanged: (v) => setDlg(() => c.operand = v ?? c.operand),
+            )
+          : TextFormField(
+              initialValue: c.operand,
+              decoration: const InputDecoration(isDense: true, hintText: 'value'),
+              onChanged: (v) => c.operand = v,
+            );
+      final removeButton = IconButton(
+        icon: const Icon(Icons.close, size: 16, color: Colors.redAccent),
+        onPressed: () => setDlg(() => r.condition.removeAt(e.key)),
+      );
+
+      if (compact) {
+        // Stack the operand controls vertically so none get squeezed below a
+        // usable width on a narrow screen.
+        return Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              leftField,
+              const SizedBox(height: 6),
+              Row(children: [
+                Expanded(child: comparatorField),
+                const SizedBox(width: 6),
+                SizedBox(width: 72, child: operandKindField),
+              ]),
+              const SizedBox(height: 6),
+              Row(children: [
+                Expanded(child: operandField),
+                removeButton,
+              ]),
+            ],
           ),
+        );
+      }
+
+      return Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Row(children: [
+          Expanded(flex: 3, child: leftField),
           const SizedBox(width: 4),
-          Expanded(
-            flex: 2,
-            child: DropdownButtonFormField<String>(
-              initialValue: c.comparator,
-              isExpanded: true,
-              decoration: const InputDecoration(isDense: true),
-              items: _comparators.map((o) => DropdownMenuItem(value: o, child: Text(o))).toList(),
-              onChanged: (v) => setDlg(() => c.comparator = v ?? c.comparator),
-            ),
-          ),
+          Expanded(flex: 2, child: comparatorField),
           const SizedBox(width: 4),
-          SizedBox(
-            width: 56,
-            child: DropdownButtonFormField<String>(
-              initialValue: c.operandKind,
-              isExpanded: true,
-              decoration: const InputDecoration(isDense: true),
-              items: const [
-                DropdownMenuItem(value: 'literal', child: Text('val', style: TextStyle(fontSize: 11))),
-                DropdownMenuItem(value: 'tag', child: Text('tag', style: TextStyle(fontSize: 11))),
-              ],
-              onChanged: (v) => setDlg(() {
-                c.operandKind = v ?? c.operandKind;
-                if (c.operandKind == 'tag' && !paths.contains(c.operand)) {
-                  c.operand = paths.isNotEmpty ? paths.first : '';
-                }
-              }),
-            ),
-          ),
+          SizedBox(width: 56, child: operandKindField),
           const SizedBox(width: 4),
-          Expanded(
-            flex: 3,
-            child: isTagOperand
-                ? DropdownButtonFormField<String>(
-                    initialValue: paths.contains(c.operand) ? c.operand : (paths.isNotEmpty ? paths.first : null),
-                    isExpanded: true,
-                    decoration: const InputDecoration(isDense: true),
-                    items: paths.map((p) => DropdownMenuItem(value: p, child: Text(p, overflow: TextOverflow.ellipsis))).toList(),
-                    onChanged: (v) => setDlg(() => c.operand = v ?? c.operand),
-                  )
-                : TextFormField(
-                    initialValue: c.operand,
-                    decoration: const InputDecoration(isDense: true, hintText: 'value'),
-                    onChanged: (v) => c.operand = v,
-                  ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.close, size: 16, color: Colors.redAccent),
-            onPressed: () => setDlg(() => r.condition.removeAt(e.key)),
-          ),
+          Expanded(flex: 3, child: operandField),
+          removeButton,
         ]),
       );
     }).toList();

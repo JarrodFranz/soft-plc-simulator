@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
+import '../ui/responsive.dart';
 
 class ProjectManagerScreen extends StatefulWidget {
   final PlcProject currentProject;
@@ -151,6 +152,28 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
   @override
   Widget build(BuildContext context) {
     final project = widget.currentProject;
+    final compact = context.isCompact;
+
+    final presetButtons = [
+      ElevatedButton.icon(
+        icon: const Icon(Icons.build),
+        label: const Text('Basic Motor Start/Stop'),
+        style: ElevatedButton.styleFrom(backgroundColor: Colors.cyan.shade700, foregroundColor: Colors.white),
+        onPressed: () => _loadPresetProject('MotorControl'),
+      ),
+      ElevatedButton.icon(
+        icon: const Icon(Icons.water_drop),
+        label: const Text('Tank Level Simulation'),
+        style: ElevatedButton.styleFrom(backgroundColor: Colors.teal.shade700, foregroundColor: Colors.white),
+        onPressed: () => _loadPresetProject('TankLevel'),
+      ),
+    ];
+
+    final propertyFields = [
+      TextField(controller: _nameController, decoration: const InputDecoration(labelText: 'Project Name')),
+      TextField(controller: _controllerNameController, decoration: const InputDecoration(labelText: 'Controller Name')),
+      TextField(controller: _scanPeriodController, decoration: const InputDecoration(labelText: 'Scan Period (ms)')),
+    ];
 
     return Scaffold(
       appBar: AppBar(
@@ -165,23 +188,24 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
             // Preset Projects Loader
             const Text('PRESET PROJECTS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.grey)),
             const SizedBox(height: 8),
-            Row(
-              children: [
-                ElevatedButton.icon(
-                  icon: const Icon(Icons.build),
-                  label: const Text('Basic Motor Start/Stop'),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.cyan.shade700, foregroundColor: Colors.white),
-                  onPressed: () => _loadPresetProject('MotorControl'),
-                ),
-                const SizedBox(width: 12),
-                ElevatedButton.icon(
-                  icon: const Icon(Icons.water_drop),
-                  label: const Text('Tank Level Simulation'),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.teal.shade700, foregroundColor: Colors.white),
-                  onPressed: () => _loadPresetProject('TankLevel'),
-                ),
-              ],
-            ),
+            compact
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      for (final b in presetButtons) ...[
+                        b,
+                        if (b != presetButtons.last) const SizedBox(height: 12),
+                      ],
+                    ],
+                  )
+                : Row(
+                    children: [
+                      for (final b in presetButtons) ...[
+                        b,
+                        if (b != presetButtons.last) const SizedBox(width: 12),
+                      ],
+                    ],
+                  ),
             const SizedBox(height: 24),
 
             // Active Project Properties
@@ -193,15 +217,23 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
                   children: [
                     Text('Active Project: ${project.name}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.cyan)),
                     const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(child: TextField(controller: _nameController, decoration: const InputDecoration(labelText: 'Project Name'))),
-                        const SizedBox(width: 12),
-                        Expanded(child: TextField(controller: _controllerNameController, decoration: const InputDecoration(labelText: 'Controller Name'))),
-                        const SizedBox(width: 12),
-                        Expanded(child: TextField(controller: _scanPeriodController, decoration: const InputDecoration(labelText: 'Scan Period (ms)'))),
-                      ],
-                    ),
+                    compact
+                        ? Column(
+                            children: [
+                              for (final f in propertyFields) ...[
+                                f,
+                                if (f != propertyFields.last) const SizedBox(height: 12),
+                              ],
+                            ],
+                          )
+                        : Row(
+                            children: [
+                              for (final f in propertyFields) ...[
+                                Expanded(child: f),
+                                if (f != propertyFields.last) const SizedBox(width: 12),
+                              ],
+                            ],
+                          ),
                   ],
                 ),
               ),
@@ -212,7 +244,11 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text('PROGRAMS IN PROJECT', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.grey)),
+                const Flexible(
+                  child: Text('PROGRAMS IN PROJECT',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.grey)),
+                ),
                 Text('${project.programs.length} Programs', style: const TextStyle(color: Colors.cyan)),
               ],
             ),
@@ -229,8 +265,8 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
                       prog.language == 'StructuredText' ? Icons.code : Icons.linear_scale,
                       color: Colors.cyan,
                     ),
-                    title: Text(prog.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text('${prog.language} — ${prog.description}'),
+                    title: Text(prog.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text('${prog.language} — ${prog.description}', maxLines: 1, overflow: TextOverflow.ellipsis),
                     trailing: Switch(
                       value: prog.enabled,
                       onChanged: (val) => setState(() => prog.enabled = val),
@@ -253,8 +289,8 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
                   final task = project.tasks[index];
                   return ListTile(
                     leading: const Icon(Icons.schedule, color: Colors.teal),
-                    title: Text('${task.name} (${task.type})', style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text('Programs assigned: ${task.programNames.join(', ')}'),
+                    title: Text('${task.name} (${task.type})', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text('Programs assigned: ${task.programNames.join(', ')}', maxLines: 1, overflow: TextOverflow.ellipsis),
                     trailing: Text('${task.periodMs} ms', style: const TextStyle(fontFamily: 'monospace')),
                   );
                 },
@@ -266,7 +302,11 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text('TAG DATABASE REGISTRY', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.grey)),
+                const Flexible(
+                  child: Text('TAG DATABASE REGISTRY',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.grey)),
+                ),
                 ElevatedButton.icon(
                   icon: const Icon(Icons.add, size: 16),
                   label: const Text('Add Tag'),
@@ -284,9 +324,9 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
                   final tag = project.tags[index];
                   return ListTile(
                     dense: true,
-                    title: Text(tag.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text('${tag.path} [${tag.dataType}]'),
-                    trailing: Text(tag.ioType, style: const TextStyle(color: Colors.grey, fontSize: 11)),
+                    title: Text(tag.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text('${tag.path} [${tag.dataType}]', maxLines: 1, overflow: TextOverflow.ellipsis),
+                    trailing: Text(tag.ioType, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.grey, fontSize: 11)),
                   );
                 },
               ),
