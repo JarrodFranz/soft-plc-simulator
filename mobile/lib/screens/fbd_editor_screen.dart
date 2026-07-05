@@ -5,7 +5,9 @@ import '../ui/responsive.dart';
 import '../widgets/tag_autocomplete_field.dart';
 
 const double _kBlockWidth = 180;
-const double _kPinRowHeight = 22;
+// Roomy enough that the 44px pin-dot touch targets don't crowd each other on a
+// dense multi-input block at phone widths.
+const double _kPinRowHeight = 30;
 const double _kHeaderHeight = 40; // icon row + divider, approx.
 
 class FbdEditorScreen extends StatefulWidget {

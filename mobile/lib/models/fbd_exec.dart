@@ -3,8 +3,8 @@ import 'fbd_pins.dart';
 import 'tag_resolver.dart';
 
 /// Per-block timer state for stateful FBD blocks (TON/TOF), keyed by block id
-/// (unique within a program; program name is folded into the key to avoid
-/// aliasing across programs/projects). Cleared on project switch.
+/// (block ids are unique within a project's FBD programs). Cleared on project
+/// switch.
 class FbdRuntime {
   final Map<String, num> _elapsedMs = {};
   void clear() => _elapsedMs.clear();
