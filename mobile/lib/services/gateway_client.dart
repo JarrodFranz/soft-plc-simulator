@@ -13,7 +13,6 @@ import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/gateway_sync.dart';
-import '../models/opcua_map.dart';
 import '../models/project_model.dart';
 import '../models/tag_resolver.dart';
 
@@ -43,11 +42,17 @@ void _forceAwareWrite(PlcProject p, String path, dynamic value) {
   writePath(p, path, value);
 }
 
-/// Builds the exposed-tag set for [project]: its `protocols.opcua` map nodes
-/// (or an auto-generated default when no map is set) resolved against the
-/// tag database into wire-ready [ExposedTag]s.
+/// Builds the exposed-tag set for [project]: the union of all enabled
+/// outbound protocols' mapped tags, resolved against the tag database into
+/// wire-ready [ExposedTag]s. Today only OPC UA exists, and its tags are
+/// exposed only when `protocols.opcua.enabled == true` — a disabled (or
+/// unconfigured) protocol exposes nothing.
 List<ExposedTag> _exposedTagsOf(PlcProject project) {
-  final map = project.protocols?.opcua?.map ?? OpcuaMap.autoGenerate(project);
+  final opcua = project.protocols?.opcua;
+  if (opcua == null || !opcua.enabled) {
+    return const [];
+  }
+  final map = opcua.map;
   final out = <ExposedTag>[];
   for (final node in map.nodes) {
     final tag = project.tags.where((t) => t.name == node.tag).firstOrNull;

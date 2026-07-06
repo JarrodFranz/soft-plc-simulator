@@ -1,8 +1,12 @@
-// Gateway panel: connect the app to a companion OPC UA gateway over
-// WebSocket, and edit the OPC UA node<->tag map that decides which tags are
-// exposed (see docs/superpowers/specs/2026-07-06-opcua-gateway-bridge-design.md,
-// "App side"). Purely an opt-in observer — the rest of the app runs exactly
-// as it does today whether or not this panel is ever opened.
+// Outbound Protocols section: a per-project connection card (gateway
+// WebSocket endpoint + Connect/Disconnect + live status) plus one card per
+// outbound industrial protocol (currently OPC UA) with an enable/disable
+// toggle and, when enabled, its config (namespace + node<->tag map editor).
+// See docs/superpowers/specs/2026-07-06-outbound-protocols-config-design.md,
+// "The 'Outbound Protocols' section" and "Client wiring". Purely an opt-in
+// observer — the rest of the app runs exactly as it does today whether or
+// not this section is ever opened, and whether or not any protocol is
+// enabled.
 
 import 'package:flutter/material.dart';
 
@@ -36,7 +40,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
   @override
   void initState() {
     super.initState();
-    _urlController = TextEditingController(text: kDefaultGatewayUrl);
+    _ensureProtocols();
+    _urlController = TextEditingController(text: widget.currentProject.protocols!.gatewayUrl);
   }
 
   @override
@@ -72,7 +77,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
   }
 
   Future<void> _connect() async {
-    await widget.client.connect(_urlController.text.trim(), widget.currentProject);
+    await widget.client.connect(widget.currentProject.protocols!.gatewayUrl, widget.currentProject);
   }
 
   Future<void> _disconnect() async {
@@ -87,36 +92,58 @@ class _GatewayScreenState extends State<GatewayScreen> {
     widget.onProjectUpdated();
   }
 
+  /// Creates a default `ProtocolSettings` (and its OPC UA config) in place
+  /// when the project has none yet, mirroring WS16's `_ensureMap`: mutate in
+  /// memory only — do NOT call `onProjectUpdated` here, so an untouched
+  /// project stays serialization-clean until the user actually changes
+  /// something.
   void _ensureProtocols() {
-    widget.currentProject.protocols ??= ProtocolSettings(gatewayUrl: kDefaultGatewayUrl);
-    widget.currentProject.protocols!.opcua ??= OpcUaProtocolConfig(
-      enabled: true,
-      namespaceUri: 'urn:softplc:${widget.currentProject.id}',
-      map: OpcuaMap.autoGenerate(widget.currentProject),
-    );
+    widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
+    widget.currentProject.protocols!.opcua ??= OpcUaProtocolConfig.defaults(widget.currentProject);
+  }
+
+  void _setGatewayUrl(String value) {
+    widget.currentProject.protocols!.gatewayUrl = value;
+    widget.onProjectUpdated();
+  }
+
+  void _setOpcuaEnabled(bool enabled) {
+    setState(() {
+      _ensureProtocols();
+      widget.currentProject.protocols!.opcua!.enabled = enabled;
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _setOpcuaNamespace(String value) {
+    widget.currentProject.protocols!.opcua!.namespaceUri = value;
+    widget.onProjectUpdated();
   }
 
   /// The exposed-tag count to show: the client's live count once connected
   /// (reflecting what was actually sent), otherwise the current map's node
-  /// count (what *would* be exposed on connect) so the figure is meaningful
-  /// even when disconnected.
+  /// count when OPC UA is enabled (what *would* be exposed on connect) or 0
+  /// when disabled, so the figure is meaningful even when disconnected.
   int get _displayedExposedCount {
     if (widget.client.status == GatewayStatus.connected) {
       return widget.client.exposedTagCount;
     }
-    return widget.currentProject.protocols?.opcua?.map.nodes.length ?? 0;
+    final opcua = widget.currentProject.protocols?.opcua;
+    if (opcua == null || !opcua.enabled) {
+      return 0;
+    }
+    return opcua.map.nodes.length;
   }
 
   @override
   Widget build(BuildContext context) {
     _ensureProtocols();
-    final map = widget.currentProject.protocols!.opcua!.map;
     final tagOptions = leafAndNodePaths(widget.currentProject);
 
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
-        title: const Text('Gateway — OPC UA Bridge'),
+        title: const Text('Outbound Protocols'),
         backgroundColor: const Color(0xFF1E293B),
       ),
       body: ListenableBuilder(
@@ -129,7 +156,12 @@ class _GatewayScreenState extends State<GatewayScreen> {
               children: [
                 _connectionCard(context),
                 const SizedBox(height: 12),
-                _mapEditorCard(context, map, tagOptions),
+                const Text(
+                  'Protocols',
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+                const SizedBox(height: 8),
+                _buildOpcUaCard(context, tagOptions),
               ],
             ),
           );
@@ -189,6 +221,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 fillColor: Color(0xFF0F172A),
                 border: OutlineInputBorder(),
               ),
+              onChanged: _setGatewayUrl,
             ),
             const SizedBox(height: 12),
             Flex(
@@ -225,7 +258,12 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
   }
 
-  Widget _mapEditorCard(BuildContext context, OpcuaMap map, List<String> tagOptions) {
+  /// The OPC UA protocol card: header + enable switch, and (when enabled)
+  /// the namespace field + node-map editor. Adding a future protocol means
+  /// adding another `_buildXCard(...)` alongside this one in `build`'s
+  /// protocol list.
+  Widget _buildOpcUaCard(BuildContext context, List<String> tagOptions) {
+    final opcua = widget.currentProject.protocols!.opcua!;
     return Card(
       color: const Color(0xFF1E293B),
       child: Padding(
@@ -237,39 +275,93 @@ class _GatewayScreenState extends State<GatewayScreen> {
               children: [
                 const Expanded(
                   child: Text(
-                    'OPC UA Node Map',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                    'OPC UA',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
                   ),
                 ),
-                TextButton.icon(
-                  icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
-                  label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
-                  onPressed: _autoGenerateMap,
+                Switch(
+                  value: opcua.enabled,
+                  onChanged: _setOpcuaEnabled,
                 ),
               ],
             ),
-            Text(
-              'Namespace: ${map.namespaceUri}',
-              style: const TextStyle(color: Colors.grey, fontSize: 11),
-            ),
-            const SizedBox(height: 8),
-            if (map.nodes.isEmpty)
+            if (!opcua.enabled)
               const Padding(
-                padding: EdgeInsets.symmetric(vertical: 12),
+                padding: EdgeInsets.only(top: 4),
                 child: Text(
-                  'No nodes yet. Tap Regenerate to build a default map from the project tags.',
+                  'Disabled — no tags are exposed to this protocol.',
                   style: TextStyle(color: Colors.grey, fontSize: 12),
                 ),
               )
-            else
-              ListView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: map.nodes.length,
-                itemBuilder: (context, i) => _nodeRow(map.nodes[i], tagOptions),
+            else ...[
+              const SizedBox(height: 8),
+              TextFormField(
+                initialValue: opcua.namespaceUri,
+                style: const TextStyle(fontSize: 12, color: Colors.white),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  labelText: 'Namespace URI',
+                  filled: true,
+                  fillColor: Color(0xFF0F172A),
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: _setOpcuaNamespace,
               ),
+              const SizedBox(height: 12),
+              _mapEditorCard(context, opcua.map, tagOptions),
+            ],
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _mapEditorCard(BuildContext context, OpcuaMap map, List<String> tagOptions) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'OPC UA Node Map',
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                ),
+              ),
+              TextButton.icon(
+                icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
+                label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
+                onPressed: _autoGenerateMap,
+              ),
+            ],
+          ),
+          Text(
+            'Namespace: ${map.namespaceUri}',
+            style: const TextStyle(color: Colors.grey, fontSize: 11),
+          ),
+          const SizedBox(height: 8),
+          if (map.nodes.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                'No nodes yet. Tap Regenerate to build a default map from the project tags.',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            )
+          else
+            ListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: map.nodes.length,
+              itemBuilder: (context, i) => _nodeRow(map.nodes[i], tagOptions),
+            ),
+        ],
       ),
     );
   }

@@ -45,7 +45,7 @@ Widget _app(PlcProject project, GatewayClient client) {
 }
 
 void main() {
-  testWidgets('renders status, Connect control, URL field, exposed-tag count', (tester) async {
+  testWidgets('renders "Outbound Protocols" title, connection card, and OPC UA card', (tester) async {
     final project = _project();
     final client = GatewayClient();
     addTearDown(client.dispose);
@@ -53,11 +53,81 @@ void main() {
     await tester.pumpWidget(_app(project, client));
     await tester.pumpAndSettle();
 
+    expect(find.text('Outbound Protocols'), findsOneWidget);
     expect(find.text('Disconnected'), findsOneWidget);
     expect(find.widgetWithText(ElevatedButton, 'Connect'), findsOneWidget);
     expect(find.byType(TextField), findsWidgets);
-    // Auto-generated map from tags => 2 exposed tags.
-    expect(find.textContaining('2'), findsWidgets);
+    expect(find.text('OPC UA'), findsOneWidget);
+    expect(find.byType(Switch), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('OPC UA card starts disabled by default with config hidden and 0 exposed', (tester) async {
+    final project = _project();
+    final client = GatewayClient();
+    addTearDown(client.dispose);
+
+    await tester.pumpWidget(_app(project, client));
+    await tester.pumpAndSettle();
+
+    expect(project.protocols?.opcua?.enabled, false);
+    final sw = tester.widget<Switch>(find.byType(Switch));
+    expect(sw.value, false);
+    expect(find.text('OPC UA Node Map'), findsNothing);
+    expect(find.textContaining('Exposed tags: 0'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('toggling the OPC UA switch ON reveals namespace + node map and sets enabled=true', (tester) async {
+    final project = _project();
+    final client = GatewayClient();
+    addTearDown(client.dispose);
+
+    await tester.pumpWidget(_app(project, client));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byType(Switch));
+    await tester.pump();
+
+    expect(project.protocols?.opcua?.enabled, true);
+    expect(find.text('OPC UA Node Map'), findsOneWidget);
+    expect(find.textContaining('Namespace'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('toggling the OPC UA switch OFF hides the config again', (tester) async {
+    final project = _project();
+    final client = GatewayClient();
+    addTearDown(client.dispose);
+
+    await tester.pumpWidget(_app(project, client));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byType(Switch));
+    await tester.pump();
+    expect(project.protocols?.opcua?.enabled, true);
+
+    await tester.tap(find.byType(Switch));
+    await tester.pump();
+
+    expect(project.protocols?.opcua?.enabled, false);
+    expect(find.text('OPC UA Node Map'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('editing the gateway URL field updates protocols.gatewayUrl', (tester) async {
+    final project = _project();
+    final client = GatewayClient();
+    addTearDown(client.dispose);
+
+    await tester.pumpWidget(_app(project, client));
+    await tester.pumpAndSettle();
+
+    final urlField = find.byType(TextField).first;
+    await tester.enterText(urlField, 'ws://example.test:9999');
+    await tester.pump();
+
+    expect(project.protocols?.gatewayUrl, 'ws://example.test:9999');
     expect(tester.takeException(), isNull);
   });
 
@@ -68,6 +138,9 @@ void main() {
     await setSurface(tester, smallPhoneSize);
     await tester.pumpWidget(_app(project, client));
     await tester.pumpAndSettle();
+    // Also exercise the enabled/expanded state, the more overflow-prone one.
+    await tester.tap(find.byType(Switch));
+    await tester.pump();
     expect(tester.takeException(), isNull);
   });
 
@@ -78,6 +151,8 @@ void main() {
     await setSurface(tester, desktopSize);
     await tester.pumpWidget(_app(project, client));
     await tester.pumpAndSettle();
+    await tester.tap(find.byType(Switch));
+    await tester.pump();
     expect(tester.takeException(), isNull);
   });
 }
