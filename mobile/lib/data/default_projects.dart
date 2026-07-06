@@ -42,6 +42,7 @@ abstract class DefaultProjects {
     _fbdBatchCounterProject(),
     _fbdPulseOutputProject(),
     _cascadeTanksProject(),
+    _noisyLevelProject(),
   ];
 
   // ── 1. Basic Motor Start/Stop (LD) ──────────────────────────────────────
@@ -1166,6 +1167,90 @@ System_Ready := Pump_Motor AND Quality_OK AND NOT Alarm_Active;''',
           HmiComponent(id: 'ct1', title: 'Feed Valve (%)', type: 'DigitalGaugeDisplay', tagBinding: 'Feed_Valve', gridSpanWidth: 4, accentColor: 'amber'),
           HmiComponent(id: 'ct2', title: 'Tank A Level (%)', type: 'TankGraphicDisplay', tagBinding: 'Tank_A_Level', gridSpanWidth: 4, accentColor: 'cyan'),
           HmiComponent(id: 'ct3', title: 'Tank B Level (%)', type: 'TankGraphicDisplay', tagBinding: 'Tank_B_Level', gridSpanWidth: 4, accentColor: 'teal'),
+        ],
+      ),
+    ],
+  );
+
+  // ── 12. Noisy Level Measurement (WS14 measurement-noise showcase) ──────
+  //
+  // Demonstrates the `noise` Simulated I/O behaviour: a clean process value
+  // (Tank_Level) is driven by an analog-scaled integrate from Fill_Valve plus
+  // a constant outflow, clamped 0-100 - a smooth true level. Level_Meas is a
+  // SEPARATE tag computed fresh every scan as `noise(Tank_Level)`
+  // (sourcePath:'Tank_Level', amplitude in targetValue) - a source->target
+  // rule, so the jitter never accumulates into Tank_Level itself (no random
+  // walk / drift). Level_Filtered then runs the existing firstOrderLag block
+  // on Level_Meas, showing the lag attenuating the raw sensor noise.
+  //
+  // Falsifiable: if the noise amplitude were 0, Level_Meas would exactly
+  // track Tank_Level (no jitter) and there would be nothing for
+  // Level_Filtered to smooth out - see
+  // test/noise_measurement_integration_test.dart for the exact scan-by-scan
+  // band/variance/filter assertions this produces.
+  static PlcProject _noisyLevelProject() => PlcProject(
+    id: 'proj_noisy_level',
+    name: 'Noisy Level Measurement',
+    controllerName: 'PLC_NOISY_LEVEL',
+    scanPeriodMs: 500,
+    tags: [
+      PlcTag(name: 'Fill_Valve', path: 'Internal/Fill_Valve', dataType: 'FLOAT64', value: 55.0, ioType: 'Internal', engineeringUnits: '%', description: 'Manipulated fill valve opening driving inflow into the tank'),
+      PlcTag(name: 'Tank_Level', path: 'Inputs/Tank_Level', dataType: 'FLOAT64', value: 20.0, ioType: 'SimulatedInput', engineeringUnits: '%', description: 'Clean (true) tank level, driven by Fill_Valve minus a constant outflow'),
+      PlcTag(name: 'Level_Meas', path: 'Inputs/Level_Meas', dataType: 'FLOAT64', value: 20.0, ioType: 'SimulatedInput', engineeringUnits: '%', description: 'Raw noisy sensor reading of Tank_Level (measurement noise behaviour)'),
+      PlcTag(name: 'Level_Filtered', path: 'Inputs/Level_Filtered', dataType: 'FLOAT64', value: 20.0, ioType: 'SimulatedInput', engineeringUnits: '%', description: 'First-order-lag-filtered reading of Level_Meas'),
+    ],
+    structDefs: [],
+    simRules: [
+      // Tank_Level: inflow scaled by the (fixed) Fill_Valve opening -
+      // effective rate = 3.0 %/s * (Fill_Valve/100) = 1.65 %/s at Fill_Valve=55.
+      SimRule(id: 'sim0', name: 'Tank inflow scaled by Fill_Valve', targetPath: 'Tank_Level',
+          behavior: 'integrate', ratePerSec: 3.0, sourcePath: 'Fill_Valve', refValue: 100.0,
+          minValue: 0, maxValue: 100),
+      // Tank_Level: constant outflow disturbance.
+      SimRule(id: 'sim1', name: 'Tank constant outflow', targetPath: 'Tank_Level',
+          behavior: 'integrate', ratePerSec: -0.4, minValue: 0, maxValue: 100),
+      // Level_Meas: the noisy sensor reading - clean source Tank_Level plus
+      // bounded uniform noise of amplitude 2.5%, clamped 0-100. Recomputed
+      // fresh from Tank_Level every scan (source->target), so it never drifts.
+      SimRule(id: 'sim2', name: 'Level measurement noise', targetPath: 'Level_Meas',
+          behavior: 'noise', sourcePath: 'Tank_Level', targetValue: 2.5,
+          minValue: 0, maxValue: 100),
+      // Level_Filtered: first-order lag of Level_Meas, tau=1.5s - smooths the
+      // raw measurement jitter while still tracking the underlying trend.
+      SimRule(id: 'sim3', name: 'Level measurement filter', targetPath: 'Level_Filtered',
+          behavior: 'firstOrderLag', sourcePath: 'Level_Meas', tauSec: 1.5,
+          minValue: 0, maxValue: 100),
+    ],
+    programs: [
+      // The process is entirely sim-driven (the integrate/noise/firstOrderLag
+      // rules above do all the work); this program is a trivial, self-consistent
+      // no-op monitor so the project has a real Continuous task to run,
+      // mirroring how other sim-only demos (e.g. Cascade Tanks) wire a task.
+      PlcProgram(
+        name: 'NoisyLevelMonitor_FBD',
+        language: 'FunctionBlockDiagram',
+        description: 'Trivial pass-through monitor of Fill_Valve; the noisy level demo is entirely sim-driven',
+        fbdBlocks: [
+          FbdBlock(id: 'k_in', type: 'TAG_INPUT', title: 'Fill Valve', tagBinding: 'Fill_Valve', x: 50, y: 80),
+          FbdBlock(id: 'k_out', type: 'TAG_OUTPUT', title: 'Fill Valve Monitor', tagBinding: 'Fill_Valve', x: 320, y: 80),
+        ],
+        fbdWires: [
+          FbdWire(fromBlockId: 'k_in', fromPin: 'OUT', toBlockId: 'k_out', toPin: 'IN'),
+        ],
+      ),
+    ],
+    tasks: [
+      PlcTask(name: 'NoisyLevelMonitorTask', type: 'Continuous', periodMs: 500, programNames: ['NoisyLevelMonitor_FBD']),
+    ],
+    hmis: [
+      HmiScreenDef(
+        id: 'hmi_noisy_level',
+        title: 'Noisy Level Measurement Dashboard',
+        layoutType: 'GridDashboard',
+        components: [
+          HmiComponent(id: 'nl1', title: 'Tank Level (%) - Clean', type: 'TankGraphicDisplay', tagBinding: 'Tank_Level', gridSpanWidth: 4, accentColor: 'cyan'),
+          HmiComponent(id: 'nl2', title: 'Level Measured (%) - Noisy', type: 'DigitalGaugeDisplay', tagBinding: 'Level_Meas', gridSpanWidth: 4, accentColor: 'amber'),
+          HmiComponent(id: 'nl3', title: 'Level Filtered (%) - Smoothed', type: 'DigitalGaugeDisplay', tagBinding: 'Level_Filtered', gridSpanWidth: 4, accentColor: 'teal'),
         ],
       ),
     ],

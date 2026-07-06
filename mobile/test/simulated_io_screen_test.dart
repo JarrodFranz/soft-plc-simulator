@@ -140,6 +140,48 @@ void main() {
 
         expect(tester.takeException(), isNull);
       });
+
+      testWidgets('$sizeLabel: selecting Measurement Noise shows source + amplitude fields and edits update the rule',
+          (tester) async {
+        await setSurface(tester, size);
+        final project = _projectById('proj_st_reactor');
+        await tester.pumpWidget(app(project));
+        await tester.pumpAndSettle();
+
+        await openFirstRuleEditor(tester);
+
+        // Switch behaviour to Measurement Noise.
+        await tester.tap(find.byType(DropdownButtonFormField<String>).first);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Measurement Noise').last);
+        await tester.pumpAndSettle();
+
+        expect(find.text('Clean source tag'), findsOneWidget);
+        expect(find.text('Noise amplitude (±)'), findsOneWidget);
+        expect(find.widgetWithText(TextFormField, 'Min'), findsOneWidget);
+        expect(find.widgetWithText(TextFormField, 'Max'), findsOneWidget);
+
+        // Edit the clean source tag.
+        final sourceField = find.widgetWithText(TextField, 'Clean source tag');
+        expect(sourceField, findsOneWidget);
+        await tester.enterText(sourceField, 'Temp_PV');
+        await tester.pump();
+
+        // Edit the noise amplitude.
+        await tester.enterText(find.widgetWithText(TextFormField, 'Noise amplitude (±)'), '2.5');
+        await tester.pump();
+
+        // Save.
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Save'));
+        await tester.pumpAndSettle();
+
+        final saved = project.simRules.firstWhere((r) => r.id == 'sim0');
+        expect(saved.behavior, 'noise');
+        expect(saved.sourcePath, 'Temp_PV');
+        expect(saved.targetValue, 2.5);
+
+        expect(tester.takeException(), isNull);
+      });
     }
 
     testWidgets('320x568: rule editor opens without overflow', (tester) async {
@@ -201,6 +243,38 @@ void main() {
       await tester.tap(find.byType(DropdownButtonFormField<String>).first);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Transport Dead-Time').last);
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('320x568: Measurement Noise rule editor opens without overflow', (tester) async {
+      await setSurface(tester, smallPhoneSize);
+      final project = _projectById('proj_st_reactor');
+      await tester.pumpWidget(app(project));
+      await tester.pumpAndSettle();
+
+      await openFirstRuleEditor(tester);
+
+      await tester.tap(find.byType(DropdownButtonFormField<String>).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Measurement Noise').last);
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('360x740: Measurement Noise rule editor opens without overflow', (tester) async {
+      await setSurface(tester, phoneSize);
+      final project = _projectById('proj_st_reactor');
+      await tester.pumpWidget(app(project));
+      await tester.pumpAndSettle();
+
+      await openFirstRuleEditor(tester);
+
+      await tester.tap(find.byType(DropdownButtonFormField<String>).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Measurement Noise').last);
       await tester.pumpAndSettle();
 
       expect(tester.takeException(), isNull);
