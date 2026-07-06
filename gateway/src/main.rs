@@ -85,7 +85,12 @@ fn default_snapshot_tags() -> Vec<ExposedTag> {
     db.all_tags()
         .into_iter()
         .map(|t| ExposedTag {
-            path: t.path.clone(),
+            // The bundled OPC UA map (`SAMPLE_MAP_JSON`) binds nodes to tags
+            // by bare name (e.g. `"tag": "Start_PB"`), not by full path (e.g.
+            // `"Inputs/Start_PB"`), so the mirror must be keyed the same way
+            // `build_variable_specs`'s `mirror.contains(&n.tag)` looks it up
+            // — otherwise the default address space boots empty.
+            path: t.name.clone(),
             data_type: wire_type_of(&t.data_type).to_string(),
             value: tag_value_to_json(&t.value),
             access: wire_access_of(&t.access).to_string(),
@@ -186,5 +191,32 @@ async fn main() {
                 log::error!("opc ua server task panicked: {e}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soft_plc_gateway::opcua_map::build_variable_specs;
+
+    /// Lock-in test for the default-boot key mismatch: the bundled OPC UA
+    /// map (`SAMPLE_MAP_JSON`) joins nodes to tags by bare name
+    /// (`"tag": "Start_PB"`), so the mirror seeded from
+    /// `default_snapshot_tags()` must be keyed by the same bare name or
+    /// `build_variable_specs`'s `mirror.contains(&n.tag)` lookup fails for
+    /// every node and the OPC UA server boots with an empty address space.
+    #[test]
+    fn default_snapshot_joins_with_bundled_map_to_produce_nonempty_address_space() {
+        let mut mirror = TagMirror::new();
+        mirror.apply_snapshot(&default_snapshot_tags());
+
+        let map = OpcuaMap::from_json_str(SAMPLE_MAP_JSON);
+        let specs = build_variable_specs(&map, &mirror);
+
+        assert_eq!(
+            specs.len(),
+            3,
+            "expected all 3 bundled nodes (Start_PB, Stop_PB, Motor_Run) to resolve against the default mirror, got: {specs:?}"
+        );
     }
 }
