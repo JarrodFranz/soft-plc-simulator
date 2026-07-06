@@ -87,12 +87,35 @@ The Mobile Soft PLC Simulator is architected as a modular, decoupled system sepa
 
 ---
 
-## 🔄 Dual Operating Modes
+## 🔄 Operating Modes
 
-Because mobile platforms enforce stringent background runtime limits, socket port restrictions, and battery saver throttling, the system is designed around two operating modes:
+**Per ADR-010** (see `DECISIONS.md`): the shipped architecture is a
+**single mobile-first app that hosts everything itself** — no companion
+process. The former "Mode A/B" split (local simulator vs. a separate
+companion-gateway process) is retired as the primary design; Mode A's
+description below is still accurate, Mode B is not.
 
 ```
-MODE A: Local Mobile Simulator
+PRIMARY: In-App Hosting (single app, all platforms)
+┌────────────────────────────────────────────────────────┐
+  Device (iOS / Android / Desktop)
+  ┌────────────────────────────────────────────────────┐
+  │ Flutter UI                                         │
+  │    └─► Dart scan engine + Tag DB (in-process)      │
+  │    └─► Pure-Dart Protocol Servers (dart:io sockets)│
+  │            - OPC UA (opc.tcp, hand-rolled, v1)     │
+  │            - Modbus TCP / MQTT / DNP3 (planned)    │
+  └────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────┘
+                              ▲
+                              │ opc.tcp / Modbus TCP / MQTT / DNP3
+                  ┌───────────┴───────────┐
+                  │   Industrial SCADA    │
+                  │ (UAExpert, Ignition,  │
+                  │  Kepware, ...)        │
+                  └───────────────────────┘
+
+MODE A: Local Mobile Simulator (native FFI core, unaffected by ADR-010)
 ┌────────────────────────────────────────────────────────┐
   Mobile Device (iOS / Android)
   ┌────────────────────────────────────────────────────┐
@@ -101,26 +124,40 @@ MODE A: Local Mobile Simulator
   │            └─► Embedded Rust Runtime Core          │
   └────────────────────────────────────────────────────┘
 └────────────────────────────────────────────────────────┘
-
-MODE B: Companion Gateway Mode
-┌───────────────────────┐         ┌───────────────────────┐
-│     Mobile App        │         │   Companion Gateway   │
-│ (HMI & Control View)  │◄───────►│    (Desktop Server)   │
-│ (Flutter)             │ WebSocket│ - Rust Runtime Core   │
-└───────────────────────┘         │ - Protocol Servers    │
-                                  └───────────┬───────────┘
-                                              │
-                                  ┌───────────┴───────────┐
-                                  │   Industrial SCADA    │
-                                  │ (Ignition, Kepware)   │
-                                  └───────────────────────┘
 ```
+
+### Primary: In-App Protocol Hosting
+- The app itself binds the protocol listener (e.g. `opc.tcp` port 4840) and
+  serves clients directly — no second process, no FFI, one Dart codebase
+  across Android, iOS, and desktop.
+- The protocol server reads the project's tag database **live** at request
+  time and applies writes through the same force-aware rule the scan engine
+  uses — there is no mirror/sync layer to go stale.
+- OPC UA v1 ships this way (`mobile/lib/protocols/opcua/`,
+  `mobile/lib/services/opcua_host.dart`) — see `docs/protocols/opcua.md` and
+  the design spec `docs/superpowers/specs/2026-07-06-in-app-opcua-server-design.md`.
+  Modbus TCP / MQTT / DNP3 are planned to follow the same pure-Dart,
+  in-app-socket pattern.
+- Mobile platform constraints apply directly to this listener: iOS accepts
+  connections only while the app is foregrounded; Android requires the
+  client to be on the same LAN (no NAT traversal/port-forwarding). These are
+  OS/network constraints, not gaps in the implementation.
 
 ### Mode A: Local Mobile Simulator
 - The Rust runtime is compiled into a C-dynamic library (`.so`, `.dylib`, `.dll`) and linked directly into the Flutter app via `flutter_rust_bridge`.
 - Perfect for offline logic testing, learning, and self-contained I/O simulation directly on a phone or tablet.
+- Independent of ADR-010 — this mode describes the Rust core embedding, not protocol hosting.
 
-### Mode B: Companion Gateway Mode
-- A standalone Rust binary (`gateway`) runs on a desktop, server, or edge gateway device on the same local network.
-- Hosts high-performance, long-running protocol servers (OPC UA port 4840, Modbus TCP port 502, DNP3 port 20000).
-- The mobile app connects over WebSocket/HTTP to monitor and control the gateway's soft PLC.
+### Retired: Companion Gateway Mode
+- The previous design ran a standalone Rust binary (`gateway/`) as a second
+  process bridging the app to protocol clients over WebSocket. ADR-010
+  retired this as the primary architecture in favor of in-app hosting
+  (single app, no companion process, no per-platform native build
+  complexity).
+- The `gateway/` crate is **not deleted** — it lives on as a dev-time
+  third-party **test-client** harness: its Rust `opcua` client
+  (`gateway/examples/opcua_probe.rs`) is the machine-verifiable E2E proof
+  that the in-app Dart OPC UA server is compatible with a real OPC UA
+  client (see `tool/opcua_e2e.sh` and `docs/protocols/opcua.md`). Its old
+  server-side/WebSocket-sync code is kept inert pending a harness cleanup on
+  branch `feat/opcua-hardening`.

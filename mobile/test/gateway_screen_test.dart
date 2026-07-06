@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/screens/gateway_screen.dart';
 import 'package:soft_plc_mobile/services/opcua_host.dart';
 import 'support/responsive_test_utils.dart';
@@ -29,9 +30,9 @@ class _CountingOpcUaHost extends OpcUaHost {
   }
 }
 
-PlcProject _project() {
-  return PlcProject(
-    id: 'proj_gw_ui_test',
+PlcProject _project({String id = 'proj_gw_ui_test', int? port}) {
+  final project = PlcProject(
+    id: id,
     name: 'Gateway UI Test',
     controllerName: 'PLC_01',
     tags: [
@@ -55,6 +56,13 @@ PlcProject _project() {
     tasks: [],
     hmis: [],
   );
+  if (port != null) {
+    project.protocols = ProtocolSettings.defaults(project);
+    project.protocols!.opcua = OpcUaProtocolConfig.defaults(project)
+      ..enabled = true
+      ..port = port;
+  }
+  return project;
 }
 
 Widget _app(PlcProject project, OpcUaHost host) {
@@ -242,6 +250,28 @@ void main() {
     // Also exercise the enabled/expanded state, the more overflow-prone one.
     await tester.tap(find.byType(Switch));
     await tester.pump();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('reusing the State across a project switch refreshes the port field (didUpdateWidget)', (tester) async {
+    final projectA = _project(id: 'proj_a', port: 4840);
+    final host = _CountingOpcUaHost();
+    addTearDown(host.dispose);
+
+    await tester.pumpWidget(_app(projectA, host));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(TextField, '4840'), findsOneWidget);
+
+    // Rebuild the SAME State (same widget type/slot) with a different
+    // project — Flutter reuses the State object, so `_portController` (a
+    // `late final` seeded only in initState) would otherwise still show
+    // project A's port.
+    final projectB = _project(id: 'proj_b', port: 4900);
+    await tester.pumpWidget(_app(projectB, host));
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(TextField, '4900'), findsOneWidget);
+    expect(find.widgetWithText(TextField, '4840'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

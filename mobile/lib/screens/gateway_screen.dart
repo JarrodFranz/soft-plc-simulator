@@ -49,6 +49,25 @@ class _GatewayScreenState extends State<GatewayScreen> {
   }
 
   @override
+  void didUpdateWidget(covariant GatewayScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Flutter reuses this State across a project switch when the widget
+    // type/slot is unchanged, so `_portController` (seeded only once, in
+    // initState) can otherwise keep showing the PREVIOUS project's port.
+    // Re-sync it whenever the project identity changes.
+    if (widget.currentProject.id != oldWidget.currentProject.id) {
+      _ensureProtocols();
+      final newPort = widget.currentProject.protocols!.opcua!.port.toString();
+      if (_portController.text != newPort) {
+        _portController.value = TextEditingValue(
+          text: newPort,
+          selection: TextSelection.collapsed(offset: newPort.length),
+        );
+      }
+    }
+  }
+
+  @override
   void dispose() {
     _portController.dispose();
     super.dispose();

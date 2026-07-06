@@ -262,6 +262,41 @@ void main() {
       expect(space.byNodeId(const OpcNodeId.string(1, 'A')), isNotNull);
       expect(space.byNodeId(const OpcNodeId.numeric(1, 1000)), isNotNull);
     });
+
+    test('a map node whose tag does not exist in project.tags is skipped (dangling reference)', () {
+      final project = PlcProject(
+        id: 'p3',
+        name: 'Test Project 3',
+        controllerName: 'PLC_01',
+        tags: [
+          PlcTag(name: 'Real', path: 'Real', dataType: 'BOOL', value: false, ioType: 'Internal'),
+        ],
+        structDefs: [],
+        programs: [],
+        tasks: [],
+        hmis: [],
+      );
+      project.protocols = ProtocolSettings(
+        opcua: OpcUaProtocolConfig(
+          enabled: true,
+          namespaceUri: 'urn:test:p3',
+          map: OpcuaMap(
+            namespaceUri: 'urn:test:p3',
+            nodes: [
+              OpcuaNode(nodeId: 'ns=1;s=Real', tag: 'Real'),
+              // 'Ghost' does not exist in project.tags — dangling reference.
+              OpcuaNode(nodeId: 'ns=1;s=Ghost', tag: 'Ghost'),
+            ],
+          ),
+        ),
+      );
+      final space = OpcUaAddressSpace.build(project);
+      final children = space.children(const OpcNodeId.numeric(0, _objectsFolderId));
+      expect(children, hasLength(1));
+      expect(children.single.browseName, 'Real');
+      expect(space.byNodeId(const OpcNodeId.string(1, 'Real')), isNotNull);
+      expect(space.byNodeId(const OpcNodeId.string(1, 'Ghost')), isNull);
+    });
   });
 
   group('OpcUaProjectServices — direct handler calls', () {
@@ -352,6 +387,62 @@ void main() {
       reader.nodeId();
       final header = reader.responseHeader();
       expect(header.serviceResult, _statusBadNothingToDo);
+    });
+
+    test('a dangling map-tag node is absent from Browse Objects and Read/Write of its node id -> Bad_NodeIdUnknown', () {
+      // Add a map entry whose tag doesn't exist in project.tags, on top of
+      // the standard fixture project (which has no such entry by default).
+      project.protocols!.opcua!.map.nodes.add(
+        OpcuaNode(nodeId: 'ns=1;s=Ghost', tag: 'Ghost'),
+      );
+      const danglingNodeId = OpcNodeId.string(1, 'Ghost');
+
+      // Browse Objects: still exactly the 3 real variables, no 'Ghost'.
+      final browseBody = _browseRequestBody(
+        nodesToBrowse: [const OpcNodeId.numeric(0, _objectsFolderId)],
+      );
+      final browseResp = callHandler(_browseRequestId, browseBody)!;
+      final browseReader = OpcUaReader(browseResp);
+      browseReader.nodeId();
+      browseReader.responseHeader();
+      expect(browseReader.int32(), 1);
+      expect(browseReader.statusCode(), _statusGood);
+      browseReader.byteString();
+      final refCount = browseReader.int32();
+      final names = <String>[];
+      for (var i = 0; i < refCount; i++) {
+        browseReader.nodeId();
+        browseReader.boolean();
+        browseReader.expandedNodeId();
+        names.add(browseReader.qualifiedName().name!);
+        browseReader.localizedText();
+        browseReader.int32();
+        browseReader.expandedNodeId();
+      }
+      expect(names.toSet(), {'StartPB', 'Temperature', 'Counter'});
+      expect(names.contains('Ghost'), isFalse);
+
+      // Read of the dangling node id -> Bad_NodeIdUnknown.
+      final readBody = _readRequestBody(
+        toRead: [(nodeId: danglingNodeId, attributeId: _attrValue, indexRange: null)],
+      );
+      final readResp = callHandler(_readRequestId, readBody)!;
+      final readReader = OpcUaReader(readResp);
+      readReader.nodeId();
+      readReader.responseHeader();
+      readReader.int32();
+      expect(readReader.dataValue().status, _statusBadNodeIdUnknown);
+
+      // Write of the dangling node id -> Bad_NodeIdUnknown.
+      final writeBody = _writeRequestBody(toWrite: [
+        (nodeId: danglingNodeId, attributeId: _attrValue, indexRange: null, value: const OpcVariant(typeId: 1, value: true)),
+      ]);
+      final writeResp = callHandler(_writeRequestId, writeBody)!;
+      final writeReader = OpcUaReader(writeResp);
+      writeReader.nodeId();
+      writeReader.responseHeader();
+      writeReader.int32();
+      expect(writeReader.statusCode(), _statusBadNodeIdUnknown);
     });
 
     test('Read Value returns live value; mutating the tag then re-reading shows the NEW value', () {
@@ -584,8 +675,7 @@ void main() {
       expect(readPath(project, 'Counter'), 42);
     });
 
-    test('Write an Int32 variant into the FLOAT64 RO... (type coercion group): '
-        'coercible numeric variant into an INT32 RW node succeeds via numeric coercion', () {
+    test('Write a Double variant into an INT32 RW node succeeds via numeric coercion (truncates toward zero)', () {
       // Documented coercion rule: any non-Boolean, non-String numeric Variant
       // type (SByte/Byte/Int16/UInt16/Int32/UInt32/Int64/UInt64/Float/Double)
       // coerces into any numeric tag dataType (rounds toward zero into
@@ -685,6 +775,26 @@ void main() {
       reader.responseHeader();
       reader.int32();
       expect(reader.statusCode(), _statusBadAttributeIdInvalid);
+    });
+
+    test('Write with non-null indexRange -> Bad_IndexRangeInvalid per-result, value unchanged', () {
+      final space = OpcUaAddressSpace.build(project);
+      final nodeId = space.byNodeId(const OpcNodeId.string(1, 'Counter'))!.nodeId;
+      final body = _writeRequestBody(toWrite: [
+        (
+          nodeId: nodeId,
+          attributeId: _attrValue,
+          indexRange: '0:1',
+          value: const OpcVariant(typeId: 6, value: 7),
+        ),
+      ]);
+      final resp = callHandler(_writeRequestId, body)!;
+      final reader = OpcUaReader(resp);
+      reader.nodeId();
+      reader.responseHeader();
+      reader.int32();
+      expect(reader.statusCode(), _statusBadIndexRangeInvalid);
+      expect(readPath(project, 'Counter'), 42);
     });
 
     test('empty nodesToWrite -> serviceResult Bad_NothingToDo', () {
