@@ -92,6 +92,10 @@ connection.
   platform — no elevated permissions are required to bind it.
 - The app remains byte-identical when OPC UA hosting is disabled or stopped
   — this is strictly an opt-in feature.
+- **Web:** OPC UA hosting is a **native-platform feature only** (Android,
+  iOS, desktop). The web build compiles fine, but a browser tab cannot host
+  an inbound TCP server (no `ServerSocket` in the browser sandbox), so OPC UA
+  serving is unavailable when the app runs as a web build.
 
 ## What is machine-verified vs. manual
 

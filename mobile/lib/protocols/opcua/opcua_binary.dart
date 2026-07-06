@@ -194,14 +194,22 @@ final DateTime _opcUaEndtimes = DateTime.utc(9999, 12, 31, 23, 59, 59);
 final int _opcUaEndtimesTicks =
     _opcUaEndtimes.difference(_opcUaEpoch).inMicroseconds * 10;
 
-/// i64::MAX (0x7FFFFFFFFFFFFFFF), built from a shift+or rather than the raw
-/// integer literal `9223372036854775807` — that literal token is rejected by
-/// dart2js ("can't be represented exactly in JavaScript") even though the
-/// VM's 64-bit `int` (and `ByteData.setInt64`, which this value is always
-/// fed into) handle the value itself just fine on every platform. Building
-/// it via `1 << 63` (the sign-bit position) minus 1 sidesteps the literal
-/// entirely and compiles identically on web and native.
-const int _int64Max = (1 << 63) - 1;
+/// i64::MAX (0x7FFFFFFFFFFFFFFF). The raw decimal literal
+/// `9223372036854775807` and the hex literal `0x7FFFFFFFFFFFFFFF` are both
+/// rejected by dart2js at compile time ("can't be represented exactly in
+/// JavaScript"). A previous version of this constant used `(1 << 63) - 1`,
+/// which *compiles* under dart2js but is a silent runtime correctness bug
+/// there: dart2js implements `<<` with JavaScript's 32-bit bitwise
+/// semantics, so `1 << 63` evaluates to `-1` at runtime on the web (verified
+/// via `dart compile js` + `node`), making the whole expression `-2`, not
+/// i64::MAX. `(0x7FFFFFFF << 32) | 0xFFFFFFFF` compiles under dart2js too,
+/// and — unlike the previous form — is exact on the native 64-bit VM (the
+/// only platform that ever evaluates this constant; OPC UA hosting is
+/// native-only, see date_time.rs `checked_ticks()` callers below). It is
+/// still not exact on dart2js at runtime (32-bit `<<` truncates the high
+/// word there), but that no longer matters since it was never correct on
+/// dart2js in either form and this codec path never executes on web.
+const int _int64Max = (0x7FFFFFFF << 32) | 0xFFFFFFFF;
 
 int _dateTimeToTicks(DateTime? dt) {
   if (dt == null) return 0;
@@ -255,13 +263,36 @@ class OpcUaWriter {
     _builder.add(b.buffer.asUint8List());
   }
 
+  // uint64/int64 are hand-rolled as two little-endian 32-bit halves via
+  // setUint32 rather than ByteData.setUint64/setInt64: dart2js does not
+  // implement the 64-bit accessors at all and throws `Unsupported
+  // operation: Int64 accessor not supported by dart2js` at runtime (the web
+  // build still *compiles* since this is a runtime-only failure — verified
+  // via `dart compile js` + node). setUint32 is fully supported on both
+  // native and dart2js. On the native 64-bit VM this decomposition is exact
+  // and byte-identical to setUint64/setInt64 for every representable value,
+  // including negative int64s (two's-complement bit pattern is preserved
+  // by `& 0xFFFFFFFF` / `>> 32` on Dart's 64-bit native int).
+  // On dart2js, Dart's bitwise operators truncate to 32 bits, so values
+  // outside +-2^31 lose their high bits here; that is an accepted
+  // limitation (not a crash) because this codec never executes on web today
+  // (OPC UA hosting requires ServerSocket, which the browser sandbox does
+  // not provide).
   void uint64(int value) {
-    final b = ByteData(8)..setUint64(0, value, Endian.little);
+    final lo = value & 0xFFFFFFFF;
+    final hi = (value >> 32) & 0xFFFFFFFF;
+    final b = ByteData(8)
+      ..setUint32(0, lo, Endian.little)
+      ..setUint32(4, hi, Endian.little);
     _builder.add(b.buffer.asUint8List());
   }
 
   void int64(int value) {
-    final b = ByteData(8)..setInt64(0, value, Endian.little);
+    final lo = value & 0xFFFFFFFF;
+    final hi = (value >> 32) & 0xFFFFFFFF;
+    final b = ByteData(8)
+      ..setUint32(0, lo, Endian.little)
+      ..setUint32(4, hi, Endian.little);
     _builder.add(b.buffer.asUint8List());
   }
 
@@ -571,20 +602,31 @@ class OpcUaReader {
     return v;
   }
 
+  // uint64/int64 are hand-rolled as two little-endian 32-bit halves via
+  // getUint32 rather than ByteData.getUint64/getInt64 — see the matching
+  // comment on OpcUaWriter.uint64/int64 for why (dart2js throws
+  // `Unsupported operation` on the 64-bit accessors at runtime). On the
+  // native 64-bit VM, reconstructing as `(hi << 32) | lo` reproduces the
+  // exact signed two's-complement value for both int64 and uint64 (e.g.
+  // lo=hi=0xFFFFFFFF -> -1, matching the original getUint64/getInt64
+  // behavior where values above 2^63-1 read back as negative — Dart has no
+  // unsigned 64-bit int type, so that quirk is preserved intentionally).
   int uint64() {
     _ensure(8);
-    final v = ByteData.sublistView(_data, _offset, _offset + 8)
-        .getUint64(0, Endian.little);
+    final view = ByteData.sublistView(_data, _offset, _offset + 8);
+    final lo = view.getUint32(0, Endian.little);
+    final hi = view.getUint32(4, Endian.little);
     _offset += 8;
-    return v;
+    return (hi << 32) | lo;
   }
 
   int int64() {
     _ensure(8);
-    final v = ByteData.sublistView(_data, _offset, _offset + 8)
-        .getInt64(0, Endian.little);
+    final view = ByteData.sublistView(_data, _offset, _offset + 8);
+    final lo = view.getUint32(0, Endian.little);
+    final hi = view.getUint32(4, Endian.little);
     _offset += 8;
-    return v;
+    return (hi << 32) | lo;
   }
 
   double float32() {
