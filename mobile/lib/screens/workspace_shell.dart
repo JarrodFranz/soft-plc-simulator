@@ -1411,7 +1411,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                       dense: true,
                       leading: Icon(Icons.hub, size: 16, color: _activeViewId == 'GATEWAY' ? Colors.cyanAccent : Colors.tealAccent),
                       title: Text(
-                        'GATEWAY (OPC UA)',
+                        'Outbound Protocols',
                         style: TextStyle(fontSize: 11, fontWeight: _activeViewId == 'GATEWAY' ? FontWeight.bold : FontWeight.normal),
                       ),
                       onTap: () => _selectView(context, 'GATEWAY'),

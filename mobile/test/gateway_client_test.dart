@@ -7,6 +7,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:soft_plc_mobile/models/gateway_sync.dart';
 import 'package:soft_plc_mobile/models/opcua_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 import 'package:soft_plc_mobile/services/gateway_client.dart';
 
@@ -103,6 +104,12 @@ PlcProject _projectWithTags() {
     programs: [],
     tasks: [],
     hmis: [],
+  );
+  // Most client tests exercise general connect/sync/inbound-write behaviour,
+  // not the enable-gating itself (which has its own dedicated tests below),
+  // so give this fixture an enabled OPC UA config with an auto-generated map.
+  project.protocols = ProtocolSettings(
+    opcua: OpcUaProtocolConfig(enabled: true, map: OpcuaMap.autoGenerate(project)),
   );
   return project;
 }
@@ -304,20 +311,45 @@ void main() {
       expect(secondDecoded.whereType<SnapshotMsg>().length, 1);
     });
 
-    test('falls back to OpcuaMap.autoGenerate when project.opcuaMap is null', () async {
+    test('exposes nothing when project.protocols is null', () async {
       final project = _projectWithTags();
-      expect(project.opcuaMap, isNull);
+      project.protocols = null;
       await client.connect('ws://localhost:4855', project);
 
       final snapshot = decodeMessage(fakeChannel.sentFrames[1]) as SnapshotMsg;
-      expect(snapshot.tags.length, 2);
+      expect(snapshot.tags, isEmpty);
+      expect(client.exposedTagCount, 0);
     });
 
-    test('uses project.opcuaMap when present instead of auto-generating', () async {
+    test('exposes nothing when opcua.enabled is false, even with a map set', () async {
       final project = _projectWithTags();
-      project.opcuaMap = OpcuaMap(namespaceUri: 'urn:test', nodes: [
-        OpcuaNode(nodeId: 'ns=1;s=Start_PB', tag: 'Start_PB', access: 'ReadOnly'),
-      ]);
+      project.protocols = ProtocolSettings(
+        opcua: OpcUaProtocolConfig(
+          enabled: false,
+          namespaceUri: 'urn:test',
+          map: OpcuaMap(namespaceUri: 'urn:test', nodes: [
+            OpcuaNode(nodeId: 'ns=1;s=Start_PB', tag: 'Start_PB', access: 'ReadOnly'),
+          ]),
+        ),
+      );
+      await client.connect('ws://localhost:4855', project);
+
+      final snapshot = decodeMessage(fakeChannel.sentFrames[1]) as SnapshotMsg;
+      expect(snapshot.tags, isEmpty);
+      expect(client.exposedTagCount, 0);
+    });
+
+    test('uses project.protocols.opcua.map when opcua.enabled is true', () async {
+      final project = _projectWithTags();
+      project.protocols = ProtocolSettings(
+        opcua: OpcUaProtocolConfig(
+          enabled: true,
+          namespaceUri: 'urn:test',
+          map: OpcuaMap(namespaceUri: 'urn:test', nodes: [
+            OpcuaNode(nodeId: 'ns=1;s=Start_PB', tag: 'Start_PB', access: 'ReadOnly'),
+          ]),
+        ),
+      );
       await client.connect('ws://localhost:4855', project);
 
       final snapshot = decodeMessage(fakeChannel.sentFrames[1]) as SnapshotMsg;
