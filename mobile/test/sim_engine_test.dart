@@ -265,4 +265,153 @@ void main() {
     applySimRules(p2, p2.simRules, 1000, SimRuntime());
     expect(p2.tags.first.value, equals(100.0)); // clamped to max
   });
+
+  // --- WS13 Task 1: transport dead-time (deadTime behaviour) ------------
+
+  test('deadTime: step is delayed by ~n scans (n = tauSec/dt)', () {
+    final rule = SimRule(id: 'r', name: 'dead', targetPath: 'Out', behavior: 'deadTime',
+        sourcePath: 'Src', tauSec: 0.3, minValue: 0, maxValue: 1000, condition: []);
+    final p = _proj([_tag('Out', 'FLOAT64', 0.0), _tag('Src', 'FLOAT64', 0.0)], [rule]);
+    final rt = SimRuntime();
+    // Run a few scans while Src == 0 -> Out stays 0.
+    for (int i = 0; i < 3; i++) {
+      applySimRules(p, p.simRules, 100, rt);
+    }
+    expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(0.0));
+
+    // Step Src to 50.
+    (p.tags.firstWhere((t) => t.name == 'Src')).value = 50.0;
+    applySimRules(p, p.simRules, 100, rt); // step scan itself
+    expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(0.0),
+        reason: 'Out must still be pre-step value right after the step');
+    applySimRules(p, p.simRules, 100, rt); // 1 scan after step
+    expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(0.0));
+    applySimRules(p, p.simRules, 100, rt); // 2 scans after step
+    expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(0.0));
+    applySimRules(p, p.simRules, 100, rt); // 3 scans after step -> n=3 scans elapsed
+    expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(50.0),
+        reason: 'Out becomes 50 after ~3 scans (n = 0.3/0.1)');
+  });
+
+  test('deadTime: holds initial source value while buffer fills', () {
+    final rule = SimRule(id: 'r', name: 'dead', targetPath: 'Out', behavior: 'deadTime',
+        sourcePath: 'Src', tauSec: 0.5, minValue: 0, maxValue: 1000, condition: []);
+    final p = _proj([_tag('Out', 'FLOAT64', 0.0), _tag('Src', 'FLOAT64', 7.0)], [rule]);
+    final rt = SimRuntime();
+    // n = 5 scans; before the buffer has n+1 samples, Out must hold the
+    // initial source value (7.0), never null/garbage/zero.
+    for (int i = 0; i < 4; i++) {
+      applySimRules(p, p.simRules, 100, rt);
+      expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(7.0));
+    }
+  });
+
+  test('deadTime: ramp is reproduced at the output shifted by n scans', () {
+    final rule = SimRule(id: 'r', name: 'dead', targetPath: 'Out', behavior: 'deadTime',
+        sourcePath: 'Src', tauSec: 0.2, minValue: -1000, maxValue: 1000, condition: []);
+    final p = _proj([_tag('Out', 'FLOAT64', 0.0), _tag('Src', 'FLOAT64', 0.0)], [rule]);
+    final rt = SimRuntime();
+    const n = 2; // 0.2 / 0.1
+    final srcHistory = <double>[];
+    final outHistory = <double>[];
+    for (int i = 0; i < 10; i++) {
+      final srcTag = p.tags.firstWhere((t) => t.name == 'Src');
+      srcTag.value = (i + 1) * 3.0; // ramps by fixed step each scan
+      applySimRules(p, p.simRules, 100, rt);
+      srcHistory.add(srcTag.value as double);
+      outHistory.add(p.tags.firstWhere((t) => t.name == 'Out').value as double);
+    }
+    // Once past the fill period, Out(k) == Src(k-n) (0-indexed histories).
+    for (int k = n; k < 10; k++) {
+      expect(outHistory[k], closeTo(srcHistory[k - n], 0.001));
+    }
+  });
+
+  test('deadTime: tauSec <= 0 is pass-through (n=0, Out==Src same scan)', () {
+    final rule = SimRule(id: 'r', name: 'dead', targetPath: 'Out', behavior: 'deadTime',
+        sourcePath: 'Src', tauSec: 0.0, minValue: 0, maxValue: 1000, condition: []);
+    final p = _proj([_tag('Out', 'FLOAT64', 0.0), _tag('Src', 'FLOAT64', 33.0)], [rule]);
+    final rt = SimRuntime();
+    applySimRules(p, p.simRules, 100, rt);
+    expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(33.0));
+
+    // Negative tauSec also treated as pass-through.
+    final rule2 = SimRule(id: 'r2', name: 'dead2', targetPath: 'Out2', behavior: 'deadTime',
+        sourcePath: 'Src2', tauSec: -1.0, minValue: 0, maxValue: 1000, condition: []);
+    final p2 = _proj([_tag('Out2', 'FLOAT64', 0.0), _tag('Src2', 'FLOAT64', 9.0)], [rule2]);
+    applySimRules(p2, p2.simRules, 100, SimRuntime());
+    expect(p2.tags.firstWhere((t) => t.name == 'Out2').value, equals(9.0));
+  });
+
+  test('deadTime: absurdly large tauSec is bounded, completes fast, holds initial value', () {
+    final rule = SimRule(id: 'r', name: 'dead', targetPath: 'Out', behavior: 'deadTime',
+        sourcePath: 'Src', tauSec: 1e9, minValue: 0, maxValue: 1000, condition: []);
+    final p = _proj([_tag('Out', 'FLOAT64', 0.0), _tag('Src', 'FLOAT64', 12.0)], [rule]);
+    final rt = SimRuntime();
+    final sw = Stopwatch()..start();
+    for (int i = 0; i < 50; i++) {
+      applySimRules(p, p.simRules, 100, rt);
+    }
+    sw.stop();
+    expect(sw.elapsedMilliseconds, lessThan(2000)); // must not hang
+    // Delay (1e9 s) is vastly longer than the run (5s) -> holds initial value.
+    expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(12.0));
+  });
+
+  test('deadTime: output is clamped and a forced target is not overwritten', () {
+    final clampRule = SimRule(id: 'r', name: 'dead', targetPath: 'Out', behavior: 'deadTime',
+        sourcePath: 'Src', tauSec: 0.0, minValue: 0, maxValue: 10, condition: []);
+    final p = _proj([_tag('Out', 'FLOAT64', 0.0), _tag('Src', 'FLOAT64', 999.0)], [clampRule]);
+    applySimRules(p, p.simRules, 100, SimRuntime());
+    expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(10.0)); // clamped to max
+
+    final forcedRule = SimRule(id: 'r2', name: 'dead2', targetPath: 'Out2', behavior: 'deadTime',
+        sourcePath: 'Src2', tauSec: 0.0, minValue: 0, maxValue: 1000, condition: []);
+    final p2 = _proj(
+        [_tag('Out2', 'FLOAT64', 0.0, forced: true, fv: 5.0), _tag('Src2', 'FLOAT64', 999.0)], [forcedRule]);
+    applySimRules(p2, p2.simRules, 100, SimRuntime());
+    expect(p2.tags.firstWhere((t) => t.name == 'Out2').value, equals(0.0)); // untouched (forced)
+  });
+
+  test('deadTime: false condition writes nothing', () {
+    final rule = SimRule(id: 'r', name: 'dead', targetPath: 'Out', behavior: 'deadTime',
+        sourcePath: 'Src', tauSec: 0.0, minValue: 0, maxValue: 1000,
+        condition: [_cl('Run', '==', 'true')]);
+    final p = _proj([_tag('Out', 'FLOAT64', 3.0), _tag('Src', 'FLOAT64', 999.0), _tag('Run', 'BOOL', false)], [rule]);
+    applySimRules(p, p.simRules, 100, SimRuntime());
+    expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(3.0)); // unchanged
+  });
+
+  test('deadTime: back-compat spot-check — existing integrate rule unaffected', () {
+    final rule = SimRule(id: 'r', name: 'fill', targetPath: 'Lvl', behavior: 'integrate',
+        ratePerSec: 10.0, minValue: 0, maxValue: 100, condition: []);
+    final p = _proj([_tag('Lvl', 'FLOAT64', 0.0)], [rule]);
+    final rt = SimRuntime();
+    applySimRules(p, p.simRules, 1000, rt); // +10
+    expect(p.tags.first.value, closeTo(10.0, 0.001));
+    for (int i = 0; i < 20; i++) {
+      applySimRules(p, p.simRules, 1000, rt);
+    }
+    expect(p.tags.first.value, equals(100.0)); // clamped, same as legacy test
+  });
+
+  test('deadTime: state resets when SimRuntime.byRuleId is cleared', () {
+    final rule = SimRule(id: 'r', name: 'dead', targetPath: 'Out', behavior: 'deadTime',
+        sourcePath: 'Src', tauSec: 0.3, minValue: 0, maxValue: 1000, condition: []);
+    final p = _proj([_tag('Out', 'FLOAT64', 0.0), _tag('Src', 'FLOAT64', 0.0)], [rule]);
+    final rt = SimRuntime();
+    (p.tags.firstWhere((t) => t.name == 'Src')).value = 50.0;
+    for (int i = 0; i < 3; i++) {
+      applySimRules(p, p.simRules, 100, rt);
+    }
+    expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(50.0));
+
+    // Clear runtime state -> delay line restarts from empty buffer.
+    rt.byRuleId.clear();
+    (p.tags.firstWhere((t) => t.name == 'Out')).value = 0.0;
+    applySimRules(p, p.simRules, 100, rt); // first scan after reset -> buffer had 0, now 1 sample
+    // With a fresh buffer, Out should hold the (only buffered) sample, not
+    // jump straight back to the old delayed value.
+    expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(50.0));
+  });
 }
