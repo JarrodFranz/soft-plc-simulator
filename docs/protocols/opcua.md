@@ -52,21 +52,24 @@ field defaults to `ws://localhost:4855` (`kDefaultGatewayUrl` in
 `mobile/lib/services/gateway_client.dart`) — matching the gateway's default
 WebSocket port. Click **Connect**. On connect the app sends `hello` then a
 full `snapshot` of its exposed tags; from then on it sends a `delta` each
-scan for changed tags only. The panel shows live status
+scan for changed tags only. The Outbound Protocols section shows live status
 (disconnected/connecting/connected/error), the exposed-tag count, and the
 last error.
 
 The OPC UA node map (which tags are exposed, under what `node_id`, and
-whether they're `ReadOnly`/`ReadWrite`) is edited from the same panel's map
+whether they're `ReadOnly`/`ReadWrite`) is edited from the OPC UA card's map
 editor, or auto-generated from the project's tags (`Simulated Inputs`/
 `Internal` tags default to `ReadWrite`; `Simulated Outputs` default to
-`ReadOnly`). The map is stored on the project as an additive, optional field.
+`ReadOnly`). It is stored per-project under the additive, optional `protocols`
+field (`protocols.opcua`) — one config slot per outbound protocol, each with
+its own enable toggle.
 
 ## Verifying with an external OPC UA client (e.g. UAExpert)
 
 1. Start the gateway (`cd gateway && cargo run`) and connect the app to it
-   from the Gateway panel (or just rely on the bundled default map/project —
-   no app connection is required to see the three default nodes).
+   from the **Outbound Protocols** section (enable the OPC UA protocol, then
+   Connect) — or just rely on the bundled default map/project — no app
+   connection is required to see the three default nodes.
 2. In UAExpert (or any OPC UA client), **Add Server** →
    `opc.tcp://localhost:4840` → security policy `None`, anonymous
    authentication.
