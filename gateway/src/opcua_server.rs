@@ -15,7 +15,6 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::mirror::{Access, TagMirror};
 use crate::opcua_map::{build_variable_specs, OpcuaMap};
-use crate::sync::tag_value_to_json;
 
 /// An outbound write, produced when an OPC UA client writes a `ReadWrite`
 /// node. Forwarded to the app as a `write` sync message by the caller.
@@ -71,11 +70,13 @@ pub fn build_server(
             let tag_path = spec.tag_path.clone();
             let mirror_for_get = mirror.clone();
             let getter = AttrFnGetter::new_boxed(move |_, _, _, _, _, _| {
-                let value = {
+                let variant = {
                     let mirror = mirror_for_get.lock().expect("mirror mutex poisoned");
-                    mirror.get(&tag_path).map(|t| tag_value_to_json(&t.value))
+                    mirror
+                        .get(&tag_path)
+                        .map(|t| tag_value_to_variant(&t.value))
+                        .unwrap_or(Variant::Empty)
                 };
-                let variant = value.map(json_to_variant).unwrap_or(Variant::Empty);
                 Ok(Some(DataValue::new_now(variant)))
             });
 
@@ -136,22 +137,32 @@ fn wire_type_of(dt: &soft_plc_runtime::tag::DataType) -> &'static str {
     }
 }
 
-fn json_to_variant(value: serde_json::Value) -> Variant {
+/// Converts a mirrored [`soft_plc_runtime::tag::TagValue`] directly to an OPC
+/// UA [`Variant`], keyed on the tag's own declared type rather than
+/// `serde_json`'s (lossy) shape-guessing.
+///
+/// This is the fix for a whole-number-Float misclassification: a `FLOAT64`
+/// tag holding e.g. `10.0` serializes to a `serde_json::Number` for which
+/// `is_i64()` returns `true` (the JSON number has no fractional part), so a
+/// JSON-shape-based inference would wrongly produce `Variant::Int64(10)`
+/// instead of `Variant::Double(10.0)` — a silent type flip visible to any
+/// OPC UA client. Converting straight from the tag's own `TagValue` variant
+/// (which already carries its true type) avoids the lossy JSON round-trip
+/// entirely and keeps the Variant type in lockstep with the tag's declared
+/// `DataType`.
+fn tag_value_to_variant(value: &soft_plc_runtime::tag::TagValue) -> Variant {
+    use soft_plc_runtime::tag::TagValue;
     match value {
-        serde_json::Value::Bool(b) => Variant::Boolean(b),
-        serde_json::Value::Number(n) => {
-            if let Some(f) = n.as_f64() {
-                if n.is_i64() || n.is_u64() {
-                    Variant::Int64(n.as_i64().unwrap_or(0))
-                } else {
-                    Variant::Double(f)
-                }
-            } else {
-                Variant::Double(0.0)
-            }
-        }
-        serde_json::Value::String(s) => Variant::from(s),
-        _ => Variant::Empty,
+        TagValue::Bool(b) => Variant::Boolean(*b),
+        TagValue::Int16(v) => Variant::Int16(*v),
+        TagValue::UInt16(v) => Variant::UInt16(*v),
+        TagValue::Int32(v) => Variant::Int32(*v),
+        TagValue::UInt32(v) => Variant::UInt32(*v),
+        TagValue::Int64(v) => Variant::Int64(*v),
+        TagValue::UInt64(v) => Variant::UInt64(*v),
+        TagValue::Float32(v) => Variant::Float(*v),
+        TagValue::Float64(v) => Variant::Double(*v),
+        TagValue::String(s) => Variant::from(s.clone()),
     }
 }
 
@@ -290,6 +301,96 @@ mod tests {
             mirror.get("Start_PB").unwrap().value,
             soft_plc_runtime::tag::TagValue::Bool(true)
         );
+    }
+
+    /// Regression test for the whole-number-Float misclassification: a
+    /// `FLOAT64` tag whose mirrored value is a WHOLE number (e.g. `10.0`)
+    /// must read back through the OPC UA getter as `Variant::Double(10.0)`,
+    /// never an integer Variant. Under the old JSON-shape inference
+    /// (`json_to_variant`, now removed), `serde_json`'s `Number::is_i64()`
+    /// returns `true` for a whole-number float, so this case would have
+    /// wrongly produced `Variant::Int64(10)` — a silent type flip visible to
+    /// any OPC UA client. The fix (`tag_value_to_variant`) keys off the
+    /// tag's own `TagValue::Float64` variant directly, so it cannot be
+    /// fooled by the JSON number's shape.
+    #[test]
+    fn float64_whole_number_reads_back_as_double_not_int() {
+        let map = OpcuaMap::from_json_str(
+            r#"{
+              "opcua_map": {
+                "namespace_uri": "urn:softplc:test",
+                "nodes": [
+                  { "node_id": "ns=1;s=Level_SP", "tag": "Level_SP", "access": "ReadOnly" }
+                ]
+              }
+            }"#,
+        );
+        let mut mirror = TagMirror::new();
+        mirror.apply_snapshot(&[ExposedTag {
+            path: "Level_SP".to_string(),
+            data_type: "FLOAT64".to_string(),
+            value: serde_json::json!(10.0),
+            access: "ReadOnly".to_string(),
+        }]);
+        let mirror = Arc::new(Mutex::new(mirror));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let server = build_server(&map, mirror, tx, "127.0.0.1", 0);
+
+        let address_space = server.address_space();
+        let mut address_space = address_space.write();
+        let node_id = NodeId::from_str("ns=1;s=Level_SP").unwrap();
+        let node = address_space.find_node_mut(&node_id).unwrap();
+        let NodeType::Variable(variable) = node else {
+            panic!("expected a Variable node");
+        };
+        let data_value = variable.value(
+            TimestampsToReturn::Neither,
+            NumericRange::None,
+            &QualifiedName::null(),
+            0.0,
+        );
+        assert_eq!(data_value.value, Some(Variant::Double(10.0)));
+    }
+
+    /// Companion case: a normal (non-whole-number) Float64 value must also
+    /// read back as `Variant::Double`, unaffected by the fix.
+    #[test]
+    fn float64_fractional_value_reads_back_as_double() {
+        let map = OpcuaMap::from_json_str(
+            r#"{
+              "opcua_map": {
+                "namespace_uri": "urn:softplc:test",
+                "nodes": [
+                  { "node_id": "ns=1;s=Level_SP", "tag": "Level_SP", "access": "ReadOnly" }
+                ]
+              }
+            }"#,
+        );
+        let mut mirror = TagMirror::new();
+        mirror.apply_snapshot(&[ExposedTag {
+            path: "Level_SP".to_string(),
+            data_type: "FLOAT64".to_string(),
+            value: serde_json::json!(12.5),
+            access: "ReadOnly".to_string(),
+        }]);
+        let mirror = Arc::new(Mutex::new(mirror));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let server = build_server(&map, mirror, tx, "127.0.0.1", 0);
+
+        let address_space = server.address_space();
+        let mut address_space = address_space.write();
+        let node_id = NodeId::from_str("ns=1;s=Level_SP").unwrap();
+        let node = address_space.find_node_mut(&node_id).unwrap();
+        let NodeType::Variable(variable) = node else {
+            panic!("expected a Variable node");
+        };
+        let data_value = variable.value(
+            TimestampsToReturn::Neither,
+            NumericRange::None,
+            &QualifiedName::null(),
+            0.0,
+        );
+        assert_eq!(data_value.value, Some(Variant::Double(12.5)));
     }
 
     #[test]
