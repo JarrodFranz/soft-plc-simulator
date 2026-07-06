@@ -99,3 +99,20 @@
 - **Decision**: Execute the LD graph **directly** with a pure Dart power-flow interpreter: nodes evaluated in topological (column) order, input power = OR of inbound wires (series therefore ANDs), writes visible to later rungs, `TON`/`TOF` state living in the real `TIMER` struct tags, and **timer time advancing by scan ticks** (dt per scan).
 - **Rationale**: Mathematically identical boolean semantics to the compile-to-ST route; interpretation gives live editing and deterministic step debugging (time freezes when paused — matching the reference runtime's per-tick clock advance); performance is ample at simulator scale.
 - **Consequences**: Complements ADR-004 — the unified-ISA compilation strategy remains the Rust core's design for native deployments, while the in-app Dart engines interpret; the two must preserve identical observable scan semantics.
+
+---
+
+## ADR-010: In-App Protocol Hosting (Pure Dart) — Companion Gateway Retired
+
+- **Status**: Accepted (supersedes ADR-003's Mode B as the primary architecture)
+- **Context**: The product goal was clarified: a **single mobile-first app** (desktop secondary) that itself hosts the outbound industrial protocol servers (OPC UA, Modbus TCP, MQTT, DNP3) — no companion service or second process. The WS16–18 companion gateway (a separate Rust process bridged over WebSocket) works technically but violates "the app is the host." Research confirmed there is **no Dart/Flutter OPC UA library** (client or server); the ecosystem's only answers are gateways or FFI to native stacks — FFI is untestable in this dev environment (native Flutter builds are toolchain-gated) and adds per-platform build complexity.
+- **Decision**: Implement the protocol servers **in pure Dart, inside the app**, reading the tag database directly (force-aware writes):
+  - **OPC UA**: a hand-rolled minimal server subset over `opc.tcp` — Security Policy `None` + anonymous, Hello/Ack, OpenSecureChannel, Session, GetEndpoints, Browse, Read, Write (v1); Subscriptions/MonitoredItems (v2); encryption later if warranted.
+  - **Modbus TCP / MQTT**: pure Dart (`ServerSocket` / MQTT client).
+  - **DNP3**: a minimal pure-Dart outstation subset, later.
+- **Rationale**: Pure Dart is the only path satisfying all three constraints at once — single app (no companion, no FFI), runs on Android + iOS + desktop from one codebase, and fully machine-testable in this environment (Dart unit tests + the Rust `opcua` **client** retained as a third-party E2E verification harness, run via `cargo`).
+- **Consequences**:
+  - The companion gateway process is retired; the `gateway/` crate is kept **only** as a dev-time test-client harness (its client E2E proved the harness works, branch `feat/opcua-hardening`).
+  - The app's WebSocket `GatewayClient`/tag-sync path is removed once in-app hosting replaces it in the UI; `OpcuaMap`/`ProtocolSettings` (per-project protocol config) carry over unchanged.
+  - v1 OPC UA is unencrypted (`None`) — appropriate for LAN commissioning/training and the simulator positioning; a hand-rolled stack targets client compatibility (UAExpert + common SCADA), not OPC Foundation certification.
+  - iOS hosts servers only while the app is foregrounded (OS constraint, independent of implementation).
