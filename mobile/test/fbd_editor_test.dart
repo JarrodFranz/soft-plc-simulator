@@ -244,7 +244,7 @@ void main() {
   });
 
   group('FbdEditorScreen responsive', () {
-    testWidgets('desktop full width (1400): no overflow, free-drag preserved (no config-on-tap)',
+    testWidgets('desktop full width (1400): pannable workspace, no overflow, free-drag preserved (no config-on-tap)',
         (tester) async {
       await setSurface(tester, desktopSize);
       final project = _buildProject();
@@ -252,7 +252,50 @@ void main() {
       await tester.pumpWidget(app(project, program));
       await tester.pumpAndSettle();
 
-      expect(find.byType(InteractiveViewer), findsNothing);
+      // Desktop workspace is now pannable/zoomable (wrapped in InteractiveViewer)
+      // while individual blocks stay free-draggable.
+      expect(find.byType(InteractiveViewer), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('FbdEditorScreen auto-arrange', () {
+    testWidgets('Auto-arrange button tidies blocks into dependency columns and notifies',
+        (tester) async {
+      await setSurface(tester, desktopSize);
+      final project = _buildProject();
+      final program = PlcProgram(name: 'FBD1', language: 'FunctionBlockDiagram');
+      // Three chained blocks all stacked on the same cramped coordinate.
+      program.fbdBlocks.addAll([
+        FbdBlock(id: 'src', type: 'TAG_INPUT', title: 'In', tagBinding: 'Start_PB', x: 500, y: 500),
+        FbdBlock(id: 'gate', type: 'NOT', title: 'Not', x: 500, y: 500),
+        FbdBlock(id: 'out', type: 'TAG_OUTPUT', title: 'Out', tagBinding: 'Motor_Run', x: 500, y: 500),
+      ]);
+      program.fbdWires.addAll([
+        FbdWire(fromBlockId: 'src', fromPin: 'OUT', toBlockId: 'gate', toPin: 'IN'),
+        FbdWire(fromBlockId: 'gate', fromPin: 'OUT', toBlockId: 'out', toPin: 'IN'),
+      ]);
+      var notified = false;
+      await tester.pumpWidget(MaterialApp(
+        home: FbdEditorScreen(
+          currentProject: project,
+          program: program,
+          onProgramUpdated: () => notified = true,
+        ),
+      ));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Auto-arrange blocks'));
+      await tester.pumpAndSettle();
+
+      expect(notified, isTrue);
+      final src = program.fbdBlocks.firstWhere((b) => b.id == 'src');
+      final gate = program.fbdBlocks.firstWhere((b) => b.id == 'gate');
+      final out = program.fbdBlocks.firstWhere((b) => b.id == 'out');
+      // Laid out left-to-right along the dataflow and no longer stacked.
+      expect(src.x < gate.x, isTrue);
+      expect(gate.x < out.x, isTrue);
+      expect(src.x == 500 && src.y == 500, isFalse);
       expect(tester.takeException(), isNull);
     });
   });

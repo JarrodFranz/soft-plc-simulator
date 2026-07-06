@@ -71,10 +71,11 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
 
                   DropdownButtonFormField<String>(
                     initialValue: selectedType,
+                    isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Component Type'),
                     items: availableTypes.map((t) => DropdownMenuItem(
                       value: t['type'],
-                      child: Text('${t['label']}'),
+                      child: Text('${t['label']}', overflow: TextOverflow.ellipsis),
                     )).toList(),
                     onChanged: (val) => setDlgState(() => selectedType = val!),
                   ),
@@ -93,6 +94,7 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
                       Expanded(
                         child: DropdownButtonFormField<int>(
                           initialValue: gridSpanWidth,
+                          isExpanded: true,
                           decoration: const InputDecoration(labelText: 'Grid Width Span'),
                           items: const [
                             DropdownMenuItem(value: 1, child: Text('1 Column (Small)')),
@@ -107,6 +109,7 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
                       Expanded(
                         child: DropdownButtonFormField<String>(
                           initialValue: accentColor,
+                          isExpanded: true,
                           decoration: const InputDecoration(labelText: 'Accent Color'),
                           items: const [
                             DropdownMenuItem(value: 'cyan', child: Text('Cyan')),

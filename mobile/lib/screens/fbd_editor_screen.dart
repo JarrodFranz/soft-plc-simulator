@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/fbd_pins.dart';
+import '../models/fbd_layout.dart';
 import '../models/project_model.dart';
 import '../ui/responsive.dart';
 import '../widgets/tag_autocomplete_field.dart';
@@ -279,17 +280,18 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
       child: stack,
     );
 
+    // The whole workspace pans/zooms on every platform. On desktop (expanded)
+    // individual blocks stay draggable via their own pan handler — dragging a
+    // block moves the block, dragging the empty background pans the canvas.
     return Container(
       color: const Color(0xFF0F172A),
-      child: expanded
-          ? stack
-          : InteractiveViewer(
-              constrained: false,
-              minScale: 0.4,
-              maxScale: 2.5,
-              boundaryMargin: const EdgeInsets.all(200),
-              child: content,
-            ),
+      child: InteractiveViewer(
+        constrained: false,
+        minScale: 0.4,
+        maxScale: 2.5,
+        boundaryMargin: const EdgeInsets.all(400),
+        child: content,
+      ),
     );
   }
 
@@ -425,6 +427,25 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     );
   }
 
+  /// Re-lays the blocks into tidy dependency-ordered columns with generous
+  /// spacing (non-destructive — blocks stay free-draggable afterward).
+  void _autoArrangeBlocks() {
+    final layout = autoArrangeFbd(widget.program);
+    if (layout.isEmpty) {
+      return;
+    }
+    setState(() {
+      for (final b in widget.program.fbdBlocks) {
+        final pos = layout[b.id];
+        if (pos != null) {
+          b.x = pos.x;
+          b.y = pos.y;
+        }
+      }
+    });
+    widget.onProgramUpdated();
+  }
+
   @override
   Widget build(BuildContext context) {
     final expanded = context.isExpanded;
@@ -433,6 +454,13 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
       appBar: AppBar(
         title: Text('${widget.program.name} — Function Block Diagram (FBD) Editor'),
         backgroundColor: const Color(0xFF1E293B),
+        actions: [
+          IconButton(
+            tooltip: 'Auto-arrange blocks',
+            icon: const Icon(Icons.auto_awesome_mosaic),
+            onPressed: _autoArrangeBlocks,
+          ),
+        ],
       ),
       floatingActionButton: expanded
           ? null

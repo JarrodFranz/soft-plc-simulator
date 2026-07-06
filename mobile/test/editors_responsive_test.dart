@@ -53,6 +53,16 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets('desktop: canvas is pannable (wrapped in InteractiveViewer)', (tester) async {
+      await setSurface(tester, desktopSize);
+      await tester.pumpWidget(app());
+      await tester.pumpAndSettle();
+
+      // The workspace pans/zooms on desktop too, not only on phone.
+      expect(find.byType(InteractiveViewer), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('phone: tapping palette FAB opens bottom sheet with palette', (tester) async {
       await setSurface(tester, phoneSize);
       await tester.pumpWidget(app());
@@ -190,6 +200,22 @@ void main() {
       await tester.pumpAndSettle();
       await enterEditMode(tester);
 
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('small phone (320x568): Configure Component dialog has no overflow', (tester) async {
+      // Regression: the component config dialog's dropdowns (long labels like
+      // "Process Vessel Graphic ...") overflowed their row without isExpanded.
+      await setSurface(tester, smallPhoneSize);
+      await tester.pumpWidget(app());
+      await tester.pumpAndSettle();
+      await enterEditMode(tester);
+
+      await tester.tap(find.byTooltip('Add HMI Component via Dialog'));
+      await tester.pumpAndSettle();
+
+      // Dialog is open (its type dropdown label is shown) and nothing overflows.
+      expect(find.text('Component Type'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
   });
