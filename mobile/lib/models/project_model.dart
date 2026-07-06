@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'opcua_map.dart';
+import 'protocol_settings.dart';
 
 class PlcTag {
   String name;
@@ -665,7 +666,7 @@ class PlcProject {
   List<PlcTask> tasks;
   List<HmiScreenDef> hmis;
   List<SimRule> simRules;
-  OpcuaMap? opcuaMap;
+  ProtocolSettings? protocols;
 
   PlcProject({
     required this.id,
@@ -680,7 +681,7 @@ class PlcProject {
     required this.tasks,
     required this.hmis,
     List<SimRule>? simRules,
-    this.opcuaMap,
+    this.protocols,
   }) : simRules = simRules ?? [];
 
   factory PlcProject.fromJson(Map<String, dynamic> json) {
@@ -699,9 +700,19 @@ class PlcProject {
       tasks: (proj['tasks'] as List? ?? []).map((tk) => PlcTask.fromJson(tk)).toList(),
       hmis: (proj['hmis'] as List? ?? []).map((h) => HmiScreenDef.fromJson(h)).toList(),
       simRules: (proj['sim_rules'] as List? ?? []).map((r) => SimRule.fromJson(r)).toList(),
-      opcuaMap: proj['opcua_map'] != null
-          ? OpcuaMap.fromJson(proj['opcua_map'] as Map<String, dynamic>)
-          : null,
+      protocols: proj['protocols'] != null
+          ? ProtocolSettings.fromJson(proj['protocols'] as Map<String, dynamic>)
+          : (proj['opcua_map'] != null
+              ? ProtocolSettings(
+                  gatewayUrl: kDefaultGatewayUrl,
+                  opcua: OpcUaProtocolConfig(
+                    enabled: true,
+                    namespaceUri:
+                        OpcuaMap.fromJson({'opcua_map': proj['opcua_map']}).namespaceUri,
+                    map: OpcuaMap.fromJson({'opcua_map': proj['opcua_map']}),
+                  ),
+                )
+              : null),
     );
   }
 
@@ -722,7 +733,7 @@ class PlcProject {
       'tasks': tasks.map((tk) => tk.toJson()).toList(),
       'hmis': hmis.map((h) => h.toJson()).toList(),
       'sim_rules': simRules.map((r) => r.toJson()).toList(),
-      if (opcuaMap != null) 'opcua_map': opcuaMap!.toJson()['opcua_map'],
+      if (protocols != null) 'protocols': protocols!.toJson(),
     }
   };
 

@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 
 import '../models/opcua_map.dart';
 import '../models/project_model.dart';
+import '../models/protocol_settings.dart';
 import '../models/tag_resolver.dart';
 import '../services/gateway_client.dart';
 import '../ui/responsive.dart';
@@ -80,13 +81,19 @@ class _GatewayScreenState extends State<GatewayScreen> {
 
   void _autoGenerateMap() {
     setState(() {
-      widget.currentProject.opcuaMap = OpcuaMap.autoGenerate(widget.currentProject);
+      _ensureProtocols();
+      widget.currentProject.protocols!.opcua!.map = OpcuaMap.autoGenerate(widget.currentProject);
     });
     widget.onProjectUpdated();
   }
 
-  void _ensureMap() {
-    widget.currentProject.opcuaMap ??= OpcuaMap.autoGenerate(widget.currentProject);
+  void _ensureProtocols() {
+    widget.currentProject.protocols ??= ProtocolSettings(gatewayUrl: kDefaultGatewayUrl);
+    widget.currentProject.protocols!.opcua ??= OpcUaProtocolConfig(
+      enabled: true,
+      namespaceUri: 'urn:softplc:${widget.currentProject.id}',
+      map: OpcuaMap.autoGenerate(widget.currentProject),
+    );
   }
 
   /// The exposed-tag count to show: the client's live count once connected
@@ -97,13 +104,13 @@ class _GatewayScreenState extends State<GatewayScreen> {
     if (widget.client.status == GatewayStatus.connected) {
       return widget.client.exposedTagCount;
     }
-    return widget.currentProject.opcuaMap?.nodes.length ?? 0;
+    return widget.currentProject.protocols?.opcua?.map.nodes.length ?? 0;
   }
 
   @override
   Widget build(BuildContext context) {
-    _ensureMap();
-    final map = widget.currentProject.opcuaMap!;
+    _ensureProtocols();
+    final map = widget.currentProject.protocols!.opcua!.map;
     final tagOptions = leafAndNodePaths(widget.currentProject);
 
     return Scaffold(

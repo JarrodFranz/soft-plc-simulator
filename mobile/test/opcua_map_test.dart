@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/opcua_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/protocol_settings.dart';
 
 void main() {
   // Mirrors examples/protocol-maps/opcua_map_example.json.
@@ -159,7 +160,7 @@ void main() {
     });
   });
 
-  group('PlcProject-level opcuaMap round-trip', () {
+  group('PlcProject-level protocols round-trip', () {
     PlcProject buildProject() => PlcProject(
           id: 'opcua_rt_proj',
           name: 'OPC UA Round Trip Project',
@@ -186,54 +187,67 @@ void main() {
           hmis: [],
         );
 
-    test('project with a populated opcuaMap round-trips via autoGenerate', () {
+    test('project with a populated protocols.opcua round-trips via autoGenerate', () {
       final project = buildProject();
-      project.opcuaMap = OpcuaMap.autoGenerate(project);
+      project.protocols = ProtocolSettings(
+        opcua: OpcUaProtocolConfig(
+          enabled: true,
+          namespaceUri: 'urn:softplc:${project.id}',
+          map: OpcuaMap.autoGenerate(project),
+        ),
+      );
 
       final restored = PlcProject.fromJson(jsonDecode(jsonEncode(project.toJson())));
 
-      expect(restored.opcuaMap, isNotNull);
-      expect(restored.opcuaMap!.namespaceUri, project.opcuaMap!.namespaceUri);
-      expect(restored.opcuaMap!.nodes.length, project.opcuaMap!.nodes.length);
-      for (var i = 0; i < project.opcuaMap!.nodes.length; i++) {
-        final a = project.opcuaMap!.nodes[i];
-        final b = restored.opcuaMap!.nodes[i];
+      expect(restored.protocols, isNotNull);
+      expect(restored.protocols!.opcua, isNotNull);
+      expect(restored.protocols!.opcua!.namespaceUri, project.protocols!.opcua!.namespaceUri);
+      expect(restored.protocols!.opcua!.map.nodes.length, project.protocols!.opcua!.map.nodes.length);
+      for (var i = 0; i < project.protocols!.opcua!.map.nodes.length; i++) {
+        final a = project.protocols!.opcua!.map.nodes[i];
+        final b = restored.protocols!.opcua!.map.nodes[i];
         expect(b.nodeId, a.nodeId);
         expect(b.tag, a.tag);
         expect(b.access, a.access);
       }
     });
 
-    test('project with a hand-built opcuaMap round-trips', () {
+    test('project with a hand-built protocols.opcua map round-trips', () {
       final project = buildProject();
-      project.opcuaMap = OpcuaMap(
-        namespaceUri: 'urn:softplc:hand-built',
-        nodes: [
-          OpcuaNode(nodeId: 'ns=1;s=Inputs.Start_PB', tag: 'Start_PB', access: 'ReadWrite'),
-          OpcuaNode(nodeId: 'ns=1;s=Outputs.Motor_Run', tag: 'Motor_Run', access: 'ReadOnly'),
-        ],
+      project.protocols = ProtocolSettings(
+        opcua: OpcUaProtocolConfig(
+          enabled: true,
+          namespaceUri: 'urn:softplc:hand-built',
+          map: OpcuaMap(
+            namespaceUri: 'urn:softplc:hand-built',
+            nodes: [
+              OpcuaNode(nodeId: 'ns=1;s=Inputs.Start_PB', tag: 'Start_PB', access: 'ReadWrite'),
+              OpcuaNode(nodeId: 'ns=1;s=Outputs.Motor_Run', tag: 'Motor_Run', access: 'ReadOnly'),
+            ],
+          ),
+        ),
       );
 
       final restored = PlcProject.fromJson(jsonDecode(jsonEncode(project.toJson())));
 
-      expect(restored.opcuaMap, isNotNull);
-      expect(restored.opcuaMap!.namespaceUri, 'urn:softplc:hand-built');
-      expect(restored.opcuaMap!.nodes.length, 2);
-      expect(restored.opcuaMap!.nodes[0].nodeId, 'ns=1;s=Inputs.Start_PB');
-      expect(restored.opcuaMap!.nodes[0].tag, 'Start_PB');
-      expect(restored.opcuaMap!.nodes[0].access, 'ReadWrite');
-      expect(restored.opcuaMap!.nodes[1].nodeId, 'ns=1;s=Outputs.Motor_Run');
-      expect(restored.opcuaMap!.nodes[1].tag, 'Motor_Run');
-      expect(restored.opcuaMap!.nodes[1].access, 'ReadOnly');
+      expect(restored.protocols, isNotNull);
+      expect(restored.protocols!.opcua!.namespaceUri, 'urn:softplc:hand-built');
+      expect(restored.protocols!.opcua!.map.nodes.length, 2);
+      expect(restored.protocols!.opcua!.map.nodes[0].nodeId, 'ns=1;s=Inputs.Start_PB');
+      expect(restored.protocols!.opcua!.map.nodes[0].tag, 'Start_PB');
+      expect(restored.protocols!.opcua!.map.nodes[0].access, 'ReadWrite');
+      expect(restored.protocols!.opcua!.map.nodes[1].nodeId, 'ns=1;s=Outputs.Motor_Run');
+      expect(restored.protocols!.opcua!.map.nodes[1].tag, 'Motor_Run');
+      expect(restored.protocols!.opcua!.map.nodes[1].access, 'ReadOnly');
     });
 
-    test('project with opcuaMap == null round-trips to null (back-compat)', () {
+    test('project with protocols == null round-trips to null (back-compat)', () {
       final project = buildProject();
-      expect(project.opcuaMap, isNull);
+      expect(project.protocols, isNull);
 
       final restored = PlcProject.fromJson(jsonDecode(jsonEncode(project.toJson())));
 
-      expect(restored.opcuaMap, isNull);
+      expect(restored.protocols, isNull);
     });
   });
 }

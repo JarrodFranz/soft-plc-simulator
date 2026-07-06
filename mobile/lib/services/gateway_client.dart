@@ -17,13 +17,10 @@ import '../models/opcua_map.dart';
 import '../models/project_model.dart';
 import '../models/tag_resolver.dart';
 
+export '../models/protocol_settings.dart' show kDefaultGatewayUrl;
+
 /// Connection lifecycle of the [GatewayClient].
 enum GatewayStatus { disconnected, connecting, connected, error }
-
-/// Default gateway WebSocket endpoint shown as the panel's starting value.
-/// Port 4855 is arbitrary but fixed so users/docs can rely on it as the
-/// convention for this project's companion gateway.
-const String kDefaultGatewayUrl = 'ws://localhost:4855';
 
 PlcTag? _rootTagOf(PlcProject p, String path) {
   final rootName = path.split('.').first.split('[').first;
@@ -46,11 +43,11 @@ void _forceAwareWrite(PlcProject p, String path, dynamic value) {
   writePath(p, path, value);
 }
 
-/// Builds the exposed-tag set for [project]: its `opcuaMap` nodes (or an
-/// auto-generated default when no map is set) resolved against the tag
-/// database into wire-ready [ExposedTag]s.
+/// Builds the exposed-tag set for [project]: its `protocols.opcua` map nodes
+/// (or an auto-generated default when no map is set) resolved against the
+/// tag database into wire-ready [ExposedTag]s.
 List<ExposedTag> _exposedTagsOf(PlcProject project) {
-  final map = project.opcuaMap ?? OpcuaMap.autoGenerate(project);
+  final map = project.protocols?.opcua?.map ?? OpcuaMap.autoGenerate(project);
   final out = <ExposedTag>[];
   for (final node in map.nodes) {
     final tag = project.tags.where((t) => t.name == node.tag).firstOrNull;
