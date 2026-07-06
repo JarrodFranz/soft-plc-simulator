@@ -2,13 +2,37 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/screens/gateway_screen.dart';
-import 'package:soft_plc_mobile/services/gateway_client.dart';
+import 'package:soft_plc_mobile/services/opcua_host.dart';
 import 'support/responsive_test_utils.dart';
 
-PlcProject _project() {
-  return PlcProject(
-    id: 'proj_gw_ui_test',
+/// A thin instrumented subclass of the REAL [OpcUaHost] — it still binds a
+/// real (loopback, ephemeral-port) socket via the base class, but records
+/// call counts so tests can assert the UI actually invoked start/stop.
+/// Using the real host (rather than a hand-rolled fake) exercises the
+/// genuine start/stop wiring the screen depends on, with port 0 so tests
+/// never collide with a real port or leak a fixed one.
+class _CountingOpcUaHost extends OpcUaHost {
+  int startCalls = 0;
+  int stopCalls = 0;
+
+  @override
+  Future<void> start(PlcProject Function() projectProvider) async {
+    startCalls++;
+    await super.start(projectProvider);
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCalls++;
+    await super.stop();
+  }
+}
+
+PlcProject _project({String id = 'proj_gw_ui_test', int? port}) {
+  final project = PlcProject(
+    id: id,
     name: 'Gateway UI Test',
     controllerName: 'PLC_01',
     tags: [
@@ -32,31 +56,35 @@ PlcProject _project() {
     tasks: [],
     hmis: [],
   );
+  if (port != null) {
+    project.protocols = ProtocolSettings.defaults(project);
+    project.protocols!.opcua = OpcUaProtocolConfig.defaults(project)
+      ..enabled = true
+      ..port = port;
+  }
+  return project;
 }
 
-Widget _app(PlcProject project, GatewayClient client) {
+Widget _app(PlcProject project, OpcUaHost host) {
   return MaterialApp(
     home: GatewayScreen(
       currentProject: project,
-      client: client,
+      host: host,
       onProjectUpdated: () {},
     ),
   );
 }
 
 void main() {
-  testWidgets('renders "Outbound Protocols" title, connection card, and OPC UA card', (tester) async {
+  testWidgets('renders "Outbound Protocols" title and OPC UA card', (tester) async {
     final project = _project();
-    final client = GatewayClient();
-    addTearDown(client.dispose);
+    final host = _CountingOpcUaHost();
+    addTearDown(host.dispose);
 
-    await tester.pumpWidget(_app(project, client));
+    await tester.pumpWidget(_app(project, host));
     await tester.pumpAndSettle();
 
     expect(find.text('Outbound Protocols'), findsOneWidget);
-    expect(find.text('Disconnected'), findsOneWidget);
-    expect(find.widgetWithText(ElevatedButton, 'Connect'), findsOneWidget);
-    expect(find.byType(TextField), findsWidgets);
     expect(find.text('OPC UA'), findsOneWidget);
     expect(find.byType(Switch), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -64,26 +92,26 @@ void main() {
 
   testWidgets('OPC UA card starts disabled by default with config hidden and 0 exposed', (tester) async {
     final project = _project();
-    final client = GatewayClient();
-    addTearDown(client.dispose);
+    final host = _CountingOpcUaHost();
+    addTearDown(host.dispose);
 
-    await tester.pumpWidget(_app(project, client));
+    await tester.pumpWidget(_app(project, host));
     await tester.pumpAndSettle();
 
     expect(project.protocols?.opcua?.enabled, false);
     final sw = tester.widget<Switch>(find.byType(Switch));
     expect(sw.value, false);
     expect(find.text('OPC UA Node Map'), findsNothing);
-    expect(find.textContaining('Exposed tags: 0'), findsOneWidget);
+    expect(find.widgetWithText(ElevatedButton, 'Start hosting'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('toggling the OPC UA switch ON reveals namespace + node map and sets enabled=true', (tester) async {
+  testWidgets('toggling the OPC UA switch ON reveals namespace, node map, and hosting controls', (tester) async {
     final project = _project();
-    final client = GatewayClient();
-    addTearDown(client.dispose);
+    final host = _CountingOpcUaHost();
+    addTearDown(host.dispose);
 
-    await tester.pumpWidget(_app(project, client));
+    await tester.pumpWidget(_app(project, host));
     await tester.pumpAndSettle();
 
     await tester.tap(find.byType(Switch));
@@ -92,15 +120,18 @@ void main() {
     expect(project.protocols?.opcua?.enabled, true);
     expect(find.text('OPC UA Node Map'), findsOneWidget);
     expect(find.textContaining('Namespace'), findsWidgets);
+    expect(find.widgetWithText(ElevatedButton, 'Start hosting'), findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, 'Stop hosting'), findsOneWidget);
+    expect(find.text('Stopped'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
   testWidgets('toggling the OPC UA switch OFF hides the config again', (tester) async {
     final project = _project();
-    final client = GatewayClient();
-    addTearDown(client.dispose);
+    final host = _CountingOpcUaHost();
+    addTearDown(host.dispose);
 
-    await tester.pumpWidget(_app(project, client));
+    await tester.pumpWidget(_app(project, host));
     await tester.pumpAndSettle();
 
     await tester.tap(find.byType(Switch));
@@ -115,28 +146,106 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('editing the gateway URL field updates protocols.gatewayUrl', (tester) async {
+  testWidgets('Start hosting calls the injected host and shows Running + endpoint', (tester) async {
     final project = _project();
-    final client = GatewayClient();
-    addTearDown(client.dispose);
+    final host = _CountingOpcUaHost();
+    addTearDown(host.dispose);
 
-    await tester.pumpWidget(_app(project, client));
+    await tester.pumpWidget(_app(project, host));
     await tester.pumpAndSettle();
-
-    final urlField = find.byType(TextField).first;
-    await tester.enterText(urlField, 'ws://example.test:9999');
+    await tester.tap(find.byType(Switch));
+    await tester.pump();
+    // Port 0 -> the OS picks an ephemeral free port, so this test never
+    // collides with a real port or leaks a fixed one across test runs.
+    await tester.enterText(find.widgetWithText(TextField, '4840'), '0');
     await tester.pump();
 
-    expect(project.protocols?.gatewayUrl, 'ws://example.test:9999');
+    // Real dart:io socket work (ServerSocket.bind) happens inside start(),
+    // so this must run under runAsync — the widget-test binding's fake
+    // clock never resolves real async IO otherwise.
+    await tester.runAsync(() async {
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Start hosting'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+    await tester.pumpAndSettle();
+
+    expect(host.startCalls, 1);
+    expect(find.text('Running'), findsOneWidget);
+    expect(find.textContaining('opc.tcp://'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Stop hosting calls the injected host and returns to Stopped', (tester) async {
+    final project = _project();
+    final host = _CountingOpcUaHost();
+    addTearDown(host.dispose);
+
+    await tester.pumpWidget(_app(project, host));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(Switch));
+    await tester.pump();
+    await tester.enterText(find.widgetWithText(TextField, '4840'), '0');
+    await tester.pump();
+    await tester.runAsync(() async {
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Start hosting'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+    await tester.pumpAndSettle();
+
+    await tester.runAsync(() async {
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Stop hosting'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+    await tester.pumpAndSettle();
+
+    expect(host.stopCalls, 1);
+    expect(find.text('Stopped'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('editing the port field persists to protocols.opcua.port', (tester) async {
+    final project = _project();
+    final host = _CountingOpcUaHost();
+    addTearDown(host.dispose);
+
+    await tester.pumpWidget(_app(project, host));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(Switch));
+    await tester.pump();
+
+    final portField = find.widgetWithText(TextField, '4840');
+    expect(portField, findsOneWidget);
+    await tester.enterText(portField, '48401');
+    await tester.pump();
+
+    expect(project.protocols?.opcua?.port, 48401);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('invalid port input is ignored (keeps last valid value)', (tester) async {
+    final project = _project();
+    final host = _CountingOpcUaHost();
+    addTearDown(host.dispose);
+
+    await tester.pumpWidget(_app(project, host));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(Switch));
+    await tester.pump();
+
+    final portField = find.widgetWithText(TextField, '4840');
+    await tester.enterText(portField, 'not-a-port');
+    await tester.pump();
+
+    expect(project.protocols?.opcua?.port, 4840);
     expect(tester.takeException(), isNull);
   });
 
   testWidgets('no overflow at 320 width', (tester) async {
     final project = _project();
-    final client = GatewayClient();
-    addTearDown(client.dispose);
+    final host = _CountingOpcUaHost();
+    addTearDown(host.dispose);
     await setSurface(tester, smallPhoneSize);
-    await tester.pumpWidget(_app(project, client));
+    await tester.pumpWidget(_app(project, host));
     await tester.pumpAndSettle();
     // Also exercise the enabled/expanded state, the more overflow-prone one.
     await tester.tap(find.byType(Switch));
@@ -144,12 +253,34 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('reusing the State across a project switch refreshes the port field (didUpdateWidget)', (tester) async {
+    final projectA = _project(id: 'proj_a', port: 4840);
+    final host = _CountingOpcUaHost();
+    addTearDown(host.dispose);
+
+    await tester.pumpWidget(_app(projectA, host));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(TextField, '4840'), findsOneWidget);
+
+    // Rebuild the SAME State (same widget type/slot) with a different
+    // project — Flutter reuses the State object, so `_portController` (a
+    // `late final` seeded only in initState) would otherwise still show
+    // project A's port.
+    final projectB = _project(id: 'proj_b', port: 4900);
+    await tester.pumpWidget(_app(projectB, host));
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(TextField, '4900'), findsOneWidget);
+    expect(find.widgetWithText(TextField, '4840'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('no overflow at 1400 width', (tester) async {
     final project = _project();
-    final client = GatewayClient();
-    addTearDown(client.dispose);
+    final host = _CountingOpcUaHost();
+    addTearDown(host.dispose);
     await setSurface(tester, desktopSize);
-    await tester.pumpWidget(_app(project, client));
+    await tester.pumpWidget(_app(project, host));
     await tester.pumpAndSettle();
     await tester.tap(find.byType(Switch));
     await tester.pump();

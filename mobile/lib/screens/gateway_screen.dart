@@ -1,12 +1,14 @@
-// Outbound Protocols section: a per-project connection card (gateway
-// WebSocket endpoint + Connect/Disconnect + live status) plus one card per
-// outbound industrial protocol (currently OPC UA) with an enable/disable
-// toggle and, when enabled, its config (namespace + node<->tag map editor).
-// See docs/superpowers/specs/2026-07-06-outbound-protocols-config-design.md,
-// "The 'Outbound Protocols' section" and "Client wiring". Purely an opt-in
-// observer — the rest of the app runs exactly as it does today whether or
-// not this section is ever opened, and whether or not any protocol is
-// enabled.
+// Outbound Protocols section: per-project OPC UA hosting controls (WS19
+// Task 4 — Start/Stop the in-app OPC UA server, port, live status/endpoint)
+// plus the existing enable toggle, namespace, and node<->tag map editor.
+// See docs/superpowers/specs/2026-07-06-in-app-opcua-server-design.md,
+// "Architecture" and ADR-010. Purely an opt-in observer — the rest of the
+// app runs exactly as it does today whether or not this section is ever
+// opened, and whether or not hosting is ever started.
+//
+// The WebSocket gateway-client connection card (WS16) is retired per
+// ADR-010: the app now hosts the OPC UA server in-process instead of
+// syncing tags out to a companion process.
 
 import 'package:flutter/material.dart';
 
@@ -14,19 +16,19 @@ import '../models/opcua_map.dart';
 import '../models/project_model.dart';
 import '../models/protocol_settings.dart';
 import '../models/tag_resolver.dart';
-import '../services/gateway_client.dart';
+import '../services/opcua_host.dart';
 import '../ui/responsive.dart';
 import '../widgets/tag_autocomplete_field.dart';
 
 class GatewayScreen extends StatefulWidget {
   final PlcProject currentProject;
-  final GatewayClient client;
+  final OpcUaHost host;
   final VoidCallback onProjectUpdated;
 
   const GatewayScreen({
     super.key,
     required this.currentProject,
-    required this.client,
+    required this.host,
     required this.onProjectUpdated,
   });
 
@@ -35,53 +37,70 @@ class GatewayScreen extends StatefulWidget {
 }
 
 class _GatewayScreenState extends State<GatewayScreen> {
-  late final TextEditingController _urlController;
+  late final TextEditingController _portController;
 
   @override
   void initState() {
     super.initState();
     _ensureProtocols();
-    _urlController = TextEditingController(text: widget.currentProject.protocols!.gatewayUrl);
+    _portController = TextEditingController(
+      text: widget.currentProject.protocols!.opcua!.port.toString(),
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant GatewayScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Flutter reuses this State across a project switch when the widget
+    // type/slot is unchanged, so `_portController` (seeded only once, in
+    // initState) can otherwise keep showing the PREVIOUS project's port.
+    // Re-sync it whenever the project identity changes.
+    if (widget.currentProject.id != oldWidget.currentProject.id) {
+      _ensureProtocols();
+      final newPort = widget.currentProject.protocols!.opcua!.port.toString();
+      if (_portController.text != newPort) {
+        _portController.value = TextEditingValue(
+          text: newPort,
+          selection: TextSelection.collapsed(offset: newPort.length),
+        );
+      }
+    }
   }
 
   @override
   void dispose() {
-    _urlController.dispose();
+    _portController.dispose();
     super.dispose();
   }
 
-  String _statusLabel(GatewayStatus s) {
+  String _statusLabel(OpcUaHostStatus s) {
     switch (s) {
-      case GatewayStatus.disconnected:
-        return 'Disconnected';
-      case GatewayStatus.connecting:
-        return 'Connecting…';
-      case GatewayStatus.connected:
-        return 'Connected';
-      case GatewayStatus.error:
+      case OpcUaHostStatus.stopped:
+        return 'Stopped';
+      case OpcUaHostStatus.running:
+        return 'Running';
+      case OpcUaHostStatus.error:
         return 'Error';
     }
   }
 
-  Color _statusColor(GatewayStatus s) {
+  Color _statusColor(OpcUaHostStatus s) {
     switch (s) {
-      case GatewayStatus.disconnected:
+      case OpcUaHostStatus.stopped:
         return Colors.grey;
-      case GatewayStatus.connecting:
-        return Colors.amberAccent;
-      case GatewayStatus.connected:
+      case OpcUaHostStatus.running:
         return Colors.greenAccent;
-      case GatewayStatus.error:
+      case OpcUaHostStatus.error:
         return Colors.redAccent;
     }
   }
 
-  Future<void> _connect() async {
-    await widget.client.connect(widget.currentProject.protocols!.gatewayUrl, widget.currentProject);
+  Future<void> _startHosting() async {
+    await widget.host.start(() => widget.currentProject);
   }
 
-  Future<void> _disconnect() async {
-    await widget.client.disconnect();
+  Future<void> _stopHosting() async {
+    await widget.host.stop();
   }
 
   void _autoGenerateMap() {
@@ -102,11 +121,6 @@ class _GatewayScreenState extends State<GatewayScreen> {
     widget.currentProject.protocols!.opcua ??= OpcUaProtocolConfig.defaults(widget.currentProject);
   }
 
-  void _setGatewayUrl(String value) {
-    widget.currentProject.protocols!.gatewayUrl = value;
-    widget.onProjectUpdated();
-  }
-
   void _setOpcuaEnabled(bool enabled) {
     setState(() {
       _ensureProtocols();
@@ -120,14 +134,20 @@ class _GatewayScreenState extends State<GatewayScreen> {
     widget.onProjectUpdated();
   }
 
-  /// The exposed-tag count to show: the client's live count once connected
-  /// (reflecting what was actually sent), otherwise the current map's node
-  /// count when OPC UA is enabled (what *would* be exposed on connect) or 0
-  /// when disabled, so the figure is meaningful even when disconnected.
-  int get _displayedExposedCount {
-    if (widget.client.status == GatewayStatus.connected) {
-      return widget.client.exposedTagCount;
+  void _setOpcuaPort(String value) {
+    final parsed = int.tryParse(value.trim());
+    // 0 is accepted (a valid `ServerSocket.bind` request meaning "let the OS
+    // pick a free ephemeral port") in addition to the normal 1-65535 range.
+    if (parsed == null || parsed < 0 || parsed > 65535) {
+      return; // ignore invalid input; keep the last-valid persisted port
     }
+    widget.currentProject.protocols!.opcua!.port = parsed;
+    widget.onProjectUpdated();
+  }
+
+  /// The exposed-tag count: the current map's node count when OPC UA is
+  /// enabled (what the address space would/does expose), 0 when disabled.
+  int get _displayedExposedCount {
     final opcua = widget.currentProject.protocols?.opcua;
     if (opcua == null || !opcua.enabled) {
       return 0;
@@ -147,15 +167,13 @@ class _GatewayScreenState extends State<GatewayScreen> {
         backgroundColor: const Color(0xFF1E293B),
       ),
       body: ListenableBuilder(
-        listenable: widget.client,
+        listenable: widget.host,
         builder: (context, _) {
           return SingleChildScrollView(
             padding: const EdgeInsets.all(12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _connectionCard(context),
-                const SizedBox(height: 12),
                 const Text(
                   'Protocols',
                   style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
@@ -170,100 +188,16 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
   }
 
-  Widget _connectionCard(BuildContext context) {
-    final status = widget.client.status;
-    final connected = status == GatewayStatus.connected || status == GatewayStatus.connecting;
-    final isCompact = context.isCompact;
-
-    return Card(
-      color: const Color(0xFF1E293B),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Wrap(
-              spacing: 8,
-              runSpacing: 4,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 10,
-                      height: 10,
-                      decoration: BoxDecoration(color: _statusColor(status), shape: BoxShape.circle),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      _statusLabel(status),
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
-                    ),
-                  ],
-                ),
-                Text(
-                  'Exposed tags: $_displayedExposedCount',
-                  style: const TextStyle(color: Colors.grey, fontSize: 12),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _urlController,
-              enabled: !connected,
-              style: const TextStyle(fontSize: 12, color: Colors.white),
-              decoration: const InputDecoration(
-                isDense: true,
-                labelText: 'Gateway URL',
-                helperText: 'Default: $kDefaultGatewayUrl',
-                filled: true,
-                fillColor: Color(0xFF0F172A),
-                border: OutlineInputBorder(),
-              ),
-              onChanged: _setGatewayUrl,
-            ),
-            const SizedBox(height: 12),
-            Flex(
-              direction: isCompact ? Axis.vertical : Axis.horizontal,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SizedBox(
-                  width: isCompact ? double.infinity : null,
-                  child: ElevatedButton(
-                    onPressed: connected ? null : _connect,
-                    child: const Text('Connect'),
-                  ),
-                ),
-                SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
-                SizedBox(
-                  width: isCompact ? double.infinity : null,
-                  child: OutlinedButton(
-                    onPressed: connected ? _disconnect : null,
-                    child: const Text('Disconnect'),
-                  ),
-                ),
-              ],
-            ),
-            if (widget.client.lastError != null) ...[
-              const SizedBox(height: 8),
-              Text(
-                'Last error: ${widget.client.lastError}',
-                style: const TextStyle(color: Colors.redAccent, fontSize: 11),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// The OPC UA protocol card: header + enable switch, and (when enabled)
-  /// the namespace field + node-map editor. Adding a future protocol means
-  /// adding another `_buildXCard(...)` alongside this one in `build`'s
-  /// protocol list.
+  /// The OPC UA protocol card: header + enable switch, hosting controls
+  /// (Start/Stop, port, status, endpoint), and (when enabled) the namespace
+  /// field + node-map editor. Adding a future protocol means adding another
+  /// `_buildXCard(...)` alongside this one in `build`'s protocol list.
   Widget _buildOpcUaCard(BuildContext context, List<String> tagOptions) {
     final opcua = widget.currentProject.protocols!.opcua!;
+    final status = widget.host.status;
+    final running = status == OpcUaHostStatus.running;
+    final isCompact = context.isCompact;
+
     return Card(
       color: const Color(0xFF1E293B),
       child: Padding(
@@ -294,7 +228,92 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 ),
               )
             else ...[
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
+              // ── Hosting controls ────────────────────────────────────
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 10,
+                        height: 10,
+                        decoration: BoxDecoration(color: _statusColor(status), shape: BoxShape.circle),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _statusLabel(status),
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                      ),
+                    ],
+                  ),
+                  Text(
+                    'Exposed tags: $_displayedExposedCount',
+                    style: const TextStyle(color: Colors.grey, fontSize: 12),
+                  ),
+                  if (widget.host.clientCount > 0)
+                    Text(
+                      'Clients: ${widget.host.clientCount}',
+                      style: const TextStyle(color: Colors.grey, fontSize: 12),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _portController,
+                enabled: !running,
+                keyboardType: TextInputType.number,
+                style: const TextStyle(fontSize: 12, color: Colors.white),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  labelText: 'Port',
+                  helperText: 'Default: 4840',
+                  filled: true,
+                  fillColor: Color(0xFF0F172A),
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: _setOpcuaPort,
+              ),
+              const SizedBox(height: 12),
+              Flex(
+                direction: isCompact ? Axis.vertical : Axis.horizontal,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: isCompact ? double.infinity : null,
+                    child: ElevatedButton(
+                      onPressed: running ? null : _startHosting,
+                      child: const Text('Start hosting'),
+                    ),
+                  ),
+                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                  SizedBox(
+                    width: isCompact ? double.infinity : null,
+                    child: OutlinedButton(
+                      onPressed: running ? _stopHosting : null,
+                      child: const Text('Stop hosting'),
+                    ),
+                  ),
+                ],
+              ),
+              if (running && widget.host.endpointUrl != null) ...[
+                const SizedBox(height: 8),
+                SelectableText(
+                  widget.host.endpointUrl!,
+                  style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                ),
+              ],
+              if (widget.host.lastError != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Last error: ${widget.host.lastError}',
+                  style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                ),
+              ],
+              const SizedBox(height: 12),
               TextFormField(
                 initialValue: opcua.namespaceUri,
                 style: const TextStyle(fontSize: 12, color: Colors.white),

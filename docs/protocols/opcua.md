@@ -1,136 +1,169 @@
-# OPC UA Companion Gateway
+# OPC UA (In-App Server)
 
-The app itself cannot host an inbound server on mobile (OS-blocked) or web (no
-raw TCP), so OPC UA is served by a small companion process: the **Rust
-gateway** (`gateway/`). The gateway is a thin protocol shell — it runs no PLC
-logic. The Flutter app stays authoritative: it executes the scan, owns the
-tag database, and streams tag values to the gateway over a WebSocket. The
-gateway mirrors those values into an OPC UA address space and forwards any
-OPC UA client write back to the app, which applies it (force-aware) and lets
-the next scan recompute.
-
-```
-Flutter app (Dart engine, tag DB)  --WebSocket (JSON tag-sync)-->  Rust gateway
-  - runs the scan pipeline                                          - tag mirror
-  - streams snapshot + deltas   <--writes (OPC client wrote)--      - OPC UA server
-  - applies inbound writes (force-aware)                            - address space from map
-```
-
-Full design rationale: `docs/superpowers/specs/2026-07-06-opcua-gateway-bridge-design.md`.
-
-## Running the gateway
+The app itself is the OPC UA server — no companion process, no second
+machine. A hand-rolled, pure-Dart OPC UA server subset runs inside the
+Flutter app (`mobile/lib/protocols/opcua/` + `mobile/lib/services/
+opcua_host.dart`), reads the project's tag database live at Read time, and
+applies writes through the same force-aware rule the scan engine uses. Any
+OPC UA client (UAExpert, a SCADA historian, a custom `opcua` client) connects
+directly to the phone/tablet/desktop running the app.
 
 ```
-cd gateway
-cargo run
+OPC UA client (UAExpert, SCADA, ...)  --opc.tcp/binary-->  the app itself
+                                                              - runs the scan
+                                                              - owns the tag DB
+                                                              - hosts opc.tcp
+                                                              - force-aware writes
 ```
 
-This starts two listeners on the same process:
+Full design rationale: `docs/superpowers/specs/2026-07-06-in-app-opcua-server-design.md`
+(and `ARCHITECTURE.md`'s Mode A/B section, and `DECISIONS.md` ADR-010, which
+retired the previous companion-gateway approach).
 
-- **WebSocket tag-sync server**: `ws://0.0.0.0:4855` (the app connects to
-  this as a client). Override with the `GATEWAY_WS_PORT` env var.
-- **OPC UA server**: `opc.tcp://127.0.0.1:4840` (port `4840` is the
-  conventional OPC UA port most clients, including UAExpert, default to).
-  Override with `GATEWAY_OPCUA_PORT`.
+## Using it
 
-Anonymous/no-security only in v1 (see "Out of scope" below) — expect log
-lines about a missing application certificate; they're harmless for local
-`None`-security testing and don't stop the server from listening.
+1. Open **Outbound Protocols** from the app's shell nav.
+2. Enable the **OPC UA** switch on the OPC UA card — this reveals the
+   hosting controls, namespace field, and node map editor.
+3. Set the **port** (default `4840`, the IANA-registered OPC UA port most
+   clients including UAExpert default to). The field is editable only while
+   stopped.
+4. Tap **Start hosting**. The card shows live status (Stopped / Running /
+   Error), the exposed-tag count, connected client count, and — once
+   running — the endpoint URL (`opc.tcp://<device-ip>:<port>`).
+5. Point any OPC UA client at that endpoint: Security Policy **None**,
+   **Anonymous** authentication (v1 has no certificates/encryption/user
+   tokens — see "v1 scope" below).
+6. Browse the address space: every mapped tag appears as a `Variable` node
+   directly under the standard **Objects** folder, named by its tag's short
+   name, with a node id of the form `ns=1;s=<tag_name>` (or `ns=1;i=<n>` for
+   numeric ids) — whichever the node map assigns.
+7. **Read** any node — the value comes live from the running soft PLC at the
+   moment of the read (there is no mirror/cache to go stale).
+8. **Write** a `ReadWrite` node — it applies through the same force-aware
+   path as any other write. Writing a `ReadOnly` node returns
+   `Bad_NotWritable`; writing a tag that is currently **forced** in the app
+   returns `Bad_UserAccessDenied` and the value is left unchanged (forcing
+   always wins over an external client).
+9. Tap **Stop hosting** to close the listener; the app is otherwise
+   byte-identical to a build with OPC UA never enabled.
 
-Before any app connects, the OPC UA address space is pre-populated from a
-bundled sample project (`examples/projects/basic_motor_start_stop.json`) and
-its matching map (`examples/protocol-maps/opcua_map_example.json`) — three
-nodes: `Start_PB`, `Stop_PB` (both `ReadWrite`), `Motor_Run` (`ReadOnly`). This
-is just so the server isn't empty on first boot; those values are frozen
-until a real app connects and sends its own `snapshot`, at which point the
-mirror (and every OPC UA read) reflects the app's real project instead.
+The node map (which tags are exposed, their `node_id`s, and
+`ReadOnly`/`ReadWrite` access) is edited from the OPC UA card's map editor,
+or auto-generated from the project's tags (**Regenerate** — `Simulated
+Inputs`/`Internal` tags default to `ReadWrite`; `Simulated Outputs` default
+to `ReadOnly`). It is stored per-project under the additive `protocols`
+field (`protocols.opcua`), alongside the `port` (additive, default `4840`)
+and `namespaceUri`.
 
-## Connecting the app
+## v1 scope (and what's deferred to v2+)
 
-In the mobile app, open the **Gateway** panel from the shell nav. The URL
-field defaults to `ws://localhost:4855` (`kDefaultGatewayUrl` in
-`mobile/lib/services/gateway_client.dart`) — matching the gateway's default
-WebSocket port. Click **Connect**. On connect the app sends `hello` then a
-full `snapshot` of its exposed tags; from then on it sends a `delta` each
-scan for changed tags only. The Outbound Protocols section shows live status
-(disconnected/connecting/connected/error), the exposed-tag count, and the
-last error.
+**v1 delivers:** `opc.tcp` transport (Hello/Acknowledge/Error framing),
+`OpenSecureChannel` with Security Policy **None** (including token renewal),
+`CreateSession`/`ActivateSession` (anonymous) + `CloseSession`,
+`GetEndpoints`, `Browse` (the exposed-tag address space, flat under
+Objects), `Read` (Value + core attributes, server timestamps), `Write`
+(force-aware, `ReadWrite` nodes only). Unsupported/unknown services answer a
+proper `ServiceFault` (`Bad_ServiceUnsupported`) rather than dropping the
+connection.
 
-The OPC UA node map (which tags are exposed, under what `node_id`, and
-whether they're `ReadOnly`/`ReadWrite`) is edited from the OPC UA card's map
-editor, or auto-generated from the project's tags (`Simulated Inputs`/
-`Internal` tags default to `ReadWrite`; `Simulated Outputs` default to
-`ReadOnly`). It is stored per-project under the additive, optional `protocols`
-field (`protocols.opcua`) — one config slot per outbound protocol, each with
-its own enable toggle.
+**Deferred (v2+):**
+- **Subscriptions/MonitoredItems** — v1 clients poll via `Read`; there is no
+  server-push/monitored-item support yet.
+- **Encryption** (`Basic256Sha256` etc.) — v1 is Security Policy `None` only,
+  appropriate for LAN commissioning/training, not a certified/secure
+  deployment.
+- **Multi-chunk reassembly** — v1 negotiates generous (~1 MB) single-chunk
+  buffers, ample for the address spaces this app builds; an oversize message
+  is rejected cleanly rather than crashing.
+- User-token authentication, `TranslateBrowsePaths`, and other optional
+  services (all answer `ServiceFault`).
 
-## Verifying with an external OPC UA client (e.g. UAExpert)
+## Platform notes
 
-1. Start the gateway (`cd gateway && cargo run`) and connect the app to it
-   from the **Outbound Protocols** section (enable the OPC UA protocol, then
-   Connect) — or just rely on the bundled default map/project — no app
-   connection is required to see the three default nodes.
-2. In UAExpert (or any OPC UA client), **Add Server** →
-   `opc.tcp://localhost:4840` → security policy `None`, anonymous
-   authentication.
-3. Browse the address space: nodes live directly under the **Objects**
-   folder, one per mapped tag, named by their tag path (e.g. `Start_PB`,
-   `Motor_Run`), with node ids of the form `ns=1;s=<tag_path>`.
-4. **Read** any node — you'll see the app's last-synced value (or the bundled
-   default's value if no app is connected).
-5. **Write** a `ReadWrite` node (e.g. `Start_PB`) — the value change is
-   forwarded to the app over the WebSocket as a `write` message; if the app
-   is connected, it applies the write (force-aware) and the tag updates on
-   the app's next scan. `ReadOnly` nodes (e.g. `Motor_Run`) have no write
-   access exposed at all — a write attempt is rejected by the OPC UA server
-   itself (no setter is wired for that node).
+- **iOS**: the app can only accept inbound connections while it is in the
+  **foreground** — an OS constraint on background sockets, not a limitation
+  of this server. Backgrounding the app stops accepting new connections.
+- **Android**: works the same as desktop while the app is running, but the
+  client must be on the **same LAN** — there is no port-forwarding/NAT
+  traversal, and mobile carriers/most Wi-Fi networks block unsolicited
+  inbound connections from outside the local network anyway.
+- The port is a normal (non-privileged, user-space) TCP port on every
+  platform — no elevated permissions are required to bind it.
+- The app remains byte-identical when OPC UA hosting is disabled or stopped
+  — this is strictly an opt-in feature.
+- **Web:** OPC UA hosting is a **native-platform feature only** (Android,
+  iOS, desktop). The web build compiles fine, but a browser tab cannot host
+  an inbound TCP server (no `ServerSocket` in the browser sandbox), so OPC UA
+  serving is unavailable when the app runs as a web build.
 
 ## What is machine-verified vs. manual
 
-**Machine-verified (`cargo test` in `gateway/`, 37 tests, plus the app-side
-Dart tests):**
-- Wire codec parity between the Rust and Dart tag-sync encodings for every
-  message type (`hello`/`snapshot`/`delta`/`write`/`ready`/`ping`/`pong`),
-  including malformed/unknown-input handling (never panics) and whole-number
-  float fidelity (a `FLOAT64` tag holding e.g. `10.0` stays a float, never
-  silently becomes an integer) — `gateway/src/sync.rs`.
-- Tag mirror semantics: snapshot replace, delta update-known-paths-only,
-  type coercion on delta — `gateway/src/mirror.rs`.
-- OPC UA map → address-space builder: one `Variable` node per mapped tag
-  present in the mirror, `ReadOnly` nodes get no write access, `ReadWrite`
-  nodes forward a write — `gateway/src/opcua_map.rs`, `gateway/src/opcua_server.rs`.
-- The OPC UA read path returns the Variant type matching the tag's *declared*
-  `DataType` (not a JSON-shape guess) — including the specific regression
-  case of a whole-number `FLOAT64` value reading back as `Variant::Double`,
-  not `Variant::Int64` (`float64_whole_number_reads_back_as_double_not_int`,
-  `float64_fractional_value_reads_back_as_double` in `opcua_server.rs`).
-- The full WebSocket transport hop against a real `tokio-tungstenite`
-  client: `ready` greeting, `hello`/`snapshot` ingestion into the mirror, and
-  a simulated OPC-write arriving at the app-side socket as a `write` frame
-  (`gateway/src/ws_server.rs`).
-- App-side: `GatewayClient` against a fake channel (connect/hello/snapshot,
-  delta-only-on-change, force-aware inbound write, reconnect re-snapshots,
-  status transitions) and the OPC UA map model's serialization round-trip
-  (`mobile/test/gateway_client_test.dart`, `mobile/test/opcua_map_test.dart`,
-  `mobile/test/gateway_sync_test.dart`).
-- The gateway binary itself starts, prints the safety banner, and both
-  listeners come up without panicking (`cargo run`, confirmed manually with
-  a bounded run during development — not a `cargo test`, since the binary is
-  a long-running process).
+**Machine-verified (`flutter test` in `mobile/`):**
+- Binary codec round-trips + known-byte fixtures for every OPC UA built-in
+  type used (NodeId forms, Variant, DataValue, LocalizedText, ...),
+  cross-checked against the vendored Rust `opcua` crate source as the
+  reference implementation — `mobile/test/opcua_binary_test.dart` (and
+  sibling codec tests).
+- The secure-channel/session state machine driven with byte frames (no
+  sockets): Hello/Acknowledge, `OpenSecureChannel` (incl. renewal),
+  `CreateSession`/`ActivateSession`/`CloseSession`, malformed frames, unknown
+  services → `ServiceFault` — `mobile/test/opcua_session_test.dart`.
+- The address space + `Browse`/`Read`/`Write` services over a live project's
+  tag DB: exposed-tag enumeration, per-attribute reads, force-aware writes
+  (a write to a forced tag is refused, value unchanged), type coercion
+  rules, `Bad_IndexRangeInvalid`/`Bad_NodeIdUnknown`/`Bad_NotWritable`/
+  `Bad_TypeMismatch` on the appropriate inputs, and dangling map-tag
+  references (a node whose `tag` no longer exists in the project is skipped
+  from Browse and answers `Bad_NodeIdUnknown` on Read/Write) —
+  `mobile/test/opcua_services_test.dart`.
+- The hosting UI (Start/Stop, port field, status, endpoint display, the
+  port-field refresh on a project switch): `mobile/test/gateway_screen_test.dart`.
+- Additive persistence: the new `port` field round-trips; `protocols`/`opcua`
+  serialization is otherwise unchanged — `mobile/test/protocol_settings_test.dart`,
+  `mobile/test/serialization_roundtrip_test.dart`.
 
-**Requires a live external OPC UA client (manual, not automatable in CI):**
-- Actually opening `opc.tcp://localhost:4840` from a real client (UAExpert or
-  any other OPC UA stack) and reading/writing a node over the real OPC UA
-  binary protocol — the Rust tests exercise the setter/getter wiring
-  directly (the same internal path a real client's Read/Write service call
-  invokes), which covers every hop except the OPC UA TCP/binary framing
-  itself.
-- Any native mobile transport path (the app connecting to a gateway over a
-  real network from an Android/iOS device rather than `localhost`).
+**Machine-verified end-to-end, with a REAL third-party OPC UA client
+(`tool/opcua_e2e.sh`):**
 
-## Out of scope (v1)
+This is the strongest proof available short of a human running UAExpert: a
+genuine Rust `opcua` crate **client** (`gateway/examples/opcua_probe.rs`,
+kept as a dev-time verification harness per ADR-010) connects over the real
+`opc.tcp` binary protocol to the Dart server hosted by a small fixture
+runner (`mobile/tool/opcua_host_probe.dart`), and exercises
+`GetEndpoints` → `Browse` (Objects) → `Read` → `Write` → `Read`-back-verify.
 
-Anonymous/`None` security only — no certificates, encryption, or user
-authentication. Scalar leaf tags only (struct/array members deferred).
-Historical access and method nodes are not implemented. The gateway never
-executes PLC logic; it only mirrors and relays.
+Run it from the repo root (bash/Git Bash):
+
+```bash
+tool/opcua_e2e.sh
+```
+
+It starts the Dart fixture host on a non-default port, waits for it to
+report `READY`, runs the Rust probe against it, and unconditionally kills
+the Dart host on exit (propagating the probe's exit code). A successful run
+ends with:
+
+```
+PROBE PASS
+```
+
+**Requires a human with a real OPC UA client (manual, documented here, not
+automatable in CI):**
+- Actually opening `opc.tcp://<device-ip>:4840` from UAExpert (or any other
+  OPC UA stack) running on a **different device** on the LAN, to confirm
+  real network reachability (the E2E probe above runs over `127.0.0.1`,
+  proving the protocol implementation but not physical network/firewall
+  behavior).
+- Confirming the iOS-foreground and Android-same-LAN behavior described
+  above on physical devices.
+
+## Out of scope / positioning
+
+This is a **simulator/training tool, not a safety-certified or
+OPC-Foundation-certified product**. The hand-rolled server targets client
+*compatibility* (UAExpert and common SCADA stacks talking Security Policy
+`None`), not formal certification. Do not use it to control real safety-
+critical equipment. Historical access and method nodes are not implemented;
+scalar leaf tags only (struct/array members are not individually addressable
+as separate nodes in v1).

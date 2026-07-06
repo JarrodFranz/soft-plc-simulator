@@ -11,9 +11,12 @@
 import 'opcua_map.dart';
 import 'project_model.dart';
 
-/// Default gateway WebSocket endpoint. Canonical home of this const: other
-/// files (e.g. `services/gateway_client.dart`) should import and reuse this
-/// value rather than re-declaring it, to avoid a clashing duplicate const.
+/// Default gateway WebSocket endpoint. Retained for back-compat with the
+/// legacy `ProtocolSettings.gatewayUrl` field's serialized default — the
+/// ws-sync path itself (the WS16 `GatewayClient`) was retired per ADR-010
+/// in favor of the in-app OPC UA host (WS19); this const and field are no
+/// longer read by any UI, but stay for old saved projects that still carry
+/// a `gateway_url` value.
 const String kDefaultGatewayUrl = 'ws://localhost:4855';
 
 /// Per-project OPC UA outbound-protocol configuration: whether the bridge is
@@ -24,10 +27,17 @@ class OpcUaProtocolConfig {
   String namespaceUri;
   OpcuaMap map;
 
+  /// TCP port the in-app OPC UA host binds to (`opc.tcp://<host>:<port>`).
+  /// Default 4840 is the IANA-registered OPC UA port. Additive field (WS19
+  /// Task 4) — older saved projects simply don't have `port` in their JSON
+  /// and fall back to this default on read.
+  int port;
+
   OpcUaProtocolConfig({
     this.enabled = false,
     this.namespaceUri = '',
     required this.map,
+    this.port = 4840,
   });
 
   factory OpcUaProtocolConfig.fromJson(Map<String, dynamic> j) => OpcUaProtocolConfig(
@@ -36,21 +46,24 @@ class OpcUaProtocolConfig {
         map: j['map'] != null
             ? OpcuaMap.fromJson(j['map'] as Map<String, dynamic>)
             : OpcuaMap(namespaceUri: '', nodes: []),
+        port: (j['port'] as num?)?.toInt() ?? 4840,
       );
 
   Map<String, dynamic> toJson() => {
         'enabled': enabled,
         'namespace_uri': namespaceUri,
         'map': map.toJson(),
+        'port': port,
       };
 
   /// Sane defaults for a project that has never configured OPC UA: disabled,
-  /// a project-scoped namespace URI, and an auto-generated map from the
-  /// project's current scalar tags.
+  /// a project-scoped namespace URI, the default port, and an auto-generated
+  /// map from the project's current scalar tags.
   static OpcUaProtocolConfig defaults(PlcProject p) => OpcUaProtocolConfig(
         enabled: false,
         namespaceUri: 'urn:softplc:${p.id}',
         map: OpcuaMap.autoGenerate(p),
+        port: 4840,
       );
 }
 
