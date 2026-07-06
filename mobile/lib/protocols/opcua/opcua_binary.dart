@@ -184,12 +184,26 @@ class ResponseHeader {
 /// 100ns intervals since this instant (date_time.rs). 0 ticks == null.
 final DateTime _opcUaEpoch = DateTime.utc(1601, 1, 1);
 
+/// The OPC UA "endtimes": Dec 31, 9999 23:59:59Z (date_time.rs
+/// `endtimes_chrono()`, MAX_YEAR = 9999). Dates at or beyond this instant
+/// clamp to `i64::MAX` ticks on write (date_time.rs `checked_ticks()`).
+final DateTime _opcUaEndtimes = DateTime.utc(9999, 12, 31, 23, 59, 59);
+
+/// Ticks corresponding to [_opcUaEndtimes], for the `> endtimes_ticks()`
+/// comparison mirrored from Rust's `checked_ticks()`.
+final int _opcUaEndtimesTicks =
+    _opcUaEndtimes.difference(_opcUaEpoch).inMicroseconds * 10;
+
 int _dateTimeToTicks(DateTime? dt) {
   if (dt == null) return 0;
   final utc = dt.isUtc ? dt : dt.toUtc();
   final micros = utc.difference(_opcUaEpoch).inMicroseconds;
   if (micros <= 0) return 0;
-  return micros * 10; // 1 microsecond == 10 ticks of 100ns.
+  final ticks = micros * 10; // 1 microsecond == 10 ticks of 100ns.
+  // Mirror Rust's checked_ticks(): clamp dates past the OPC UA endtimes
+  // (9999-12-31T23:59:59Z) to i64::MAX rather than overflowing/wrapping.
+  if (ticks > _opcUaEndtimesTicks) return 9223372036854775807; // i64::MAX
+  return ticks;
 }
 
 DateTime? _ticksToDateTime(int ticks) {
@@ -664,7 +678,21 @@ class OpcUaReader {
   OpcVariant variant() {
     final mask = uint8();
     final isArray = (mask & 0x80) != 0;
-    final typeId = mask & 0x7F;
+    // Rust reference: variant_type_id.rs:249-253 defines
+    // ARRAY_DIMENSIONS_BIT = 0x40, ARRAY_VALUES_BIT = 0x80,
+    // ARRAY_MASK = ARRAY_DIMENSIONS_BIT | ARRAY_VALUES_BIT (0xC0); variant.rs:585
+    // computes the element type id as `encoding_mask & !ARRAY_MASK`, i.e. both
+    // high bits must be cleared, not just 0x80. Using `& 0x7F` here would fold
+    // a set ArrayDimensionsBit (0x40) into the type id, silently corrupting it.
+    final typeId = mask & 0x3F;
+    if ((mask & 0x40) != 0) {
+      // v1 scope: array dimensions (multi-dimensional arrays) are not
+      // supported. Reject cleanly rather than silently mis-parsing.
+      throw FormatException(
+        'OPC UA Binary: Variant array dimensions are not supported '
+        '(typeId=$typeId)',
+      );
+    }
     if (isArray) {
       final length = int32();
       if (length < -1) {

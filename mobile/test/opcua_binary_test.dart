@@ -177,6 +177,40 @@ void main() {
       // Ticks are 100ns; Dart DateTime microsecond precision may lose <1 tick.
       expect(decoded.difference(now).inMilliseconds.abs(), lessThanOrEqualTo(1));
     });
+
+    test('year-10000+ DateTime clamps to i64::MAX ticks on write (FIXTURE, Fix 2)', () {
+      // Rust reference: date_time.rs:310-320 `checked_ticks()` clamps dates
+      // past the OPC UA "endtimes" (Dec 31, 9999 23:59:59Z, MAX_YEAR = 9999)
+      // to i64::MAX (9223372036854775807), mirroring the existing pre-1601
+      // clamp-to-0 on the other end.
+      final farFuture = DateTime.utc(10000, 1, 1);
+      final writer = OpcUaWriter()..dateTime(farFuture);
+      final bytes = writer.take();
+      final reader = ByteData.sublistView(bytes);
+      final ticks = reader.getInt64(0, Endian.little);
+      expect(ticks, 9223372036854775807); // i64::MAX
+    });
+
+    test('date just past endtimes boundary also clamps to i64::MAX (Fix 2)', () {
+      // 10000-01-01 is well past 9999-12-31T23:59:59Z; also check a date
+      // just barely past the boundary second to ensure the comparison uses
+      // ticks, not just year.
+      final justPastEndtimes = DateTime.utc(9999, 12, 31, 23, 59, 59, 1);
+      final writer = OpcUaWriter()..dateTime(justPastEndtimes);
+      final bytes = writer.take();
+      final reader = ByteData.sublistView(bytes);
+      final ticks = reader.getInt64(0, Endian.little);
+      expect(ticks, 9223372036854775807);
+    });
+
+    test('normal date well within range is unaffected by the upper clamp (Fix 2)', () {
+      final known = DateTime.utc(2020, 1, 1);
+      final writer = OpcUaWriter()..dateTime(known);
+      final bytes = writer.take();
+      // Same fixture bytes as the existing 2020-01-01 test above — proves the
+      // clamp logic doesn't perturb normal in-range dates.
+      expect(bytes, _bytes([0, 0, 5, 105, 54, 192, 213, 1]));
+    });
   });
 
   group('Guid encoding', () {
@@ -507,6 +541,75 @@ void main() {
       expect(decoded.isArray, isTrue);
       expect(decoded.value, <int>[]);
     });
+
+    test('LocalizedText array (high-numbered scalar id 21, mask 0x95) round-trips', () {
+      // Regression guard for the type-id mask fix: 0x80 (array) | 0x15 (21,
+      // LocalizedText) == 0x95. Asserts the typeId survives extraction
+      // specifically for a high-numbered scalar id, not just low ids like
+      // Int32(6) where a masking bug could go unnoticed.
+      const items = [
+        OpcLocalizedText(locale: 'en', text: 'Start'),
+        OpcLocalizedText(text: 'Stop'),
+        OpcLocalizedText(),
+      ];
+      final writer = OpcUaWriter()
+        ..variant(const OpcVariant(typeId: 21, value: items, isArray: true));
+      final bytes = writer.take();
+      expect(bytes[0], 0x95);
+      final reader = OpcUaReader(bytes);
+      final decoded = reader.variant();
+      expect(decoded.typeId, 21);
+      expect(decoded.isArray, isTrue);
+      expect(decoded.value, items);
+    });
+
+    test(
+        'Variant array-dimensions bit (0x40) set -> clean FormatException, '
+        'never silent corruption (Fix 1 regression)', () {
+      // Rust reference: variant_type_id.rs:249-253 (ARRAY_DIMENSIONS_BIT =
+      // 0x40, ARRAY_VALUES_BIT = 0x80, ARRAY_MASK = both); variant.rs:585
+      // (`encoding_mask & !ARRAY_MASK`) clears BOTH bits to recover the type
+      // id. Build the encoding byte by hand: 0x80 (array) | 0x40 (dimensions)
+      // | 0x06 (Int32) == 0xC6. The reader must throw before consuming any
+      // array-dimensions body, since v1 does not support that structure.
+      //
+      // The thrown message embeds the extracted typeId, so this test also
+      // catches a mask regression (e.g. `& 0x7F` instead of `& 0x3F`): under
+      // `& 0x7F`, mask 0xC6 & 0x7F == 0x46 (70) rather than the correct
+      // 0xC6 & 0x3F == 0x06 (Int32) — a different message, failing the
+      // `contains('typeId=6')` assertion below.
+      final bytes = _bytes([0xC6, 0xFF, 0xFF, 0xFF, 0xFF]); // mask + garbage
+      final reader = OpcUaReader(bytes);
+      expect(
+        () => reader.variant(),
+        throwsA(
+          isA<FormatException>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              contains('array dimensions are not supported'),
+              contains('typeId=6'),
+            ),
+          ),
+        ),
+      );
+    });
+
+    test('Int32 array (mask 0x86, no dimensions bit) still yields correct typeId', () {
+      // Regression guard: a NORMAL array (0x80 | typeId, no 0x40) must still
+      // decode with the correct typeId extraction under the new `& 0x3F` mask.
+      final writer = OpcUaWriter()
+        ..variant(
+          const OpcVariant(typeId: 6, value: [10, 20, 30], isArray: true),
+        );
+      final bytes = writer.take();
+      expect(bytes[0], 0x86); // 0x80 | 0x06, no 0x40 bit.
+      final reader = OpcUaReader(bytes);
+      final decoded = reader.variant();
+      expect(decoded.typeId, 6);
+      expect(decoded.isArray, isTrue);
+      expect(decoded.value, [10, 20, 30]);
+    });
   });
 
   group('DataValue mask combinations (0x01/0x02/0x04/0x08)', () {
@@ -667,6 +770,87 @@ void main() {
       final reader = OpcUaReader(writer.take());
       final decoded = reader.responseHeader();
       expect(decoded.serviceResult, 0x80010000);
+    });
+
+    test('RequestHeader exact-byte fixture (Fix 3, catches swapped-field bugs)', () {
+      // Field order per Rust reference request_header.rs:103-142
+      // (`BinaryEncoder<RequestHeader>::encode`):
+      //   authentication_token: NodeId
+      //   timestamp: UtcTime (DateTime)
+      //   request_handle: IntegerId (UInt32)
+      //   return_diagnostics: DiagnosticBits.bits() (UInt32)
+      //   audit_entry_id: UAString
+      //   timeout_hint: u32
+      //   additional_header: ExtensionObject
+      //
+      // Every same-typed field below uses a DISTINCT recognizable value so a
+      // swapped-adjacent-field bug (e.g. requestHandle/timeoutHint swapped,
+      // both UInt32) would flip specific bytes and be caught, unlike a plain
+      // round-trip test which cannot distinguish that class of bug.
+      final header = RequestHeader(
+        authToken: const OpcNodeId.numeric(1, 300), // two-byte NodeId (0x01 form)
+        timestamp: DateTime.utc(2020, 1, 1), // known-good ticks fixture (see DateTime group)
+        requestHandle: 0x11111111,
+        returnDiagnostics: 0x22222222,
+        auditEntryId: null,
+        timeoutHint: 0x33333333,
+      );
+      final writer = OpcUaWriter()..requestHeader(header);
+      final bytes = writer.take();
+      expect(
+        bytes,
+        _bytes([
+          // authToken: NodeId.numeric(1, 300) -> 0x01 form: [0x01, ns=1, id=300 LE u16]
+          0x01, 0x01, 0x2C, 0x01,
+          // timestamp: 2020-01-01T00:00:00Z ticks (verified DateTime fixture above)
+          0, 0, 5, 105, 54, 192, 213, 1,
+          // requestHandle: 0x11111111 LE
+          0x11, 0x11, 0x11, 0x11,
+          // returnDiagnostics: 0x22222222 LE
+          0x22, 0x22, 0x22, 0x22,
+          // auditEntryId: null -> Int32(-1)
+          0xFF, 0xFF, 0xFF, 0xFF,
+          // timeoutHint: 0x33333333 LE
+          0x33, 0x33, 0x33, 0x33,
+          // additionalHeader: empty ExtensionObject -> NodeId(0,0) [0x00,0x00] + encoding 0x00
+          0x00, 0x00, 0x00,
+        ]),
+      );
+    });
+
+    test('ResponseHeader exact-byte fixture (Fix 3, catches swapped-field bugs)', () {
+      // Field order per Rust reference response_header.rs:26-63
+      // (`BinaryEncoder<ResponseHeader>::encode`):
+      //   timestamp: UtcTime (DateTime)
+      //   request_handle: IntegerId (UInt32)
+      //   service_result: StatusCode (UInt32)
+      //   service_diagnostics: DiagnosticInfo (empty -> single 0x00 byte)
+      //   string_table: Option<Vec<UAString>> (None -> write_array null -> Int32(-1))
+      //   additional_header: ExtensionObject (empty)
+      final header = ResponseHeader(
+        timestamp: DateTime.utc(2020, 1, 1),
+        requestHandle: 0x44444444,
+        serviceResult: 0x80010000,
+      );
+      final writer = OpcUaWriter()..responseHeader(header);
+      final bytes = writer.take();
+      expect(
+        bytes,
+        _bytes([
+          // timestamp: 2020-01-01T00:00:00Z ticks
+          0, 0, 5, 105, 54, 192, 213, 1,
+          // requestHandle: 0x44444444 LE
+          0x44, 0x44, 0x44, 0x44,
+          // serviceResult: 0x80010000 LE
+          0x00, 0x00, 0x01, 0x80,
+          // empty DiagnosticInfo
+          0x00,
+          // empty string table -> null array -> Int32(-1)
+          0xFF, 0xFF, 0xFF, 0xFF,
+          // additionalHeader: empty ExtensionObject
+          0x00, 0x00, 0x00,
+        ]),
+      );
     });
   });
 
