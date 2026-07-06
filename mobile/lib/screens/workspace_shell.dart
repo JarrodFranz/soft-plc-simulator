@@ -494,6 +494,11 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     if (!mounted) return;
     setState(() {
       _activeProject.name = name;
+      // Rename is a project-level operation (like the other CRUD paths): reset
+      // the undo history to the renamed state so a later undo can't revert the
+      // rename off a stale pre-rename baseline. The active content/view is
+      // unchanged, so the editor is not re-keyed (editor state is preserved).
+      _history.reset(_snapshot());
     });
   }
 
