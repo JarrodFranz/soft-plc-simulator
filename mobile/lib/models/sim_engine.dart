@@ -7,6 +7,7 @@ class RuleRuntime {
   bool pulseOn = true;  // pulse: current phase is the on-phase
   int heldMs = 0;       // delayedSet: how long the condition has held
   final List<double> delayBuf = <double>[]; // deadTime: FIFO of source samples
+  int? noiseState;      // noise: 32-bit xorshift PRNG state, lazily seeded
 }
 
 class SimRuntime {
@@ -93,6 +94,28 @@ void _write(PlcProject p, String path, dynamic value) {
 }
 
 double _clamp(double v, double lo, double hi) => v < lo ? lo : (v > hi ? hi : v);
+
+/// Stable FNV-1a hash of [s], used to seed the per-rule [noise] PRNG from
+/// [SimRule.id]. Deliberately NOT Dart's `String.hashCode` (which is not
+/// guaranteed stable across runs) — this keeps the seed (and therefore the
+/// noise sequence) reproducible within a run and across a serialization
+/// round-trip.
+int _fnv1a(String s) {
+  var h = 0x811c9dc5;
+  for (final c in s.codeUnits) {
+    h = (h ^ c) & 0xffffffff;
+    h = (h * 0x01000193) & 0xffffffff;
+  }
+  return h == 0 ? 0x1a2b3c4d : h; // xorshift needs a non-zero seed
+}
+
+/// One step of a 32-bit xorshift PRNG.
+int _xorshift32(int x) {
+  x = (x ^ ((x << 13) & 0xffffffff)) & 0xffffffff;
+  x = (x ^ (x >> 17)) & 0xffffffff;
+  x = (x ^ ((x << 5) & 0xffffffff)) & 0xffffffff;
+  return x & 0xffffffff;
+}
 
 /// Analog gain for [integrate]/[ramp]: scales the per-second rate by
 /// `source / refValue` when a driving tag is set (1.0 — i.e. unscaled — when
@@ -185,6 +208,20 @@ void applySimRules(PlcProject p, List<SimRule> rules, int dtMs, SimRuntime rt) {
           final idx = st.delayBuf.length > n ? st.delayBuf.length - 1 - n : 0;
           final out = st.delayBuf[idx];
           _write(p, rule.targetPath, _clamp(out, rule.minValue, rule.maxValue));
+        }
+        break;
+      case 'noise':
+        if (cond && rule.sourcePath.isNotEmpty) {
+          final clean = _asDouble(readPath(p, rule.sourcePath));
+          final a = rule.targetValue;
+          if (a <= 0) {
+            _write(p, rule.targetPath, _clamp(clean, rule.minValue, rule.maxValue));
+            break;
+          }
+          st.noiseState = _xorshift32(st.noiseState ?? _fnv1a(rule.id));
+          final u = st.noiseState! / 0xffffffff; // [0,1]
+          final noise = (2 * u - 1) * a; // [-a, a]
+          _write(p, rule.targetPath, _clamp(clean + noise, rule.minValue, rule.maxValue));
         }
         break;
       default:
