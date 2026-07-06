@@ -1,12 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/project_model.dart';
+import '../models/project_history.dart';
 import '../models/sim_engine.dart';
 import '../models/ld_exec.dart';
 import '../models/fbd_exec.dart';
@@ -74,6 +75,15 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   bool _saveInFlight = false;
   bool _savedIndicatorVisible = false;
   bool _saveFailed = false;
+
+  // Undo/Redo history. `_history` snapshots the active project's serialized
+  // JSON; `_editorRevision` bumps whenever the active project is replaced
+  // wholesale (switch/CRUD/undo/redo) so the center editor widget is keyed
+  // fresh instead of trying to diff its old state against the new project.
+  final ProjectHistory _history = ProjectHistory();
+  int _editorRevision = 0;
+
+  String _snapshot() => jsonEncode(_activeProject.toJson());
 
   @override
   void initState() {
@@ -167,6 +177,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'MEMORY';
       }
       _booting = false;
+      _history.reset(_snapshot());
     });
     await repo?.setActiveProjectId(_activeProject.id);
     _startScanLoop();
@@ -209,6 +220,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _fbdRuntime.clear();
       _sfcRuntime.clear();
       _stRuntime.clear();
+      _history.reset(_snapshot());
+      _editorRevision++;
     });
     unawaited(_repo?.setActiveProjectId(proj.id));
   }
@@ -225,6 +238,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   }
 
   Future<void> _runAutosave() async {
+    _history.capture(_snapshot());
     final repo = _repo;
     if (repo == null) return;
     setState(() {
@@ -259,6 +273,83 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     if (_autosaveTimer == null || !_autosaveTimer!.isActive) return;
     _autosaveTimer!.cancel();
     unawaited(_runAutosave());
+  }
+
+  // ── Undo / Redo ──────────────────────────────────────────────────────
+
+  /// Moves one step back in the project history and applies it, if any.
+  /// Cancels a pending debounced autosave and captures the current state
+  /// first, so an in-flight (not-yet-captured) edit isn't lost off the
+  /// front of the undo stack.
+  void _undo() {
+    _autosaveTimer?.cancel();
+    _history.capture(_snapshot());
+    final snap = _history.undo();
+    if (snap != null) {
+      _applySnapshot(snap);
+    }
+  }
+
+  /// Moves one step forward in the project history and applies it, if any.
+  void _redo() {
+    _autosaveTimer?.cancel();
+    _history.capture(_snapshot());
+    final snap = _history.redo();
+    if (snap != null) {
+      _applySnapshot(snap);
+    }
+  }
+
+  /// Restores [json] (a `PlcProject.toJson()` snapshot) as the active
+  /// project: swaps it into `_allProjects` (by id) and `_activeProject`,
+  /// bumps `_editorRevision` so the center editor rebuilds fresh, clears all
+  /// runtimes (their internal state no longer matches the restored
+  /// project), and re-validates the active view. Schedules a debounced
+  /// persist afterward rather than re-capturing synchronously — the
+  /// restored snapshot already equals the history baseline, so the next
+  /// `_history.capture` call is a no-op.
+  void _applySnapshot(String json) {
+    final proj = PlcProject.fromJson(jsonDecode(json) as Map<String, dynamic>);
+    setState(() {
+      final i = _allProjects.indexWhere((p) => p.id == proj.id);
+      if (i != -1) {
+        _allProjects[i] = proj;
+      }
+      _activeProject = proj;
+      _editorRevision++;
+      _simRuntime.byRuleId.clear();
+      _ldRuntime.clear();
+      _fbdRuntime.clear();
+      _sfcRuntime.clear();
+      _stRuntime.clear();
+      _ensureValidView();
+    });
+    _autosaveTimer?.cancel();
+    _autosaveTimer = Timer(_autosaveDebounce, _runAutosave);
+  }
+
+  /// Defensive re-validation of `_activeViewId` after a snapshot restore: if
+  /// it points at a program or HMI that no longer exists in the (possibly
+  /// older/newer) restored project, fall back to the first available HMI or
+  /// program, mirroring `_switchActiveProject`'s fallback logic.
+  void _ensureValidView() {
+    if (_activeViewId.startsWith('HMI:')) {
+      final hmiId = _activeViewId.replaceFirst('HMI:', '');
+      if (_activeProject.hmis.any((h) => h.id == hmiId)) return;
+    } else if (_activeViewId.startsWith('PROGRAM:')) {
+      final progName = _activeViewId.replaceFirst('PROGRAM:', '');
+      if (_activeProject.programs.any((p) => p.name == progName)) return;
+    } else {
+      // MEMORY / SIMIO:rules are always valid views.
+      return;
+    }
+    if (_activeProject.hmis.isNotEmpty) {
+      _activeViewId = 'HMI:${_activeProject.hmis.first.id}';
+    } else if (_activeProject.programs.isNotEmpty) {
+      _activeViewId = 'PROGRAM:${_activeProject.programs.first.name}';
+    } else {
+      _activeViewId = 'MEMORY';
+    }
   }
 
   // ── Project CRUD ─────────────────────────────────────────────────────
@@ -354,6 +445,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _fbdRuntime.clear();
       _sfcRuntime.clear();
       _stRuntime.clear();
+      _history.reset(_snapshot());
+      _editorRevision++;
     });
   }
 
@@ -382,6 +475,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _fbdRuntime.clear();
       _sfcRuntime.clear();
       _stRuntime.clear();
+      _history.reset(_snapshot());
+      _editorRevision++;
     });
   }
 
@@ -399,6 +494,11 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     if (!mounted) return;
     setState(() {
       _activeProject.name = name;
+      // Rename is a project-level operation (like the other CRUD paths): reset
+      // the undo history to the renamed state so a later undo can't revert the
+      // rename off a stale pre-rename baseline. The active content/view is
+      // unchanged, so the editor is not re-keyed (editor state is preserved).
+      _history.reset(_snapshot());
     });
   }
 
@@ -454,6 +554,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _fbdRuntime.clear();
       _sfcRuntime.clear();
       _stRuntime.clear();
+      _history.reset(_snapshot());
+      _editorRevision++;
     });
   }
 
@@ -501,6 +603,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _fbdRuntime.clear();
       _sfcRuntime.clear();
       _stRuntime.clear();
+      _history.reset(_snapshot());
+      _editorRevision++;
     });
   }
 
@@ -614,6 +718,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _fbdRuntime.clear();
       _sfcRuntime.clear();
       _stRuntime.clear();
+      _history.reset(_snapshot());
+      _editorRevision++;
     });
     messenger.showSnackBar(SnackBar(content: Text('Imported "${imported.name}"')));
   }
@@ -771,13 +877,39 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     final expanded = context.isExpanded;
     final compact = context.isCompact;
 
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.keyZ, control: true): _undo,
+        const SingleActivator(LogicalKeyboardKey.keyY, control: true): _redo,
+        const SingleActivator(LogicalKeyboardKey.keyZ, control: true, shift: true): _redo,
+        const SingleActivator(LogicalKeyboardKey.keyZ, meta: true): _undo,
+        const SingleActivator(LogicalKeyboardKey.keyY, meta: true): _redo,
+        const SingleActivator(LogicalKeyboardKey.keyZ, meta: true, shift: true): _redo,
+      },
+      child: Focus(
+        autofocus: true,
+        child: _buildScaffold(context, expanded: expanded, compact: compact),
+      ),
+    );
+  }
+
+  Widget _buildScaffold(BuildContext context, {required bool expanded, required bool compact}) {
     return Scaffold(
       key: _scaffoldKey,
       appBar: AppBar(
         title: Row(
           children: [
-            const Icon(Icons.memory, color: Colors.cyan, size: 22),
-            const SizedBox(width: 10),
+            // Dropped on compact widths: the AppBar actions row is already
+            // busy (run/pause, tag toggle, undo/redo, overflow menu), so
+            // this purely-decorative icon is the cheapest thing to shed to
+            // keep the title's Flexible text from being squeezed into an
+            // overflow, including during transient (mid-animation, e.g.
+            // Drawer opening) frames where the available width briefly
+            // narrows further than its settled value.
+            if (!compact) ...[
+              const Icon(Icons.memory, color: Colors.cyan, size: 22),
+              const SizedBox(width: 10),
+            ],
             Flexible(
               child: Text(
                 'Soft PLC Simulator — ${_activeProject.name}',
@@ -786,7 +918,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                 style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
               ),
             ),
-            const SizedBox(width: 10),
+            SizedBox(width: compact ? 4 : 10),
             _buildSaveStatus(compact: compact),
           ],
         ),
@@ -867,7 +999,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
 
                       // CENTER WORKSPACE: Active View (HMI, Language Editors, or Memory Manager)
                       Expanded(
-                        child: _buildCenterWorkspace(),
+                        child: KeyedSubtree(
+                          key: ValueKey('editor-$_editorRevision-$_activeViewId'),
+                          child: _buildCenterWorkspace(),
+                        ),
                       ),
 
                       // RIGHT DOCK: Toggleable Tag Inspector & Forcing Matrix
@@ -881,7 +1016,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                       ],
                     ],
                   )
-                : _buildCenterWorkspace(),
+                : KeyedSubtree(
+                    key: ValueKey('editor-$_editorRevision-$_activeViewId'),
+                    child: _buildCenterWorkspace(),
+                  ),
           ),
         ],
       ),
@@ -911,6 +1049,27 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       onPressed: () => _openTagDock(context),
     );
 
+    // Undo / Redo project history. On compact widths the AppBar is already
+    // tight (run/pause + tag toggle + these two + overflow menu all have to
+    // fit at 360px), so trim the tap-target padding down from the default
+    // 48px minimum to keep the row from overflowing.
+    final undoButton = IconButton(
+      icon: const Icon(Icons.undo),
+      tooltip: 'Undo',
+      onPressed: _history.canUndo ? _undo : null,
+      iconSize: compact ? 20 : 24,
+      padding: compact ? const EdgeInsets.symmetric(horizontal: 4) : const EdgeInsets.all(8),
+      constraints: compact ? const BoxConstraints() : null,
+    );
+    final redoButton = IconButton(
+      icon: const Icon(Icons.redo),
+      tooltip: 'Redo',
+      onPressed: _history.canRedo ? _redo : null,
+      iconSize: compact ? 20 : 24,
+      padding: compact ? const EdgeInsets.symmetric(horizontal: 4) : const EdgeInsets.all(8),
+      constraints: compact ? const BoxConstraints() : null,
+    );
+
     if (!compact) {
       // Expanded / medium: keep the full original action set.
       return [
@@ -922,6 +1081,9 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
           tooltip: 'Execute Single Scan Step (Step Scan)',
           onPressed: () => _executeScan(),
         ),
+
+        undoButton,
+        redoButton,
 
         const SizedBox(width: 12),
 
@@ -947,10 +1109,15 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       ];
     }
 
-    // Compact: keep only run/stop + tag-toggle inline; overflow the rest into a menu.
+    // Compact: keep only run/stop + tag-toggle + undo/redo inline; overflow
+    // the rest into a menu. Undo/Redo use their own small footprint
+    // (default IconButton constraints already trimmed by the AppBar) so
+    // adding two more icons here does not overflow at 320px.
     return [
       runToggle,
       tagToggle,
+      undoButton,
+      redoButton,
       PopupMenuButton<String>(
         tooltip: 'More actions',
         icon: const Icon(Icons.more_vert),
