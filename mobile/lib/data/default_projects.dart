@@ -41,6 +41,7 @@ abstract class DefaultProjects {
     _fbdPidTankLevelProject(),
     _fbdBatchCounterProject(),
     _fbdPulseOutputProject(),
+    _cascadeTanksProject(),
   ];
 
   // ── 1. Basic Motor Start/Stop (LD) ──────────────────────────────────────
@@ -1074,6 +1075,97 @@ System_Ready := Pump_Motor AND Quality_OK AND NOT Alarm_Active;''',
           HmiComponent(id: 'po1', title: 'Start Btn', type: 'LedIndicatorLight', tagBinding: 'Start_Btn', gridSpanWidth: 1, accentColor: 'amber'),
           HmiComponent(id: 'po2', title: 'Pulse Out', type: 'LedIndicatorLight', tagBinding: 'Pulse_Out', gridSpanWidth: 1, accentColor: 'green'),
           HmiComponent(id: 'po3', title: 'Pulse Elapsed (ms)', type: 'DigitalGaugeDisplay', tagBinding: 'Pulse_ET', gridSpanWidth: 4, accentColor: 'cyan'),
+        ],
+      ),
+    ],
+  );
+
+  // ── 11. Cascade Tanks with Transport Delay (deadTime showcase) ──────────
+  //
+  // Showcase for the `deadTime` sim behaviour (transport dead-time / pure
+  // delay line): Tank_A_Level fills from the (fixed) Feed_Valve opening via
+  // an analog-scaled `integrate` inflow, minus a constant outflow. The level
+  // reaching Tank_B is NOT read directly from Tank_A_Level — it passes
+  // through Transfer_Line, a `deadTime` rule that reproduces Tank_A_Level
+  // delayed by tauSec=3.0s (the transport delay of the pipe between the two
+  // tanks). Tank_B_Level then integrates its own inflow from Transfer_Line
+  // (again analog-scaled) minus a constant outflow.
+  //
+  // Net effect: Tank_A_Level starts rising the instant the scan loop starts
+  // (Feed_Valve is a fixed nonzero opening from t=0), but Tank_B_Level does
+  // not begin rising until the delay line has filled with samples showing
+  // Tank_A_Level's rise — a visible, provable transport lag between the two
+  // tanks. See test/deadtime_cascade_integration_test.dart for the exact
+  // scan-by-scan behavior this produces (Tank_A_Level clearly risen while
+  // Tank_B_Level is still ~its initial value, then Tank_B_Level rising only
+  // after roughly tauSec has elapsed). Falsifiable: with tauSec=0 (or the
+  // deadTime rule removed), Transfer_Line would track Tank_A_Level with zero
+  // delay and Tank_B_Level would rise in lock-step with Tank_A_Level.
+  static PlcProject _cascadeTanksProject() => PlcProject(
+    id: 'proj_cascade_tanks',
+    name: 'Cascade Tanks with Transport Delay',
+    controllerName: 'PLC_CASCADE',
+    scanPeriodMs: 500,
+    tags: [
+      PlcTag(name: 'Feed_Valve', path: 'Internal/Feed_Valve', dataType: 'FLOAT64', value: 60.0, ioType: 'Internal', engineeringUnits: '%', description: 'Manipulated feed valve opening driving inflow into Tank A'),
+      PlcTag(name: 'Tank_A_Level', path: 'Inputs/Tank_A_Level', dataType: 'FLOAT64', value: 10.0, ioType: 'SimulatedInput', engineeringUnits: '%', description: 'Upstream tank level'),
+      PlcTag(name: 'Transfer_Line', path: 'Internal/Transfer_Line', dataType: 'FLOAT64', value: 10.0, ioType: 'Internal', engineeringUnits: '%', description: 'Transport-delayed signal in the pipe carrying Tank A level to Tank B (deadTime of Tank_A_Level)'),
+      PlcTag(name: 'Tank_B_Level', path: 'Inputs/Tank_B_Level', dataType: 'FLOAT64', value: 10.0, ioType: 'SimulatedInput', engineeringUnits: '%', description: 'Downstream tank level, lags Tank A by the transport delay'),
+    ],
+    structDefs: [],
+    simRules: [
+      // Tank A: inflow scaled by the (fixed) Feed_Valve opening — effective
+      // rate = 4.0 %/s * (Feed_Valve/100) = 2.4 %/s at Feed_Valve=60.
+      SimRule(id: 'sim0', name: 'Tank A inflow scaled by Feed_Valve', targetPath: 'Tank_A_Level',
+          behavior: 'integrate', ratePerSec: 4.0, sourcePath: 'Feed_Valve', refValue: 100.0,
+          minValue: 0, maxValue: 100),
+      // Tank A: constant outflow disturbance.
+      SimRule(id: 'sim1', name: 'Tank A constant outflow', targetPath: 'Tank_A_Level',
+          behavior: 'integrate', ratePerSec: -0.5, minValue: 0, maxValue: 100),
+      // Transfer line: the transport dead-time between the two tanks —
+      // Transfer_Line reproduces Tank_A_Level delayed by 3.0 seconds.
+      SimRule(id: 'sim2', name: 'Transfer line transport delay', targetPath: 'Transfer_Line',
+          behavior: 'deadTime', sourcePath: 'Tank_A_Level', tauSec: 3.0,
+          minValue: 0, maxValue: 100),
+      // Tank B: inflow scaled by the delayed Transfer_Line signal — effective
+      // rate = 4.0 %/s * (Transfer_Line/100).
+      SimRule(id: 'sim3', name: 'Tank B inflow scaled by Transfer Line', targetPath: 'Tank_B_Level',
+          behavior: 'integrate', ratePerSec: 4.0, sourcePath: 'Transfer_Line', refValue: 100.0,
+          minValue: 0, maxValue: 100),
+      // Tank B: constant outflow disturbance.
+      SimRule(id: 'sim4', name: 'Tank B constant outflow', targetPath: 'Tank_B_Level',
+          behavior: 'integrate', ratePerSec: -0.5, minValue: 0, maxValue: 100),
+    ],
+    programs: [
+      // The process is entirely sim-driven (the deadTime/integrate rules
+      // above do all the work); this program is a trivial, self-consistent
+      // no-op monitor so the project has a real Continuous task to run,
+      // mirroring how other sim-only demos wire a task.
+      PlcProgram(
+        name: 'CascadeMonitor_FBD',
+        language: 'FunctionBlockDiagram',
+        description: 'Trivial pass-through monitor of Feed_Valve; the cascade itself is entirely sim-driven',
+        fbdBlocks: [
+          FbdBlock(id: 'k_in', type: 'TAG_INPUT', title: 'Feed Valve', tagBinding: 'Feed_Valve', x: 50, y: 80),
+          FbdBlock(id: 'k_out', type: 'TAG_OUTPUT', title: 'Feed Valve Monitor', tagBinding: 'Feed_Valve', x: 320, y: 80),
+        ],
+        fbdWires: [
+          FbdWire(fromBlockId: 'k_in', fromPin: 'OUT', toBlockId: 'k_out', toPin: 'IN'),
+        ],
+      ),
+    ],
+    tasks: [
+      PlcTask(name: 'CascadeMonitorTask', type: 'Continuous', periodMs: 500, programNames: ['CascadeMonitor_FBD']),
+    ],
+    hmis: [
+      HmiScreenDef(
+        id: 'hmi_cascade_tanks',
+        title: 'Cascade Tanks Dashboard',
+        layoutType: 'GridDashboard',
+        components: [
+          HmiComponent(id: 'ct1', title: 'Feed Valve (%)', type: 'DigitalGaugeDisplay', tagBinding: 'Feed_Valve', gridSpanWidth: 4, accentColor: 'amber'),
+          HmiComponent(id: 'ct2', title: 'Tank A Level (%)', type: 'TankGraphicDisplay', tagBinding: 'Tank_A_Level', gridSpanWidth: 4, accentColor: 'cyan'),
+          HmiComponent(id: 'ct3', title: 'Tank B Level (%)', type: 'TankGraphicDisplay', tagBinding: 'Tank_B_Level', gridSpanWidth: 4, accentColor: 'teal'),
         ],
       ),
     ],

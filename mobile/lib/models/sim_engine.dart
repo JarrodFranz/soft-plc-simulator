@@ -6,6 +6,7 @@ class RuleRuntime {
   int phaseMs = 0;      // pulse: elapsed within current on/off phase
   bool pulseOn = true;  // pulse: current phase is the on-phase
   int heldMs = 0;       // delayedSet: how long the condition has held
+  final List<double> delayBuf = <double>[]; // deadTime: FIFO of source samples
 }
 
 class SimRuntime {
@@ -164,6 +165,26 @@ void applySimRules(PlcProject p, List<SimRule> rules, int dtMs, SimRuntime rt) {
           final k = rule.tauSec <= 0 ? 1.0 : (dt / rule.tauSec).clamp(0.0, 1.0);
           final next = cur + (target - cur) * k;
           _write(p, rule.targetPath, _clamp(next, rule.minValue, rule.maxValue));
+        }
+        break;
+      case 'deadTime':
+        if (cond && rule.sourcePath.isNotEmpty) {
+          final src = _asDouble(readPath(p, rule.sourcePath));
+          final n = rule.tauSec <= 0 ? 0 : (rule.tauSec / dt).round();
+          if (n <= 0) {
+            _write(p, rule.targetPath, _clamp(src, rule.minValue, rule.maxValue));
+            break;
+          }
+          // Cap the buffer so an absurd dead time can't grow memory unbounded.
+          final cap = (n + 1) > 100000 ? 100000 : (n + 1);
+          st.delayBuf.add(src);
+          while (st.delayBuf.length > cap) {
+            st.delayBuf.removeAt(0);
+          }
+          // Output the sample from n scans ago; while filling, hold the oldest.
+          final idx = st.delayBuf.length > n ? st.delayBuf.length - 1 - n : 0;
+          final out = st.delayBuf[idx];
+          _write(p, rule.targetPath, _clamp(out, rule.minValue, rule.maxValue));
         }
         break;
       default:

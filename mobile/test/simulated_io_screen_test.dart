@@ -98,6 +98,48 @@ void main() {
 
         expect(tester.takeException(), isNull);
       });
+
+      testWidgets('$sizeLabel: selecting Transport Dead-Time shows source + tau fields and edits update the rule',
+          (tester) async {
+        await setSurface(tester, size);
+        final project = _projectById('proj_st_reactor');
+        await tester.pumpWidget(app(project));
+        await tester.pumpAndSettle();
+
+        await openFirstRuleEditor(tester);
+
+        // Switch behaviour to Transport Dead-Time.
+        await tester.tap(find.byType(DropdownButtonFormField<String>).first);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Transport Dead-Time').last);
+        await tester.pumpAndSettle();
+
+        expect(find.text('Delayed source tag'), findsOneWidget);
+        expect(find.text('Dead time τ (seconds)'), findsOneWidget);
+        expect(find.widgetWithText(TextFormField, 'Min'), findsOneWidget);
+        expect(find.widgetWithText(TextFormField, 'Max'), findsOneWidget);
+
+        // Edit the delayed source tag.
+        final sourceField = find.widgetWithText(TextField, 'Delayed source tag');
+        expect(sourceField, findsOneWidget);
+        await tester.enterText(sourceField, 'Temp_PV');
+        await tester.pump();
+
+        // Edit tau.
+        await tester.enterText(find.widgetWithText(TextFormField, 'Dead time τ (seconds)'), '3.0');
+        await tester.pump();
+
+        // Save.
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Save'));
+        await tester.pumpAndSettle();
+
+        final saved = project.simRules.firstWhere((r) => r.id == 'sim0');
+        expect(saved.behavior, 'deadTime');
+        expect(saved.sourcePath, 'Temp_PV');
+        expect(saved.tauSec, 3.0);
+
+        expect(tester.takeException(), isNull);
+      });
     }
 
     testWidgets('320x568: rule editor opens without overflow', (tester) async {
@@ -127,6 +169,38 @@ void main() {
       await tester.tap(find.byType(DropdownButtonFormField<String>).first);
       await tester.pumpAndSettle();
       await tester.tap(find.text('First-Order Lag (process response)').last);
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('320x568: Transport Dead-Time rule editor opens without overflow', (tester) async {
+      await setSurface(tester, smallPhoneSize);
+      final project = _projectById('proj_st_reactor');
+      await tester.pumpWidget(app(project));
+      await tester.pumpAndSettle();
+
+      await openFirstRuleEditor(tester);
+
+      await tester.tap(find.byType(DropdownButtonFormField<String>).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Transport Dead-Time').last);
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('360x740: Transport Dead-Time rule editor opens without overflow', (tester) async {
+      await setSurface(tester, phoneSize);
+      final project = _projectById('proj_st_reactor');
+      await tester.pumpWidget(app(project));
+      await tester.pumpAndSettle();
+
+      await openFirstRuleEditor(tester);
+
+      await tester.tap(find.byType(DropdownButtonFormField<String>).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Transport Dead-Time').last);
       await tester.pumpAndSettle();
 
       expect(tester.takeException(), isNull);
