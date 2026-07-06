@@ -194,6 +194,15 @@ final DateTime _opcUaEndtimes = DateTime.utc(9999, 12, 31, 23, 59, 59);
 final int _opcUaEndtimesTicks =
     _opcUaEndtimes.difference(_opcUaEpoch).inMicroseconds * 10;
 
+/// i64::MAX (0x7FFFFFFFFFFFFFFF), built from a shift+or rather than the raw
+/// integer literal `9223372036854775807` — that literal token is rejected by
+/// dart2js ("can't be represented exactly in JavaScript") even though the
+/// VM's 64-bit `int` (and `ByteData.setInt64`, which this value is always
+/// fed into) handle the value itself just fine on every platform. Building
+/// it via `1 << 63` (the sign-bit position) minus 1 sidesteps the literal
+/// entirely and compiles identically on web and native.
+const int _int64Max = (1 << 63) - 1;
+
 int _dateTimeToTicks(DateTime? dt) {
   if (dt == null) return 0;
   final utc = dt.isUtc ? dt : dt.toUtc();
@@ -202,7 +211,7 @@ int _dateTimeToTicks(DateTime? dt) {
   final ticks = micros * 10; // 1 microsecond == 10 ticks of 100ns.
   // Mirror Rust's checked_ticks(): clamp dates past the OPC UA endtimes
   // (9999-12-31T23:59:59Z) to i64::MAX rather than overflowing/wrapping.
-  if (ticks > _opcUaEndtimesTicks) return 9223372036854775807; // i64::MAX
+  if (ticks > _opcUaEndtimesTicks) return _int64Max;
   return ticks;
 }
 

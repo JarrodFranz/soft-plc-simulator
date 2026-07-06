@@ -61,6 +61,34 @@ void main() {
       expect(cfg.namespaceUri, 'urn:x');
       expect(cfg.map.nodes, isEmpty);
     });
+
+    test('port defaults to 4840 and round-trips a custom value (WS19 Task 4, additive field)', () {
+      final defaultCfg = OpcUaProtocolConfig(
+        namespaceUri: 'urn:x',
+        map: OpcuaMap(namespaceUri: 'urn:x', nodes: []),
+      );
+      expect(defaultCfg.port, 4840);
+
+      final custom = OpcUaProtocolConfig(
+        namespaceUri: 'urn:x',
+        map: OpcuaMap(namespaceUri: 'urn:x', nodes: []),
+        port: 48401,
+      );
+      final rt = OpcUaProtocolConfig.fromJson(custom.toJson());
+      expect(rt.port, 48401);
+      expect(custom.toJson()['port'], 48401);
+    });
+
+    test('fromJson on a legacy record with no "port" key back-fills the default 4840', () {
+      final cfg = OpcUaProtocolConfig.fromJson({
+        'enabled': true,
+        'namespace_uri': 'urn:x',
+        'map': {
+          'opcua_map': {'namespace_uri': 'urn:x', 'nodes': []},
+        },
+      });
+      expect(cfg.port, 4840);
+    });
   });
 
   group('ProtocolSettings.toJson / fromJson', () {
@@ -138,6 +166,9 @@ void main() {
       expect(project.protocols!.opcua!.map.nodes.length, 3);
       expect(project.protocols!.opcua!.map.nodes[0].tag, 'Start_PB');
       expect(project.protocols!.opcua!.map.nodes[2].access, 'ReadOnly');
+      // A legacy project migrated from the old top-level `opcua_map` has no
+      // `port` key anywhere -> back-fills the default (WS19 Task 4).
+      expect(project.protocols!.opcua!.port, 4840);
     });
 
     test('neither protocols nor opcua_map present -> protocols is null', () {
@@ -213,6 +244,7 @@ void main() {
           enabled: true,
           namespaceUri: 'urn:softplc:rt_proj',
           map: OpcuaMap.autoGenerate(project),
+          port: 48402,
         ),
       );
 
@@ -222,6 +254,7 @@ void main() {
       expect(restored.protocols!.gatewayUrl, project.protocols!.gatewayUrl);
       expect(restored.protocols!.opcua!.enabled, project.protocols!.opcua!.enabled);
       expect(restored.protocols!.opcua!.map.nodes.length, project.protocols!.opcua!.map.nodes.length);
+      expect(restored.protocols!.opcua!.port, 48402);
     });
 
     test('protocols == null round-trips to null and omits the key (back-compat)', () {
@@ -265,6 +298,7 @@ void main() {
       expect(settings.opcua!.enabled, isFalse);
       expect(settings.opcua!.namespaceUri, 'urn:softplc:def_proj');
       expect(settings.opcua!.map.nodes, isNotEmpty);
+      expect(settings.opcua!.port, 4840);
     });
   });
 }
