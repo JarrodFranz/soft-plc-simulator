@@ -86,4 +86,83 @@ void main() {
     // with Tank_A_Level (same scan, no lag) - the assertions above would then
     // fail because bLevelWhenARisen would already be well above initialB+5.
   });
+
+  // The test above only proves Tank_B_Level lags Tank_A_Level - which also
+  // happens purely from the two cascaded integrators even if tauSec were 0
+  // (Tank_B still needs time to integrate up through Transfer_Line). It does
+  // NOT prove the deadTime rule itself is honored. This test asserts the
+  // *exact* dead-time relationship directly: Transfer_Line(now) must equal
+  // Tank_A_Level from n scans ago, where n = round(tauSec / dt). This fails
+  // if tauSec were 0 (Transfer_Line would just equal current Tank_A_Level)
+  // or if the delay length/buffer indexing were wrong.
+  test('Transfer_Line reproduces Tank_A_Level delayed by the dead time', () {
+    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_cascade_tanks');
+    final sim = SimRuntime();
+    final ld = LdExecRuntime();
+    final fbd = FbdRuntime();
+    final sfc = SfcRuntime();
+    final st = StRuntime();
+
+    const scanPeriodMs = 500;
+
+    void scan() {
+      applySimRules(p, p.simRules, scanPeriodMs, sim);
+      executeLdPrograms(p, scanPeriodMs, ld);
+      executeFbdPrograms(p, scanPeriodMs, fbd);
+      executeSfcPrograms(p, scanPeriodMs, sfc);
+      executeStPrograms(p, scanPeriodMs, st);
+    }
+
+    final deadTimeRule = p.simRules.firstWhere((r) => r.behavior == 'deadTime');
+    final tauSec = deadTimeRule.tauSec;
+    // Pin down the demo's documented dead time so the derived `n` below is
+    // meaningful (n=6 at tauSec=3.0s, scanPeriodMs=500 -> dt=0.5s).
+    expect(tauSec, 3.0, reason: 'demo dead time should be 3.0s (n=6 scans at 500ms)');
+
+    // n = number of scans the delay line holds a sample before it is output,
+    // derived from the project's actual tauSec/scan period (mirrors the
+    // production deadTime implementation: n = round(tauSec / dt)).
+    const dtSec = scanPeriodMs / 1000.0;
+    final n = (tauSec / dtSec).round();
+    expect(n, 6);
+
+    const scanCount = 60;
+    final aHistory = <double>[];
+
+    for (var i = 0; i < scanCount; i++) {
+      scan();
+      aHistory.add(_d(p, 'Tank_A_Level'));
+
+      if (i > n) {
+        final transferLine = _d(p, 'Transfer_Line');
+        final aNow = aHistory[i];
+        final aDelayed = aHistory[i - n];
+
+        // Only assert while Tank_A_Level is genuinely still rising (not yet
+        // clamped at 100), so the delayed value provably differs from the
+        // current value - a coincidental equality (e.g. both pegged at the
+        // clamp) would not distinguish a real delay from a zero delay.
+        final stillRising = aNow < 99.0 && (aNow - aDelayed).abs() > 0.5;
+        if (stillRising) {
+          // Pure dead-time check: Transfer_Line(now) must equal Tank_A_Level
+          // from exactly n scans ago. This is an exact FIFO buffer copy, so
+          // the tolerance is small; it fails if tauSec were 0 or n were wrong.
+          expect(transferLine, closeTo(aDelayed, 0.5),
+              reason: 'at scan $i, Transfer_Line ($transferLine) should equal '
+                  'Tank_A_Level from $n scans ago ($aDelayed), not some other '
+                  'value - this is the direct dead-time buffer check');
+
+          // Non-zero-delay check: while Tank_A_Level is actively rising,
+          // Transfer_Line (the delayed value) must be strictly less than the
+          // current Tank_A_Level. At tauSec=0, Transfer_Line would equal
+          // Tank_A_Level exactly (no lag), so this would fail and catch a
+          // zero-delay regression directly.
+          expect(transferLine, lessThan(aNow),
+              reason: 'at scan $i, Transfer_Line ($transferLine) must lag '
+                  'strictly behind the rising Tank_A_Level ($aNow) - equality '
+                  'here would mean the dead time is zero');
+        }
+      }
+    }
+  });
 }
