@@ -422,6 +422,34 @@ void main() {
       expect(renewTokenId, isNot(firstTokenId));
       expect(renewTokenId, greaterThan(0));
     });
+
+    test('MSG with a wrong secureChannelId (but valid tokenId) -> ERR + close', () {
+      // Defense-in-depth regression: _handleMsg must validate the channel id,
+      // not only the token id (consistent with the OPN/CLO paths).
+      final opnFrames = session.onBytes(_buildOpenSecureChannelRequestChunk(
+        secureChannelId: 0,
+        sequenceNumber: 1,
+        requestId: 10,
+      ));
+      final opnReader = OpcUaReader(parseChunk(opnFrames.single).body);
+      opnReader.nodeId();
+      opnReader.responseHeader();
+      opnReader.uint32(); // serverProtocolVersion
+      final channelId = opnReader.uint32();
+      final tokenId = opnReader.uint32();
+
+      final outFrames = session.onBytes(_buildGetEndpointsRequestChunk(
+        secureChannelId: channelId + 999, // wrong channel, correct token
+        tokenId: tokenId,
+        sequenceNumber: 2,
+        requestId: 11,
+        authToken: const OpcNodeId.numeric(0, 0),
+      ));
+      expect(outFrames, hasLength(1));
+      final header = MessageHeader.parse(outFrames.single);
+      expect(header.messageType, 'ERR');
+      expect(session.shouldClose, isTrue);
+    });
   });
 
   group('GetEndpoints', () {

@@ -377,7 +377,11 @@ class OpcUaServerSession {
         'multi-chunk (non-final) messages are not supported',
       );
     }
-    if (_channel == null || chunk.tokenId != _channel!.tokenId) {
+    if (_channel == null ||
+        chunk.secureChannelId != _channel!.channelId ||
+        chunk.tokenId != _channel!.tokenId) {
+      // Defense-in-depth: validate the channel id as well as the token id,
+      // consistent with the OPN (renew) and CLO paths in this file.
       return _err(
         OpcUaStatusCodes.badSecureChannelIdInvalid,
         'unknown or stale secure channel token',
