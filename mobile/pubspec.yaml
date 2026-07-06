@@ -13,10 +13,12 @@ dependencies:
   shared_preferences: ^2.3.2
   file_picker: ^8.1.6
   share_plus: ^10.1.4
+  web_socket_channel: ^3.0.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  stream_channel: ^2.1.4
   flutter_lints: ^4.0.0
   shared_preferences_platform_interface: ^2.4.0
   flutter_launcher_icons: ^0.14.4
