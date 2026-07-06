@@ -395,23 +395,41 @@ void main() {
     expect(p.tags.first.value, equals(100.0)); // clamped, same as legacy test
   });
 
-  test('deadTime: state resets when SimRuntime.byRuleId is cleared', () {
+  test('deadTime restarts its delay line after SimRuntime.byRuleId.clear()', () {
+    // tauSec:0.3 @ dtMs:100 -> n=3 scans, buffer cap = n+1 = 4.
     final rule = SimRule(id: 'r', name: 'dead', targetPath: 'Out', behavior: 'deadTime',
         sourcePath: 'Src', tauSec: 0.3, minValue: 0, maxValue: 1000, condition: []);
     final p = _proj([_tag('Out', 'FLOAT64', 0.0), _tag('Src', 'FLOAT64', 0.0)], [rule]);
     final rt = SimRuntime();
-    (p.tags.firstWhere((t) => t.name == 'Src')).value = 50.0;
-    for (int i = 0; i < 3; i++) {
+
+    // Phase 1: saturate the delay buffer entirely with distinctive value A.
+    (p.tags.firstWhere((t) => t.name == 'Src')).value = 80.0;
+    for (int i = 0; i < 6; i++) {
       applySimRules(p, p.simRules, 100, rt);
     }
-    expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(50.0));
+    expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(80.0),
+        reason: 'buffer should be fully saturated with A (80.0) before clearing');
 
-    // Clear runtime state -> delay line restarts from empty buffer.
+    // Clear runtime state -> a truly-reset delay line restarts from an empty
+    // buffer.
     rt.byRuleId.clear();
-    (p.tags.firstWhere((t) => t.name == 'Out')).value = 0.0;
-    applySimRules(p, p.simRules, 100, rt); // first scan after reset -> buffer had 0, now 1 sample
-    // With a fresh buffer, Out should hold the (only buffered) sample, not
-    // jump straight back to the old delayed value.
-    expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(50.0));
+
+    // Phase 2: switch the source to a different value B and run exactly one
+    // scan. A freshly-emptied buffer holds only the new sample B, so it must
+    // read B immediately. A stale, still-saturated buffer (i.e. clear() did
+    // NOT actually empty delayBuf) would instead push B onto the full A-filled
+    // buffer and still output the old delayed value A (80.0) - so this
+    // distinguishes a real reset from a no-op.
+    (p.tags.firstWhere((t) => t.name == 'Src')).value = 20.0;
+    applySimRules(p, p.simRules, 100, rt);
+    expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(20.0),
+        reason: 'a reset buffer holds only the new sample B (20.0); a stale '
+            'buffer would still output the old delayed value A (80.0)');
+
+    // A clean restart: while the fresh buffer refills, Out keeps holding B.
+    for (int i = 0; i < 2; i++) {
+      applySimRules(p, p.simRules, 100, rt);
+      expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(20.0));
+    }
   });
 }
