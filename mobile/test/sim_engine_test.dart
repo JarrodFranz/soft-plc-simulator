@@ -432,4 +432,146 @@ void main() {
       expect(p.tags.firstWhere((t) => t.name == 'Out').value, equals(20.0));
     }
   });
+
+  // --- WS14 Task 1: measurement noise (clean source + bounded deterministic noise) ---
+
+  test('noise: bounded within [-A, A] of the clean source over many scans', () {
+    final rule = SimRule(id: 'r', name: 'noise', targetPath: 'Meas', behavior: 'noise',
+        sourcePath: 'Clean', targetValue: 2.0, minValue: 0, maxValue: 100, condition: []);
+    final p = _proj([_tag('Meas', 'FLOAT64', 0.0), _tag('Clean', 'FLOAT64', 50.0)], [rule]);
+    final rt = SimRuntime();
+    for (int i = 0; i < 200; i++) {
+      applySimRules(p, p.simRules, 100, rt);
+      final meas = p.tags.firstWhere((t) => t.name == 'Meas').value as double;
+      expect(meas, inInclusiveRange(48.0, 52.0));
+    }
+  });
+
+  test('noise: varies scan-to-scan (not constant)', () {
+    final rule = SimRule(id: 'r', name: 'noise', targetPath: 'Meas', behavior: 'noise',
+        sourcePath: 'Clean', targetValue: 2.0, minValue: 0, maxValue: 100, condition: []);
+    final p = _proj([_tag('Meas', 'FLOAT64', 0.0), _tag('Clean', 'FLOAT64', 50.0)], [rule]);
+    final rt = SimRuntime();
+    final seen = <double>{};
+    for (int i = 0; i < 30; i++) {
+      applySimRules(p, p.simRules, 100, rt);
+      seen.add(p.tags.firstWhere((t) => t.name == 'Meas').value as double);
+    }
+    expect(seen.length, greaterThan(1));
+    expect(seen.reduce((a, b) => a > b ? a : b) - seen.reduce((a, b) => a < b ? a : b), greaterThan(0.0));
+  });
+
+  test('noise: no drift — holding Clean fixed for 500 scans never exceeds A', () {
+    final rule = SimRule(id: 'r', name: 'noise', targetPath: 'Meas', behavior: 'noise',
+        sourcePath: 'Clean', targetValue: 2.0, minValue: 0, maxValue: 100, condition: []);
+    final p = _proj([_tag('Meas', 'FLOAT64', 0.0), _tag('Clean', 'FLOAT64', 50.0)], [rule]);
+    final rt = SimRuntime();
+    for (int i = 0; i < 500; i++) {
+      applySimRules(p, p.simRules, 100, rt);
+      final meas = p.tags.firstWhere((t) => t.name == 'Meas').value as double;
+      expect((meas - 50.0).abs(), lessThanOrEqualTo(2.0),
+          reason: 'an in-place += random-walk bug would grow this beyond A over 500 scans');
+    }
+  });
+
+  test('noise: deterministic — same rule id + fresh SimRuntime reproduces identical sequence', () {
+    SimRule makeRule(String id) => SimRule(id: id, name: 'noise', targetPath: 'Meas', behavior: 'noise',
+        sourcePath: 'Clean', targetValue: 2.0, minValue: 0, maxValue: 100, condition: []);
+
+    List<double> runSeq(String ruleId) {
+      final rule = makeRule(ruleId);
+      final p = _proj([_tag('Meas', 'FLOAT64', 0.0), _tag('Clean', 'FLOAT64', 50.0)], [rule]);
+      final rt = SimRuntime();
+      final seq = <double>[];
+      for (int i = 0; i < 50; i++) {
+        applySimRules(p, p.simRules, 100, rt);
+        seq.add(p.tags.firstWhere((t) => t.name == 'Meas').value as double);
+      }
+      return seq;
+    }
+
+    final seqA1 = runSeq('sameId');
+    final seqA2 = runSeq('sameId');
+    expect(seqA1, equals(seqA2));
+
+    final seqB = runSeq('differentId');
+    expect(seqB, isNot(equals(seqA1)));
+  });
+
+  test('noise: A <= 0 is pass-through (Meas == clamp(Clean) every scan, no jitter)', () {
+    final rule = SimRule(id: 'r', name: 'noise', targetPath: 'Meas', behavior: 'noise',
+        sourcePath: 'Clean', targetValue: 0.0, minValue: 0, maxValue: 100, condition: []);
+    final p = _proj([_tag('Meas', 'FLOAT64', 0.0), _tag('Clean', 'FLOAT64', 50.0)], [rule]);
+    final rt = SimRuntime();
+    for (int i = 0; i < 10; i++) {
+      applySimRules(p, p.simRules, 100, rt);
+      expect(p.tags.firstWhere((t) => t.name == 'Meas').value, equals(50.0));
+    }
+  });
+
+  test('noise: clamps near a bound and does not overwrite a forced target', () {
+    final clampRule = SimRule(id: 'r', name: 'noise', targetPath: 'Meas', behavior: 'noise',
+        sourcePath: 'Clean', targetValue: 5.0, minValue: 0, maxValue: 100, condition: []);
+    final p = _proj([_tag('Meas', 'FLOAT64', 0.0), _tag('Clean', 'FLOAT64', 99.0)], [clampRule]);
+    final rt = SimRuntime();
+    for (int i = 0; i < 50; i++) {
+      applySimRules(p, p.simRules, 100, rt);
+      final meas = p.tags.firstWhere((t) => t.name == 'Meas').value as double;
+      expect(meas, lessThanOrEqualTo(100.0));
+      expect(meas, greaterThanOrEqualTo(94.0));
+    }
+
+    final forcedRule = SimRule(id: 'r2', name: 'noise2', targetPath: 'Meas2', behavior: 'noise',
+        sourcePath: 'Clean2', targetValue: 5.0, minValue: 0, maxValue: 100, condition: []);
+    final p2 = _proj(
+        [_tag('Meas2', 'FLOAT64', 0.0, forced: true, fv: 7.0), _tag('Clean2', 'FLOAT64', 50.0)], [forcedRule]);
+    applySimRules(p2, p2.simRules, 100, SimRuntime());
+    expect(p2.tags.firstWhere((t) => t.name == 'Meas2').value, equals(0.0)); // untouched (forced)
+  });
+
+  test('noise: false condition writes nothing', () {
+    final rule = SimRule(id: 'r', name: 'noise', targetPath: 'Meas', behavior: 'noise',
+        sourcePath: 'Clean', targetValue: 2.0, minValue: 0, maxValue: 100,
+        condition: [_cl('Run', '==', 'true')]);
+    final p = _proj(
+        [_tag('Meas', 'FLOAT64', 3.0), _tag('Clean', 'FLOAT64', 50.0), _tag('Run', 'BOOL', false)], [rule]);
+    applySimRules(p, p.simRules, 100, SimRuntime());
+    expect(p.tags.firstWhere((t) => t.name == 'Meas').value, equals(3.0)); // unchanged
+  });
+
+  test('noise: back-compat spot-check — existing integrate rule unaffected', () {
+    final rule = SimRule(id: 'r', name: 'fill', targetPath: 'Lvl', behavior: 'integrate',
+        ratePerSec: 10.0, minValue: 0, maxValue: 100, condition: []);
+    final p = _proj([_tag('Lvl', 'FLOAT64', 0.0)], [rule]);
+    final rt = SimRuntime();
+    applySimRules(p, p.simRules, 1000, rt); // +10
+    expect(p.tags.first.value, closeTo(10.0, 0.001));
+    for (int i = 0; i < 20; i++) {
+      applySimRules(p, p.simRules, 1000, rt);
+    }
+    expect(p.tags.first.value, equals(100.0)); // clamped, same as legacy test
+  });
+
+  test('noise: SimRuntime.byRuleId.clear() re-seeds and reproduces the same sequence from the start', () {
+    final rule = SimRule(id: 'r', name: 'noise', targetPath: 'Meas', behavior: 'noise',
+        sourcePath: 'Clean', targetValue: 2.0, minValue: 0, maxValue: 100, condition: []);
+    final p = _proj([_tag('Meas', 'FLOAT64', 0.0), _tag('Clean', 'FLOAT64', 50.0)], [rule]);
+    final rt = SimRuntime();
+
+    final firstRun = <double>[];
+    for (int i = 0; i < 10; i++) {
+      applySimRules(p, p.simRules, 100, rt);
+      firstRun.add(p.tags.firstWhere((t) => t.name == 'Meas').value as double);
+    }
+
+    rt.byRuleId.clear();
+
+    final secondRun = <double>[];
+    for (int i = 0; i < 10; i++) {
+      applySimRules(p, p.simRules, 100, rt);
+      secondRun.add(p.tags.firstWhere((t) => t.name == 'Meas').value as double);
+    }
+
+    expect(secondRun, equals(firstRun));
+  });
 }

@@ -26,6 +26,7 @@ const List<String> _behaviors = [
   'integrate',
   'firstOrderLag',
   'deadTime',
+  'noise',
 ];
 
 const Map<String, String> _behaviorLabels = {
@@ -36,6 +37,7 @@ const Map<String, String> _behaviorLabels = {
   'integrate': 'Integrate',
   'firstOrderLag': 'First-Order Lag (process response)',
   'deadTime': 'Transport Dead-Time',
+  'noise': 'Measurement Noise',
 };
 const List<String> _comparators = ['>', '<', '>=', '<=', '==', '!='];
 
@@ -72,6 +74,8 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
         return 'lag τ=${r.tauSec}s → ${r.sourcePath.isNotEmpty ? r.sourcePath : r.targetValue}';
       case 'deadTime':
         return 'dead time τ=${r.tauSec}s of ${r.sourcePath.isNotEmpty ? r.sourcePath : '(no source)'}';
+      case 'noise':
+        return 'noise ±${r.targetValue} of ${r.sourcePath.isNotEmpty ? r.sourcePath : '(no source)'}';
       default:
         return r.behavior;
     }
@@ -307,6 +311,21 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
         ),
       ));
       w.add(_numField('Dead time τ (seconds)', r.tauSec, (v) => r.tauSec = v));
+      w.add(_numField('Min', r.minValue, (v) => r.minValue = v));
+      w.add(_numField('Max', r.maxValue, (v) => r.maxValue = v));
+    }
+    if (r.behavior == 'noise') {
+      w.add(Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: TagAutocompleteField(
+          options: paths,
+          initialValue: r.sourcePath,
+          label: 'Clean source tag',
+          allowFreeText: true,
+          onChanged: (v) => setDlg(() => r.sourcePath = v),
+        ),
+      ));
+      w.add(_numField('Noise amplitude (±)', r.targetValue, (v) => r.targetValue = v));
       w.add(_numField('Min', r.minValue, (v) => r.minValue = v));
       w.add(_numField('Max', r.maxValue, (v) => r.maxValue = v));
     }
