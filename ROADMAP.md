@@ -116,7 +116,7 @@
 
 ---
 
-## Phase 9: Advanced Process Simulation Engine
+## Phase 9: Advanced Process Simulation Engine ✅
 - **Objective**: Built-in physical process models (PID loops, thermal dynamics, multi-tank flow systems).
 - **Deliverables**:
   - **Analog-scaled rates** ✅ — an optional actuator tag (`sourcePath` + `refValue`) proportionally drives an `integrate`/`ramp` rate, so a PLC's analog output modulates the process (real closed-loop control); off/byte-identical when unset.
@@ -126,8 +126,9 @@
   - **IEC 61131-3 counter function blocks** ✅ — edge-triggered `CTU`/`CTD`/`CTUD` FBD blocks (`CU/R/PV→Q/CV`, `CD/LD/PV→Q/CV`, `CU/CD/R/LD/PV→QU/QD/CV`) with per-block state in `FbdRuntime` (cleared on project switch), reset/load priority, `CV` floored at 0, and palette entries. A "Batch Counter" demo counts pulsed part arrivals to a preset, raises `Batch_Done`, and self-resets via one-scan-delayed tag feedback (cycle-free) — verified by a falsifiable closed-loop counting test plus mutation-checked edge-trigger coverage.
   - **IEC 61131-3 edge detectors + pulse timer** ✅ — `R_TRIG`/`F_TRIG` (`CLK→Q` one-scan edge pulse) and the non-retriggerable `TP` pulse timer (`IN/PT→Q/ET`, fixed-width pulse using the scan clock), with per-block state in `FbdRuntime` (cleared on project switch) and palette entries. A "Pulse Output" demo gates a fixed 3000 ms `TP` pulse from a simulated button's rising edge (`R_TRIG`), so the output pulse width is independent of how long the button is held — verified by a falsifiable closed-loop test plus a mutation-locked non-retrigger/ET-hold test. This completes the standard IEC 61131-3 FBD function-block library (timers, PID, counters, edge/pulse).
   - **Transport dead-time + coupled tanks** ✅ — a `deadTime` Simulated-I/O behaviour outputs a source signal delayed by a dead time (`τ` seconds) via a bounded per-rule FIFO buffer (pass-through at `τ≤0`, clamped, force-aware, cleared on project switch), reusing existing rule fields (no serialization change) and configurable in the editor. A "Cascade Tanks with Transport Delay" demo couples two tanks through a 3 s transport line so the downstream tank visibly lags the upstream one — verified by pure engine step/ramp delay tests plus a direct `Transfer_Line == Tank_A[n scans ago]` assertion (mutation-checked to fail at `τ=0`).
-  - Auto-tune, multi-variable (MIMO) coupled plant models, nonlinear valve curves, and measurement noise (needs a deterministic seeded PRNG to keep the round-trip guard green — a workstream of its own). ⏳ Planned
-- **Status**: 🔄 **ACTIVE — analog rates + first-order lag + thermal showcase + PID (tank-level demo) + CTU/CTD/CTUD counters (batch demo) + R_TRIG/F_TRIG/TP edge & pulse blocks (pulse demo) + transport dead-time & coupled cascade tanks shipped; the standard IEC FBD function-block library is complete; auto-tune/MIMO/noise remain**
+  - **Measurement noise** ✅ — a `noise` Simulated-I/O behaviour reads a clean source tag and writes `measured = clean + bounded uniform noise (±amplitude)` to a *separate* tag, so it is non-accumulating (no random-walk drift). The noise is deterministic — a per-rule xorshift PRNG seeded from a stable FNV-1a hash of `rule.id` (no `Math.random`/clock) — so a project and its serialized round-trip produce the identical sequence and the 20-scan scan-equivalence guard stays green. Reuses existing rule fields (no serialization change), configurable in the editor. A "Noisy Level Measurement" demo shows a smooth true level, a jittery bounded measurement, and a first-order-lag-filtered reading — verified by bounded/varies/no-drift/determinism engine tests plus a filter-attenuation integration test.
+  - Auto-tune, multi-variable (MIMO) coupled plant models, nonlinear valve curves, and Gaussian/pink noise & per-sensor drift. ⏳ Planned
+- **Status**: ✅ **COMPLETED — analog rates, first-order lag, PID, the full IEC FBD function-block library (timers/counters/edge/pulse), transport dead-time + coupled tanks, and deterministic measurement noise all shipped with showcase demos; MIMO/auto-tune/nonlinear/richer-noise models remain as future enhancements**
 
 ---
 
