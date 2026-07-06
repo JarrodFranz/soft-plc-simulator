@@ -71,6 +71,18 @@ void main() {
       expect(fbdInputPins('CTUD'), ['CU', 'CD', 'R', 'LD', 'PV']);
     });
 
+    test('R_TRIG is CLK', () {
+      expect(fbdInputPins('R_TRIG'), ['CLK']);
+    });
+
+    test('F_TRIG is CLK', () {
+      expect(fbdInputPins('F_TRIG'), ['CLK']);
+    });
+
+    test('TP is IN, PT', () {
+      expect(fbdInputPins('TP'), ['IN', 'PT']);
+    });
+
     test('unknown type -> empty, never throws', () {
       expect(fbdInputPins('NOT_A_REAL_TYPE'), isEmpty);
       expect(fbdInputPins(''), isEmpty);
@@ -115,6 +127,18 @@ void main() {
 
     test('CTUD -> QU, QD, CV', () {
       expect(fbdOutputPins('CTUD'), ['QU', 'QD', 'CV']);
+    });
+
+    test('R_TRIG -> Q', () {
+      expect(fbdOutputPins('R_TRIG'), ['Q']);
+    });
+
+    test('F_TRIG -> Q', () {
+      expect(fbdOutputPins('F_TRIG'), ['Q']);
+    });
+
+    test('TP -> Q, ET', () {
+      expect(fbdOutputPins('TP'), ['Q', 'ET']);
     });
 
     test('unknown type -> empty, never throws', () {

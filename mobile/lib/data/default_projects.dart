@@ -40,6 +40,7 @@ abstract class DefaultProjects {
     _allWaterProject(),
     _fbdPidTankLevelProject(),
     _fbdBatchCounterProject(),
+    _fbdPulseOutputProject(),
   ];
 
   // ── 1. Basic Motor Start/Stop (LD) ──────────────────────────────────────
@@ -1000,6 +1001,79 @@ System_Ready := Pump_Motor AND Quality_OK AND NOT Alarm_Active;''',
           HmiComponent(id: 'bc2', title: 'Batch Size', type: 'NumericSliderInput', tagBinding: 'Batch_Size', gridSpanWidth: 4, accentColor: 'teal'),
           HmiComponent(id: 'bc3', title: 'Batch Done', type: 'LedIndicatorLight', tagBinding: 'Batch_Done', gridSpanWidth: 1, accentColor: 'green'),
           HmiComponent(id: 'bc4', title: 'Part Sensor', type: 'LedIndicatorLight', tagBinding: 'Part_Sensor', gridSpanWidth: 1, accentColor: 'amber'),
+        ],
+      ),
+    ],
+  );
+
+  // ── 10. FBD — Pulse Output (R_TRIG + TP) ────────────────────────────────
+  //
+  // Showcase for the R_TRIG edge detector gating a TP (pulse timer): each
+  // rising edge of Start_Btn (button press) fires exactly one Q pulse on
+  // R_TRIG, which starts TP. TP then holds Pulse_Out true for Pulse_Time ms
+  // REGARDLESS of how long Start_Btn stays held — TP is non-retriggerable,
+  // so further edges while a pulse is running are ignored, and without
+  // R_TRIG a level-driven TP.IN would still one-shot on the first rising
+  // edge (TP itself edge-detects IN internally) but a retriggerable timer
+  // would extend the pulse for as long as the button is held; without TP
+  // the output would simply follow the button. The sim rule drives
+  // Start_Btn with an on-phase (5000ms) deliberately LONGER than Pulse_Time
+  // (3000ms) so the demo visibly proves the output pulse width is set by
+  // TP, not by the button hold. See test/pulse_loop_integration_test.dart
+  // for the exact scan-by-scan behavior this produces.
+  static PlcProject _fbdPulseOutputProject() => PlcProject(
+    id: 'proj_pulse_output',
+    name: 'Pulse Output',
+    controllerName: 'PLC_PULSE',
+    scanPeriodMs: 100,
+    tags: [
+      PlcTag(name: 'Start_Btn', path: 'Inputs/Start_Btn', dataType: 'BOOL', value: false, ioType: 'SimulatedInput', description: 'Momentary start button (simulated press)'),
+      PlcTag(name: 'Pulse_Time', path: 'Internal/Pulse_Time', dataType: 'INT32', value: 3000, ioType: 'Internal', description: 'Fixed pulse width in ms (TP.PT preset)'),
+      PlcTag(name: 'Pulse_Out', path: 'Outputs/Pulse_Out', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Fixed-width one-shot pulse (TP.Q), gated by the Start_Btn rising edge (R_TRIG.Q)'),
+      PlcTag(name: 'Pulse_ET', path: 'Outputs/Pulse_ET', dataType: 'INT32', value: 0, ioType: 'SimulatedOutput', description: 'Elapsed time of the current/last pulse in ms (TP.ET)'),
+    ],
+    structDefs: [],
+    simRules: [
+      // Button presses: on 5000ms (well past Pulse_Time=3000ms), off 2000ms —
+      // the on-phase deliberately outlasts the pulse width so the demo proves
+      // Pulse_Out is timed by TP, not by how long Start_Btn is held.
+      SimRule(id: 'sim0', name: 'Start button presses (held longer than Pulse_Time)', targetPath: 'Start_Btn',
+          behavior: 'pulse', onMs: 5000, offMs: 2000),
+    ],
+    programs: [
+      PlcProgram(
+        name: 'PulseOut_FBD',
+        language: 'FunctionBlockDiagram',
+        description: 'R_TRIG detects the Start_Btn rising edge to start a non-retriggerable TP pulse of Pulse_Time ms',
+        fbdBlocks: [
+          FbdBlock(id: 'u_btn', type: 'TAG_INPUT', title: 'Start Btn', tagBinding: 'Start_Btn', x: 50, y: 80),
+          FbdBlock(id: 'u_pt', type: 'TAG_INPUT', title: 'Pulse Time', tagBinding: 'Pulse_Time', x: 50, y: 260),
+          FbdBlock(id: 'u_rtrig', type: 'R_TRIG', title: 'Btn Rising Edge', tagBinding: '', x: 300, y: 80),
+          FbdBlock(id: 'u_tp', type: 'TP', title: 'Output Pulse', tagBinding: '', x: 560, y: 150),
+          FbdBlock(id: 'u_out', type: 'TAG_OUTPUT', title: 'Pulse Out', tagBinding: 'Pulse_Out', x: 820, y: 100),
+          FbdBlock(id: 'u_et', type: 'TAG_OUTPUT', title: 'Pulse ET', tagBinding: 'Pulse_ET', x: 820, y: 220),
+        ],
+        fbdWires: [
+          FbdWire(fromBlockId: 'u_btn', fromPin: 'OUT', toBlockId: 'u_rtrig', toPin: 'CLK'),
+          FbdWire(fromBlockId: 'u_rtrig', fromPin: 'Q', toBlockId: 'u_tp', toPin: 'IN'),
+          FbdWire(fromBlockId: 'u_pt', fromPin: 'OUT', toBlockId: 'u_tp', toPin: 'PT'),
+          FbdWire(fromBlockId: 'u_tp', fromPin: 'Q', toBlockId: 'u_out', toPin: 'IN'),
+          FbdWire(fromBlockId: 'u_tp', fromPin: 'ET', toBlockId: 'u_et', toPin: 'IN'),
+        ],
+      ),
+    ],
+    tasks: [
+      PlcTask(name: 'PulseOutTask', type: 'Continuous', periodMs: 100, programNames: ['PulseOut_FBD']),
+    ],
+    hmis: [
+      HmiScreenDef(
+        id: 'hmi_pulse_output',
+        title: 'Pulse Output Dashboard',
+        layoutType: 'GridDashboard',
+        components: [
+          HmiComponent(id: 'po1', title: 'Start Btn', type: 'LedIndicatorLight', tagBinding: 'Start_Btn', gridSpanWidth: 1, accentColor: 'amber'),
+          HmiComponent(id: 'po2', title: 'Pulse Out', type: 'LedIndicatorLight', tagBinding: 'Pulse_Out', gridSpanWidth: 1, accentColor: 'green'),
+          HmiComponent(id: 'po3', title: 'Pulse Elapsed (ms)', type: 'DigitalGaugeDisplay', tagBinding: 'Pulse_ET', gridSpanWidth: 4, accentColor: 'cyan'),
         ],
       ),
     ],

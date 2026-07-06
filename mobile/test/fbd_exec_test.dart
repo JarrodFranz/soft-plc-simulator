@@ -854,4 +854,343 @@ void main() {
       expect(readPath(p, 'CvOut'), equals(3));
     });
   });
+
+  group('R_TRIG', () {
+    PlcProject buildRTrig() {
+      final blocks = <FbdBlock>[
+        FbdBlock(id: 'clk', type: 'TAG_INPUT', title: '', tagBinding: 'Clk'),
+        FbdBlock(id: 'rt', type: 'R_TRIG', title: ''),
+        FbdBlock(id: 'oq', type: 'TAG_OUTPUT', title: '', tagBinding: 'QOut'),
+      ];
+      final wires = <FbdWire>[
+        FbdWire(fromBlockId: 'clk', fromPin: 'OUT', toBlockId: 'rt', toPin: 'CLK'),
+        FbdWire(fromBlockId: 'rt', fromPin: 'Q', toBlockId: 'oq', toPin: 'IN'),
+      ];
+      return _proj([
+        _tag('Clk', 'BOOL', false), _tag('QOut', 'BOOL', false),
+      ], _fbd(blocks, wires));
+    }
+
+    test('CLK already true on scan 1 IS a rising edge (prevCLK defaults false)', () {
+      final p = buildRTrig();
+      final rt = FbdRuntime();
+      writePath(p, 'Clk', true);
+      _run(p, rt);
+      expect(readPath(p, 'QOut'), isTrue);
+    });
+
+    test('holding CLK true across scans -> Q true first scan only', () {
+      final p = buildRTrig();
+      final rt = FbdRuntime();
+      writePath(p, 'Clk', true);
+      _run(p, rt);
+      expect(readPath(p, 'QOut'), isTrue);
+
+      _run(p, rt); // still held true, no new edge
+      expect(readPath(p, 'QOut'), isFalse);
+
+      _run(p, rt);
+      expect(readPath(p, 'QOut'), isFalse);
+    });
+
+    test('toggle CLK false then true -> Q true again for one scan', () {
+      final p = buildRTrig();
+      final rt = FbdRuntime();
+      writePath(p, 'Clk', true);
+      _run(p, rt);
+      expect(readPath(p, 'QOut'), isTrue);
+
+      writePath(p, 'Clk', false);
+      _run(p, rt);
+      expect(readPath(p, 'QOut'), isFalse);
+
+      writePath(p, 'Clk', true);
+      _run(p, rt);
+      expect(readPath(p, 'QOut'), isTrue);
+
+      _run(p, rt);
+      expect(readPath(p, 'QOut'), isFalse);
+    });
+
+    test('unwired CLK -> Q false, no throw', () {
+      final blocks = <FbdBlock>[
+        FbdBlock(id: 'rt', type: 'R_TRIG', title: ''),
+        FbdBlock(id: 'oq', type: 'TAG_OUTPUT', title: '', tagBinding: 'QOut'),
+      ];
+      final wires = <FbdWire>[
+        FbdWire(fromBlockId: 'rt', fromPin: 'Q', toBlockId: 'oq', toPin: 'IN'),
+      ];
+      final p = _proj([_tag('QOut', 'BOOL', true)], _fbd(blocks, wires));
+      _run(p);
+      expect(readPath(p, 'QOut'), isFalse);
+    });
+
+    test('rt.clear() resets prevCLK edge state', () {
+      final p = buildRTrig();
+      final rt = FbdRuntime();
+      writePath(p, 'Clk', true);
+      _run(p, rt);
+      expect(readPath(p, 'QOut'), isTrue);
+      _run(p, rt);
+      expect(readPath(p, 'QOut'), isFalse);
+
+      rt.clear();
+      _run(p, rt); // CLK still true, but state cleared -> edge again
+      expect(readPath(p, 'QOut'), isTrue);
+    });
+  });
+
+  group('F_TRIG', () {
+    PlcProject buildFTrig() {
+      final blocks = <FbdBlock>[
+        FbdBlock(id: 'clk', type: 'TAG_INPUT', title: '', tagBinding: 'Clk'),
+        FbdBlock(id: 'ft', type: 'F_TRIG', title: ''),
+        FbdBlock(id: 'oq', type: 'TAG_OUTPUT', title: '', tagBinding: 'QOut'),
+      ];
+      final wires = <FbdWire>[
+        FbdWire(fromBlockId: 'clk', fromPin: 'OUT', toBlockId: 'ft', toPin: 'CLK'),
+        FbdWire(fromBlockId: 'ft', fromPin: 'Q', toBlockId: 'oq', toPin: 'IN'),
+      ];
+      return _proj([
+        _tag('Clk', 'BOOL', false), _tag('QOut', 'BOOL', false),
+      ], _fbd(blocks, wires));
+    }
+
+    test('CLK starting false -> no spurious Q on scan 1', () {
+      final p = buildFTrig();
+      final rt = FbdRuntime();
+      _run(p, rt); // CLK false, prevCLK defaults false -> no falling edge
+      expect(readPath(p, 'QOut'), isFalse);
+    });
+
+    test('CLK true then false -> Q true one scan on falling edge', () {
+      final p = buildFTrig();
+      final rt = FbdRuntime();
+      writePath(p, 'Clk', true);
+      _run(p, rt);
+      expect(readPath(p, 'QOut'), isFalse);
+
+      writePath(p, 'Clk', false);
+      _run(p, rt);
+      expect(readPath(p, 'QOut'), isTrue);
+
+      _run(p, rt); // held false, no new edge
+      expect(readPath(p, 'QOut'), isFalse);
+    });
+
+    test('unwired CLK -> Q false, no throw', () {
+      final blocks = <FbdBlock>[
+        FbdBlock(id: 'ft', type: 'F_TRIG', title: ''),
+        FbdBlock(id: 'oq', type: 'TAG_OUTPUT', title: '', tagBinding: 'QOut'),
+      ];
+      final wires = <FbdWire>[
+        FbdWire(fromBlockId: 'ft', fromPin: 'Q', toBlockId: 'oq', toPin: 'IN'),
+      ];
+      final p = _proj([_tag('QOut', 'BOOL', true)], _fbd(blocks, wires));
+      _run(p);
+      expect(readPath(p, 'QOut'), isFalse);
+    });
+
+    test('rt.clear() resets prevCLK edge state', () {
+      final p = buildFTrig();
+      final rt = FbdRuntime();
+      writePath(p, 'Clk', true);
+      _run(p, rt);
+      writePath(p, 'Clk', false);
+      _run(p, rt);
+      expect(readPath(p, 'QOut'), isTrue);
+      _run(p, rt);
+      expect(readPath(p, 'QOut'), isFalse);
+
+      rt.clear();
+      _run(p, rt); // CLK still false, but state cleared -> prevCLK defaults false, no edge
+      expect(readPath(p, 'QOut'), isFalse);
+    });
+  });
+
+  group('TP', () {
+    PlcProject buildTp({String pt = '300'}) {
+      final blocks = <FbdBlock>[
+        FbdBlock(id: 'i', type: 'TAG_INPUT', title: '', tagBinding: 'In'),
+        FbdBlock(id: 'cpt', type: 'CONST', title: '', tagBinding: pt),
+        FbdBlock(id: 'tp', type: 'TP', title: ''),
+        FbdBlock(id: 'oq', type: 'TAG_OUTPUT', title: '', tagBinding: 'QOut'),
+        FbdBlock(id: 'oet', type: 'TAG_OUTPUT', title: '', tagBinding: 'EtOut'),
+      ];
+      final wires = <FbdWire>[
+        FbdWire(fromBlockId: 'i', fromPin: 'OUT', toBlockId: 'tp', toPin: 'IN'),
+        FbdWire(fromBlockId: 'cpt', fromPin: 'OUT', toBlockId: 'tp', toPin: 'PT'),
+        FbdWire(fromBlockId: 'tp', fromPin: 'Q', toBlockId: 'oq', toPin: 'IN'),
+        FbdWire(fromBlockId: 'tp', fromPin: 'ET', toBlockId: 'oet', toPin: 'IN'),
+      ];
+      return _proj([
+        _tag('In', 'BOOL', false), _tag('QOut', 'BOOL', false), _tag('EtOut', 'INT32', -1),
+      ], _fbd(blocks, wires));
+    }
+
+    test('fixed-width pulse: IN drops early but Q stays true until ET reaches PT', () {
+      final p = buildTp(pt: '300');
+      final rt = FbdRuntime();
+
+      // Scan 1: rising edge on IN starts the pulse. dtMs=100 -> ET=100, Q true.
+      writePath(p, 'In', true);
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isTrue);
+      expect(readPath(p, 'EtOut'), equals(100));
+
+      // Scan 2: IN drops false, but pulse keeps running (not retriggerable,
+      // width set by PT not IN) -> ET=200, Q still true.
+      writePath(p, 'In', false);
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isTrue);
+      expect(readPath(p, 'EtOut'), equals(200));
+
+      // Scan 3: ET reaches PT=300 -> Q goes false, ET holds at 300 (the scan
+      // the pulse completes on).
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isFalse);
+      expect(readPath(p, 'EtOut'), equals(300));
+
+      // Scan 4: pulse already completed and IN is (still) false -> idle
+      // reset kicks in, ET resets to 0, re-arming the next pulse. Q remains
+      // false throughout.
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isFalse);
+      expect(readPath(p, 'EtOut'), equals(0));
+    });
+
+    test('non-retriggerable: an IN edge mid-pulse does not restart/extend it', () {
+      final p = buildTp(pt: '300');
+      final rt = FbdRuntime();
+
+      writePath(p, 'In', true);
+      executeFbdPrograms(p, 100, rt); // ET=100, Q true
+      expect(readPath(p, 'EtOut'), equals(100));
+
+      // Drop and re-raise IN mid-pulse: should not restart the timer.
+      writePath(p, 'In', false);
+      executeFbdPrograms(p, 100, rt); // ET=200
+      writePath(p, 'In', true); // new rising edge while still running
+      executeFbdPrograms(p, 100, rt); // ET=300, pulse ends (not restarted to 0)
+      expect(readPath(p, 'QOut'), isFalse);
+      expect(readPath(p, 'EtOut'), equals(300));
+    });
+
+    test('re-arm: after pulse completes and IN returns false, a new edge starts a fresh pulse', () {
+      final p = buildTp(pt: '300');
+      final rt = FbdRuntime();
+
+      writePath(p, 'In', true);
+      executeFbdPrograms(p, 100, rt); // ET=100
+      writePath(p, 'In', false);
+      executeFbdPrograms(p, 100, rt); // ET=200
+      executeFbdPrograms(p, 100, rt); // ET=300, Q false, pulse done
+      expect(readPath(p, 'QOut'), isFalse);
+      expect(readPath(p, 'EtOut'), equals(300));
+
+      // IN idle false -> ET resets to 0 (re-arm).
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'EtOut'), equals(0));
+      expect(readPath(p, 'QOut'), isFalse);
+
+      // New rising edge starts a fresh pulse from ET=0.
+      writePath(p, 'In', true);
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isTrue);
+      expect(readPath(p, 'EtOut'), equals(100));
+    });
+
+    test('PT<=0 is a zero-width pulse: Q does not latch true beyond the trigger', () {
+      final p = buildTp(pt: '0');
+      final rt = FbdRuntime();
+      writePath(p, 'In', true);
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isFalse);
+      expect(readPath(p, 'EtOut'), equals(0));
+
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isFalse);
+      expect(readPath(p, 'EtOut'), equals(0));
+    });
+
+    test('unwired IN/PT -> Q false, ET 0, no throw', () {
+      final blocks = <FbdBlock>[
+        FbdBlock(id: 'tp', type: 'TP', title: ''),
+        FbdBlock(id: 'oq', type: 'TAG_OUTPUT', title: '', tagBinding: 'QOut'),
+        FbdBlock(id: 'oet', type: 'TAG_OUTPUT', title: '', tagBinding: 'EtOut'),
+      ];
+      final wires = <FbdWire>[
+        FbdWire(fromBlockId: 'tp', fromPin: 'Q', toBlockId: 'oq', toPin: 'IN'),
+        FbdWire(fromBlockId: 'tp', fromPin: 'ET', toBlockId: 'oet', toPin: 'IN'),
+      ];
+      final p = _proj([
+        _tag('QOut', 'BOOL', true), _tag('EtOut', 'INT32', -1),
+      ], _fbd(blocks, wires));
+      executeFbdPrograms(p, 100, FbdRuntime());
+      expect(readPath(p, 'QOut'), isFalse);
+      expect(readPath(p, 'EtOut'), equals(0));
+    });
+
+    test('TP holds ET at PT and does not retrigger while IN held true past completion', () {
+      final p = buildTp(pt: '300');
+      final rt = FbdRuntime();
+
+      // Raise IN and hold it true continuously through the whole test.
+      writePath(p, 'In', true);
+
+      // Scan 1: rising edge starts the pulse -> ET=100, Q true.
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isTrue);
+      expect(readPath(p, 'EtOut'), equals(100));
+
+      // Scan 2: ET=200, Q still true.
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isTrue);
+      expect(readPath(p, 'EtOut'), equals(200));
+
+      // Scan 3: ET reaches PT=300 -> pulse completes, Q false, ET holds at 300.
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isFalse);
+      expect(readPath(p, 'EtOut'), equals(300));
+
+      // Scans 4-7: IN is STILL held true. Non-retriggerable behavior means
+      // there is no new rising edge (prevIN was already 1), so the pulse
+      // must not restart: Q stays false and ET stays pinned at 300 with no
+      // reset to 0, every scan.
+      for (var i = 0; i < 4; i++) {
+        executeFbdPrograms(p, 100, rt);
+        expect(readPath(p, 'QOut'), isFalse);
+        expect(readPath(p, 'EtOut'), equals(300));
+      }
+
+      // Drop IN to false for one scan: this is the idle re-arm -> ET resets
+      // to 0, Q remains false.
+      writePath(p, 'In', false);
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isFalse);
+      expect(readPath(p, 'EtOut'), equals(0));
+
+      // Raise IN again: a fresh rising edge starts a brand-new pulse from
+      // ET=0, proving re-arm still works after the long held-true hold.
+      writePath(p, 'In', true);
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isTrue);
+      expect(readPath(p, 'EtOut'), equals(100));
+    });
+
+    test('rt.clear() resets pulse state (et/running/prevIN)', () {
+      final p = buildTp(pt: '300');
+      final rt = FbdRuntime();
+      writePath(p, 'In', true);
+      executeFbdPrograms(p, 100, rt); // ET=100, running
+      expect(readPath(p, 'EtOut'), equals(100));
+
+      rt.clear();
+      // After clear, state is gone; IN is still true but prevIN resets to 0,
+      // so this scan is seen as a fresh rising edge starting a new pulse.
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isTrue);
+      expect(readPath(p, 'EtOut'), equals(100));
+    });
+  });
 }
