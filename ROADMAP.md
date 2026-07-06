@@ -73,12 +73,13 @@
 
 ---
 
-## Phase 4: Industrial OPC UA Server Adapter
+## Phase 4: Industrial OPC UA Server Adapter 🔄
 - **Objective**: Embed an OPC UA server in the gateway/runtime exposing tag database as standard OPC UA variable nodes.
 - **Deliverables**:
-  - OPC UA Server namespace (`ns=1;s=Tags/...`).
-  - SCADA client interoperability verified with Kepware and UAExpert.
-- **Status**: ⏳ Planned
+  - **App↔gateway tag-sync bridge** ✅ — a thin, app-authoritative companion gateway (ADR-003 Mode B, since mobile/web can't host inbound protocol servers). The Flutter app keeps executing the scan and owning the tag DB; it streams a tag snapshot + per-scan deltas over a WebSocket to the Rust gateway (`gateway/`), which mirrors the values and forwards OPC-client writes back (applied **force-aware**, so forcing wins). The app is a WebSocket client only and byte-identical when disconnected (opt-in). Built on a **protocol-agnostic tag-sync layer** (JSON codec with parity tests on both the Dart and Rust ends) that Modbus/MQTT/DNP3 will reuse.
+  - **OPC UA server** ✅ (first cut) — the gateway serves the mirrored tags as OPC UA variable nodes (`ns=1;s=<tag>`, `opcua 0.12`) built from an editable node↔tag↔access map (auto-generated from the project tags; inputs/internals ReadWrite, outputs ReadOnly), with type-faithful value mapping and ReadWrite-node write-back. A runnable gateway binary (`cd gateway && cargo run` — WS :4855, OPC UA :4840). Codec/mirror/address-space/read-write-forward and the app client are machine-tested (gateway 38 cargo tests + app client/panel tests); see [docs/protocols/opcua.md](docs/protocols/opcua.md).
+  - SCADA client interoperability verified with Kepware/UAExpert, and OPC UA security (certs/user auth) beyond anonymous/None. ⏳ (external-client E2E is documented as a manual step)
+- **Status**: 🔄 **ACTIVE — thin app-authoritative gateway + WebSocket tag-sync + OPC UA server (machine-tested) shipped; external SCADA-client interop verification + security remain**
 
 ---
 
