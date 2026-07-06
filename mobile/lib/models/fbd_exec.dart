@@ -17,10 +17,21 @@ class FbdRuntime {
   /// CTD only prevCD, CTUD uses both.
   final Map<String, List<num>> _counters = {};
 
+  /// Per-block previous CLK level for edge detectors (R_TRIG/F_TRIG), keyed
+  /// by block id. Defaults to false on first read (see `_prevClk[b.id] ??
+  /// false` at call sites), so a CLK already true on scan 1 is a rising edge.
+  final Map<String, bool> _prevClk = {};
+
+  /// Per-block pulse-timer (TP) state keyed by block id: `[et, running,
+  /// prevIN]`. `running`/`prevIN` stored as 0/1.
+  final Map<String, List<num>> _pulse = {};
+
   void clear() {
     _elapsedMs.clear();
     _pid.clear();
     _counters.clear();
+    _prevClk.clear();
+    _pulse.clear();
   }
 }
 
@@ -380,6 +391,53 @@ Map<String, dynamic> _evalBlock(
         final qu = cv >= pv;
         final qd = cv <= 0;
         return {'QU': qu, 'QD': qd, 'CV': cv.toInt()};
+      }
+    case 'R_TRIG':
+      {
+        final clk = inputs.isNotEmpty ? _truthy(inputs[0]) ?? false : false;
+        final prev = rt._prevClk[b.id] ?? false;
+        final q = clk && !prev;
+        rt._prevClk[b.id] = clk;
+        return {'Q': q};
+      }
+    case 'F_TRIG':
+      {
+        final clk = inputs.isNotEmpty ? _truthy(inputs[0]) ?? false : false;
+        final prev = rt._prevClk[b.id] ?? false;
+        final q = !clk && prev;
+        rt._prevClk[b.id] = clk;
+        return {'Q': q};
+      }
+    case 'TP':
+      {
+        // Ordered inputs follow fbdInputPins('TP'): IN, PT.
+        final inVal = inputs.isNotEmpty ? _truthy(inputs[0]) ?? false : false;
+        final pt = _asNum(inputs.length > 1 ? inputs[1] : null);
+
+        final state = rt._pulse[b.id] ?? [0, 0, 0];
+        num et = state[0];
+        num running = state[1];
+        final prevIN = state[2];
+
+        final startEdge = inVal && prevIN == 0;
+
+        if (running == 0 && startEdge && pt > 0) {
+          running = 1;
+          et = 0;
+        }
+        if (running == 1) {
+          et += dtMs;
+          if (et >= pt) {
+            et = pt;
+            running = 0;
+          }
+        } else if (!startEdge && !inVal) {
+          et = 0;
+        }
+
+        rt._pulse[b.id] = [et, running, inVal ? 1 : 0];
+        final q = running == 1;
+        return {'Q': q, 'ET': et};
       }
     case 'TAG_OUTPUT':
       if (inputs.isEmpty) {
