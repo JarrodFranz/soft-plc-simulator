@@ -25,9 +25,9 @@ class OpcuaNode {
   });
 
   factory OpcuaNode.fromJson(Map<String, dynamic> json) => OpcuaNode(
-        nodeId: json['node_id'] ?? '',
-        tag: json['tag'] ?? '',
-        access: json['access'] ?? 'ReadWrite',
+        nodeId: json['node_id']?.toString() ?? '',
+        tag: json['tag']?.toString() ?? '',
+        access: json['access']?.toString() ?? 'ReadWrite',
       );
 
   Map<String, dynamic> toJson() => {
@@ -49,12 +49,17 @@ class OpcuaMap {
   }) : nodes = nodes ?? [];
 
   factory OpcuaMap.fromJson(Map<String, dynamic> json) {
-    final inner = json['opcua_map'] ?? json;
+    final innerRaw = json['opcua_map'] ?? json;
+    final inner = innerRaw is Map ? Map<String, dynamic>.from(innerRaw) : <String, dynamic>{};
+    final rawNodes = inner['nodes'];
     return OpcuaMap(
-      namespaceUri: inner['namespace_uri'] ?? '',
-      nodes: (inner['nodes'] as List? ?? [])
-          .map((n) => OpcuaNode.fromJson(Map<String, dynamic>.from(n)))
-          .toList(),
+      namespaceUri: inner['namespace_uri']?.toString() ?? '',
+      nodes: (rawNodes is List)
+          ? rawNodes
+              .whereType<Map>()
+              .map((n) => OpcuaNode.fromJson(Map<String, dynamic>.from(n)))
+              .toList()
+          : <OpcuaNode>[],
     );
   }
 

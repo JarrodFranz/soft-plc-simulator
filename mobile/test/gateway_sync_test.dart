@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/gateway_sync.dart';
 
@@ -119,6 +121,19 @@ void main() {
       final back = jsonToTagValue(j, 'FLOAT64');
       expect(back, isA<double>());
       expect(back, 3.14);
+    });
+
+    test('FLOAT64 whole-number value stays a double through the wire', () {
+      // 3.14 alone can't distinguish "stayed double" from "became int":
+      // a whole-number float like 5.0 is the case where that bug would hide,
+      // since jsonDecode(jsonEncode(5.0)) already returns an int in Dart.
+      final j = tagValueToJson(5.0, 'FLOAT64');
+      final encoded = jsonEncode(j);
+      final decoded = jsonDecode(encoded);
+      final back = jsonToTagValue(decoded, 'FLOAT64');
+      expect(back, isA<double>());
+      expect(back, 5.0);
+      expect(back is int, isFalse);
     });
 
     test('STRING', () {
