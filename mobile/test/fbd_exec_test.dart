@@ -1131,6 +1131,53 @@ void main() {
       expect(readPath(p, 'EtOut'), equals(0));
     });
 
+    test('TP holds ET at PT and does not retrigger while IN held true past completion', () {
+      final p = buildTp(pt: '300');
+      final rt = FbdRuntime();
+
+      // Raise IN and hold it true continuously through the whole test.
+      writePath(p, 'In', true);
+
+      // Scan 1: rising edge starts the pulse -> ET=100, Q true.
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isTrue);
+      expect(readPath(p, 'EtOut'), equals(100));
+
+      // Scan 2: ET=200, Q still true.
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isTrue);
+      expect(readPath(p, 'EtOut'), equals(200));
+
+      // Scan 3: ET reaches PT=300 -> pulse completes, Q false, ET holds at 300.
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isFalse);
+      expect(readPath(p, 'EtOut'), equals(300));
+
+      // Scans 4-7: IN is STILL held true. Non-retriggerable behavior means
+      // there is no new rising edge (prevIN was already 1), so the pulse
+      // must not restart: Q stays false and ET stays pinned at 300 with no
+      // reset to 0, every scan.
+      for (var i = 0; i < 4; i++) {
+        executeFbdPrograms(p, 100, rt);
+        expect(readPath(p, 'QOut'), isFalse);
+        expect(readPath(p, 'EtOut'), equals(300));
+      }
+
+      // Drop IN to false for one scan: this is the idle re-arm -> ET resets
+      // to 0, Q remains false.
+      writePath(p, 'In', false);
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isFalse);
+      expect(readPath(p, 'EtOut'), equals(0));
+
+      // Raise IN again: a fresh rising edge starts a brand-new pulse from
+      // ET=0, proving re-arm still works after the long held-true hold.
+      writePath(p, 'In', true);
+      executeFbdPrograms(p, 100, rt);
+      expect(readPath(p, 'QOut'), isTrue);
+      expect(readPath(p, 'EtOut'), equals(100));
+    });
+
     test('rt.clear() resets pulse state (et/running/prevIN)', () {
       final p = buildTp(pt: '300');
       final rt = FbdRuntime();
