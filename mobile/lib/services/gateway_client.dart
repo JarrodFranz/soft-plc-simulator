@@ -161,6 +161,7 @@ class GatewayClient extends ChangeNotifier {
     try {
       final exposed = _exposedTagsOf(project);
       _exposedTagCount = exposed.length;
+      notifyListeners();
       final changes = <TagChange>[];
       for (final tag in exposed) {
         final prev = _lastSent[tag.path];
@@ -184,7 +185,10 @@ class GatewayClient extends ChangeNotifier {
       }
       final msg = decodeMessage(data);
       if (msg is WriteMsg) {
-        _forceAwareWrite(project, msg.path, msg.value);
+        final tag = project.tags.where((t) => t.name == msg.path).firstOrNull;
+        final value =
+            tag == null ? msg.value : jsonToTagValue(msg.value, tag.dataType);
+        _forceAwareWrite(project, msg.path, value);
         notifyListeners();
       } else if (msg is PingMsg) {
         _send(const PongMsg());

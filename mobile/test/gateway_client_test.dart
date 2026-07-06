@@ -107,6 +107,30 @@ PlcProject _projectWithTags() {
   return project;
 }
 
+/// A project with a single FLOAT64 tag, used to test inbound-write value
+/// coercion in isolation (kept separate from [_projectWithTags] so it
+/// doesn't change the exposed-tag counts asserted by other tests).
+PlcProject _projectWithFloatTag() {
+  return PlcProject(
+    id: 'proj_gw_float_test',
+    name: 'Gateway Float Test Project',
+    controllerName: 'PLC_01',
+    tags: [
+      PlcTag(
+        name: 'Setpoint_Temp',
+        path: 'Internal.Setpoint_Temp',
+        dataType: 'FLOAT64',
+        value: 0.0,
+        ioType: 'Internal',
+      ),
+    ],
+    structDefs: [],
+    programs: [],
+    tasks: [],
+    hmis: [],
+  );
+}
+
 void main() {
   group('GatewayClient', () {
     late FakeWebSocketChannel fakeChannel;
@@ -180,6 +204,22 @@ void main() {
       await pumpEventQueue();
 
       expect(readPath(project, 'Start_PB'), true);
+    });
+
+    test('inbound WriteMsg coerces an integral JSON number to double for a FLOAT64 tag', () async {
+      final project = _projectWithFloatTag();
+      await client.connect('ws://localhost:4855', project);
+
+      // Simulate a Rust/serde_json gateway sending an integral number (`5`,
+      // a JSON/Dart int) for a FLOAT64 tag: the value must be coerced to a
+      // double so the tag's runtime type stays consistent with its
+      // declared dataType.
+      fakeChannel.pushFromServer(encodeMessage(const WriteMsg(path: 'Setpoint_Temp', value: 5)));
+      await pumpEventQueue();
+
+      final result = readPath(project, 'Setpoint_Temp');
+      expect(result, isA<double>());
+      expect(result, 5.0);
     });
 
     test('inbound WriteMsg is force-aware: a forced root tag is not overwritten', () async {
