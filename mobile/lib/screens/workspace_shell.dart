@@ -16,6 +16,7 @@ import '../models/st_exec.dart';
 import '../data/default_projects.dart';
 import '../data/project_repository.dart';
 import '../data/project_transfer.dart';
+import '../services/gateway_client.dart';
 import '../ui/responsive.dart';
 import '../widgets/tag_inspector_dock.dart';
 import 'st_editor_screen.dart';
@@ -25,6 +26,7 @@ import 'sfc_editor_screen.dart';
 import 'memory_manager_screen.dart';
 import 'hmi_dashboard_builder_screen.dart';
 import 'simulated_io_screen.dart';
+import 'gateway_screen.dart';
 
 /// Debounce window between the last project mutation and the autosave write.
 const Duration _autosaveDebounce = Duration(milliseconds: 800);
@@ -64,6 +66,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   final FbdRuntime _fbdRuntime = FbdRuntime();
   final SfcRuntime _sfcRuntime = SfcRuntime();
   final StRuntime _stRuntime = StRuntime();
+  final GatewayClient _gatewayClient = GatewayClient();
 
   // Side Dock Inspector State
   bool isTagDockVisible = true;
@@ -95,6 +98,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   void dispose() {
     _scanTimer?.cancel();
     _autosaveTimer?.cancel();
+    _gatewayClient.dispose();
     super.dispose();
   }
 
@@ -201,6 +205,12 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       executeSfcPrograms(_activeProject, scanSpeedMs, _sfcRuntime);
       executeStPrograms(_activeProject, scanSpeedMs, _stRuntime);
     });
+    // Opt-in observer: only sends anything when a gateway is actually
+    // connected (changed-only delta); a no-op otherwise, so behaviour is
+    // unchanged unless the user has connected via the Gateway panel.
+    if (_gatewayClient.status == GatewayStatus.connected) {
+      _gatewayClient.syncTags(_activeProject);
+    }
   }
 
   void _switchActiveProject(PlcProject proj) {
@@ -340,7 +350,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       final progName = _activeViewId.replaceFirst('PROGRAM:', '');
       if (_activeProject.programs.any((p) => p.name == progName)) return;
     } else {
-      // MEMORY / SIMIO:rules are always valid views.
+      // MEMORY / SIMIO:rules / GATEWAY are always valid views.
       return;
     }
     if (_activeProject.hmis.isNotEmpty) {
@@ -1387,6 +1397,28 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                   ),
                 ),
 
+                const SizedBox(height: 8),
+
+                Container(
+                  margin: const EdgeInsets.only(left: 12, top: 2),
+                  decoration: BoxDecoration(
+                    color: _activeViewId == 'GATEWAY' ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(Icons.hub, size: 16, color: _activeViewId == 'GATEWAY' ? Colors.cyanAccent : Colors.tealAccent),
+                      title: Text(
+                        'GATEWAY (OPC UA)',
+                        style: TextStyle(fontSize: 11, fontWeight: _activeViewId == 'GATEWAY' ? FontWeight.bold : FontWeight.normal),
+                      ),
+                      onTap: () => _selectView(context, 'GATEWAY'),
+                    ),
+                  ),
+                ),
+
                 const SizedBox(height: 12),
 
                 // SECTION 3: Tasks & Programs Classified by Task Type & Language
@@ -1632,6 +1664,12 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     } else if (_activeViewId == 'SIMIO:rules') {
       return SimulatedIoScreen(
         currentProject: _activeProject,
+        onProjectUpdated: _markDirtyAndAutosave,
+      );
+    } else if (_activeViewId == 'GATEWAY') {
+      return GatewayScreen(
+        currentProject: _activeProject,
+        client: _gatewayClient,
         onProjectUpdated: _markDirtyAndAutosave,
       );
     }
