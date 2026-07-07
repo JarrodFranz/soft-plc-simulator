@@ -85,6 +85,23 @@ void main() {
     expect(childrenOf(p, 'A').map((c) => c.label).toList(), equals(['[0]', '[1]', '[2]']));
   });
 
+  test('COUNTER builtin composite is registered with its 7 members', () {
+    expect(builtinCompositeNames(), contains('COUNTER'));
+    final p = _proj([]);
+    final counter = lookupComposite(p, 'COUNTER');
+    expect(counter, isNotNull);
+    final names = counter!.fields.map((f) => f.name).toList();
+    expect(names, equals(['CU', 'CD', 'QU', 'QD', 'R', 'CV', 'PV']));
+    final cv = defaultValueFor(p, 'COUNTER', 0) as Map;
+    expect(cv['CU'], isFalse);
+    expect(cv['CD'], isFalse);
+    expect(cv['QU'], isFalse);
+    expect(cv['QD'], isFalse);
+    expect(cv['R'], isFalse);
+    expect(cv['CV'], equals(0));
+    expect(cv['PV'], equals(0));
+  });
+
   test('leafAndNodePaths includes members but not individual bits', () {
     final p = _proj([
       _tag('T', 'TIMER', defaultValueFor(_proj([]), 'TIMER', 0)),

@@ -14,6 +14,10 @@ const double _kLaneGap = 10.0;
 const double _kRailW = 6.0;
 const double _kRungGap = 8.0;
 
+/// Counter block types (preset = count, not time).
+const List<String> _kCounterBlockTypes = ['CTU', 'CTD', 'CTUD'];
+bool _isCounterBlock(String blockType) => _kCounterBlockTypes.contains(blockType);
+
 /// Below this LOCAL available width, the toolbar wraps and the ladder canvas
 /// gets pan/zoom. This is a per-pane decision (LayoutBuilder), never derived
 /// from the window/`MediaQuery` width — the editor can be embedded in a
@@ -717,9 +721,12 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
   void _showEditNodeDialog(LdRung rung, LdNode n) {
     final tagCtrl = TextEditingController(text: n.variable);
     final presetCtrl = TextEditingController(text: n.presetMs.toString());
+    final downTagCtrl = TextEditingController(text: n.operandA);
     String modifier = n.modifier;
     final isCoil = n.kind == LdKind.coil;
     final isBlock = n.kind == LdKind.block;
+    final isCounter = isBlock && _isCounterBlock(n.blockType);
+    final isCtud = isBlock && n.blockType == 'CTUD';
 
     const contactMods = [
       DropdownMenuItem(value: 'normal', child: Text('Normally Open  -| |-')),
@@ -768,7 +775,18 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                   TextField(
                     controller: presetCtrl,
                     keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'Preset Time (PT) ms'),
+                    decoration: InputDecoration(
+                      labelText: isCounter ? 'Preset Count (PV)' : 'Preset Time (PT) ms',
+                    ),
+                  ),
+                ],
+                if (isCtud) ...[
+                  const SizedBox(height: 12),
+                  TagAutocompleteField(
+                    options: leafAndNodePaths(widget.currentProject),
+                    initialValue: downTagCtrl.text,
+                    label: 'Count-down tag',
+                    onChanged: (v) => downTagCtrl.text = v,
                   ),
                 ],
               ],
@@ -790,6 +808,9 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                   n.variable = tagCtrl.text.trim();
                   n.modifier = modifier;
                   n.presetMs = int.tryParse(presetCtrl.text) ?? n.presetMs;
+                  if (isCtud) {
+                    n.operandA = downTagCtrl.text.trim();
+                  }
                 });
                 widget.onProgramUpdated();
                 Navigator.pop(context);
@@ -868,6 +889,36 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
   }
 
   Widget _buildBlock(LdNode n) {
+    final isCounter = _isCounterBlock(n.blockType);
+    String topLeft;
+    String topRight;
+    String bottomLeft;
+    String bottomRight;
+    String presetLine;
+    if (isCounter) {
+      presetLine = 'PV ${n.presetMs}';
+      switch (n.blockType) {
+        case 'CTD':
+          topLeft = 'CD';
+          topRight = 'QD';
+          break;
+        case 'CTUD':
+          topLeft = 'CU';
+          topRight = 'QU';
+          break;
+        default: // CTU
+          topLeft = 'CU';
+          topRight = 'QU';
+      }
+      bottomLeft = 'PV';
+      bottomRight = 'CV';
+    } else {
+      topLeft = 'IN';
+      topRight = 'Q';
+      presetLine = 'PT ${n.presetMs}ms';
+      bottomLeft = 'PT';
+      bottomRight = 'ET';
+    }
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF1E293B),
@@ -885,6 +936,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
               borderRadius: BorderRadius.only(topLeft: Radius.circular(3), topRight: Radius.circular(3)),
             ),
             child: Text(n.blockType,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Colors.white, fontFamily: 'monospace'),
                 textAlign: TextAlign.center),
           ),
@@ -897,12 +950,12 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 8, color: Colors.cyanAccent, fontFamily: 'monospace')),
-                const _BlockPinRow(left: 'IN', right: 'Q'),
-                Text('PT ${n.presetMs}ms',
+                _BlockPinRow(left: topLeft, right: topRight),
+                Text(presetLine,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 7, color: Colors.grey)),
-                const _BlockPinRow(left: 'PT', right: 'ET'),
+                _BlockPinRow(left: bottomLeft, right: bottomRight),
               ],
             ),
           ),

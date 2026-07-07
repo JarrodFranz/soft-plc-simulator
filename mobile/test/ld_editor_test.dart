@@ -7,6 +7,14 @@ import 'support/responsive_test_utils.dart';
 
 LdNode contact(String v) => LdNode(id: '', kind: LdKind.contact, variable: v);
 LdNode coil(String v) => LdNode(id: '', kind: LdKind.coil, variable: v);
+LdNode block(String blockType, String v, {int presetMs = 5000, String operandA = ''}) => LdNode(
+      id: '',
+      kind: LdKind.block,
+      blockType: blockType,
+      variable: v,
+      presetMs: presetMs,
+      operandA: operandA,
+    );
 
 PlcProject _buildProject(PlcProgram program) {
   return PlcProject(
@@ -138,6 +146,77 @@ void main() {
         expect(program.rungs[0].nodes.any((n) => n.kind == LdKind.coil && n.variable == 'Output_Coil'), isTrue);
         // The edit dialog opens after adding.
         expect(find.text('Edit Coil'), findsOneWidget);
+
+        expect(tester.takeException(), isNull);
+      });
+    }
+  });
+
+  group('Counter/timer block edit dialog + rendering', () {
+    for (final size in [desktopSize, smallPhoneSize]) {
+      testWidgets('CTU block edit dialog shows Preset Count (PV), not Preset Time (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = PlcProgram(
+          name: 'TestProgram',
+          language: 'LadderLogic',
+          rungs: [
+            buildRung(index: 0, comment: 'Rung 0', main: [block('CTU', 'Ctr1', presetMs: 10)]),
+          ],
+        );
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('CTU'));
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.tap(find.text('CTU'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Preset Count (PV)'), findsOneWidget);
+        expect(find.text('Preset Time (PT) ms'), findsNothing);
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('CTUD block edit dialog additionally shows a Count-down tag field (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = PlcProgram(
+          name: 'TestProgram',
+          language: 'LadderLogic',
+          rungs: [
+            buildRung(index: 0, comment: 'Rung 0', main: [block('CTUD', 'Ctr2', presetMs: 10)]),
+          ],
+        );
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('CTUD'));
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.tap(find.text('CTUD'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Preset Count (PV)'), findsOneWidget);
+        expect(find.text('Count-down tag'), findsOneWidget);
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('CTU block renders CU/QU pins with no overflow (${size.width.toInt()}px)', (tester) async {
+        await setSurface(tester, size);
+        final program = PlcProgram(
+          name: 'TestProgram',
+          language: 'LadderLogic',
+          rungs: [
+            buildRung(index: 0, comment: 'Rung 0', main: [block('CTU', 'Ctr1', presetMs: 10)]),
+          ],
+        );
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        expect(find.text('CTU'), findsOneWidget);
+        expect(find.text('CU'), findsOneWidget);
+        expect(find.text('QU'), findsOneWidget);
 
         expect(tester.takeException(), isNull);
       });
