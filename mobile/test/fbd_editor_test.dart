@@ -299,4 +299,45 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   });
+
+  group('FbdEditorScreen block naming', () {
+    testWidgets('config dialog exposes a Block name field seeded with block.title; editing + Save renames the block face',
+        (tester) async {
+      await setSurface(tester, phoneSize);
+      final project = _buildProject();
+      final program = _buildProgram();
+      await tester.pumpWidget(app(project, program));
+      await tester.pumpAndSettle();
+
+      // Phone size renders the non-expanded canvas, where the *outer*
+      // Positioned GestureDetector's onTap opens the configure dialog. It is
+      // nested outside the card's own GestureDetector (which merely clears
+      // wire selection on tap and wins the gesture arena for a simulated
+      // tap), so invoke the outer callback directly — same ancestor-lookup
+      // technique already used elsewhere in this file for ambiguous nested
+      // GestureDetector hits (see the '+'/'-' input-count tests above).
+      final ancestors = find
+          .ancestor(of: find.text('Timer Block'), matching: find.byType(GestureDetector))
+          .evaluate()
+          .map((e) => e.widget as GestureDetector);
+      final configureDetector = ancestors.lastWhere((gd) => gd.onTap != null);
+      configureDetector.onTap!();
+      await tester.pumpAndSettle();
+
+      final nameField = find.widgetWithText(TextFormField, 'Block name');
+      expect(nameField, findsOneWidget);
+      final fieldWidget = tester.widget<TextFormField>(nameField);
+      expect(fieldWidget.initialValue, 'Timer Block');
+
+      await tester.enterText(nameField, 'My Renamed Timer');
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      final tonBlock = program.fbdBlocks.firstWhere((b) => b.id == 'ton1');
+      expect(tonBlock.title, 'My Renamed Timer');
+      expect(find.text('My Renamed Timer'), findsOneWidget);
+
+      expect(tester.takeException(), isNull);
+    });
+  });
 }

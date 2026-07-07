@@ -385,6 +385,41 @@ void main() {
         expect(find.textContaining('Total'), findsOneWidget);
         expect(tester.takeException(), isNull);
       });
+
+      testWidgets('GT edit dialog exposes a Name field bound to variable; set + Apply shows it on the block face '
+          '(${size.width.toInt()}px)', (tester) async {
+        await setSurface(tester, size);
+        final program = PlcProgram(
+          name: 'TestProgram',
+          language: 'LadderLogic',
+          rungs: [
+            buildRung(index: 0, comment: 'Rung 0', main: [
+              LdNode(id: '', kind: LdKind.block, blockType: 'GT', variable: '', operandA: '10', operandB: '20'),
+            ]),
+          ],
+        );
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('GT'));
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.tap(find.text('GT'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Edit GT'), findsOneWidget);
+        final nameField = find.widgetWithText(TextField, 'Name');
+        expect(nameField, findsOneWidget);
+
+        await tester.enterText(nameField, 'SpeedCheck');
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Apply'));
+        await tester.pumpAndSettle();
+
+        final n = program.rungs[0].nodes.firstWhere((n) => n.kind == LdKind.block && n.blockType == 'GT');
+        expect(n.variable, 'SpeedCheck');
+        expect(find.text('SpeedCheck'), findsOneWidget);
+
+        expect(tester.takeException(), isNull);
+      });
     }
   });
 

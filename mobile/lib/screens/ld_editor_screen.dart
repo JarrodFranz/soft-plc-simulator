@@ -995,6 +995,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     final downTagCtrl = TextEditingController(text: n.operandA);
     final operandACtrl = TextEditingController(text: n.operandA);
     final operandBCtrl = TextEditingController(text: n.operandB);
+    final compareNameCtrl = TextEditingController(text: n.variable);
     String modifier = n.modifier;
     String blockType = n.blockType;
     final isCoil = n.kind == LdKind.coil;
@@ -1106,6 +1107,13 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     label: 'Operand B',
                     onChanged: (v) => operandBCtrl.text = v,
                   ),
+                  if (isCompare) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: compareNameCtrl,
+                      decoration: const InputDecoration(labelText: 'Name'),
+                    ),
+                  ],
                 ],
               ],
             ),
@@ -1141,6 +1149,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     n.operandB = operandBCtrl.text.trim();
                     if (isMath) {
                       n.variable = tagCtrl.text.trim();
+                    } else if (isCompare) {
+                      n.variable = compareNameCtrl.text.trim();
                     }
                   } else {
                     n.variable = tagCtrl.text.trim();
@@ -1374,9 +1384,17 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     textAlign: TextAlign.center),
                 // Math blocks write a result — surface its destination on the
                 // block face for parity with timer/counter blocks (compare
-                // blocks have no output tag, so this line is math-only).
+                // blocks have no output tag, so `variable` instead holds an
+                // optional user-assigned name — shown only when set so
+                // unnamed compare blocks keep their original compact face).
                 if (!isCompare)
                   Text('→ ${n.variable}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 7, color: Colors.cyanAccent, fontFamily: 'monospace'),
+                      textAlign: TextAlign.center)
+                else if (n.variable.isNotEmpty)
+                  Text(n.variable,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 7, color: Colors.cyanAccent, fontFamily: 'monospace'),

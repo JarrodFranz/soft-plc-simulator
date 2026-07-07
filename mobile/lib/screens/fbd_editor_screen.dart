@@ -358,6 +358,7 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     // (and trigger `onProgramUpdated`) when the dialog is saved, not on
     // every keystroke.
     String pendingTagBinding = block.tagBinding;
+    String pendingTitle = block.title;
 
     showAdaptiveWidthDialog(
       context,
@@ -370,6 +371,12 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('Block Type: ${block.type}', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+              const SizedBox(height: 12),
+              TextFormField(
+                initialValue: block.title,
+                decoration: const InputDecoration(labelText: 'Block name'),
+                onChanged: (val) => pendingTitle = val,
+              ),
               const SizedBox(height: 12),
               if (block.type.startsWith('TAG_'))
                 TagAutocompleteField(
@@ -415,7 +422,10 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
             TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
             ElevatedButton(
               onPressed: () {
-                setState(() => block.tagBinding = pendingTagBinding);
+                setState(() {
+                  block.tagBinding = pendingTagBinding;
+                  block.title = pendingTitle.trim().isEmpty ? block.title : pendingTitle.trim();
+                });
                 widget.onProgramUpdated();
                 Navigator.pop(context);
               },
