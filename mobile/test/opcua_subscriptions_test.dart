@@ -12,8 +12,12 @@
 // delete_subscriptions_request,delete_subscriptions_response,
 // create_monitored_items_request,create_monitored_items_response,
 // monitored_item_create_request,monitored_item_create_result,
-// monitoring_parameters,data_change_filter}.rs and types/node_ids.rs /
-// types/status_codes.rs / types/attribute.rs / types/service_types/enums.rs.
+// monitoring_parameters,data_change_filter,publish_request,publish_response,
+// republish_request,republish_response,notification_message,
+// data_change_notification,monitored_item_notification,
+// status_change_notification,subscription_acknowledgement}.rs and
+// types/node_ids.rs / types/status_codes.rs / types/attribute.rs /
+// types/service_types/enums.rs.
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -36,7 +40,9 @@ const _modifyMonitoredItemsResponseId = 766;
 const _deleteMonitoredItemsRequestId = 781;
 const _deleteMonitoredItemsResponseId = 784;
 const _publishRequestId = 826;
+const _publishResponseId = 829; // node_ids.rs:1794
 const _republishRequestId = 832;
+const _republishResponseId = 835; // node_ids.rs:1796
 const _serviceFaultId = 397;
 // DataChangeFilter wire ExtensionObject typeId MUST be the DefaultBinary
 // ENCODING id, not the plain DataType NodeId. Verified against the vendored
@@ -47,6 +53,10 @@ const _serviceFaultId = 397;
 // as an ExtensionObject typeId with Bad_MonitoredItemFilterUnsupported).
 const _dataChangeFilterTypeId = 724;
 const _dataChangeFilterNonEncodingTypeId = 722; // node_ids.rs:217 — invalid on the wire
+// NotificationMessage=805, DataChangeNotification=811,
+// StatusChangeNotification=820 (node_ids.rs:1788,1790,1791).
+const _dataChangeNotificationTypeId = 811;
+const _statusChangeNotificationTypeId = 820;
 
 // --- StatusCodes, verified against types/status_codes.rs -------------------
 const _statusGood = 0;
@@ -61,6 +71,11 @@ const _statusBadMonitoredItemFilterUnsupported = 0x80440000;
 const _statusBadTooManySubscriptions = 0x80770000;
 const _statusBadDeadbandFilterInvalid = 0x808E0000;
 const _statusBadTooManyMonitoredItems = 0x80DB0000;
+const _statusBadTimeout = 0x800A0000; // status_codes.rs:95
+const _statusBadTooManyPublishRequests = 0x80780000; // status_codes.rs:199
+const _statusBadNoSubscription = 0x80790000; // status_codes.rs:200
+const _statusBadSequenceNumberUnknown = 0x807A0000; // status_codes.rs:201
+const _statusBadMessageNotAvailable = 0x807B0000; // status_codes.rs:202
 
 // --- AttributeIds, verified against types/attribute.rs ---------------------
 const _attrValue = 13;
@@ -281,6 +296,89 @@ OpcDataValue Function(OpcNodeId) _sampler(Set<OpcNodeId> knownNodes) {
       serverTs: DateTime.utc(2026, 7, 6),
     );
   };
+}
+
+/// PublishRequest body: subscriptionAcknowledgements[]
+/// (SubscriptionAcknowledgement{subscriptionId u32, sequenceNumber u32}).
+OpcUaReader _publishBody([List<({int subscriptionId, int sequenceNumber})> acks = const []]) {
+  final w = OpcUaWriter();
+  w.int32(acks.length);
+  for (final ack in acks) {
+    w.uint32(ack.subscriptionId);
+    w.uint32(ack.sequenceNumber);
+  }
+  return OpcUaReader(w.take());
+}
+
+/// RepublishRequest body: subscriptionId u32, retransmitSequenceNumber u32.
+OpcUaReader _republishBody({required int subscriptionId, required int seq}) {
+  final w = OpcUaWriter();
+  w.uint32(subscriptionId);
+  w.uint32(seq);
+  return OpcUaReader(w.take());
+}
+
+/// Fully decodes a PublishResponse body (past the leading NodeId typeId,
+/// which the caller has already consumed via `reader.nodeId()`).
+({
+  ResponseHeader header,
+  int subscriptionId,
+  List<int> availableSeq,
+  bool moreNotifications,
+  int sequenceNumber,
+  List<({int clientHandle, OpcDataValue value})> items,
+  int? statusChangeStatus,
+  List<int> results,
+}) _decodePublishResponse(OpcUaReader reader) {
+  final header = reader.responseHeader();
+  final subscriptionId = reader.uint32();
+  final availLen = reader.int32();
+  final availableSeq = <int>[];
+  for (var i = 0; i < availLen; i++) {
+    availableSeq.add(reader.uint32());
+  }
+  final moreNotifications = reader.boolean();
+  final sequenceNumber = reader.uint32();
+  reader.dateTime(); // publishTime
+  final notifLen = reader.int32();
+  final items = <({int clientHandle, OpcDataValue value})>[];
+  int? statusChangeStatus;
+  for (var i = 0; i < notifLen; i++) {
+    final typeId = reader.extensionObjectHeader();
+    expect(reader.lastExtensionObjectHasBody, isTrue);
+    final bodyBytes = reader.byteString()!;
+    final inner = OpcUaReader(Uint8List.fromList(bodyBytes));
+    if (typeId.numericId == _dataChangeNotificationTypeId) {
+      final monitoredLen = inner.int32();
+      for (var j = 0; j < monitoredLen; j++) {
+        final clientHandle = inner.uint32();
+        final value = inner.dataValue();
+        items.add((clientHandle: clientHandle, value: value));
+      }
+      expect(inner.int32(), -1); // diagnosticInfos null
+    } else if (typeId.numericId == _statusChangeNotificationTypeId) {
+      statusChangeStatus = inner.statusCode();
+      inner.uint8(); // empty DiagnosticInfo (0x00)
+    } else {
+      fail('Unexpected notificationData typeId ${typeId.numericId}');
+    }
+  }
+  final resultsLen = reader.int32();
+  final results = <int>[];
+  for (var i = 0; i < resultsLen; i++) {
+    results.add(reader.statusCode());
+  }
+  reader.int32(); // diagnosticInfos: null array (-1)
+  return (
+    header: header,
+    subscriptionId: subscriptionId,
+    availableSeq: availableSeq,
+    moreNotifications: moreNotifications,
+    sequenceNumber: sequenceNumber,
+    items: items,
+    statusChangeStatus: statusChangeStatus,
+    results: results,
+  );
 }
 
 void main() {
@@ -1200,34 +1298,698 @@ void main() {
     });
   });
 
-  group('Publish / Republish placeholders (Task 2 scope)', () {
-    test('Publish -> ServiceFault Bad_ServiceUnsupported', () {
-      final mgr = buildManager();
-      final w = OpcUaWriter();
-      w.int32(0); // subscriptionAcknowledgements: empty
-      final body = OpcUaReader(w.take());
-      final out = mgr.handleService(_publishRequestId, body, _reqHeader(), 1, 0);
-      expect(out, hasLength(1));
-      final reader = OpcUaReader(out.single.body);
-      final typeId = reader.nodeId();
-      expect(typeId.numericId, _serviceFaultId);
-      final respHeader = reader.responseHeader();
-      expect(respHeader.serviceResult, _statusBadServiceUnsupported);
+  group('Publish (826) / Republish (832): sampling + publish engine (Task 2)', () {
+    // A mutable "live" sampler backed by a Map the test can mutate between
+    // onTick calls to simulate a changing tag. Absent nodes -> Bad_NodeIdUnknown.
+    late Map<OpcNodeId, OpcDataValue> live;
+    late SubscriptionManager mgr;
+
+    void setLive(int value, {int status = _statusGood}) {
+      live[knownNode] = OpcDataValue(
+        variant: OpcVariant(typeId: 6, value: value),
+        status: status,
+        sourceTs: DateTime.utc(2026, 7, 6),
+        serverTs: DateTime.utc(2026, 7, 6),
+      );
+    }
+
+    setUp(() {
+      live = {
+        knownNode: OpcDataValue(
+          variant: const OpcVariant(typeId: 6, value: 42),
+          status: _statusGood,
+          sourceTs: DateTime.utc(2026, 7, 6),
+          serverTs: DateTime.utc(2026, 7, 6),
+        ),
+      };
+      mgr = SubscriptionManager(
+        sampler: (nodeId) =>
+            live[nodeId] ?? const OpcDataValue(status: _statusBadNodeIdUnknown),
+      );
     });
 
-    test('Republish -> ServiceFault Bad_ServiceUnsupported', () {
-      final mgr = buildManager();
-      final w = OpcUaWriter();
-      w.uint32(1); // subscriptionId
-      w.uint32(1); // retransmitSequenceNumber
-      final body = OpcUaReader(w.take());
-      final out = mgr.handleService(_republishRequestId, body, _reqHeader(), 1, 0);
+    /// Creates a subscription with the given (grid-aligned) parameters,
+    /// returning its id.
+    int createSub({
+      double publishingInterval = 1000,
+      int lifetimeCount = 30,
+      int maxKeepAlive = 3,
+      int maxNotifications = 0,
+      bool publishingEnabled = true,
+      int nowMs = 0,
+    }) {
+      final out = mgr.handleService(
+        _createSubscriptionRequestId,
+        _createSubBody(
+          publishingInterval: publishingInterval,
+          lifetimeCount: lifetimeCount,
+          maxKeepAlive: maxKeepAlive,
+          maxNotifications: maxNotifications,
+          publishingEnabled: publishingEnabled,
+        ),
+        _reqHeader(),
+        1,
+        nowMs,
+      );
+      final r = OpcUaReader(out.single.body);
+      r.nodeId();
+      r.responseHeader();
+      return r.uint32();
+    }
+
+    /// Creates one monitored item on [nodeId] (default: knownNode),
+    /// returning (itemId, clientHandle).
+    ({int itemId, int clientHandle}) createItem(
+      int subId, {
+      OpcNodeId? nodeId,
+      int clientHandle = 11,
+      Uint8List? filterBody,
+      int queueSize = 5,
+      bool discardOldest = true,
+      double samplingInterval = 0,
+      int monitoringMode = 2,
+      int nowMs = 0,
+    }) {
+      final out = mgr.handleService(
+        _createMonitoredItemsRequestId,
+        _createMonitoredItemsBody(
+          subscriptionId: subId,
+          items: [
+            (w) => _writeMonitoredItemCreateRequest(
+                  w,
+                  nodeId: nodeId ?? knownNode,
+                  clientHandle: clientHandle,
+                  filterBody: filterBody,
+                  queueSize: queueSize,
+                  discardOldest: discardOldest,
+                  samplingInterval: samplingInterval,
+                  monitoringMode: monitoringMode,
+                ),
+          ],
+        ),
+        _reqHeader(),
+        1,
+        nowMs,
+      );
+      final r = OpcUaReader(out.single.body);
+      r.nodeId();
+      r.responseHeader();
+      r.int32();
+      r.statusCode();
+      final itemId = r.uint32();
+      return (itemId: itemId, clientHandle: clientHandle);
+    }
+
+    /// Parks a PublishRequest (no acks); returns handleService's raw result
+    /// (empty == parked with nothing to answer yet).
+    List<PublishOut> park({int requestId = 100, int nowMs = 0}) {
+      return mgr.handleService(
+        _publishRequestId,
+        _publishBody(),
+        _reqHeader(requestHandle: requestId),
+        requestId,
+        nowMs,
+      );
+    }
+
+    test('Publish parked before change; delivers the initial queued sample on the first cycle', () {
+      final subId = createSub(publishingInterval: 1000, nowMs: 0);
+      final item = createItem(subId, nowMs: 0);
+
+      final parkOut = park(requestId: 9, nowMs: 500);
+      expect(parkOut, isEmpty); // parked, nothing to answer yet (< first boundary)
+
+      final ticked = mgr.onTick(1000); // first cycle boundary
+      expect(ticked, hasLength(1));
+      expect(ticked.single.requestId, 9);
+      final reader = OpcUaReader(ticked.single.body);
+      final typeId = reader.nodeId();
+      expect(typeId.numericId, _publishResponseId);
+      final resp = _decodePublishResponse(reader);
+      expect(resp.subscriptionId, subId);
+      expect(resp.sequenceNumber, 1);
+      expect(resp.items, hasLength(1));
+      expect(resp.items.single.clientHandle, item.clientHandle);
+      expect(resp.items.single.value.variant!.value, 42);
+      expect(resp.moreNotifications, isFalse);
+      expect(resp.availableSeq, [1]);
+    });
+
+    test('no change -> keep-alive fires at exactly maxKeepAliveCount cycles; sequence NOT consumed', () {
+      createSub(publishingInterval: 1000, maxKeepAlive: 3, nowMs: 0);
+      createItem(1, nowMs: 0);
+
+      // Drain the initial sample so subsequent cycles are genuinely
+      // "no change".
+      park(requestId: 1, nowMs: 0);
+      final first = mgr.onTick(1000);
+      expect(first, hasLength(1));
+      final firstResp = _decodePublishResponse(OpcUaReader(first.single.body)..nodeId());
+      expect(firstResp.sequenceNumber, 1);
+
+      park(requestId: 2, nowMs: 1000);
+      final second = mgr.onTick(2000); // keepAlive=1
+      expect(second, isEmpty);
+      final third = mgr.onTick(3000); // keepAlive=2 (not yet >= 3)
+      expect(third, isEmpty);
+      final fourth = mgr.onTick(4000); // keepAlive=3 -> fires
+      expect(fourth, hasLength(1));
+      expect(fourth.single.requestId, 2);
+      final resp = _decodePublishResponse(OpcUaReader(fourth.single.body)..nodeId());
+      expect(resp.items, isEmpty);
+      expect(resp.sequenceNumber, 2); // next-expected, NOT consumed
+
+      // A subsequent data change must still use sequence 2 (proving the
+      // keep-alive above did not consume it).
+      setLive(100);
+      park(requestId: 3, nowMs: 4000);
+      final fifth = mgr.onTick(5000);
+      expect(fifth, hasLength(1));
+      final fifthResp = _decodePublishResponse(OpcUaReader(fifth.single.body)..nodeId());
+      expect(fifthResp.sequenceNumber, 2);
+      expect(fifthResp.items.single.value.variant!.value, 100);
+    });
+
+    test('value change -> DataChangeNotification carries clientHandle + new value', () {
+      final subId = createSub(publishingInterval: 1000, nowMs: 0);
+      final item = createItem(subId, nowMs: 0);
+      park(requestId: 1, nowMs: 0);
+      mgr.onTick(1000); // drains initial sample
+
+      park(requestId: 2, nowMs: 1000);
+      setLive(55);
+      final out = mgr.onTick(2000);
+      expect(out, hasLength(1));
+      final resp = _decodePublishResponse(OpcUaReader(out.single.body)..nodeId());
+      expect(resp.subscriptionId, subId);
+      expect(resp.items.single.clientHandle, item.clientHandle);
+      expect(resp.items.single.value.variant!.value, 55);
+      expect(resp.sequenceNumber, 2);
+    });
+
+    test('deadband: |delta| < d silent, |delta| == d triggers (inclusive), status change always triggers', () {
+      createSub(publishingInterval: 1000, nowMs: 0);
+      createItem(
+        1,
+        nowMs: 0,
+        filterBody: _dataChangeFilterBody(trigger: 1, deadbandType: 1, deadbandValue: 5.0),
+      );
+      park(requestId: 1, nowMs: 0);
+      mgr.onTick(1000); // drains initial sample (reported baseline = 42)
+
+      setLive(46); // |46-42| = 4 < 5 -> silent
+      park(requestId: 2, nowMs: 1000);
+      final silentOut = mgr.onTick(2000);
+      expect(silentOut, isEmpty);
+
+      setLive(47); // |47-42| = 5 == deadband -> triggers (inclusive)
+      final out = mgr.onTick(3000);
+      expect(out, hasLength(1));
+      final resp = _decodePublishResponse(OpcUaReader(out.single.body)..nodeId());
+      expect(resp.items.single.value.variant!.value, 47);
+
+      // Status change always triggers, even with delta 0 against the last
+      // REPORTED value (47).
+      park(requestId: 3, nowMs: 3000);
+      setLive(47, status: 0x80000000);
+      final statusOut = mgr.onTick(4000);
+      expect(statusOut, hasLength(1));
+      final statusResp = _decodePublishResponse(OpcUaReader(statusOut.single.body)..nodeId());
+      expect(statusResp.items.single.value.status, 0x80000000);
+    });
+
+    test('trigger=Status: value-only changes ignored; status changes still trigger', () {
+      createSub(publishingInterval: 1000, nowMs: 0);
+      createItem(
+        1,
+        nowMs: 0,
+        filterBody: _dataChangeFilterBody(trigger: 0, deadbandType: 0, deadbandValue: 0),
+      );
+      park(requestId: 1, nowMs: 0);
+      mgr.onTick(1000); // drains initial sample
+
+      setLive(999); // value-only change
+      park(requestId: 2, nowMs: 1000);
+      final out = mgr.onTick(2000);
+      expect(out, isEmpty);
+
+      setLive(999, status: 0x80000000); // status change, same value
+      final out2 = mgr.onTick(3000);
+      expect(out2, hasLength(1));
+      final resp = _decodePublishResponse(OpcUaReader(out2.single.body)..nodeId());
+      expect(resp.items.single.value.status, 0x80000000);
+    });
+
+    test('queue overflow discardOldest=true: oldest dropped, overflow bit 0x480 on oldest surviving entry', () {
+      createSub(publishingInterval: 1000, nowMs: 0);
+      createItem(1, nowMs: 0, queueSize: 2, discardOldest: true, filterBody: null);
+      park(requestId: 1, nowMs: 0);
+      mgr.onTick(1000); // drains initial sample
+
+      // Accumulate 3 changes with NO parked request in between, so the
+      // queue (cap 2) overflows.
+      setLive(1);
+      mgr.onTick(2000); // queue: [1]
+      setLive(2);
+      mgr.onTick(3000); // queue: [1, 2]
+      setLive(3);
+      mgr.onTick(4000); // overflow: drop oldest (1) -> [2*, 3]
+
+      // The subscription is late (unserved queued data from past cycles), so
+      // this Publish is answered IMMEDIATELY at arrival, not parked.
+      final out = mgr.handleService(
+        _publishRequestId,
+        _publishBody(),
+        _reqHeader(requestHandle: 9),
+        9,
+        4500,
+      );
+      expect(out, hasLength(1));
+      final resp = _decodePublishResponse(OpcUaReader(out.single.body)..nodeId());
+      expect(resp.items, hasLength(2));
+      expect(resp.items[0].value.variant!.value, 2);
+      expect(resp.items[0].value.status! & 0x480, 0x480);
+      expect(resp.items[1].value.variant!.value, 3);
+      expect(resp.items[1].value.status! & 0x480, 0);
+    });
+
+    test('queue overflow discardOldest=false: newest sample dropped, overflow bit on newest queued entry', () {
+      createSub(publishingInterval: 1000, nowMs: 0);
+      createItem(1, nowMs: 0, queueSize: 2, discardOldest: false, filterBody: null);
+      park(requestId: 1, nowMs: 0);
+      mgr.onTick(1000); // drains initial sample
+
+      setLive(1);
+      mgr.onTick(2000); // queue: [1]
+      setLive(2);
+      mgr.onTick(3000); // queue: [1, 2]
+      setLive(3);
+      mgr.onTick(4000); // overflow: new sample (3) dropped; bit set on newest queued (2)
+
+      // The subscription is late (unserved queued data from past cycles), so
+      // this Publish is answered IMMEDIATELY at arrival, not parked.
+      final out = mgr.handleService(
+        _publishRequestId,
+        _publishBody(),
+        _reqHeader(requestHandle: 9),
+        9,
+        4500,
+      );
+      expect(out, hasLength(1));
+      final resp = _decodePublishResponse(OpcUaReader(out.single.body)..nodeId());
+      expect(resp.items, hasLength(2));
+      expect(resp.items[0].value.variant!.value, 1);
+      expect(resp.items[0].value.status! & 0x480, 0);
+      expect(resp.items[1].value.variant!.value, 2);
+      expect(resp.items[1].value.status! & 0x480, 0x480);
+    });
+
+    test('maxNotificationsPerPublish truncation + moreNotifications + follow-up drain', () {
+      live[const OpcNodeId.string(1, 'A')] = OpcDataValue(
+        variant: const OpcVariant(typeId: 6, value: 1),
+        status: _statusGood,
+        sourceTs: DateTime.utc(2026, 7, 6),
+        serverTs: DateTime.utc(2026, 7, 6),
+      );
+      live[const OpcNodeId.string(1, 'B')] = live[const OpcNodeId.string(1, 'A')]!;
+      live[const OpcNodeId.string(1, 'C')] = live[const OpcNodeId.string(1, 'A')]!;
+
+      final subOut = mgr.handleService(
+        _createSubscriptionRequestId,
+        _createSubBody(publishingInterval: 1000, lifetimeCount: 30, maxKeepAlive: 50, maxNotifications: 2),
+        _reqHeader(),
+        1,
+        0,
+      );
+      final subReader = OpcUaReader(subOut.single.body);
+      subReader.nodeId();
+      subReader.responseHeader();
+      final subId = subReader.uint32();
+
+      mgr.handleService(
+        _createMonitoredItemsRequestId,
+        _createMonitoredItemsBody(
+          subscriptionId: subId,
+          items: [
+            (w) => _writeMonitoredItemCreateRequest(w,
+                nodeId: const OpcNodeId.string(1, 'A'), clientHandle: 1, filterBody: null),
+            (w) => _writeMonitoredItemCreateRequest(w,
+                nodeId: const OpcNodeId.string(1, 'B'), clientHandle: 2, filterBody: null),
+            (w) => _writeMonitoredItemCreateRequest(w,
+                nodeId: const OpcNodeId.string(1, 'C'), clientHandle: 3, filterBody: null),
+          ],
+        ),
+        _reqHeader(),
+        1,
+        0,
+      );
+
+      // 3 initial samples are queued (one per item at CreateMonitoredItems).
+      // Only 2 of the 3 should be drained per response (maxNotifications=2).
+      park(requestId: 1, nowMs: 0);
+      final out = mgr.onTick(1000);
+      expect(out, hasLength(1));
+      final resp = _decodePublishResponse(OpcUaReader(out.single.body)..nodeId());
+      expect(resp.items, hasLength(2));
+      expect(resp.moreNotifications, isTrue);
+      expect(resp.sequenceNumber, 1);
+
+      // Follow-up: the next parked request drains the remaining item.
+      park(requestId: 2, nowMs: 1000);
+      final out2 = mgr.onTick(2000);
+      expect(out2, hasLength(1));
+      final resp2 = _decodePublishResponse(OpcUaReader(out2.single.body)..nodeId());
+      expect(resp2.items, hasLength(1));
+      expect(resp2.moreNotifications, isFalse);
+      expect(resp2.sequenceNumber, 2);
+    });
+
+    test('late subscription: change with no parked request is answered immediately by the next Publish', () {
+      createSub(publishingInterval: 1000, nowMs: 0);
+      createItem(1, nowMs: 0);
+      park(requestId: 1, nowMs: 0);
+      mgr.onTick(1000); // drains initial sample
+
+      setLive(2);
+      final tickOut = mgr.onTick(2000); // no parked request -> marked late
+      expect(tickOut, isEmpty);
+
+      final immediate = mgr.handleService(
+        _publishRequestId,
+        _publishBody(),
+        _reqHeader(requestHandle: 77),
+        77,
+        2500,
+      );
+      expect(immediate, hasLength(1));
+      final resp = _decodePublishResponse(OpcUaReader(immediate.single.body)..nodeId());
+      expect(resp.items.single.value.variant!.value, 2);
+    });
+
+    test('acks remove sequence numbers from the retransmission buffer', () {
+      final subId = createSub(publishingInterval: 1000, nowMs: 0);
+      createItem(subId, nowMs: 0);
+      park(requestId: 1, nowMs: 0);
+      final first = mgr.onTick(1000); // seq 1, buffer: [1]
+      expect(first, hasLength(1));
+
+      setLive(2);
+      park(requestId: 2, nowMs: 1000);
+      final second = mgr.onTick(2000); // seq 2, buffer: [1, 2]
+      final secondResp = _decodePublishResponse(OpcUaReader(second.single.body)..nodeId());
+      expect(secondResp.availableSeq, [1, 2]);
+
+      // Ack seq 1 (removes it from the buffer); the response consuming this
+      // ack may arrive immediately (if the subscription is already late) or
+      // via the next tick — drive both deterministically.
+      setLive(3);
+      final ackOut = mgr.handleService(
+        _publishRequestId,
+        _publishBody([(subscriptionId: subId, sequenceNumber: 1)]),
+        _reqHeader(requestHandle: 3),
+        3,
+        2500,
+      );
+      final tickOut = mgr.onTick(3000);
+      final consuming = ackOut.isNotEmpty ? ackOut : tickOut;
+      expect(consuming, hasLength(1));
+      final resp = _decodePublishResponse(OpcUaReader(consuming.single.body)..nodeId());
+      expect(resp.results, [_statusGood]);
+      expect(resp.availableSeq, isNot(contains(1)));
+    });
+
+    test('ack with unknown sequence number -> Bad_SequenceNumberUnknown in results', () {
+      final subId = createSub(publishingInterval: 1000, nowMs: 0);
+      createItem(subId, nowMs: 0);
+      park(requestId: 1, nowMs: 0);
+      mgr.onTick(1000); // seq 1, buffer: [1]
+
+      setLive(2);
+      final ackOut = mgr.handleService(
+        _publishRequestId,
+        _publishBody([(subscriptionId: subId, sequenceNumber: 999)]),
+        _reqHeader(requestHandle: 2),
+        2,
+        1500,
+      );
+      final tickOut = mgr.onTick(2000);
+      final consuming = ackOut.isNotEmpty ? ackOut : tickOut;
+      expect(consuming, hasLength(1));
+      final resp = _decodePublishResponse(OpcUaReader(consuming.single.body)..nodeId());
+      expect(resp.results, [_statusBadSequenceNumberUnknown]);
+    });
+
+    test('ack with unknown subscription id -> Bad_SubscriptionIdInvalid in results', () {
+      final subId = createSub(publishingInterval: 1000, nowMs: 0);
+      createItem(subId, nowMs: 0);
+      park(requestId: 1, nowMs: 0);
+      mgr.onTick(1000);
+
+      setLive(2);
+      final ackOut = mgr.handleService(
+        _publishRequestId,
+        _publishBody([(subscriptionId: 99999, sequenceNumber: 1)]),
+        _reqHeader(requestHandle: 5),
+        5,
+        1500,
+      );
+      final tickOut = mgr.onTick(2000);
+      final consuming = ackOut.isNotEmpty ? ackOut : tickOut;
+      expect(consuming, hasLength(1));
+      final resp = _decodePublishResponse(OpcUaReader(consuming.single.body)..nodeId());
+      expect(resp.results, [_statusBadSubscriptionIdInvalid]);
+    });
+
+    test('Republish hit returns the same stored NotificationMessage; miss -> Bad_MessageNotAvailable', () {
+      final subId = createSub(publishingInterval: 1000, nowMs: 0);
+      final item = createItem(subId, nowMs: 0);
+      park(requestId: 1, nowMs: 0);
+      mgr.onTick(1000);
+
+      final republishOut = mgr.handleService(
+        _republishRequestId,
+        _republishBody(subscriptionId: subId, seq: 1),
+        _reqHeader(),
+        2,
+        1500,
+      );
+      expect(republishOut, hasLength(1));
+      final reader = OpcUaReader(republishOut.single.body);
+      final typeId = reader.nodeId();
+      expect(typeId.numericId, _republishResponseId);
+      final header = reader.responseHeader();
+      expect(header.serviceResult, _statusGood);
+      final seq = reader.uint32();
+      expect(seq, 1);
+      reader.dateTime(); // publishTime
+      final notifLen = reader.int32();
+      expect(notifLen, 1);
+      final innerTypeId = reader.extensionObjectHeader();
+      expect(innerTypeId.numericId, _dataChangeNotificationTypeId);
+      final innerBody = reader.byteString()!;
+      final innerReader = OpcUaReader(Uint8List.fromList(innerBody));
+      final monLen = innerReader.int32();
+      expect(monLen, 1);
+      final ch = innerReader.uint32();
+      expect(ch, item.clientHandle);
+      final value = innerReader.dataValue();
+      expect(value.variant!.value, 42);
+
+      // Miss: sequence 999 was never sent.
+      final missOut = mgr.handleService(
+        _republishRequestId,
+        _republishBody(subscriptionId: subId, seq: 999),
+        _reqHeader(),
+        3,
+        1600,
+      );
+      expect(missOut, hasLength(1));
+      final missReader = OpcUaReader(missOut.single.body);
+      final missTypeId = missReader.nodeId();
+      expect(missTypeId.numericId, _serviceFaultId);
+      final missHeader = missReader.responseHeader();
+      expect(missHeader.serviceResult, _statusBadMessageNotAvailable);
+    });
+
+    test('Republish unknown subscription -> ServiceFault Bad_SubscriptionIdInvalid', () {
+      final out = mgr.handleService(
+        _republishRequestId,
+        _republishBody(subscriptionId: 999, seq: 1),
+        _reqHeader(),
+        1,
+        0,
+      );
       expect(out, hasLength(1));
       final reader = OpcUaReader(out.single.body);
       final typeId = reader.nodeId();
       expect(typeId.numericId, _serviceFaultId);
       final respHeader = reader.responseHeader();
-      expect(respHeader.serviceResult, _statusBadServiceUnsupported);
+      expect(respHeader.serviceResult, _statusBadSubscriptionIdInvalid);
+    });
+
+    test('retransmission buffer cap 20: oldest silently dropped', () {
+      final subId = createSub(publishingInterval: 1000, maxKeepAlive: 9999, nowMs: 0);
+      createItem(subId, nowMs: 0);
+      park(requestId: 1, nowMs: 0);
+      mgr.onTick(1000); // seq 1
+
+      // Generate messages seq 2..25, parking a fresh request before each
+      // cycle so every cycle delivers immediately (no lateness).
+      for (var i = 2; i <= 25; i++) {
+        setLive(i);
+        park(requestId: i, nowMs: (i - 1) * 1000 - 500);
+        mgr.onTick(i * 1000);
+      }
+
+      // Buffer should now hold only the most recent 20: seq 6..25.
+      setLive(999);
+      park(requestId: 999, nowMs: 25500);
+      final out = mgr.onTick(26000);
+      final resp = _decodePublishResponse(OpcUaReader(out.single.body)..nodeId());
+      expect(resp.availableSeq, List<int>.generate(20, (i) => i + 7)); // 7..26
+      expect(resp.availableSeq.length, 20);
+      expect(resp.subscriptionId, subId);
+    });
+
+    test('lifetime timeout with NO parked request: subscription dies silently; later Publish -> Bad_NoSubscription', () {
+      createSub(publishingInterval: 1000, maxKeepAlive: 3, lifetimeCount: 30, nowMs: 0);
+      createItem(1, nowMs: 0);
+      park(requestId: 1, nowMs: 0);
+      mgr.onTick(1000); // drains initial sample; resets counters
+
+      // No further parked requests at all: every subsequent cycle
+      // increments lifetime (nothing delivered). After lifetimeCount (30)
+      // such cycles the subscription dies (silently, since nothing is
+      // parked to carry the StatusChangeNotification).
+      var nowMs = 1000;
+      for (var i = 0; i < 30; i++) {
+        nowMs += 1000;
+        mgr.onTick(nowMs);
+      }
+      expect(mgr.subscriptionCount, 0);
+
+      final out = mgr.handleService(_publishRequestId, _publishBody(), _reqHeader(), 1, nowMs + 1000);
+      expect(out, hasLength(1));
+      final reader = OpcUaReader(out.single.body);
+      final typeId = reader.nodeId();
+      expect(typeId.numericId, _serviceFaultId);
+      final respHeader = reader.responseHeader();
+      expect(respHeader.serviceResult, _statusBadNoSubscription);
+    });
+
+    test('lifetime timeout WITH a parked request: StatusChangeNotification(Bad_Timeout) delivered, then subscription gone', () {
+      createSub(publishingInterval: 1000, maxKeepAlive: 3, lifetimeCount: 30, nowMs: 0);
+      createItem(1, nowMs: 0);
+      park(requestId: 1, nowMs: 0);
+      mgr.onTick(1000); // drains initial sample (seq 1); resets counters
+
+      // Starve for 29 cycles: lifetime reaches 29. Keep-alive becomes
+      // ELIGIBLE from cycle 3 (keepAlive >= maxKeepAliveCount=3) but never
+      // fires because no request is parked during the starvation window.
+      var nowMs = 1000;
+      for (var i = 0; i < 29; i++) {
+        nowMs += 1000;
+        expect(mgr.onTick(nowMs), isEmpty);
+      }
+      expect(mgr.subscriptionCount, 1);
+
+      // Park a request JUST before the death cycle. On the 30th starved
+      // cycle lifetime hits 30 >= lifetimeCount; the death check runs BEFORE
+      // the keep-alive send, so the parked request carries the
+      // StatusChangeNotification(Bad_Timeout) instead of a keep-alive.
+      park(requestId: 3, nowMs: nowMs + 500);
+      final out = mgr.onTick(nowMs + 1000);
+      expect(out, hasLength(1));
+      expect(out.single.requestId, 3);
+      final reader = OpcUaReader(out.single.body);
+      final typeId = reader.nodeId();
+      expect(typeId.numericId, _publishResponseId);
+      final resp = _decodePublishResponse(reader);
+      expect(resp.header.serviceResult, _statusGood);
+      expect(resp.statusChangeStatus, _statusBadTimeout);
+      // Sequence number = next-expected (2 — the initial data message used
+      // 1), NOT consumed: StatusChange messages are not data messages.
+      expect(resp.sequenceNumber, 2);
+      expect(mgr.subscriptionCount, 0);
+    });
+
+    test('publishing disabled: data withheld, keep-alives still flow; re-enable delivers queued data', () {
+      final subId = createSub(publishingInterval: 1000, maxKeepAlive: 2, publishingEnabled: false, nowMs: 0);
+      createItem(subId, nowMs: 0);
+
+      // The initial sample was queued at CreateMonitoredItems regardless of
+      // publishingEnabled, but disabled subscriptions never send data.
+      park(requestId: 1, nowMs: 0);
+      final first = mgr.onTick(1000); // keepAlive=1 (data withheld)
+      expect(first, isEmpty);
+      park(requestId: 2, nowMs: 1000);
+      final second = mgr.onTick(2000); // keepAlive=2 -> fires (>= maxKeepAlive=2)
+      expect(second, hasLength(1));
+      final resp = _decodePublishResponse(OpcUaReader(second.single.body)..nodeId());
+      expect(resp.items, isEmpty); // keep-alive only, despite queued data
+
+      final enableOut = mgr.handleService(
+        _setPublishingModeRequestId,
+        _setPublishingModeBody(publishingEnabled: true, subscriptionIds: [subId]),
+        _reqHeader(),
+        1,
+        2500,
+      );
+      expect(enableOut, hasLength(1));
+
+      park(requestId: 3, nowMs: 2600);
+      final third = mgr.onTick(3000);
+      expect(third, hasLength(1));
+      final thirdResp = _decodePublishResponse(OpcUaReader(third.single.body)..nodeId());
+      expect(thirdResp.items, hasLength(1)); // the still-queued initial sample, now delivered
+      expect(thirdResp.items.single.value.variant!.value, 42);
+    });
+
+    test('11th parked Publish -> immediate ServiceFault Bad_TooManyPublishRequests', () {
+      createSub(publishingInterval: 1000, maxKeepAlive: 9999, nowMs: 0);
+      createItem(1, nowMs: 0);
+      for (var i = 0; i < 10; i++) {
+        final out = park(requestId: i + 1, nowMs: 0);
+        expect(out, isEmpty);
+      }
+      final eleventh = mgr.handleService(
+        _publishRequestId,
+        _publishBody(),
+        _reqHeader(requestHandle: 11),
+        11,
+        0,
+      );
+      expect(eleventh, hasLength(1));
+      final reader = OpcUaReader(eleventh.single.body);
+      final typeId = reader.nodeId();
+      expect(typeId.numericId, _serviceFaultId);
+      final respHeader = reader.responseHeader();
+      expect(respHeader.serviceResult, _statusBadTooManyPublishRequests);
+    });
+
+    test('Publish with no subscriptions at all -> immediate ServiceFault Bad_NoSubscription', () {
+      final out = mgr.handleService(_publishRequestId, _publishBody(), _reqHeader(), 1, 0);
+      expect(out, hasLength(1));
+      final reader = OpcUaReader(out.single.body);
+      final typeId = reader.nodeId();
+      expect(typeId.numericId, _serviceFaultId);
+      final respHeader = reader.responseHeader();
+      expect(respHeader.serviceResult, _statusBadNoSubscription);
+    });
+
+    test('sequence numbers strictly increase 1,2,3,4,5 across successive data messages', () {
+      createSub(publishingInterval: 1000, nowMs: 0);
+      createItem(1, nowMs: 0);
+      final seqs = <int>[];
+      for (var i = 1; i <= 5; i++) {
+        setLive(i);
+        park(requestId: i, nowMs: (i - 1) * 1000 + 100);
+        final out = mgr.onTick(i * 1000);
+        expect(out, hasLength(1));
+        final resp = _decodePublishResponse(OpcUaReader(out.single.body)..nodeId());
+        seqs.add(resp.sequenceNumber);
+      }
+      expect(seqs, [1, 2, 3, 4, 5]);
     });
   });
 

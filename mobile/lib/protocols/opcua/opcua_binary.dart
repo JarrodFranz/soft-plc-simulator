@@ -233,6 +233,12 @@ DateTime? _ticksToDateTime(int ticks) {
 class OpcUaWriter {
   final BytesBuilder _builder = BytesBuilder(copy: true);
 
+  /// Appends raw already-encoded bytes verbatim (e.g. a NotificationMessage
+  /// body built once and reused byte-identical across a PublishResponse's
+  /// live send and a later Republish — WS20/Task 2). Added for WS20/Task 2;
+  /// the pre-subscriptions codec never needed to splice pre-encoded bytes.
+  void bytes(Uint8List value) => _builder.add(value);
+
   void boolean(bool value) => uint8(value ? 1 : 0);
 
   void uint8(int value) {

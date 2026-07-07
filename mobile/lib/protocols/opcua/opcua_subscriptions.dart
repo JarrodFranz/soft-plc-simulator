@@ -1,11 +1,13 @@
-// OPC UA SubscriptionManager — subscription / monitored-item lifecycle
-// services — pure Dart, no dart:io / Flutter imports, no Timer. Implements
-// the seven non-Publish subscription services (CreateSubscription,
+// OPC UA SubscriptionManager — subscription / monitored-item lifecycle AND
+// the time-driven publish engine — pure Dart, no dart:io / Flutter imports,
+// no Timer. Implements all nine subscription services (CreateSubscription,
 // ModifySubscription, SetPublishingMode, DeleteSubscriptions,
-// CreateMonitoredItems, ModifyMonitoredItems, DeleteMonitoredItems);
-// Publish/Republish are routed but answered with a Bad_ServiceUnsupported
-// placeholder fault in this task (Task 2 replaces them with the real
-// publish-cycle implementation — see onTick, currently a no-op stub).
+// CreateMonitoredItems, ModifyMonitoredItems, DeleteMonitoredItems, Publish,
+// Republish) plus [onTick], the clock-driven sampling/publish-cycle engine
+// (keep-alive, lifetime, retransmission/Republish, deadband change
+// detection). ALL scheduling time comes from the injected `nowMs`
+// (monotonic ms) parameter; `DateTime.now().toUtc()` is used ONLY for wire
+// timestamps (publishTime, ResponseHeader timestamp), never for scheduling.
 //
 // Every encoding id / struct layout / StatusCode / AttributeId used here is
 // cross-checked against the Rust `opcua` crate (v0.12.0), vendored locally
@@ -47,8 +49,18 @@ class _Ids {
   static const deleteMonitoredItemsRequest = 781; // node_ids.rs:1780
   static const deleteMonitoredItemsResponse = 784; // node_ids.rs:1781
   static const publishRequest = 826; // node_ids.rs:1793
+  static const publishResponse = 829; // node_ids.rs:1794
   static const republishRequest = 832; // node_ids.rs:1795
+  static const republishResponse = 835; // node_ids.rs:1796
   static const serviceFault = 397; // node_ids.rs:1662 (opcua_session.dart's _Ids.serviceFault)
+  // Notification payload DefaultBinary encoding ids (types/node_ids.rs).
+  // NotificationMessage (805) has no dedicated ExtensionObject wrapper of its
+  // own in this codec (its fields are written directly into the
+  // PublishResponse/RepublishResponse body), so it is not referenced by id
+  // here; DataChangeNotification and StatusChangeNotification ARE wrapped in
+  // ExtensionObjects inside notificationData and so need their ids.
+  static const dataChangeNotification = 811; // node_ids.rs:1790
+  static const statusChangeNotification = 820; // node_ids.rs:1791
   // NOTE: node_ids.rs:217 `DataChangeFilter = 722` is the plain NodeId for
   // the DataChangeFilter DataType/structure, NOT the wire ExtensionObject
   // typeId. On the wire an ExtensionObject's typeId must be the
@@ -62,6 +74,7 @@ class _Ids {
 /// types/status_codes.rs.
 class SubscriptionStatusCodes {
   static const good = 0;
+  static const badTimeout = 0x800A0000; // status_codes.rs:95
   static const badServiceUnsupported = 0x800B0000; // status_codes.rs:96
   static const badNothingToDo = 0x800F0000; // status_codes.rs:100
   static const badSubscriptionIdInvalid = 0x80280000; // status_codes.rs:125
@@ -71,6 +84,10 @@ class SubscriptionStatusCodes {
   static const badMonitoredItemIdInvalid = 0x80420000; // status_codes.rs:146
   static const badMonitoredItemFilterUnsupported = 0x80440000; // status_codes.rs:148
   static const badTooManySubscriptions = 0x80770000; // status_codes.rs:198
+  static const badTooManyPublishRequests = 0x80780000; // status_codes.rs:199
+  static const badNoSubscription = 0x80790000; // status_codes.rs:200
+  static const badSequenceNumberUnknown = 0x807A0000; // status_codes.rs:201
+  static const badMessageNotAvailable = 0x807B0000; // status_codes.rs:202
   static const badDeadbandFilterInvalid = 0x808E0000; // status_codes.rs:221
   static const badTooManyMonitoredItems = 0x80DB0000; // status_codes.rs:275
 }
@@ -165,9 +182,10 @@ int _reviseQueueSize(int requested) {
   return requested.clamp(_queueSizeFloor, _queueSizeCeil);
 }
 
-/// One monitored item inside a [_Subscription]. The initial sample (and,
-/// eventually in Task 2, subsequent samples) is queued here as a simple
-/// list; Task 2's onTick consumes/publishes it.
+/// One monitored item inside a [_Subscription]. The initial sample is
+/// queued at CreateMonitoredItems time; [onTick] samples/enqueues
+/// subsequent changes per the item's own sampling schedule
+/// (`createdAtMs + k*samplingIntervalMs`).
 class _MonitoredItem {
   final int id;
   final OpcNodeId nodeId;
@@ -178,8 +196,19 @@ class _MonitoredItem {
   bool discardOldest;
   int monitoringMode;
   int trigger;
+  double? deadbandValue;
   final int createdAtMs;
   final List<OpcDataValue> queue = [];
+
+  /// The last REPORTED (i.e. delivered-or-queued-for-delivery) sample, used
+  /// as the change-detection baseline per the spec ("vs last REPORTED
+  /// sample"). Set at CreateMonitoredItems (the initial sample) and updated
+  /// every time a new sample is enqueued.
+  OpcDataValue? lastReported;
+
+  /// The next sampling due-time (ms), advanced by whole multiples of
+  /// [samplingIntervalMs] each tick so drift never accumulates.
+  int nextSampleDueMs;
 
   _MonitoredItem({
     required this.id,
@@ -191,8 +220,18 @@ class _MonitoredItem {
     required this.discardOldest,
     required this.monitoringMode,
     required this.trigger,
+    required this.deadbandValue,
     required this.createdAtMs,
-  });
+  }) : nextSampleDueMs = createdAtMs + samplingIntervalMs.round();
+}
+
+/// A data-carrying NotificationMessage retained for retransmission
+/// (Republish) until acknowledged or evicted by the 20-message cap.
+class _RetainedMessage {
+  final int sequenceNumber;
+  final Uint8List notificationMessageBody; // sequenceNumber+publishTime+notificationData, pre-encoded
+
+  const _RetainedMessage(this.sequenceNumber, this.notificationMessageBody);
 }
 
 class _Subscription {
@@ -206,6 +245,31 @@ class _Subscription {
   final int createdAtMs;
   final Map<int, _MonitoredItem> items = {};
 
+  /// Next publishing-cycle boundary (ms); advanced by whole multiples of
+  /// [publishingIntervalMs] each tick so drift never accumulates.
+  int nextCycleMs;
+
+  /// The next sequence number a DATA-carrying message will use (starts 1;
+  /// increments only when a message actually carries notificationData).
+  int nextSequenceNumber = 1;
+
+  int keepAliveCounter = 0;
+  int lifetimeCounter = 0;
+
+  /// True when a past cycle had queued data but no parked PublishRequest
+  /// was available to carry it — the next arriving (or already-parked)
+  /// Publish must be answered for this subscription before any others,
+  /// longest-late first.
+  bool late = false;
+
+  /// ms of the cycle at which [late] first became true (for "longest-late
+  /// first" ordering across multiple late subscriptions).
+  int lateSinceMs = 0;
+
+  /// Retransmission buffer: most recent 20 data-carrying messages sent,
+  /// oldest evicted first.
+  final List<_RetainedMessage> retransmission = [];
+
   _Subscription({
     required this.id,
     required this.publishingIntervalMs,
@@ -215,32 +279,55 @@ class _Subscription {
     required this.publishingEnabled,
     required this.priority,
     required this.createdAtMs,
+  }) : nextCycleMs = createdAtMs + publishingIntervalMs.round();
+}
+
+/// A parked PublishRequest awaiting a response: the transport requestId to
+/// echo, the client's requestHandle (for the ResponseHeader), and the
+/// per-acknowledgement StatusCodes computed at arrival time (ride whichever
+/// response eventually consumes this parked request).
+class _ParkedPublish {
+  final int requestId;
+  final int requestHandle;
+  final List<int> ackResults;
+
+  const _ParkedPublish({
+    required this.requestId,
+    required this.requestHandle,
+    required this.ackResults,
   });
 }
 
 /// The result of decoding+validating a DataChangeFilter (or the absence of
 /// a filter). [statusOnly] mirrors the DataChangeTrigger: false when the
 /// notification should carry status+value (trigger 1/2), true for
-/// status-only (trigger 0).
+/// status-only (trigger 0). [deadbandValue] is non-null only for an
+/// Absolute-deadband filter (deadbandType 1); null means "no deadband" (any
+/// value inequality triggers), matching the absence of a filter or an
+/// explicit deadbandType None (0).
 class _FilterOutcome {
   final bool ok;
   final int? errorStatus;
   final bool statusOnly;
+  final double? deadbandValue;
 
-  const _FilterOutcome.good({required this.statusOnly})
+  const _FilterOutcome.good({required this.statusOnly, this.deadbandValue})
       : ok = true,
         errorStatus = null;
 
   const _FilterOutcome.error(this.errorStatus)
       : ok = false,
-        statusOnly = false;
+        statusOnly = false,
+        deadbandValue = null;
 }
 
-/// Handles the nine subscription services (Publish/Republish are Task 2
-/// placeholders in this task). Builds its OWN ResponseHeaders/ServiceFaults
-/// (timestamp `DateTime.now().toUtc()`, echoing `header.requestHandle`;
-/// ServiceFault type id 397) — does not use the session's ResponseBuilder.
-/// Never throws out of [handleService].
+/// Handles all nine subscription services, including the full time-driven
+/// Publish/Republish engine (keep-alive, lifetime, retransmission, deadband
+/// change detection — see [onTick]). Builds its OWN ResponseHeaders/
+/// ServiceFaults (timestamp `DateTime.now().toUtc()`, echoing
+/// `header.requestHandle`; ServiceFault type id 397) — does not use the
+/// session's ResponseBuilder. Never throws out of [handleService] or
+/// [onTick].
 class SubscriptionManager {
   final OpcDataValue Function(OpcNodeId) sampler;
 
@@ -271,8 +358,10 @@ class SubscriptionManager {
 
   /// Handles any of the nine subscription services. [body] is positioned
   /// after the RequestHeader (session already consumed type id + header).
-  /// Returns response bodies to send NOW (usually one; empty when a
-  /// PublishRequest was parked — not applicable this task). Never throws.
+  /// Returns response bodies to send NOW: usually exactly one, but a
+  /// PublishRequest may return EMPTY (parked for a future [onTick]/arrival
+  /// to answer) or, when it also resolves one or more late subscriptions,
+  /// more than one. Never throws.
   List<PublishOut> handleService(
     int requestTypeId,
     OpcUaReader body,
@@ -281,6 +370,9 @@ class SubscriptionManager {
     int nowMs,
   ) {
     try {
+      if (requestTypeId == _Ids.publishRequest) {
+        return _handlePublish(body, header, requestId, nowMs);
+      }
       final responseBody = _dispatch(requestTypeId, body, header, nowMs);
       if (responseBody == null) {
         return [
@@ -304,10 +396,498 @@ class SubscriptionManager {
     }
   }
 
-  /// Clock tick (Task 2 scope): sampling, publish cycles, keep-alives,
-  /// lifetimes. This task does not implement publishing; onTick is a no-op
-  /// placeholder so the public interface exists for Task 2/3 to build on.
-  List<PublishOut> onTick(int nowMs) => const [];
+  /// Parked PublishRequests: global FIFO (cap 10; the 11th arrival is
+  /// immediately faulted rather than parked, per spec).
+  final List<_ParkedPublish> _parkedPublishes = [];
+  static const int _maxParkedPublishes = 10;
+
+  /// Clock tick: samples every enabled monitored item whose due-time has
+  /// arrived, then runs the publish-cycle state machine for every
+  /// subscription at its own cycle boundary. Never throws — a single
+  /// subscription's cycle failing degrades to skipping that subscription's
+  /// output for this tick rather than losing the whole batch.
+  List<PublishOut> onTick(int nowMs) {
+    final out = <PublishOut>[];
+    // Snapshot ids: subscriptions may be deleted (lifetime timeout) during
+    // iteration.
+    for (final subId in _subscriptions.keys.toList()) {
+      final sub = _subscriptions[subId];
+      if (sub == null) continue;
+      try {
+        _sampleDueItems(sub, nowMs);
+        _runPublishCycles(sub, nowMs, out);
+      } catch (_) {
+        // Skip this subscription's output for this tick; never throw out
+        // of onTick.
+      }
+    }
+    return out;
+  }
+
+  /// Samples every Sampling/Reporting-mode item in [sub] whose due-time has
+  /// arrived, possibly multiple times if nowMs has jumped past several
+  /// sampling intervals (drains due-times without drift).
+  void _sampleDueItems(_Subscription sub, int nowMs) {
+    for (final item in sub.items.values) {
+      if (item.monitoringMode == _monitoringModeDisabled) continue;
+      final intervalMs = item.samplingIntervalMs.round().clamp(1, 1 << 30);
+      var guard = 0;
+      while (item.nextSampleDueMs <= nowMs && guard < 100000) {
+        _sampleOnce(item);
+        item.nextSampleDueMs += intervalMs;
+        guard++;
+      }
+    }
+  }
+
+  /// Samples [item] once via the injected sampler and enqueues a
+  /// notification if change detection says it should trigger, applying
+  /// queue-overflow rules on enqueue.
+  void _sampleOnce(_MonitoredItem item) {
+    final sample = sampler(item.nodeId);
+    if (!_shouldReport(item, sample)) return;
+    item.lastReported = sample;
+    _enqueue(item, sample);
+  }
+
+  /// Change detection vs the item's last REPORTED sample (spec
+  /// "Change detection"): trigger Status (0) => statusCode change only;
+  /// StatusValue (1 or 2) => status change OR value change (absolute
+  /// deadband gates numeric value changes only, inclusive boundary;
+  /// non-numeric values trigger on any inequality; status changes always
+  /// trigger regardless of trigger mode or deadband).
+  bool _shouldReport(_MonitoredItem item, OpcDataValue sample) {
+    final last = item.lastReported;
+    if (last == null) return true; // nothing reported yet (shouldn't normally recur; initial sample is queued directly at creation)
+    // An absent statusCode means Good (0) — data_value.rs's HAS_STATUS mask
+    // bit omits the field entirely for Good — so normalize before comparing.
+    final statusChanged = (sample.status ?? SubscriptionStatusCodes.good) !=
+        (last.status ?? SubscriptionStatusCodes.good);
+    if (statusChanged) return true;
+    if (item.trigger == _triggerStatusOnly) return false;
+
+    // Absolute deadband applies to NUMERIC scalar value changes only
+    // (inclusive boundary: |new - old| >= deadband triggers). Everything
+    // else (non-numeric, arrays, type changes, no deadband) triggers on any
+    // variant inequality — OpcVariant.== is a deep compare (typeId +
+    // per-element for arrays), unlike raw `.value !=` which would be an
+    // identity compare for List values.
+    final newValue = sample.variant?.value;
+    final oldValue = last.variant?.value;
+    final deadband = item.deadbandValue;
+    if (deadband != null && newValue is num && oldValue is num) {
+      return (newValue - oldValue).abs() >= deadband; // inclusive boundary
+    }
+    return sample.variant != last.variant;
+  }
+
+  /// Enqueues [sample] for [item], applying the queue-size cap + overflow
+  /// bit (0x480 = Overflow 0x80 | InfoType DataValue 0x400, Part 4 InfoBits)
+  /// per discardOldest polarity: true => drop the oldest entry and set the
+  /// overflow bit on the new oldest surviving entry; false => drop this new
+  /// sample instead and set the overflow bit on the current newest queued
+  /// entry.
+  void _enqueue(_MonitoredItem item, OpcDataValue sample) {
+    if (item.queue.length < item.queueSize) {
+      item.queue.add(sample);
+      return;
+    }
+    if (item.discardOldest) {
+      item.queue.removeAt(0);
+      item.queue.add(sample);
+      if (item.queue.isNotEmpty) {
+        item.queue[0] = _withOverflowBit(item.queue[0]);
+      }
+    } else {
+      // The NEW sample is dropped; mark the current newest surviving entry.
+      final lastIndex = item.queue.length - 1;
+      item.queue[lastIndex] = _withOverflowBit(item.queue[lastIndex]);
+    }
+  }
+
+  OpcDataValue _withOverflowBit(OpcDataValue value) {
+    final status = (value.status ?? SubscriptionStatusCodes.good) | 0x480;
+    return OpcDataValue(
+      variant: value.variant,
+      status: status,
+      sourceTs: value.sourceTs,
+      serverTs: value.serverTs,
+    );
+  }
+
+  /// Runs every publish-cycle boundary in [sub] that has arrived by
+  /// [nowMs] (handles nowMs jumping past multiple boundaries), appending
+  /// any resulting [PublishOut]s to [out]. May delete [sub] from
+  /// [_subscriptions] on lifetime timeout.
+  void _runPublishCycles(_Subscription sub, int nowMs, List<PublishOut> out) {
+    final intervalMs = sub.publishingIntervalMs.round().clamp(1, 1 << 30);
+    var guard = 0;
+    while (sub.nextCycleMs <= nowMs && guard < 100000) {
+      final cycleMs = sub.nextCycleMs;
+      sub.nextCycleMs += intervalMs;
+      guard++;
+      if (!_runOnePublishCycle(sub, cycleMs, out)) {
+        return; // subscription died (lifetime timeout) — stop iterating it
+      }
+    }
+  }
+
+  /// Runs exactly one publish-cycle boundary for [sub]. Returns false if
+  /// the subscription died (lifetime timeout) during this cycle — callers
+  /// must stop iterating it afterward.
+  ///
+  /// Ordering note: the lifetime-timeout check runs BEFORE the keep-alive
+  /// send is attempted on a "nothing queued" cycle. Both conditions can be
+  /// simultaneously true (e.g. keepAlive has been eligible for many cycles
+  /// with no parked request to consume, and lifetime finally reaches its
+  /// cap on the very cycle a request becomes available) — a dying
+  /// subscription must be torn down with its StatusChangeNotification
+  /// rather than issued one more keep-alive that resets the lifetime
+  /// counter and silently postpones the timeout.
+  bool _runOnePublishCycle(_Subscription sub, int cycleMs, List<PublishOut> out) {
+    final hasQueuedData = sub.publishingEnabled && _hasQueuedNotifications(sub);
+
+    if (hasQueuedData) {
+      final parked = _takeParkedPublish();
+      if (parked != null) {
+        out.add(_buildDataPublishResponse(sub, parked, cycleMs));
+        sub.keepAliveCounter = 0;
+        sub.lifetimeCounter = 0;
+        sub.late = false;
+        return true;
+      }
+      // Queued but nothing parked to carry it: mark late, lifetime++.
+      if (!sub.late) {
+        sub.late = true;
+        sub.lateSinceMs = cycleMs;
+      }
+      sub.lifetimeCounter++;
+      return _checkLifetimeTimeout(sub, cycleMs, out);
+    }
+
+    // Nothing to send (either no queued data, or publishing disabled —
+    // Part 4: keep-alives still flow when disabled).
+    sub.keepAliveCounter++;
+    sub.lifetimeCounter++;
+    if (!_checkLifetimeTimeout(sub, cycleMs, out)) {
+      return false; // dead: never gets a keep-alive on this cycle
+    }
+    if (sub.keepAliveCounter >= sub.maxKeepAliveCount) {
+      final parked = _takeParkedPublish();
+      if (parked != null) {
+        out.add(_buildKeepAlivePublishResponse(sub, parked, cycleMs));
+        sub.keepAliveCounter = 0;
+        sub.lifetimeCounter = 0;
+      }
+    }
+    return true;
+  }
+
+  /// Checks [sub]'s lifetime counter against its lifetimeCount; if expired,
+  /// sends a final StatusChangeNotification(Bad_Timeout) (if a request is
+  /// parked; silently otherwise) and deletes the subscription. Returns
+  /// false if the subscription died (callers must stop using it).
+  bool _checkLifetimeTimeout(_Subscription sub, int cycleMs, List<PublishOut> out) {
+    if (sub.lifetimeCounter < sub.lifetimeCount) return true;
+    final parked = _takeParkedPublish();
+    if (parked != null) {
+      out.add(_buildTimeoutPublishResponse(sub, parked, cycleMs));
+    }
+    _subscriptions.remove(sub.id);
+    return false;
+  }
+
+  bool _hasQueuedNotifications(_Subscription sub) {
+    for (final item in sub.items.values) {
+      if (item.queue.isNotEmpty) return true;
+    }
+    return false;
+  }
+
+  /// Takes the next parked PublishRequest (FIFO), or null if none parked.
+  _ParkedPublish? _takeParkedPublish() {
+    if (_parkedPublishes.isEmpty) return null;
+    return _parkedPublishes.removeAt(0);
+  }
+
+  /// Drains up to [sub.maxNotificationsPerPublish] item notifications
+  /// (0 = unlimited) across all of [sub]'s monitored items into one
+  /// DataChangeNotification, builds+retains the NotificationMessage, and
+  /// returns the full PublishResponse [PublishOut].
+  PublishOut _buildDataPublishResponse(_Subscription sub, _ParkedPublish parked, int cycleMs) {
+    final limit = sub.maxNotificationsPerPublish == 0 ? 1 << 30 : sub.maxNotificationsPerPublish;
+    final drained = <({int clientHandle, OpcDataValue value})>[];
+    outer:
+    for (final item in sub.items.values) {
+      while (item.queue.isNotEmpty) {
+        if (drained.length >= limit) break outer;
+        final value = item.queue.removeAt(0);
+        drained.add((clientHandle: item.clientHandle, value: value));
+      }
+    }
+    final moreNotifications = _hasQueuedNotifications(sub);
+
+    final seq = sub.nextSequenceNumber++;
+    final notifMessageBody = _encodeNotificationMessage(seq, drained);
+    _retain(sub, seq, notifMessageBody);
+
+    return _buildPublishResponse(
+      sub: sub,
+      parked: parked,
+      sequenceNumber: seq,
+      moreNotifications: moreNotifications,
+      notificationMessageBody: notifMessageBody,
+    );
+  }
+
+  /// Builds an empty-notificationData keep-alive PublishResponse. Uses the
+  /// next-expected sequence number WITHOUT consuming it (no retransmission
+  /// entry is created — keep-alives are never retransmitted). The
+  /// NotificationMessage carries an EMPTY notificationData array (length 0,
+  /// NOT a DataChangeNotification with zero items) — Part 4 keep-alive
+  /// shape, notification_message.rs:20 `notification_data:
+  /// Option<Vec<ExtensionObject>>`.
+  PublishOut _buildKeepAlivePublishResponse(_Subscription sub, _ParkedPublish parked, int cycleMs) {
+    final w = OpcUaWriter();
+    w.uint32(sub.nextSequenceNumber);
+    w.dateTime(DateTime.now().toUtc());
+    w.int32(0); // notificationData: EMPTY array — keep-alive carries nothing
+    return _buildPublishResponse(
+      sub: sub,
+      parked: parked,
+      sequenceNumber: sub.nextSequenceNumber,
+      moreNotifications: false,
+      notificationMessageBody: w.take(),
+    );
+  }
+
+  /// Builds a StatusChangeNotification(Bad_Timeout) PublishResponse for a
+  /// dying (lifetime-expired) subscription. Uses the next-expected sequence
+  /// number WITHOUT consuming it; not retained for retransmission (the
+  /// subscription is about to be deleted).
+  PublishOut _buildTimeoutPublishResponse(_Subscription sub, _ParkedPublish parked, int cycleMs) {
+    final w = OpcUaWriter();
+    w.uint32(sub.nextSequenceNumber);
+    w.dateTime(DateTime.now().toUtc());
+    w.int32(1); // notificationData: one entry
+    final statusChangeBody = OpcUaWriter();
+    statusChangeBody.statusCode(SubscriptionStatusCodes.badTimeout);
+    statusChangeBody.emptyDiagnosticInfo();
+    w.extensionObject(
+      const OpcNodeId.numeric(0, _Ids.statusChangeNotification),
+      statusChangeBody.take(),
+    );
+    return _buildPublishResponse(
+      sub: sub,
+      parked: parked,
+      sequenceNumber: sub.nextSequenceNumber,
+      moreNotifications: false,
+      notificationMessageBody: w.take(),
+    );
+  }
+
+  /// Assembles the full PublishResponse body: responseHeader, subscriptionId,
+  /// availableSequenceNumbers (buffer's seqs ascending, AFTER retaining this
+  /// message), moreNotifications, notificationMessage (pre-encoded body),
+  /// results (the parked request's ack StatusCodes), diagnosticInfos: null.
+  PublishOut _buildPublishResponse({
+    required _Subscription sub,
+    required _ParkedPublish parked,
+    required int sequenceNumber,
+    required bool moreNotifications,
+    required Uint8List notificationMessageBody,
+  }) {
+    final w = OpcUaWriter();
+    w.nodeId(const OpcNodeId.numeric(0, _Ids.publishResponse));
+    w.responseHeader(ResponseHeader(
+      timestamp: DateTime.now().toUtc(),
+      requestHandle: parked.requestHandle,
+      serviceResult: SubscriptionStatusCodes.good,
+    ));
+    w.uint32(sub.id);
+    final availSeqs = sub.retransmission.map((m) => m.sequenceNumber).toList()..sort();
+    w.int32(availSeqs.length);
+    for (final s in availSeqs) {
+      w.uint32(s);
+    }
+    w.boolean(moreNotifications);
+    w.bytes(notificationMessageBody);
+    w.int32(parked.ackResults.length);
+    for (final r in parked.ackResults) {
+      w.statusCode(r);
+    }
+    w.int32(-1); // diagnosticInfos: null array
+    return PublishOut(requestId: parked.requestId, body: w.take());
+  }
+
+  /// Retains a data-carrying NotificationMessage for retransmission, capped
+  /// at the most recent 20 per subscription (oldest silently dropped).
+  void _retain(_Subscription sub, int seq, Uint8List notifMessageBody) {
+    sub.retransmission.add(_RetainedMessage(seq, notifMessageBody));
+    while (sub.retransmission.length > 20) {
+      sub.retransmission.removeAt(0);
+    }
+  }
+
+  /// Encodes a data-carrying NotificationMessage{sequenceNumber u32,
+  /// publishTime DateTime, notificationData:[ONE DataChangeNotification
+  /// ExtensionObject]} (notification_message.rs:17-20 field order; the
+  /// entry is an ExtensionObject: NodeId 811 + encoding byte 0x01 +
+  /// ByteString body per extension_object.rs). DataChangeNotification body
+  /// (data_change_notification.rs:17-19): monitoredItems
+  /// Option<Vec<MonitoredItemNotification>> — each
+  /// {clientHandle u32, value DataValue}
+  /// (monitored_item_notification.rs:18-20) — then diagnosticInfos (null).
+  Uint8List _encodeNotificationMessage(
+    int sequenceNumber,
+    List<({int clientHandle, OpcDataValue value})> items,
+  ) {
+    final w = OpcUaWriter();
+    w.uint32(sequenceNumber);
+    w.dateTime(DateTime.now().toUtc());
+    w.int32(1); // notificationData: always exactly one DataChangeNotification entry
+    final dcnBody = OpcUaWriter();
+    dcnBody.int32(items.length);
+    for (final item in items) {
+      dcnBody.uint32(item.clientHandle);
+      dcnBody.dataValue(item.value);
+    }
+    dcnBody.int32(-1); // diagnosticInfos: null array
+    w.extensionObject(
+      const OpcNodeId.numeric(0, _Ids.dataChangeNotification),
+      dcnBody.take(),
+    );
+    return w.take();
+  }
+
+  // --- Publish (826) ----------------------------------------------------
+
+  /// PublishRequest (publish_request.rs): requestHeader(consumed),
+  /// subscriptionAcknowledgements Option<Vec<SubscriptionAcknowledgement>>
+  /// ({subscriptionId u32, sequenceNumber u32} each).
+  List<PublishOut> _handlePublish(
+    OpcUaReader body,
+    RequestHeader header,
+    int requestId,
+    int nowMs,
+  ) {
+    final ackCount = body.int32();
+    final ackResults = <int>[];
+    for (var i = 0; i < (ackCount < 0 ? 0 : ackCount); i++) {
+      final subId = body.uint32();
+      final seq = body.uint32();
+      ackResults.add(_processAck(subId, seq));
+    }
+
+    if (_subscriptions.isEmpty) {
+      return [
+        PublishOut(
+          requestId: requestId,
+          body: _fault(header, SubscriptionStatusCodes.badNoSubscription),
+        ),
+      ];
+    }
+
+    if (_parkedPublishes.length >= _maxParkedPublishes) {
+      return [
+        PublishOut(
+          requestId: requestId,
+          body: _fault(header, SubscriptionStatusCodes.badTooManyPublishRequests),
+        ),
+      ];
+    }
+
+    _parkedPublishes.add(_ParkedPublish(
+      requestId: requestId,
+      requestHandle: header.requestHandle,
+      ackResults: ackResults,
+    ));
+
+    // Service every late subscription immediately (longest-late first),
+    // each consuming one parked request (this arriving one, if it is the
+    // only/first one available), until no late subscription remains or no
+    // parked request remains.
+    final out = <PublishOut>[];
+    while (_parkedPublishes.isNotEmpty) {
+      final longestLate = _longestLateSubscription();
+      if (longestLate == null) break;
+      if (!_runOnePublishCycle(longestLate, nowMs, out)) {
+        // Subscription died (lifetime timeout) while being serviced — its
+        // cycle already appended a StatusChange response if a request was
+        // available; continue the loop for any remaining late subs.
+        continue;
+      }
+    }
+    return out;
+  }
+
+  /// The subscription that has been [late] the longest (spec: "longest-late
+  /// first"), or null if none is late. A subscription only counts as late
+  /// while it can actually be answered with data: publishing must still be
+  /// enabled and queued notifications must still exist (either can have
+  /// changed since the flag was set — SetPublishingMode(false) or
+  /// DeleteMonitoredItems — in which case the stale flag is cleared here so
+  /// the arrival loop can't spin on an unanswerable subscription).
+  _Subscription? _longestLateSubscription() {
+    _Subscription? best;
+    for (final sub in _subscriptions.values) {
+      if (!sub.late) continue;
+      if (!sub.publishingEnabled || !_hasQueuedNotifications(sub)) {
+        sub.late = false; // stale flag — no longer answerable with data
+        continue;
+      }
+      if (best == null || sub.lateSinceMs < best.lateSinceMs) {
+        best = sub;
+      }
+    }
+    return best;
+  }
+
+  /// Processes one SubscriptionAcknowledgement: known subscription +
+  /// sequenceNumber present in its retransmission buffer => remove it,
+  /// Good; unknown subscription => Bad_SubscriptionIdInvalid; known
+  /// subscription but the sequence number isn't buffered =>
+  /// Bad_SequenceNumberUnknown.
+  int _processAck(int subscriptionId, int sequenceNumber) {
+    final sub = _subscriptions[subscriptionId];
+    if (sub == null) {
+      return SubscriptionStatusCodes.badSubscriptionIdInvalid;
+    }
+    final index = sub.retransmission.indexWhere((m) => m.sequenceNumber == sequenceNumber);
+    if (index == -1) {
+      return SubscriptionStatusCodes.badSequenceNumberUnknown;
+    }
+    sub.retransmission.removeAt(index);
+    return SubscriptionStatusCodes.good;
+  }
+
+  // --- Republish (832) ----------------------------------------------------
+
+  /// RepublishRequest (republish_request.rs): requestHeader(consumed),
+  /// subscriptionId u32, retransmitSequenceNumber u32.
+  /// RepublishResponse (republish_response.rs): responseHeader,
+  /// notificationMessage (the SAME stored NotificationMessage bytes).
+  Uint8List _handleRepublish(OpcUaReader body, RequestHeader header) {
+    final subscriptionId = body.uint32();
+    final retransmitSequenceNumber = body.uint32();
+
+    final sub = _subscriptions[subscriptionId];
+    if (sub == null) {
+      return _fault(header, SubscriptionStatusCodes.badSubscriptionIdInvalid);
+    }
+    final stored = sub.retransmission
+        .where((m) => m.sequenceNumber == retransmitSequenceNumber)
+        .toList();
+    if (stored.isEmpty) {
+      return _fault(header, SubscriptionStatusCodes.badMessageNotAvailable);
+    }
+
+    final w = OpcUaWriter();
+    w.nodeId(const OpcNodeId.numeric(0, _Ids.republishResponse));
+    w.responseHeader(_respond(header));
+    w.bytes(stored.single.notificationMessageBody);
+    return w.take();
+  }
 
   Uint8List? _dispatch(
     int requestTypeId,
@@ -330,13 +910,12 @@ class SubscriptionManager {
         return _handleModifyMonitoredItems(body, header);
       case _Ids.deleteMonitoredItemsRequest:
         return _handleDeleteMonitoredItems(body, header);
-      case _Ids.publishRequest:
       case _Ids.republishRequest:
-        // Task 2 scope: replace this placeholder with the real Publish
-        // cycle / Republish-from-retransmission-queue behavior. For now,
-        // both are routed here (so they don't fall through to the
-        // session's generic Bad_ServiceUnsupported path with a different
-        // shape) but explicitly answered unsupported.
+        return _handleRepublish(body, header);
+      case _Ids.publishRequest:
+        // Publish is special-cased in handleService (it can return zero or
+        // one PublishOuts, unlike every other service here which always
+        // returns exactly one) — never reached via _dispatch.
         return null;
       default:
         return null;
@@ -620,10 +1199,12 @@ class SubscriptionManager {
         discardOldest: discardOldest,
         monitoringMode: monitoringMode,
         trigger: filterOutcome.statusOnly ? _triggerStatusOnly : 1,
+        deadbandValue: filterOutcome.deadbandValue,
         createdAtMs: nowMs,
       );
       if (monitoringMode != _monitoringModeDisabled) {
         item.queue.add(sample);
+        item.lastReported = sample;
       }
       sub.items[itemId] = item;
 
@@ -702,6 +1283,7 @@ class SubscriptionManager {
       item.queueSize = revisedQueueSize;
       item.discardOldest = discardOldest;
       item.trigger = filterOutcome.statusOnly ? _triggerStatusOnly : 1;
+      item.deadbandValue = filterOutcome.deadbandValue;
 
       w.statusCode(SubscriptionStatusCodes.good);
       w.float64(revisedSampling);
@@ -805,7 +1387,10 @@ class SubscriptionManager {
           return const _FilterOutcome.error(
               SubscriptionStatusCodes.badDeadbandFilterInvalid);
         }
-        return _FilterOutcome.good(statusOnly: trigger == _triggerStatusOnly);
+        return _FilterOutcome.good(
+          statusOnly: trigger == _triggerStatusOnly,
+          deadbandValue: deadbandValue,
+        );
       case _deadbandPercent:
         return const _FilterOutcome.error(
             SubscriptionStatusCodes.badMonitoredItemFilterUnsupported);
