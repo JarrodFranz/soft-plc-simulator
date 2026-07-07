@@ -87,10 +87,11 @@ receive **DataChangeNotifications** whenever a value changes, instead of
 having to poll with `Read`. All nine subscription-related services are
 implemented:
 
-- `CreateSubscription` / `DeleteSubscription` / `ModifySubscription` /
+- `CreateSubscription` / `ModifySubscription` / `DeleteSubscriptions` /
   `SetPublishingMode`
-- `CreateMonitoredItems` / `ModifyMonitoredItems` / `DeleteMonitoredItems` /
-  `SetMonitoringMode`
+- `CreateMonitoredItems` / `ModifyMonitoredItems` / `DeleteMonitoredItems`
+  (`SetMonitoringMode` is not implemented; per-item mode is set at
+  create/modify time, and calling it returns `Bad_ServiceUnsupported`)
 - `Publish` / `Republish` (retransmission of a notification the client
   missed, by sequence number)
 
