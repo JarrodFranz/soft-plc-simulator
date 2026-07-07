@@ -958,6 +958,39 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
   }
 
   void _showEditNodeDialog(LdRung rung, LdNode n) {
+    if (n.kind == LdKind.link) {
+      // An empty-branch placeholder has no logical content to edit — offer
+      // only Delete/Cancel instead of the generic contact-editing UI (which
+      // would silently write dead Tag/modifier data onto a slot that still
+      // renders as the ghost "+" affordance).
+      showAdaptiveWidthDialog(
+        context,
+        desiredWidth: 420,
+        child: AlertDialog(
+          title: const Text('Empty Branch Slot'),
+          content: const Text(
+            'Empty branch slot. Pick the Contact, Coil, or Block tool and tap '
+            'this slot to fill it — or delete the branch.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                setState(() {
+                  // An open link has no logical content to remove — deleting
+                  // it drops the whole (still-empty) branch.
+                  collapseLink(rung, n);
+                });
+                widget.onProgramUpdated();
+                Navigator.pop(context);
+              },
+              child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
+            ),
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          ],
+        ),
+      );
+      return;
+    }
     final tagCtrl = TextEditingController(text: n.variable);
     final presetCtrl = TextEditingController(text: n.presetMs.toString());
     final downTagCtrl = TextEditingController(text: n.operandA);
@@ -1082,11 +1115,10 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
             TextButton(
               onPressed: () {
                 setState(() {
-                  if (n.kind == LdKind.link) {
-                    // An open link has no logical content to remove — deleting
-                    // it drops the whole (still-empty) branch.
-                    collapseLink(rung, n);
-                  } else if (n.row > 0 &&
+                  // n.kind == LdKind.link is handled by the early-return
+                  // branch above, so only real contact/coil/block nodes
+                  // reach here.
+                  if (n.row > 0 &&
                       !rung.nodes.any((o) => o.id != n.id && o.row == n.row)) {
                     // Sole element on a branch lane: revert to an open link
                     // (keep the branch) instead of dropping the lane entirely.

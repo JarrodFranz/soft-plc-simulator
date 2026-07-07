@@ -679,6 +679,41 @@ void main() {
 
         expect(tester.takeException(), isNull);
       });
+
+      testWidgets(
+          'link edit dialog is delete/cancel-only, no dead Apply (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        final rung = program.rungs[0];
+        final coilQ0 = rung.nodes.firstWhere((n) => n.variable == 'Q0');
+        addEmptyBranch(rung, kLeftRailId, coilQ0.id);
+        final branchesBefore = findBranches(rung).length;
+
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        final slot = linkSlot();
+        expect(slot, findsOneWidget);
+        nodeGestureDetector(tester, slot).onDoubleTap!();
+        await tester.pumpAndSettle();
+
+        // An empty-branch placeholder has no logical content to edit — the
+        // dialog must not offer the generic contact-editing UI (Tag field,
+        // modifier dropdown, Apply button), only Delete/Cancel.
+        expect(find.text('Apply'), findsNothing);
+        expect(find.text('Tag / literal'), findsNothing);
+        expect(find.text('Delete'), findsOneWidget);
+        expect(find.text('Cancel'), findsOneWidget);
+
+        await tester.tap(find.text('Delete'));
+        await tester.pumpAndSettle();
+
+        expect(findBranches(rung).length, branchesBefore - 1);
+        expect(rung.nodes.any((n) => n.kind == LdKind.link), isFalse);
+
+        expect(tester.takeException(), isNull);
+      });
     }
   });
 }
