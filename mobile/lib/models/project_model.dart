@@ -126,7 +126,7 @@ class PlcStructDef {
 // -------------------------------------------------------------
 // LADDER LOGIC (LD) — node-and-wire graph model
 // -------------------------------------------------------------
-enum LdKind { leftRail, rightRail, contact, coil, block }
+enum LdKind { leftRail, rightRail, contact, coil, block, link }
 
 class LdNode {
   String id;

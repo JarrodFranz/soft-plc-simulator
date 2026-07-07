@@ -182,6 +182,49 @@ void main() {
     expect(prog.rungs.first.nodes.firstWhere((n) => n.kind == LdKind.coil).variable, 'C');
   });
 
+  test('addEmptyBranch creates an open link lane wired source->link->dest', () {
+    final rung = buildRung(index: 0, main: [contact('A'), contact('B'), coil('Q')]);
+    final before = maxLane(rung);
+    // parallel element B: source = the node before B (m0='A'), dest = right of B (m2='Q')
+    final link = addEmptyBranch(rung, 'm0', 'm2');
+    expect(link.kind, LdKind.link);
+    expect(link.row, before + 1);
+    expect(rung.wires.any((w) => w.fromId == 'm0' && w.toId == link.id), isTrue);
+    expect(rung.wires.any((w) => w.fromId == link.id && w.toId == 'm2'), isTrue);
+  });
+
+  test('fillLink swaps kind in place, preserving id/row/wires', () {
+    final rung = buildRung(index: 0, main: [contact('A'), coil('Q')]);
+    final link = addEmptyBranch(rung, kLeftRailId, 'm1'); // parallels A
+    final wiresBefore = rung.wires.length;
+    final filled = fillLink(rung, link, LdNode(id: 'IGNORED', kind: LdKind.contact, variable: 'Seal'));
+    expect(filled.id, link.id); // id preserved so wires stay valid
+    expect(filled.row, link.row);
+    expect(rung.nodes.any((n) => n.kind == LdKind.link), isFalse);
+    expect(rung.nodes.firstWhere((n) => n.id == link.id).variable, 'Seal');
+    expect(rung.wires.length, wiresBefore); // no wires added/removed
+  });
+
+  test('emptyBranch reverts a real node to a link (same id/row)', () {
+    final rung = buildRung(index: 0, main: [contact('A'), coil('Q')]);
+    final link = addEmptyBranch(rung, kLeftRailId, 'm1');
+    final filled = fillLink(rung, link, LdNode(id: 'x', kind: LdKind.contact, variable: 'Seal'));
+    final back = emptyBranch(rung, filled);
+    expect(back.kind, LdKind.link);
+    expect(back.id, filled.id);
+    expect(back.row, filled.row);
+  });
+
+  test('collapseLink removes the link and its two branch wires', () {
+    final rung = buildRung(index: 0, main: [contact('A'), coil('Q')]);
+    final link = addEmptyBranch(rung, kLeftRailId, 'm1');
+    final n0 = rung.nodes.length, w0 = rung.wires.length;
+    collapseLink(rung, link);
+    expect(rung.nodes.length, n0 - 1);
+    expect(rung.wires.length, w0 - 2);
+    expect(rung.wires.any((w) => w.fromId == link.id || w.toId == link.id), isFalse);
+  });
+
   test('addOutputCoil adds a new terminal coil lane', () {
     final rung = buildRung(index: 0, main: [
       contact('A'),

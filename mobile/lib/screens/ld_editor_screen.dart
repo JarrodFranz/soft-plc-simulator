@@ -52,6 +52,7 @@ const List<String> _kCompareBlockTypes = ['GT', 'LT', 'GE', 'LE', 'EQ', 'NE'];
 const List<String> _kMathBlockTypes = ['ADD', 'SUB', 'MUL', 'DIV', 'MOVE'];
 bool _isCompareBlock(String blockType) => _kCompareBlockTypes.contains(blockType);
 bool _isMathBlock(String blockType) => _kMathBlockTypes.contains(blockType);
+bool _isDataBlock(String blockType) => _isCompareBlock(blockType) || _isMathBlock(blockType);
 
 /// Operator glyph shown centred in a compare/math data-block body.
 String _blockOperatorGlyph(String blockType) {
@@ -84,7 +85,11 @@ String _blockOperatorGlyph(String blockType) {
 class _LdEditorScreenState extends State<LdEditorScreen> {
   String _editMode = 'select'; // 'select' | 'contact' | 'coil' | 'block' | 'branch'
   String _pendingBlockType = 'TON';
-  LdNode? _branchStart; // first element tapped in branch mode
+  // Key of the picked start junction wire in guided Branch mode, e.g.
+  // '0|m0>m1' — namespaced by rung index, since main-line node ids (m0/m1/...)
+  // are per-rung and two structurally-identical rungs would otherwise share
+  // a key (highlighting/activating the wrong rung's dot).
+  String? _branchStartWireKey;
   LdBranchView? _dragBranch;
   bool _dragTapEnd = false; // true = dragging the tap (start) handle; false = merge (end)
   double _dragX = 0;
@@ -287,7 +292,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           onPressed: onPressed ??
               () => setState(() {
                     _editMode = mode;
-                    _branchStart = null;
+                    _branchStartWireKey = null;
                   }),
         ),
       );
@@ -305,9 +310,12 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       label: const Text('Add Rung', style: TextStyle(fontSize: 11, color: Colors.greenAccent)),
       onPressed: _addRung,
     );
-    const branchHint = Padding(
-      padding: EdgeInsets.only(left: 8),
-      child: Text('Tap span start, then span end', style: TextStyle(fontSize: 10, color: Colors.amberAccent)),
+    final branchHint = Padding(
+      padding: const EdgeInsets.only(left: 8),
+      child: Text(
+        _branchStartWireKey == null ? 'Tap a start point' : 'Tap an end point (tap the start again to cancel)',
+        style: const TextStyle(fontSize: 10, color: Colors.amberAccent),
+      ),
     );
 
     // Decide compact-vs-wide from the toolbar's own LOCAL available width,
@@ -396,7 +404,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       setState(() {
         _pendingBlockType = selected;
         _editMode = 'block';
-        _branchStart = null;
+        _branchStartWireKey = null;
       });
     }
   }
@@ -520,22 +528,32 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     ...rung.nodes
                         .where((n) => n.kind == LdKind.contact ||
                             n.kind == LdKind.coil ||
-                            n.kind == LdKind.block)
+                            n.kind == LdKind.block ||
+                            n.kind == LdKind.link)
                         .map((n) => _positionedNode(rung, n, col, width)),
-                    // Insert targets on wires (contact/block modes).
+                    // Insert targets on wires (contact/block modes). Wires
+                    // touching a still-open LdKind.link are excluded — an
+                    // empty branch is filled ONLY by tapping its slot; a
+                    // wire-insert there would splice a new element IN SERIES
+                    // with the open link (link -> newNode -> dest), which is
+                    // a permanently dead branch (open AND element = open).
                     if (_editMode == 'contact' || _editMode == 'block')
                       ...rung.wires
-                          .where((w) => canInsertContactOnWire(rung, w))
+                          .where((w) => canInsertContactOnWire(rung, w) && !_wireTouchesLink(rung, w))
                           .map((w) => _wireInsertTarget(rung, w, col, width)),
-                    // Insert targets on wires (coil mode).
+                    // Insert targets on wires (coil mode). Same link-exclusion
+                    // as above.
                     if (_editMode == 'coil')
                       ...rung.wires
-                          .where((w) => canInsertCoilOnWire(rung, w))
+                          .where((w) => canInsertCoilOnWire(rung, w) && !_wireTouchesLink(rung, w))
                           .map((w) => _wireInsertTarget(rung, w, col, width)),
                     // Always-present stacked-output affordance (coil mode):
                     // adds a brand new terminal coil lane at the right rail,
                     // independent of any specific wire.
                     if (_editMode == 'coil') _addOutputTarget(rung, width),
+                    // Guided junction-anchor pick targets (branch mode): one
+                    // dot per lane-0 (main-line) wire.
+                    if (_editMode == 'branch') ..._branchJunctionDots(rung, index, col, width),
                     // Draggable branch start/end handles.
                     ...findBranches(rung).expand((br) => _branchHandles(rung, br, col, width)),
                   ],
@@ -575,31 +593,150 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       child: GestureDetector(
         onTap: () => _onNodeTap(rung, n),
         onDoubleTap: () => _showEditNodeDialog(rung, n),
-        child: n.kind == LdKind.block ? _buildBlock(n) : _buildContactCoil(n),
+        child: n.kind == LdKind.block
+            ? _buildBlock(n)
+            : (n.kind == LdKind.link ? _buildLink(n) : _buildContactCoil(n)),
       ),
     );
   }
 
+  /// In an element mode (contact/coil/block), tapping an empty `link` slot
+  /// fills it in place (replaces, not inserts in series) and opens its edit
+  /// dialog — mirroring `_insertOnWire`'s "insert then edit" flow. In select
+  /// mode (or tapping a non-link node), this is a no-op for now — branches
+  /// are created via the guided junction-anchor dots in Branch mode, not
+  /// element taps.
   void _onNodeTap(LdRung rung, LdNode n) {
-    if (_editMode == 'branch') {
-      if (_branchStart == null) {
-        setState(() => _branchStart = n);
-      } else {
-        final start = _branchStart!;
-        final col = colAssignment(rung);
-        // order the two picks left-to-right by column
-        final a = (col[start.id] ?? 0) <= (col[n.id] ?? 0) ? start : n;
-        final b = identical(a, start) ? n : start;
-        setState(() {
-          addParallelBranch(rung, a, b);
-          _branchStart = null;
-          _editMode = 'select';
-        });
-        widget.onProgramUpdated();
-      }
+    if (n.kind != LdKind.link) {
       return;
     }
-    // select mode: single tap selects (highlight handled via _branchStart reuse is avoided)
+    if (_editMode != 'contact' && _editMode != 'coil' && _editMode != 'block') {
+      return;
+    }
+    late final LdNode filled;
+    setState(() {
+      if (_editMode == 'contact') {
+        filled = fillLink(rung, n, LdNode(id: '', kind: LdKind.contact, variable: 'New_Contact'));
+      } else if (_editMode == 'coil') {
+        filled = fillLink(rung, n, LdNode(id: '', kind: LdKind.coil, variable: 'Output_Coil'));
+      } else {
+        final blockType = _pendingBlockType;
+        filled = fillLink(
+          rung,
+          n,
+          LdNode(
+            id: '',
+            kind: LdKind.block,
+            blockType: blockType,
+            variable: 'T1',
+            presetMs: 5000,
+            operandA: _isDataBlock(blockType) ? '0' : '',
+            operandB: _isDataBlock(blockType) ? '0' : '',
+          ),
+        );
+      }
+      _editMode = 'select';
+    });
+    widget.onProgramUpdated();
+    _showEditNodeDialog(rung, filled);
+  }
+
+  LdNode _nodeById(LdRung rung, String id) => rung.nodes.firstWhere((n) => n.id == id);
+
+  /// True if either endpoint of [w] is a still-open `LdKind.link` (empty
+  /// branch placeholder). Such wires must never offer a wire-insert "+" —
+  /// the link is filled (replaced) only by tapping its own slot; a series
+  /// insert next to an open link would leave the branch permanently dead.
+  bool _wireTouchesLink(LdRung rung, LdWire w) =>
+      _nodeById(rung, w.fromId).kind == LdKind.link || _nodeById(rung, w.toId).kind == LdKind.link;
+
+  // Junction-wire key is namespaced by rung index — main-line node ids
+  // (m0/m1/...) are per-rung, so two structurally-identical rungs would
+  // otherwise share a key and a start picked in one rung would highlight
+  // (or let you branch into) the same-key dot in the other rung.
+  String _wireKey(int rungIndex, LdWire w) => '$rungIndex|${w.fromId}>${w.toId}';
+
+  bool _isLaneZero(LdWire w, LdRung rung) {
+    final from = _nodeById(rung, w.fromId);
+    final to = _nodeById(rung, w.toId);
+    return from.row == 0 && to.row == 0;
+  }
+
+  /// Lane-0 (main-line) wires, ordered left-to-right by the source node's
+  /// column. Each such wire is a "junction" the user can pick as a branch
+  /// start or end in guided Branch mode.
+  List<LdWire> _mainLineWires(LdRung rung) {
+    final col = colAssignment(rung);
+    final wires = rung.wires.where((w) => _isLaneZero(w, rung)).toList()
+      ..sort((a, b) => (col[a.fromId] ?? 0).compareTo(col[b.fromId] ?? 0));
+    return wires;
+  }
+
+  /// One pick-target dot per main-line wire (junction), for guided Branch
+  /// mode. Before a start is picked, every dot is active. Once a start is
+  /// picked, that dot is highlighted; only dots strictly to its right stay
+  /// active (valid end picks) and the rest are dimmed + non-tappable.
+  List<Widget> _branchJunctionDots(LdRung rung, int rungIndex, Map<String, int> col, double width) {
+    final wires = _mainLineWires(rung);
+    LdWire? startWire;
+    if (_branchStartWireKey != null) {
+      for (final w in wires) {
+        if (_wireKey(rungIndex, w) == _branchStartWireKey) {
+          startWire = w;
+          break;
+        }
+      }
+    }
+    return [for (final w in wires) _junctionDot(rung, rungIndex, w, col, width, startWire)];
+  }
+
+  Widget _junctionDot(
+      LdRung rung, int rungIndex, LdWire w, Map<String, int> col, double width, LdWire? startWire) {
+    final src = _nodeById(rung, w.fromId);
+    final dst = _nodeById(rung, w.toId);
+    final p1 = _outPort(rung, src, col, width);
+    final p2 = _inPort(rung, dst, col, width);
+    final mid = Offset((p1.dx + p2.dx) / 2, (p1.dy + p2.dy) / 2);
+    final isStart = startWire != null && _wireKey(rungIndex, w) == _wireKey(rungIndex, startWire);
+    final active = startWire == null || isStart || (col[w.fromId] ?? 0) > (col[startWire.fromId] ?? 0);
+    final color = isStart ? Colors.tealAccent : Colors.cyanAccent;
+    return Positioned(
+      left: mid.dx - 11,
+      top: mid.dy - 11,
+      width: 22,
+      height: 22,
+      child: GestureDetector(
+        onTap: active ? () => _onJunctionDotTap(rung, rungIndex, w) : null,
+        child: Container(
+          decoration: BoxDecoration(
+            color: active ? color.withValues(alpha: 0.85) : color.withValues(alpha: 0.3),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(isStart ? Icons.check : Icons.circle, size: isStart ? 14 : 8, color: Colors.black),
+        ),
+      ),
+    );
+  }
+
+  void _onJunctionDotTap(LdRung rung, int rungIndex, LdWire w) {
+    final key = _wireKey(rungIndex, w);
+    if (_branchStartWireKey == null) {
+      setState(() => _branchStartWireKey = key);
+      return;
+    }
+    if (_branchStartWireKey == key) {
+      // Tapping the start dot again cancels the pick.
+      setState(() => _branchStartWireKey = null);
+      return;
+    }
+    final wires = _mainLineWires(rung);
+    final startWire = wires.firstWhere((ww) => _wireKey(rungIndex, ww) == _branchStartWireKey);
+    setState(() {
+      addEmptyBranch(rung, startWire.fromId, w.toId);
+      _branchStartWireKey = null;
+      _editMode = 'select';
+    });
+    widget.onProgramUpdated();
   }
 
   Widget _wireInsertTarget(LdRung rung, LdWire w, Map<String, int> col, double width) {
@@ -842,6 +979,39 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
   }
 
   void _showEditNodeDialog(LdRung rung, LdNode n) {
+    if (n.kind == LdKind.link) {
+      // An empty-branch placeholder has no logical content to edit — offer
+      // only Delete/Cancel instead of the generic contact-editing UI (which
+      // would silently write dead Tag/modifier data onto a slot that still
+      // renders as the ghost "+" affordance).
+      showAdaptiveWidthDialog(
+        context,
+        desiredWidth: 420,
+        child: AlertDialog(
+          title: const Text('Empty Branch Slot'),
+          content: const Text(
+            'Empty branch slot. Pick the Contact, Coil, or Block tool and tap '
+            'this slot to fill it — or delete the branch.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                setState(() {
+                  // An open link has no logical content to remove — deleting
+                  // it drops the whole (still-empty) branch.
+                  collapseLink(rung, n);
+                });
+                widget.onProgramUpdated();
+                Navigator.pop(context);
+              },
+              child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
+            ),
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          ],
+        ),
+      );
+      return;
+    }
     final tagCtrl = TextEditingController(text: n.variable);
     final presetCtrl = TextEditingController(text: n.presetMs.toString());
     final downTagCtrl = TextEditingController(text: n.operandA);
@@ -965,7 +1135,19 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           actions: [
             TextButton(
               onPressed: () {
-                setState(() => deleteNode(rung, n));
+                setState(() {
+                  // n.kind == LdKind.link is handled by the early-return
+                  // branch above, so only real contact/coil/block nodes
+                  // reach here.
+                  if (n.row > 0 &&
+                      !rung.nodes.any((o) => o.id != n.id && o.row == n.row)) {
+                    // Sole element on a branch lane: revert to an open link
+                    // (keep the branch) instead of dropping the lane entirely.
+                    emptyBranch(rung, n);
+                  } else {
+                    deleteNode(rung, n);
+                  }
+                });
                 widget.onProgramUpdated();
                 Navigator.pop(context);
               },
@@ -999,6 +1181,21 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  /// An open (unfilled) branch: a ghosted, low-alpha "＋" slot inviting the
+  /// user to tap it in Contact/Coil/Block mode to fill it in place.
+  Widget _buildLink(LdNode n) {
+    return Container(
+      key: const Key('ld_link_slot'),
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: Colors.cyanAccent.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.35), width: 1.5),
+      ),
+      child: Icon(Icons.add, size: 18, color: Colors.cyanAccent.withValues(alpha: 0.8)),
     );
   }
 

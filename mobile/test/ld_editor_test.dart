@@ -381,4 +381,425 @@ void main() {
       });
     }
   });
+
+  group('Guided branch mode (junction-anchor picking)', () {
+    // Junction dots render an Icon.circle (unpicked) or Icon.check (the
+    // picked start), always in main-line (left-to-right) wire order — so
+    // indexing into this combined finder is stable across a pick.
+    Finder junctionDots() =>
+        find.byWidgetPredicate((w) => w is Icon && (w.icon == Icons.circle || w.icon == Icons.check));
+
+    Future<void> tapDot(WidgetTester tester, int index) async {
+      final dot = junctionDots().at(index);
+      final gd = tester.widget<GestureDetector>(
+        find.ancestor(of: dot, matching: find.byType(GestureDetector)).first,
+      );
+      gd.onTap?.call();
+      await tester.pump();
+    }
+
+    PlcProgram threeElementProgram() => PlcProgram(
+          name: 'TestProgram',
+          language: 'LadderLogic',
+          rungs: [
+            buildRung(index: 0, comment: 'Rung 0', main: [contact('A'), contact('B'), coil('Q0')]),
+          ],
+        );
+
+    for (final size in [desktopSize, smallPhoneSize]) {
+      testWidgets('Branch mode shows N+1 junction dots for N main elements (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = threeElementProgram(); // N = 3 main elements
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Branch'));
+        await tester.pumpAndSettle();
+
+        expect(junctionDots(), findsNWidgets(4)); // N + 1 = 4 lane-0 wires
+        expect(find.text('Tap a start point'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('start dot then a valid end dot to its right creates a link branch (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = threeElementProgram();
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+        final rung = program.rungs[0];
+
+        await tester.tap(find.text('Branch'));
+        await tester.pumpAndSettle();
+        final branchesBefore = findBranches(rung).length;
+
+        // Pick the first junction (L -> A) as the start.
+        await tapDot(tester, 0);
+        await tester.pumpAndSettle();
+        expect(find.text('Tap an end point (tap the start again to cancel)'), findsOneWidget);
+
+        // Pick the third junction (B -> Q0) as the end (strictly to the right).
+        await tapDot(tester, 2);
+        await tester.pumpAndSettle();
+
+        expect(findBranches(rung).length, branchesBefore + 1);
+        final newLane = findBranches(rung)
+            .map((br) => br.lane)
+            .reduce((a, b) => a > b ? a : b);
+        final linkNode = rung.nodes.firstWhere((n) => n.row == newLane);
+        expect(linkNode.kind, LdKind.link);
+
+        final inWire = rung.wires.firstWhere((w) => w.toId == linkNode.id);
+        final outWire = rung.wires.firstWhere((w) => w.fromId == linkNode.id);
+        expect(inWire.fromId, kLeftRailId);
+        final coilNode = rung.nodes.firstWhere((n) => n.variable == 'Q0');
+        expect(outWire.toId, coilNode.id);
+
+        // Guided pick is a one-shot flow: it resets to select mode afterward.
+        expect(find.text('Tap a start point'), findsNothing);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('tapping the start dot again cancels the pick, no branch created (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = threeElementProgram();
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+        final rung = program.rungs[0];
+
+        await tester.tap(find.text('Branch'));
+        await tester.pumpAndSettle();
+        final branchesBefore = findBranches(rung).length;
+
+        await tapDot(tester, 1);
+        await tester.pumpAndSettle();
+        expect(find.text('Tap an end point (tap the start again to cancel)'), findsOneWidget);
+
+        // Tap the very same (now-highlighted) start dot again to cancel.
+        await tapDot(tester, 1);
+        await tester.pumpAndSettle();
+
+        expect(find.text('Tap a start point'), findsOneWidget);
+        expect(findBranches(rung).length, branchesBefore);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('a right-rail end junction produces a branch merging at the right rail (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram(); // rung 0: main = [contact('A'), coil('Q0')]
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+        final rung = program.rungs[0];
+
+        await tester.tap(find.text('Branch'));
+        await tester.pumpAndSettle();
+
+        // Dots: 0 = L->A, 1 = A->Q0, 2 = Q0->R. Pick the last (right-rail) as end.
+        await tapDot(tester, 0);
+        await tester.pumpAndSettle();
+        await tapDot(tester, 2);
+        await tester.pumpAndSettle();
+
+        final newLane = findBranches(rung)
+            .map((br) => br.lane)
+            .reduce((a, b) => a > b ? a : b);
+        final linkNode = rung.nodes.firstWhere((n) => n.row == newLane);
+        expect(linkNode.kind, LdKind.link);
+        final outWire = rung.wires.firstWhere((w) => w.fromId == linkNode.id);
+        expect(outWire.toId, kRightRailId);
+
+        expect(tester.takeException(), isNull);
+      });
+    }
+  });
+
+  group('Empty-branch link rendering + fill/delete (WS22 Task 3)', () {
+    // The link slot is identified by a distinct Key regardless of viewport —
+    // Icons.add alone is ambiguous (also used by Add Rung / wire-insert /
+    // add-output affordances).
+    Finder linkSlot() => find.byKey(const Key('ld_link_slot'));
+
+    GestureDetector nodeGestureDetector(WidgetTester tester, Finder target) {
+      return tester.widget<GestureDetector>(
+        find.ancestor(of: target, matching: find.byType(GestureDetector)).first,
+      );
+    }
+
+    for (final size in [desktopSize, smallPhoneSize]) {
+      testWidgets('a link renders a ghosted + slot with no overflow (${size.width.toInt()}px)', (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        final rung = program.rungs[0];
+        final coilQ0 = rung.nodes.firstWhere((n) => n.variable == 'Q0');
+        addEmptyBranch(rung, kLeftRailId, coilQ0.id);
+
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        expect(linkSlot(), findsOneWidget);
+        expect(find.byIcon(Icons.add), findsWidgets); // includes the link's + affordance
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('Contact mode tapping a link REPLACES it with a contact (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        final rung = program.rungs[0];
+        final coilQ0 = rung.nodes.firstWhere((n) => n.variable == 'Q0');
+        final link = addEmptyBranch(rung, kLeftRailId, coilQ0.id);
+
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Contact'));
+        await tester.pumpAndSettle();
+
+        final slot = linkSlot();
+        expect(slot, findsOneWidget);
+        nodeGestureDetector(tester, slot).onTap!();
+        await tester.pumpAndSettle();
+
+        // No LdKind.link remains on that lane; the id was reused by a contact.
+        expect(rung.nodes.where((n) => n.row == link.row && n.kind == LdKind.link), isEmpty);
+        final filled = rung.nodes.firstWhere((n) => n.id == link.id);
+        expect(filled.kind, LdKind.contact);
+        expect(find.text('Edit Contact'), findsOneWidget);
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('Coil mode tapping a right-rail-merged link fills it with a coil (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        final rung = program.rungs[0];
+        final contactA = rung.nodes.firstWhere((n) => n.variable == 'A');
+        final link = addEmptyBranch(rung, contactA.id, kRightRailId);
+
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Coil'));
+        await tester.pumpAndSettle();
+
+        final slot = linkSlot();
+        expect(slot, findsOneWidget);
+        nodeGestureDetector(tester, slot).onTap!();
+        await tester.pumpAndSettle();
+
+        final filled = rung.nodes.firstWhere((n) => n.id == link.id);
+        expect(filled.kind, LdKind.coil);
+        expect(find.text('Edit Coil'), findsOneWidget);
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('Block mode (pending TON) tapping a link fills it with a block (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        final rung = program.rungs[0];
+        final coilQ0 = rung.nodes.firstWhere((n) => n.variable == 'Q0');
+        final link = addEmptyBranch(rung, kLeftRailId, coilQ0.id);
+
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Block'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('TON'));
+        await tester.pumpAndSettle();
+
+        final slot = linkSlot();
+        expect(slot, findsOneWidget);
+        nodeGestureDetector(tester, slot).onTap!();
+        await tester.pumpAndSettle();
+
+        final filled = rung.nodes.firstWhere((n) => n.id == link.id);
+        expect(filled.kind, LdKind.block);
+        expect(filled.blockType, 'TON');
+        expect(find.text('Edit TON'), findsOneWidget);
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('deleting the sole element of a branch reverts it to a link (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        final rung = program.rungs[0];
+        final contactA = rung.nodes.firstWhere((n) => n.variable == 'A');
+        final coilQ0 = rung.nodes.firstWhere((n) => n.variable == 'Q0');
+        final br = addParallelBranch(rung, contactA, coilQ0);
+        final branchesBefore = findBranches(rung).length;
+
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        final nodeText = find.text('New_Contact');
+        expect(nodeText, findsOneWidget);
+        nodeGestureDetector(tester, nodeText).onDoubleTap!();
+        await tester.pumpAndSettle();
+        expect(find.text('Delete'), findsOneWidget);
+        await tester.tap(find.text('Delete'));
+        await tester.pumpAndSettle();
+
+        // The branch lane persists (reverted to a link), not removed.
+        expect(findBranches(rung).length, branchesBefore);
+        final reverted = rung.nodes.firstWhere((n) => n.id == br.firstNodeId);
+        expect(reverted.kind, LdKind.link);
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('deleting a link removes the branch (${size.width.toInt()}px)', (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        final rung = program.rungs[0];
+        final coilQ0 = rung.nodes.firstWhere((n) => n.variable == 'Q0');
+        addEmptyBranch(rung, kLeftRailId, coilQ0.id);
+        final branchesBefore = findBranches(rung).length;
+
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        final slot = linkSlot();
+        expect(slot, findsOneWidget);
+        nodeGestureDetector(tester, slot).onDoubleTap!();
+        await tester.pumpAndSettle();
+        expect(find.text('Delete'), findsOneWidget);
+        await tester.tap(find.text('Delete'));
+        await tester.pumpAndSettle();
+
+        expect(findBranches(rung).length, branchesBefore - 1);
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets(
+          'link edit dialog is delete/cancel-only, no dead Apply (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        final rung = program.rungs[0];
+        final coilQ0 = rung.nodes.firstWhere((n) => n.variable == 'Q0');
+        addEmptyBranch(rung, kLeftRailId, coilQ0.id);
+        final branchesBefore = findBranches(rung).length;
+
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        final slot = linkSlot();
+        expect(slot, findsOneWidget);
+        nodeGestureDetector(tester, slot).onDoubleTap!();
+        await tester.pumpAndSettle();
+
+        // An empty-branch placeholder has no logical content to edit — the
+        // dialog must not offer the generic contact-editing UI (Tag field,
+        // modifier dropdown, Apply button), only Delete/Cancel.
+        expect(find.text('Apply'), findsNothing);
+        expect(find.text('Tag / literal'), findsNothing);
+        expect(find.text('Delete'), findsOneWidget);
+        expect(find.text('Cancel'), findsOneWidget);
+
+        await tester.tap(find.text('Delete'));
+        await tester.pumpAndSettle();
+
+        expect(findBranches(rung).length, branchesBefore - 1);
+        expect(rung.nodes.any((n) => n.kind == LdKind.link), isFalse);
+
+        expect(tester.takeException(), isNull);
+      });
+    }
+  });
+
+  group('Final-review fixes (open-branch series-insert guard + rung-scoped branch key)', () {
+    // Matches only `_wireInsertTarget`'s "+" icon (size 14). In Contact/Block
+    // mode the always-present coil-mode `_addOutputTarget` (also size 14) is
+    // never built, and the toolbar's "Add Rung" icon is size 15, and the
+    // link-slot fill affordance's icon is size 18 — so this predicate is
+    // unambiguous for a Contact-mode pump.
+    Finder wireInsertPlusIcons() =>
+        find.byWidgetPredicate((w) => w is Icon && w.icon == Icons.add && w.size == 14);
+
+    for (final size in [desktopSize, smallPhoneSize]) {
+      testWidgets(
+          'FIX1: an empty branch adds a slot "+", not new wire-insert "+" targets, in Contact mode '
+          '(${size.width.toInt()}px)', (tester) async {
+        await setSurface(tester, size);
+
+        // Baseline: same two-rung shape, no branch.
+        final baseProgram = _twoRungProgram();
+        await tester.pumpWidget(_app(baseProgram));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Contact'));
+        await tester.pumpAndSettle();
+        final baselineCount = wireInsertPlusIcons().evaluate().length;
+
+        // Same shape, but rung 0 now has an empty (open) branch: L1 -> link -> Q0.
+        final branchProgram = _twoRungProgram();
+        final rung = branchProgram.rungs[0];
+        final coilQ0 = rung.nodes.firstWhere((n) => n.variable == 'Q0');
+        addEmptyBranch(rung, kLeftRailId, coilQ0.id);
+
+        await tester.pumpWidget(_app(branchProgram));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Contact'));
+        await tester.pumpAndSettle();
+        final withBranchCount = wireInsertPlusIcons().evaluate().length;
+
+        // The link's own fill slot ("+") is a separate affordance (icon size
+        // 18, asserted by the WS22 tests above) — it must not add to the
+        // wire-insert count. Wires touching the still-open link (source->link,
+        // link->dest) must be excluded, or tapping them would insert an
+        // element IN SERIES with the open link: a permanently dead branch
+        // (open AND element = open).
+        expect(withBranchCount, baselineCount,
+            reason: 'wires touching an open LdKind.link must be excluded from '
+                'wire-insert targets — filling only ever happens via the link '
+                'slot itself');
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets(
+          'FIX2: picking a branch start in rung 0 highlights only rung 0\'s dot, not the '
+          'same-key dot in a structurally-identical rung 1 (${size.width.toInt()}px)', (tester) async {
+        await setSurface(tester, size);
+        // Two structurally-identical rungs: main-line ids are per-rung
+        // (m0/m1/...), so both rungs' first junction wire shares the
+        // un-namespaced key 'L>m0' / 'm0>m1' etc.
+        final program = _twoRungProgram();
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Branch'));
+        await tester.pumpAndSettle();
+
+        // Pick rung 0's first junction (L -> A) as the branch start.
+        final junctionDots = find.byWidgetPredicate(
+            (w) => w is Icon && (w.icon == Icons.circle || w.icon == Icons.check));
+        final firstDot = junctionDots.at(0);
+        final gd = tester.widget<GestureDetector>(
+          find.ancestor(of: firstDot, matching: find.byType(GestureDetector)).first,
+        );
+        gd.onTap?.call();
+        await tester.pumpAndSettle();
+
+        // Exactly one dot (rung 0's) shows the highlighted "start" check icon —
+        // a rung-1 dot sharing the same un-namespaced wire key must not also
+        // light up as the start.
+        final checkIcons = find.byWidgetPredicate((w) => w is Icon && w.icon == Icons.check);
+        expect(checkIcons, findsOneWidget,
+            reason: 'the branch-start key must be scoped per rung so a '
+                'structurally-identical rung does not share the highlighted dot');
+
+        expect(tester.takeException(), isNull);
+      });
+    }
+  });
 }
