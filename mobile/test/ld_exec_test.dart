@@ -320,6 +320,32 @@ void main() {
     expect(_b(p, 'Q'), isTrue);
   });
 
+  test('TP with a sub-scan preset (presetMs <= dtMs) still pulses Q true for the starting scan', () {
+    final r = buildRung(index: 0, main: [
+      _no('In'),
+      LdNode(id: '', kind: LdKind.block, blockType: 'TP', variable: 'T', presetMs: 50),
+      _coil('Q'),
+    ]);
+    final p = _proj([
+      _tag('In', 'BOOL', false),
+      _tag('T', 'TIMER', defaultValueFor(_proj([], []), 'TIMER', 0)),
+      _tag('Q', 'BOOL', false),
+    ], [_ldProg([r])]);
+    final rt = LdExecRuntime();
+    executeLdPrograms(p, 100, rt); // no edge yet
+    expect(_b(p, 'Q'), isFalse);
+
+    writePath(p, 'In', true);
+    executeLdPrograms(p, 100, rt); // rising edge, dtMs(100) >= presetMs(50)
+    // The pulse must be observable for at least this starting scan.
+    expect(_b(p, 'Q'), isTrue);
+    expect(_b(p, 'T.DN'), isTrue);
+
+    executeLdPrograms(p, 100, rt); // next scan -> pulse has completed
+    expect(_b(p, 'Q'), isFalse);
+    expect((readPath(p, 'T.ACC') as num).toInt(), equals(0));
+  });
+
   test('CTU counts once per rising edge, saturates, QU at PV, resets on R', () {
     final r = buildRung(index: 0, main: [
       _no('PB'),
@@ -387,6 +413,50 @@ void main() {
     writePath(p, 'Cnt.R', true);
     executeLdPrograms(p, 100, rt); // reset reloads PV
     expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(2));
+  });
+
+  test('CTD preloads CV to PV on its first scan even when CV starts at 0 (editor default)', () {
+    final r = buildRung(index: 0, main: [
+      _no('PB'),
+      LdNode(id: '', kind: LdKind.block, blockType: 'CTD', variable: 'Cnt', presetMs: 3),
+      _coil('Done'),
+    ]);
+    // A normal editor-placed COUNTER tag: CV is present and initialized to 0,
+    // not absent/null. Before the fix, CTD only preloaded when CV was null,
+    // so this tag would start at CV=0 -> QD true immediately.
+    final p = _proj(
+      [_tag('PB', 'BOOL', false), _counterTag('Cnt'), _tag('Done', 'BOOL', false)],
+      [_ldProg([r])],
+      structDefs: [_counterDef],
+    );
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0)); // sanity: starts at 0, not null
+
+    final rt = LdExecRuntime();
+    executeLdPrograms(p, 100, rt); // first scan, no count input yet -> must preload CV to PV
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(3));
+    expect(_b(p, 'Cnt.QD'), isFalse);
+
+    writePath(p, 'PB', true);
+    executeLdPrograms(p, 100, rt); // edge -> CV 2
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(2));
+
+    writePath(p, 'PB', false);
+    executeLdPrograms(p, 100, rt);
+    writePath(p, 'PB', true);
+    executeLdPrograms(p, 100, rt); // edge -> CV 1
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(1));
+
+    writePath(p, 'PB', false);
+    executeLdPrograms(p, 100, rt);
+    writePath(p, 'PB', true);
+    executeLdPrograms(p, 100, rt); // edge -> CV 0 -> QD
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0));
+    expect(_b(p, 'Cnt.QD'), isTrue);
+    expect(_b(p, 'Done'), isTrue);
+
+    writePath(p, 'Cnt.R', true);
+    executeLdPrograms(p, 100, rt); // reset reloads PV
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(3));
   });
 
   test('CTUD counts up then down and clamps at [0, PV]', () {

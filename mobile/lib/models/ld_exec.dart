@@ -142,9 +142,10 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
           } else if (timing) {
             acc = acc + dtMs;
           }
-          bool q = acc > 0 && acc < pre;
+          // The pulse must be observable for at least the scan it starts on,
+          // even when presetMs <= dtMs makes acc reach pre in that same scan.
+          bool q = (acc > 0 && acc < pre) || rising;
           if (acc >= pre) {
-            q = false;
             acc = 0; // pulse complete; ready to retrigger on next rising edge
           }
           write('$base.EN', inP);
@@ -180,6 +181,15 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
         if (n.blockType == 'CTD') {
           final rawCv = readPath(p, '$base.CV');
           int cv = rawCv == null ? pre : (rawCv as num).toInt();
+          final initKey = '$key|init';
+          if (rt.prevBool[initKey] != true) {
+            // First-ever scan for this CTD node: an editor-placed COUNTER tag
+            // initializes .CV to 0 (not null), so the `rawCv == null` load
+            // above never fires for it. Preload CV to PV unconditionally on
+            // the first scan so QD isn't spuriously true before any counting.
+            cv = pre;
+            rt.prevBool[initKey] = true;
+          }
           final prevIn = rt.prevBool[key] ?? inP;
           rt.prevBool[key] = inP;
           if (inP && !prevIn) {
