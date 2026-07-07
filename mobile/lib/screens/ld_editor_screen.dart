@@ -84,7 +84,8 @@ String _blockOperatorGlyph(String blockType) {
 class _LdEditorScreenState extends State<LdEditorScreen> {
   String _editMode = 'select'; // 'select' | 'contact' | 'coil' | 'block' | 'branch'
   String _pendingBlockType = 'TON';
-  LdNode? _branchStart; // first element tapped in branch mode
+  // Key of the picked start junction wire in guided Branch mode, e.g. 'm0>m1'.
+  String? _branchStartWireKey;
   LdBranchView? _dragBranch;
   bool _dragTapEnd = false; // true = dragging the tap (start) handle; false = merge (end)
   double _dragX = 0;
@@ -287,7 +288,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           onPressed: onPressed ??
               () => setState(() {
                     _editMode = mode;
-                    _branchStart = null;
+                    _branchStartWireKey = null;
                   }),
         ),
       );
@@ -305,9 +306,12 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       label: const Text('Add Rung', style: TextStyle(fontSize: 11, color: Colors.greenAccent)),
       onPressed: _addRung,
     );
-    const branchHint = Padding(
-      padding: EdgeInsets.only(left: 8),
-      child: Text('Tap span start, then span end', style: TextStyle(fontSize: 10, color: Colors.amberAccent)),
+    final branchHint = Padding(
+      padding: const EdgeInsets.only(left: 8),
+      child: Text(
+        _branchStartWireKey == null ? 'Tap a start point' : 'Tap an end point (tap the start again to cancel)',
+        style: const TextStyle(fontSize: 10, color: Colors.amberAccent),
+      ),
     );
 
     // Decide compact-vs-wide from the toolbar's own LOCAL available width,
@@ -396,7 +400,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       setState(() {
         _pendingBlockType = selected;
         _editMode = 'block';
-        _branchStart = null;
+        _branchStartWireKey = null;
       });
     }
   }
@@ -536,6 +540,9 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     // adds a brand new terminal coil lane at the right rail,
                     // independent of any specific wire.
                     if (_editMode == 'coil') _addOutputTarget(rung, width),
+                    // Guided junction-anchor pick targets (branch mode): one
+                    // dot per lane-0 (main-line) wire.
+                    if (_editMode == 'branch') ..._branchJunctionDots(rung, col, width),
                     // Draggable branch start/end handles.
                     ...findBranches(rung).expand((br) => _branchHandles(rung, br, col, width)),
                   ],
@@ -581,25 +588,94 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
   }
 
   void _onNodeTap(LdRung rung, LdNode n) {
-    if (_editMode == 'branch') {
-      if (_branchStart == null) {
-        setState(() => _branchStart = n);
-      } else {
-        final start = _branchStart!;
-        final col = colAssignment(rung);
-        // order the two picks left-to-right by column
-        final a = (col[start.id] ?? 0) <= (col[n.id] ?? 0) ? start : n;
-        final b = identical(a, start) ? n : start;
-        setState(() {
-          addParallelBranch(rung, a, b);
-          _branchStart = null;
-          _editMode = 'select';
-        });
-        widget.onProgramUpdated();
+    // select mode: single tap selects (no-op for now — branches are created
+    // via the guided junction-anchor dots in Branch mode, not element taps).
+  }
+
+  LdNode _nodeById(LdRung rung, String id) => rung.nodes.firstWhere((n) => n.id == id);
+
+  String _wireKey(LdWire w) => '${w.fromId}>${w.toId}';
+
+  bool _isLaneZero(LdWire w, LdRung rung) {
+    final from = _nodeById(rung, w.fromId);
+    final to = _nodeById(rung, w.toId);
+    return from.row == 0 && to.row == 0;
+  }
+
+  /// Lane-0 (main-line) wires, ordered left-to-right by the source node's
+  /// column. Each such wire is a "junction" the user can pick as a branch
+  /// start or end in guided Branch mode.
+  List<LdWire> _mainLineWires(LdRung rung) {
+    final col = colAssignment(rung);
+    final wires = rung.wires.where((w) => _isLaneZero(w, rung)).toList()
+      ..sort((a, b) => (col[a.fromId] ?? 0).compareTo(col[b.fromId] ?? 0));
+    return wires;
+  }
+
+  /// One pick-target dot per main-line wire (junction), for guided Branch
+  /// mode. Before a start is picked, every dot is active. Once a start is
+  /// picked, that dot is highlighted; only dots strictly to its right stay
+  /// active (valid end picks) and the rest are dimmed + non-tappable.
+  List<Widget> _branchJunctionDots(LdRung rung, Map<String, int> col, double width) {
+    final wires = _mainLineWires(rung);
+    LdWire? startWire;
+    if (_branchStartWireKey != null) {
+      for (final w in wires) {
+        if (_wireKey(w) == _branchStartWireKey) {
+          startWire = w;
+          break;
+        }
       }
+    }
+    return [for (final w in wires) _junctionDot(rung, w, col, width, startWire)];
+  }
+
+  Widget _junctionDot(LdRung rung, LdWire w, Map<String, int> col, double width, LdWire? startWire) {
+    final src = _nodeById(rung, w.fromId);
+    final dst = _nodeById(rung, w.toId);
+    final p1 = _outPort(rung, src, col, width);
+    final p2 = _inPort(rung, dst, col, width);
+    final mid = Offset((p1.dx + p2.dx) / 2, (p1.dy + p2.dy) / 2);
+    final isStart = startWire != null && _wireKey(w) == _wireKey(startWire);
+    final active = startWire == null || isStart || (col[w.fromId] ?? 0) > (col[startWire.fromId] ?? 0);
+    final color = isStart ? Colors.tealAccent : Colors.cyanAccent;
+    return Positioned(
+      left: mid.dx - 11,
+      top: mid.dy - 11,
+      width: 22,
+      height: 22,
+      child: GestureDetector(
+        onTap: active ? () => _onJunctionDotTap(rung, w) : null,
+        child: Container(
+          decoration: BoxDecoration(
+            color: active ? color.withValues(alpha: 0.85) : color.withValues(alpha: 0.3),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(isStart ? Icons.check : Icons.circle, size: isStart ? 14 : 8, color: Colors.black),
+        ),
+      ),
+    );
+  }
+
+  void _onJunctionDotTap(LdRung rung, LdWire w) {
+    final key = _wireKey(w);
+    if (_branchStartWireKey == null) {
+      setState(() => _branchStartWireKey = key);
       return;
     }
-    // select mode: single tap selects (highlight handled via _branchStart reuse is avoided)
+    if (_branchStartWireKey == key) {
+      // Tapping the start dot again cancels the pick.
+      setState(() => _branchStartWireKey = null);
+      return;
+    }
+    final wires = _mainLineWires(rung);
+    final startWire = wires.firstWhere((ww) => _wireKey(ww) == _branchStartWireKey);
+    setState(() {
+      addEmptyBranch(rung, startWire.fromId, w.toId);
+      _branchStartWireKey = null;
+      _editMode = 'select';
+    });
+    widget.onProgramUpdated();
   }
 
   Widget _wireInsertTarget(LdRung rung, LdWire w, Map<String, int> col, double width) {

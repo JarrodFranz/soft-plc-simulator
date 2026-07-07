@@ -381,4 +381,138 @@ void main() {
       });
     }
   });
+
+  group('Guided branch mode (junction-anchor picking)', () {
+    // Junction dots render an Icon.circle (unpicked) or Icon.check (the
+    // picked start), always in main-line (left-to-right) wire order — so
+    // indexing into this combined finder is stable across a pick.
+    Finder junctionDots() =>
+        find.byWidgetPredicate((w) => w is Icon && (w.icon == Icons.circle || w.icon == Icons.check));
+
+    Future<void> tapDot(WidgetTester tester, int index) async {
+      final dot = junctionDots().at(index);
+      final gd = tester.widget<GestureDetector>(
+        find.ancestor(of: dot, matching: find.byType(GestureDetector)).first,
+      );
+      gd.onTap?.call();
+      await tester.pump();
+    }
+
+    PlcProgram threeElementProgram() => PlcProgram(
+          name: 'TestProgram',
+          language: 'LadderLogic',
+          rungs: [
+            buildRung(index: 0, comment: 'Rung 0', main: [contact('A'), contact('B'), coil('Q0')]),
+          ],
+        );
+
+    for (final size in [desktopSize, smallPhoneSize]) {
+      testWidgets('Branch mode shows N+1 junction dots for N main elements (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = threeElementProgram(); // N = 3 main elements
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Branch'));
+        await tester.pumpAndSettle();
+
+        expect(junctionDots(), findsNWidgets(4)); // N + 1 = 4 lane-0 wires
+        expect(find.text('Tap a start point'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('start dot then a valid end dot to its right creates a link branch (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = threeElementProgram();
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+        final rung = program.rungs[0];
+
+        await tester.tap(find.text('Branch'));
+        await tester.pumpAndSettle();
+        final branchesBefore = findBranches(rung).length;
+
+        // Pick the first junction (L -> A) as the start.
+        await tapDot(tester, 0);
+        await tester.pumpAndSettle();
+        expect(find.text('Tap an end point (tap the start again to cancel)'), findsOneWidget);
+
+        // Pick the third junction (B -> Q0) as the end (strictly to the right).
+        await tapDot(tester, 2);
+        await tester.pumpAndSettle();
+
+        expect(findBranches(rung).length, branchesBefore + 1);
+        final newLane = findBranches(rung)
+            .map((br) => br.lane)
+            .reduce((a, b) => a > b ? a : b);
+        final linkNode = rung.nodes.firstWhere((n) => n.row == newLane);
+        expect(linkNode.kind, LdKind.link);
+
+        final inWire = rung.wires.firstWhere((w) => w.toId == linkNode.id);
+        final outWire = rung.wires.firstWhere((w) => w.fromId == linkNode.id);
+        expect(inWire.fromId, kLeftRailId);
+        final coilNode = rung.nodes.firstWhere((n) => n.variable == 'Q0');
+        expect(outWire.toId, coilNode.id);
+
+        // Guided pick is a one-shot flow: it resets to select mode afterward.
+        expect(find.text('Tap a start point'), findsNothing);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('tapping the start dot again cancels the pick, no branch created (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = threeElementProgram();
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+        final rung = program.rungs[0];
+
+        await tester.tap(find.text('Branch'));
+        await tester.pumpAndSettle();
+        final branchesBefore = findBranches(rung).length;
+
+        await tapDot(tester, 1);
+        await tester.pumpAndSettle();
+        expect(find.text('Tap an end point (tap the start again to cancel)'), findsOneWidget);
+
+        // Tap the very same (now-highlighted) start dot again to cancel.
+        await tapDot(tester, 1);
+        await tester.pumpAndSettle();
+
+        expect(find.text('Tap a start point'), findsOneWidget);
+        expect(findBranches(rung).length, branchesBefore);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('a right-rail end junction produces a branch merging at the right rail (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram(); // rung 0: main = [contact('A'), coil('Q0')]
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+        final rung = program.rungs[0];
+
+        await tester.tap(find.text('Branch'));
+        await tester.pumpAndSettle();
+
+        // Dots: 0 = L->A, 1 = A->Q0, 2 = Q0->R. Pick the last (right-rail) as end.
+        await tapDot(tester, 0);
+        await tester.pumpAndSettle();
+        await tapDot(tester, 2);
+        await tester.pumpAndSettle();
+
+        final newLane = findBranches(rung)
+            .map((br) => br.lane)
+            .reduce((a, b) => a > b ? a : b);
+        final linkNode = rung.nodes.firstWhere((n) => n.row == newLane);
+        expect(linkNode.kind, LdKind.link);
+        final outWire = rung.wires.firstWhere((w) => w.fromId == linkNode.id);
+        expect(outWire.toId, kRightRailId);
+
+        expect(tester.takeException(), isNull);
+      });
+    }
+  });
 }
