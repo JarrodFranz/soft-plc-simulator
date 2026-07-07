@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'project_model.dart';
 import 'ld_graph.dart';
 import 'tag_resolver.dart';
@@ -127,6 +129,108 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
         final inP = inputPower(n);
         final base = n.variable;
         final pre = n.presetMs;
+        final key = '$progName|${rung.rungIndex}|${n.id}';
+
+        if (n.blockType == 'TP') {
+          int acc = (readPath(p, '$base.ACC') as num?)?.toInt() ?? 0;
+          final prevIn = rt.prevBool[key] ?? inP;
+          rt.prevBool[key] = inP;
+          final rising = inP && !prevIn;
+          final timing = acc > 0 && acc < pre;
+          if (rising && !timing) {
+            acc = dtMs; // start the pulse (non-retriggerable while timing)
+          } else if (timing) {
+            acc = acc + dtMs;
+          }
+          bool q = acc > 0 && acc < pre;
+          if (acc >= pre) {
+            q = false;
+            acc = 0; // pulse complete; ready to retrigger on next rising edge
+          }
+          write('$base.EN', inP);
+          write('$base.PRE', pre);
+          write('$base.ACC', acc);
+          write('$base.DN', q);
+          write('$base.TT', q);
+          power[n.id] = q;
+          break;
+        }
+
+        if (n.blockType == 'CTU') {
+          int cv = (readPath(p, '$base.CV') as num?)?.toInt() ?? 0;
+          final prevIn = rt.prevBool[key] ?? inP;
+          rt.prevBool[key] = inP;
+          if (inP && !prevIn) {
+            cv = math.min(cv + 1, 32767);
+          }
+          final reset = readPath(p, '$base.R') == true;
+          if (reset) {
+            cv = 0;
+          }
+          final qu = cv >= pre;
+          write('$base.CU', inP);
+          write('$base.PV', pre);
+          write('$base.CV', cv);
+          write('$base.QU', qu);
+          write('$base.R', reset);
+          power[n.id] = qu;
+          break;
+        }
+
+        if (n.blockType == 'CTD') {
+          final rawCv = readPath(p, '$base.CV');
+          int cv = rawCv == null ? pre : (rawCv as num).toInt();
+          final prevIn = rt.prevBool[key] ?? inP;
+          rt.prevBool[key] = inP;
+          if (inP && !prevIn) {
+            cv = math.max(cv - 1, 0);
+          }
+          final reset = readPath(p, '$base.R') == true;
+          if (reset) {
+            cv = pre;
+          }
+          final qd = cv <= 0;
+          write('$base.CD', inP);
+          write('$base.PV', pre);
+          write('$base.CV', cv);
+          write('$base.QD', qd);
+          write('$base.R', reset);
+          power[n.id] = qd;
+          break;
+        }
+
+        if (n.blockType == 'CTUD') {
+          int cv = (readPath(p, '$base.CV') as num?)?.toInt() ?? 0;
+          final prevUp = rt.prevBool[key] ?? inP;
+          rt.prevBool[key] = inP;
+          final downIn = readPath(p, n.operandA) == true;
+          final downKey = '$key|dn';
+          final prevDown = rt.prevBool[downKey] ?? downIn;
+          rt.prevBool[downKey] = downIn;
+          if (inP && !prevUp) {
+            cv = cv + 1;
+          }
+          if (downIn && !prevDown) {
+            cv = cv - 1;
+          }
+          cv = cv.clamp(0, pre);
+          final reset = readPath(p, '$base.R') == true;
+          if (reset) {
+            cv = 0;
+          }
+          final qu = cv >= pre;
+          final qd = cv <= 0;
+          write('$base.CU', inP);
+          write('$base.CD', downIn);
+          write('$base.PV', pre);
+          write('$base.CV', cv);
+          write('$base.QU', qu);
+          write('$base.QD', qd);
+          write('$base.R', reset);
+          power[n.id] = qu;
+          break;
+        }
+
         int acc = (readPath(p, '$base.ACC') as num?)?.toInt() ?? 0;
         bool dn;
         if (n.blockType == 'TOF') {

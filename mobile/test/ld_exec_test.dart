@@ -7,10 +7,36 @@ import 'package:soft_plc_mobile/models/tag_resolver.dart';
 PlcTag _tag(String n, String type, dynamic v, {bool forced = false, dynamic fv}) =>
     PlcTag(name: n, path: n, dataType: type, value: v, ioType: 'Internal', isForced: forced, forcedValue: fv);
 
-PlcProject _proj(List<PlcTag> tags, List<PlcProgram> programs) => PlcProject(
+PlcProject _proj(List<PlcTag> tags, List<PlcProgram> programs, {List<PlcStructDef>? structDefs}) => PlcProject(
       id: 'p', name: 'p', controllerName: 'c',
-      tags: tags, structDefs: [], programs: programs, tasks: [], hmis: [],
+      tags: tags, structDefs: structDefs ?? [], programs: programs, tasks: [], hmis: [],
     );
+
+/// A minimal counter DUT with the fields every CTU/CTD/CTUD test needs;
+/// unused fields for a given block are simply ignored by the engine.
+final PlcStructDef _counterDef = PlcStructDef(name: 'COUNTER', fields: [
+  StructFieldDef(name: 'CU', dataType: 'BOOL', defaultValue: false),
+  StructFieldDef(name: 'CD', dataType: 'BOOL', defaultValue: false),
+  StructFieldDef(name: 'PV', dataType: 'INT32', defaultValue: 0),
+  StructFieldDef(name: 'CV', dataType: 'INT32', defaultValue: 0),
+  StructFieldDef(name: 'QU', dataType: 'BOOL', defaultValue: false),
+  StructFieldDef(name: 'QD', dataType: 'BOOL', defaultValue: false),
+  StructFieldDef(name: 'R', dataType: 'BOOL', defaultValue: false),
+]);
+
+PlcTag _counterTag(String n) => PlcTag(
+      name: n, path: n, dataType: 'COUNTER',
+      value: defaultValueFor(_proj([], [], structDefs: [_counterDef]), 'COUNTER', 0),
+      ioType: 'Internal',
+    );
+
+/// A counter tag with `.CV` absent (as if never yet written) so CTD's
+/// "load PV when absent" branch (`readPath(...) == null`) is exercised.
+PlcTag _counterTagNoCv(String n) {
+  final v = defaultValueFor(_proj([], [], structDefs: [_counterDef]), 'COUNTER', 0) as Map;
+  final m = Map<String, dynamic>.from(v)..remove('CV');
+  return PlcTag(name: n, path: n, dataType: 'COUNTER', value: m, ioType: 'Internal');
+}
 
 LdNode _no(String v) => LdNode(id: '', kind: LdKind.contact, variable: v);
 LdNode _nc(String v) => LdNode(id: '', kind: LdKind.contact, variable: v, modifier: 'negated');
@@ -255,5 +281,172 @@ void main() {
     writePath(p, 'Gate', true);
     executeLdPrograms(p, 100, rt); // DN AND Gate
     expect(_b(p, 'Y'), isTrue);
+  });
+
+  test('TP emits a pulse of exactly ceil(pre/dt) scans and is not retriggerable mid-pulse', () {
+    final r = buildRung(index: 0, main: [
+      _no('In'),
+      LdNode(id: '', kind: LdKind.block, blockType: 'TP', variable: 'T', presetMs: 300),
+      _coil('Q'),
+    ]);
+    final p = _proj([
+      _tag('In', 'BOOL', false),
+      _tag('T', 'TIMER', defaultValueFor(_proj([], []), 'TIMER', 0)),
+      _tag('Q', 'BOOL', false),
+    ], [_ldProg([r])]);
+    final rt = LdExecRuntime();
+    executeLdPrograms(p, 100, rt); // no edge yet
+    expect(_b(p, 'Q'), isFalse);
+
+    writePath(p, 'In', true);
+    executeLdPrograms(p, 100, rt); // rising edge -> pulse starts, ACC=100
+    expect(_b(p, 'Q'), isTrue);
+
+    writePath(p, 'In', false); // mid-pulse IN drop must NOT cut the pulse short
+    executeLdPrograms(p, 100, rt); // ACC=200
+    expect(_b(p, 'Q'), isTrue);
+
+    executeLdPrograms(p, 100, rt); // ACC=300 -> pulse complete, Q drops
+    expect(_b(p, 'Q'), isFalse);
+    expect((readPath(p, 'T.ACC') as num).toInt(), equals(0));
+
+    // A held-high input after completion should not keep it pulsing; only a
+    // fresh rising edge retriggers.
+    executeLdPrograms(p, 100, rt);
+    expect(_b(p, 'Q'), isFalse);
+
+    writePath(p, 'In', true);
+    executeLdPrograms(p, 100, rt); // fresh rising edge -> retriggers
+    expect(_b(p, 'Q'), isTrue);
+  });
+
+  test('CTU counts once per rising edge, saturates, QU at PV, resets on R', () {
+    final r = buildRung(index: 0, main: [
+      _no('PB'),
+      LdNode(id: '', kind: LdKind.block, blockType: 'CTU', variable: 'Cnt', presetMs: 2),
+      _coil('Done'),
+    ]);
+    final p = _proj(
+      [_tag('PB', 'BOOL', false), _counterTag('Cnt'), _tag('Done', 'BOOL', false)],
+      [_ldProg([r])],
+      structDefs: [_counterDef],
+    );
+    final rt = LdExecRuntime();
+    executeLdPrograms(p, 100, rt);
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0));
+
+    writePath(p, 'PB', true);
+    executeLdPrograms(p, 100, rt); // edge 1 -> CV 1
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(1));
+
+    executeLdPrograms(p, 100, rt); // held high, no new edge -> CV still 1
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(1));
+
+    writePath(p, 'PB', false);
+    executeLdPrograms(p, 100, rt);
+    writePath(p, 'PB', true);
+    executeLdPrograms(p, 100, rt); // edge 2 -> CV 2, QU true (PV 2)
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(2));
+    expect(_b(p, 'Cnt.QU'), isTrue);
+    expect(_b(p, 'Done'), isTrue); // block output feeds the coil
+
+    writePath(p, 'Cnt.R', true);
+    executeLdPrograms(p, 100, rt);
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0));
+    expect(_b(p, 'Cnt.QU'), isFalse);
+  });
+
+  test('CTD reloads CV to PV and decrements to 0 on rising edges', () {
+    final r = buildRung(index: 0, main: [
+      _no('PB'),
+      LdNode(id: '', kind: LdKind.block, blockType: 'CTD', variable: 'Cnt', presetMs: 2),
+      _coil('Done'),
+    ]);
+    final p = _proj(
+      [_tag('PB', 'BOOL', false), _counterTagNoCv('Cnt'), _tag('Done', 'BOOL', false)],
+      [_ldProg([r])],
+      structDefs: [_counterDef],
+    );
+    final rt = LdExecRuntime();
+    executeLdPrograms(p, 100, rt); // CV absent (null) -> loads to PV=2
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(2));
+    expect(_b(p, 'Cnt.QD'), isFalse);
+
+    writePath(p, 'PB', true);
+    executeLdPrograms(p, 100, rt); // edge -> CV 1
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(1));
+
+    writePath(p, 'PB', false);
+    executeLdPrograms(p, 100, rt);
+    writePath(p, 'PB', true);
+    executeLdPrograms(p, 100, rt); // edge -> CV 0 -> QD
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0));
+    expect(_b(p, 'Cnt.QD'), isTrue);
+    expect(_b(p, 'Done'), isTrue);
+
+    writePath(p, 'Cnt.R', true);
+    executeLdPrograms(p, 100, rt); // reset reloads PV
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(2));
+  });
+
+  test('CTUD counts up then down and clamps at [0, PV]', () {
+    final r = buildRung(index: 0, main: [
+      _no('Up'),
+      LdNode(id: '', kind: LdKind.block, blockType: 'CTUD', variable: 'Cnt', presetMs: 2, operandA: 'Down'),
+      _coil('Done'),
+    ]);
+    final p = _proj(
+      [
+        _tag('Up', 'BOOL', false),
+        _tag('Down', 'BOOL', false),
+        _counterTag('Cnt'),
+        _tag('Done', 'BOOL', false),
+      ],
+      [_ldProg([r])],
+      structDefs: [_counterDef],
+    );
+    final rt = LdExecRuntime();
+    executeLdPrograms(p, 100, rt);
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0));
+
+    writePath(p, 'Up', true);
+    executeLdPrograms(p, 100, rt); // up edge -> CV 1
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(1));
+
+    writePath(p, 'Up', false);
+    executeLdPrograms(p, 100, rt);
+    writePath(p, 'Up', true);
+    executeLdPrograms(p, 100, rt); // up edge -> CV 2 (== PV) -> QU
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(2));
+    expect(_b(p, 'Cnt.QU'), isTrue);
+    expect(_b(p, 'Done'), isTrue);
+
+    writePath(p, 'Up', false);
+    executeLdPrograms(p, 100, rt);
+    writePath(p, 'Up', true);
+    executeLdPrograms(p, 100, rt); // another up edge -> clamp at PV=2
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(2));
+
+    writePath(p, 'Down', true);
+    executeLdPrograms(p, 100, rt); // down edge -> CV 1
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(1));
+    expect(_b(p, 'Cnt.QU'), isFalse);
+
+    writePath(p, 'Down', false);
+    executeLdPrograms(p, 100, rt);
+    writePath(p, 'Down', true);
+    executeLdPrograms(p, 100, rt); // down edge -> CV 0 -> QD
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0));
+    expect(_b(p, 'Cnt.QD'), isTrue);
+
+    writePath(p, 'Down', false);
+    executeLdPrograms(p, 100, rt);
+    writePath(p, 'Down', true);
+    executeLdPrograms(p, 100, rt); // another down edge -> clamp at 0
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0));
+
+    writePath(p, 'Cnt.R', true);
+    executeLdPrograms(p, 100, rt);
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0));
   });
 }
