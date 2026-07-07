@@ -116,6 +116,7 @@ void main() {
             body: SizedBox(
               width: size.width,
               child: TagInspectorDock(
+                project: project,
                 tags: project.tags,
                 onTagStateChanged: () {},
                 onClose: () {},

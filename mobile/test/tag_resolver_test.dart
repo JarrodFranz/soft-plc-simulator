@@ -122,4 +122,69 @@ void main() {
     writePath(p, 'Arr[2].5', false);
     expect(readPath(p, 'Arr[2]'), equals(0));
   });
+
+  test('structDefInUse detects tag and nested-field references', () {
+    final p = _proj(
+      [_tag('P1', 'PumpStatusDUT', null)],
+      defs: [
+        PlcStructDef(name: 'PumpStatusDUT', fields: [
+          StructFieldDef(name: 'Running', dataType: 'BOOL', defaultValue: false),
+        ]),
+        PlcStructDef(name: 'Skid', fields: [
+          StructFieldDef(name: 'Pump', dataType: 'PumpStatusDUT', defaultValue: null),
+        ]),
+      ],
+    );
+    expect(structDefInUse(p, 'PumpStatusDUT'), isTrue); // used by tag P1 and by Skid.Pump
+    expect(structDefInUse(p, 'Skid'), isFalse);
+  });
+
+  test('defaultValueFor terminates on a direct self-referencing DUT (no stack overflow)', () {
+    final p = _proj(
+      [],
+      defs: [
+        PlcStructDef(name: 'SelfDUT', fields: [
+          StructFieldDef(name: 'Nested', dataType: 'SelfDUT', defaultValue: null),
+        ]),
+      ],
+    );
+    // Must terminate rather than recurse infinitely; the cyclic member resolves
+    // to a safe empty value instead of blowing the stack.
+    final result = defaultValueFor(p, 'SelfDUT', 0) as Map;
+    expect(result.containsKey('Nested'), isTrue);
+  });
+
+  test('defaultValueFor terminates on a mutual A->B->A cycle (no stack overflow)', () {
+    final p = _proj(
+      [],
+      defs: [
+        PlcStructDef(name: 'ADut', fields: [
+          StructFieldDef(name: 'B', dataType: 'BDut', defaultValue: null),
+        ]),
+        PlcStructDef(name: 'BDut', fields: [
+          StructFieldDef(name: 'A', dataType: 'ADut', defaultValue: null),
+        ]),
+      ],
+    );
+    final result = defaultValueFor(p, 'ADut', 0) as Map;
+    expect(result.containsKey('B'), isTrue);
+  });
+
+  test('renameStructDef cascades to tags and nested fields', () {
+    final p = _proj(
+      [_tag('P1', 'PumpStatusDUT', null)],
+      defs: [
+        PlcStructDef(name: 'PumpStatusDUT', fields: [
+          StructFieldDef(name: 'Running', dataType: 'BOOL', defaultValue: false),
+        ]),
+        PlcStructDef(name: 'Skid', fields: [
+          StructFieldDef(name: 'Pump', dataType: 'PumpStatusDUT', defaultValue: null),
+        ]),
+      ],
+    );
+    renameStructDef(p, 'PumpStatusDUT', 'PumpDUT');
+    expect(p.structDefs.any((s) => s.name == 'PumpDUT'), isTrue);
+    expect(p.tags.firstWhere((t) => t.name == 'P1').dataType, 'PumpDUT');
+    expect(p.structDefs.firstWhere((s) => s.name == 'Skid').fields.first.dataType, 'PumpDUT');
+  });
 }

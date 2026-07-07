@@ -235,8 +235,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     final rungs = widget.program.rungs;
     double contentHeight = 0;
     for (final r in rungs) {
-      final rungExtra = _editMode == 'coil' ? _kContactH + _kLaneGap : 0;
-      contentHeight += _rungHeight(r) + rungExtra + 44 /* rung chrome: label + padding */ + _kRungGap;
+      contentHeight += _rungHeight(r) + 58 /* rung chrome: label + padding */ + _kRungGap;
     }
     double contentWidth = _kCompactPaneWidth;
     for (final r in rungs) {
@@ -465,12 +464,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
   Widget _buildRungCanvas(LdRung rung, int index, {bool compact = false}) {
     final col = colAssignment(rung);
-    // In Coil mode, reserve an extra lane's worth of height for the
-    // always-present "add output" affordance so it never sits outside the
-    // canvas's clipped bounds.
-    final height = _editMode == 'coil'
-        ? _rungHeight(rung) + _kContactH + _kLaneGap
-        : _rungHeight(rung);
+    final height = _rungHeight(rung);
 
     return Container(
       decoration: BoxDecoration(
@@ -490,6 +484,15 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                   child: Text('RUNG $index   ${rung.comment}',
                       style: const TextStyle(fontSize: 11, color: Colors.grey),
                       overflow: TextOverflow.ellipsis),
+                ),
+                touchable(
+                  IconButton(
+                    icon: const Icon(Icons.add, size: 18, color: Colors.cyanAccent),
+                    tooltip: 'Add output',
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                    onPressed: () => _addOutputCoilAndEdit(rung),
+                  ),
                 ),
                 _rungActionButton(
                   icon: Icons.arrow_upward,
@@ -547,10 +550,6 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                       ...rung.wires
                           .where((w) => canInsertCoilOnWire(rung, w) && !_wireTouchesLink(rung, w))
                           .map((w) => _wireInsertTarget(rung, w, col, width)),
-                    // Always-present stacked-output affordance (coil mode):
-                    // adds a brand new terminal coil lane at the right rail,
-                    // independent of any specific wire.
-                    if (_editMode == 'coil') _addOutputTarget(rung, width),
                     // Guided junction-anchor pick targets (branch mode): one
                     // dot per lane-0 (main-line) wire.
                     if (_editMode == 'branch') ..._branchJunctionDots(rung, index, col, width),
@@ -763,30 +762,9 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     );
   }
 
-  /// Always-present "add output" affordance near the right rail (Coil mode)
-  /// that adds a brand new stacked output coil on a fresh lane, independent
-  /// of any existing wire.
-  Widget _addOutputTarget(LdRung rung, double width) {
-    final lane = maxLane(rung) + 1;
-    final y = _laneTop(rung, lane) + _kContactH / 2;
-    return Positioned(
-      left: width - kLdCellW - kLdCoilRailGap - 11,
-      top: y - 11,
-      width: 22,
-      height: 22,
-      child: GestureDetector(
-        onTap: () => _addOutputCoilAndEdit(rung),
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.cyanAccent.withValues(alpha: 0.85),
-            shape: BoxShape.circle,
-          ),
-          child: const Icon(Icons.add, size: 14, color: Colors.black),
-        ),
-      ),
-    );
-  }
-
+  /// Adds a brand new stacked output coil on a fresh lane, independent of any
+  /// existing wire, and opens its edit dialog. Invoked from the rung header's
+  /// "Add output" button (available in any editor mode, not just Coil mode).
   void _addOutputCoilAndEdit(LdRung rung) {
     late final LdNode coilNode;
     setState(() {
@@ -1017,6 +995,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     final downTagCtrl = TextEditingController(text: n.operandA);
     final operandACtrl = TextEditingController(text: n.operandA);
     final operandBCtrl = TextEditingController(text: n.operandB);
+    final compareNameCtrl = TextEditingController(text: n.variable);
     String modifier = n.modifier;
     String blockType = n.blockType;
     final isCoil = n.kind == LdKind.coil;
@@ -1128,6 +1107,13 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     label: 'Operand B',
                     onChanged: (v) => operandBCtrl.text = v,
                   ),
+                  if (isCompare) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: compareNameCtrl,
+                      decoration: const InputDecoration(labelText: 'Name'),
+                    ),
+                  ],
                 ],
               ],
             ),
@@ -1163,6 +1149,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     n.operandB = operandBCtrl.text.trim();
                     if (isMath) {
                       n.variable = tagCtrl.text.trim();
+                    } else if (isCompare) {
+                      n.variable = compareNameCtrl.text.trim();
                     }
                   } else {
                     n.variable = tagCtrl.text.trim();
@@ -1396,9 +1384,17 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     textAlign: TextAlign.center),
                 // Math blocks write a result — surface its destination on the
                 // block face for parity with timer/counter blocks (compare
-                // blocks have no output tag, so this line is math-only).
+                // blocks have no output tag, so `variable` instead holds an
+                // optional user-assigned name — shown only when set so
+                // unnamed compare blocks keep their original compact face).
                 if (!isCompare)
                   Text('→ ${n.variable}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 7, color: Colors.cyanAccent, fontFamily: 'monospace'),
+                      textAlign: TextAlign.center)
+                else if (n.variable.isNotEmpty)
+                  Text(n.variable,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 7, color: Colors.cyanAccent, fontFamily: 'monospace'),

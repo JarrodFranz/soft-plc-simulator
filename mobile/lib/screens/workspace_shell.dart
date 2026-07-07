@@ -953,6 +953,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
           : Drawer(
               width: math.min(340, MediaQuery.sizeOf(context).width * 0.9),
               child: TagInspectorDock(
+                project: _activeProject,
                 tags: _activeProject.tags,
                 onTagStateChanged: _markDirtyAndAutosave,
                 onClose: () {
@@ -1030,6 +1031,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                       if (isTagDockVisible) ...[
                         const VerticalDivider(width: 1, color: Colors.white12),
                         TagInspectorDock(
+                          project: _activeProject,
                           tags: _activeProject.tags,
                           onTagStateChanged: _markDirtyAndAutosave,
                           onClose: () => setState(() => isTagDockVisible = false),

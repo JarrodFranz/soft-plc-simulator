@@ -40,6 +40,44 @@ final List<PlcStructDef> _builtinComposites = [
 
 List<String> builtinCompositeNames() => _builtinComposites.map((s) => s.name).toList();
 
+/// True if any tag or struct field in [p] references the struct definition
+/// named [name] as its data type.
+bool structDefInUse(PlcProject p, String name) {
+  if (p.tags.any((t) => t.dataType == name)) {
+    return true;
+  }
+  return p.structDefs.any((s) => s.fields.any((f) => f.dataType == name));
+}
+
+/// Renames struct definition [oldName] to [newName] everywhere it is
+/// referenced: tag data types, nested struct field data types, and the
+/// definition's own name. No-op if the names are equal or no such def exists.
+void renameStructDef(PlcProject p, String oldName, String newName) {
+  if (oldName == newName) {
+    return;
+  }
+  if (!p.structDefs.any((s) => s.name == oldName)) {
+    return;
+  }
+  for (final t in p.tags) {
+    if (t.dataType == oldName) {
+      t.dataType = newName;
+    }
+  }
+  for (final s in p.structDefs) {
+    for (final f in s.fields) {
+      if (f.dataType == oldName) {
+        f.dataType = newName;
+      }
+    }
+  }
+  for (final s in p.structDefs) {
+    if (s.name == oldName) {
+      s.name = newName;
+    }
+  }
+}
+
 /// The DUT/composite definition for a type name, or null if it is a scalar.
 PlcStructDef? lookupComposite(PlcProject p, String typeName) {
   for (final s in p.structDefs) {
@@ -72,14 +110,28 @@ int bitWidth(String base) {
 
 /// Recursive default value for a base type + arrayLength.
 dynamic defaultValueFor(PlcProject p, String base, int arrayLength) {
+  return _defaultValueFor(p, base, arrayLength, <String>{});
+}
+
+/// Cycle-safe worker for [defaultValueFor]. [visiting] tracks composite type
+/// names currently being expanded on this recursion path; a composite that
+/// re-appears (direct self-reference or a mutual A->B->A cycle) is treated
+/// as an empty struct instead of being recursed into again, so malformed or
+/// maliciously-crafted DUT graphs (from the UI or legacy JSON) can never
+/// stack-overflow.
+dynamic _defaultValueFor(PlcProject p, String base, int arrayLength, Set<String> visiting) {
   if (arrayLength > 0) {
-    return List<dynamic>.generate(arrayLength, (_) => defaultValueFor(p, base, 0));
+    return List<dynamic>.generate(arrayLength, (_) => _defaultValueFor(p, base, 0, visiting));
   }
   final comp = lookupComposite(p, base);
   if (comp != null) {
+    if (visiting.contains(base)) {
+      return <String, dynamic>{}; // cycle detected — bail out safely
+    }
+    final nextVisiting = {...visiting, base};
     final m = <String, dynamic>{};
     for (final f in comp.fields) {
-      m[f.name] = f.defaultValue ?? defaultValueFor(p, f.dataType, f.arrayLength);
+      m[f.name] = f.defaultValue ?? _defaultValueFor(p, f.dataType, f.arrayLength, nextVisiting);
     }
     return m;
   }

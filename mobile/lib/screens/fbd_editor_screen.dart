@@ -358,6 +358,7 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     // (and trigger `onProgramUpdated`) when the dialog is saved, not on
     // every keystroke.
     String pendingTagBinding = block.tagBinding;
+    String pendingTitle = block.title;
 
     showAdaptiveWidthDialog(
       context,
@@ -370,6 +371,12 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('Block Type: ${block.type}', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+              const SizedBox(height: 12),
+              TextFormField(
+                initialValue: block.title,
+                decoration: const InputDecoration(labelText: 'Block name'),
+                onChanged: (val) => pendingTitle = val,
+              ),
               const SizedBox(height: 12),
               if (block.type.startsWith('TAG_'))
                 TagAutocompleteField(
@@ -415,7 +422,10 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
             TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
             ElevatedButton(
               onPressed: () {
-                setState(() => block.tagBinding = pendingTagBinding);
+                setState(() {
+                  block.tagBinding = pendingTagBinding;
+                  block.title = pendingTitle.trim().isEmpty ? block.title : pendingTitle.trim();
+                });
                 widget.onProgramUpdated();
                 Navigator.pop(context);
               },
@@ -662,9 +672,16 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     final extensible = _typeIsExtensible(block.type);
 
     return GestureDetector(
-      onTap: () {
-        if (_selectedWireIndex != null) _selectWire(null);
-      },
+      // Only claim the tap gesture in expanded/inline mode (where the outer
+      // card GestureDetector's onTap is null and drag is enabled). In
+      // non-expanded (phone) mode this must stay null so the outer
+      // Positioned > GestureDetector's onTap (opens the configure dialog)
+      // wins the gesture arena instead of being shadowed by this inner one.
+      onTap: showInlineEditors
+          ? () {
+              if (_selectedWireIndex != null) _selectWire(null);
+            }
+          : null,
       child: Container(
         width: _kBlockWidth,
         padding: const EdgeInsets.all(6),

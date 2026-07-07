@@ -8,6 +8,7 @@ import 'package:soft_plc_mobile/models/ld_exec.dart';
 import 'package:soft_plc_mobile/models/fbd_exec.dart';
 import 'package:soft_plc_mobile/models/sfc_exec.dart';
 import 'package:soft_plc_mobile/models/st_exec.dart';
+import 'package:soft_plc_mobile/models/tag_resolver.dart';
 
 // One full scan tick, exactly as the shell runs it.
 void _scan(PlcProject p, SimRuntime sim, LdExecRuntime ld, FbdRuntime fbd,
@@ -249,6 +250,63 @@ void main() {
 
     // Strongest check: the whole project is byte-identical after round-trip.
     expect(jsonEncode(restored.toJson()), jsonEncode(original.toJson()));
+  });
+
+  test('WS23: struct-def rename cascade round-trips a bound tag', () {
+    // A user DUT with 2 fields.
+    final dut = PlcStructDef(name: 'MotorParams', fields: [
+      StructFieldDef(name: 'Speed', dataType: 'INT32', defaultValue: 0),
+      StructFieldDef(name: 'Enabled', dataType: 'BOOL', defaultValue: false),
+    ]);
+    // A tag bound to that DUT, so the rename cascade has something to touch.
+    final tag = PlcTag(
+      name: 'Motor1',
+      path: 'Motor1',
+      dataType: 'MotorParams',
+      value: null,
+      ioType: 'Internal',
+    );
+    final original = PlcProject(
+      id: 'ws23_structdef_roundtrip',
+      name: 'WS23 Struct Rename Fixture',
+      controllerName: 'PLC_TEST',
+      tags: [tag],
+      structDefs: [dut],
+      programs: [],
+      tasks: [],
+      hmis: [],
+    );
+
+    // Exercise the rename cascade before serializing: the struct def's own
+    // name and every referencing tag's dataType must both flip.
+    renameStructDef(original, 'MotorParams', 'DriveParams');
+    expect(original.structDefs.single.name, 'DriveParams');
+    expect(original.tags.single.dataType, 'DriveParams',
+        reason: 'renameStructDef must cascade into bound tags');
+
+    final restored = _roundTrip(original);
+
+    expect(restored.structDefs.length, 1);
+    final sA = original.structDefs.single;
+    final sB = restored.structDefs.single;
+    expect(sB.name, sA.name);
+    expect(sB.fields.length, sA.fields.length);
+    for (var i = 0; i < sA.fields.length; i++) {
+      expect(sB.fields[i].name, sA.fields[i].name, reason: 'field $i name');
+      expect(sB.fields[i].dataType, sA.fields[i].dataType,
+          reason: 'field $i dataType');
+    }
+    // Not a tautology against an empty/degenerate def.
+    expect(sB.name, 'DriveParams');
+    expect(sB.fields.map((f) => f.name).toSet(), {'Speed', 'Enabled'});
+    expect(
+        sB.fields.firstWhere((f) => f.name == 'Speed').dataType, 'INT32');
+    expect(
+        sB.fields.firstWhere((f) => f.name == 'Enabled').dataType, 'BOOL');
+
+    // The referencing tag's dataType survives the rename + round-trip too.
+    expect(restored.tags.single.dataType, 'DriveParams',
+        reason: 'tag dataType must still point at the renamed struct def');
   });
 
   for (final original in DefaultProjects.all()) {
