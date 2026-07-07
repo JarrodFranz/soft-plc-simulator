@@ -502,6 +502,17 @@ class OpcUaWriter {
     uint8(hasBody ? 0x01 : 0x00);
   }
 
+  /// ExtensionObject with a ByteString body: NodeId typeId + 0x01 (ByteString
+  /// encoding present) + the body itself as a ByteString (Int32 length +
+  /// bytes). (extension_object.rs) Added for WS20/Task 1 — used to encode
+  /// MonitoringParameters.filter / MonitoredItemCreateResult.filterResult
+  /// (DataChangeFilter bodies), which the pre-subscriptions codec never
+  /// needed to write.
+  void extensionObject(OpcNodeId typeId, Uint8List body) {
+    extensionObjectHeader(typeId, hasBody: true);
+    byteString(body);
+  }
+
   /// DiagnosticInfo: writes the empty (all-fields-absent) 0x00 form.
   /// (diagnostic_info.rs `DiagnosticInfo::null()`)
   void emptyDiagnosticInfo() => uint8(0x00);
