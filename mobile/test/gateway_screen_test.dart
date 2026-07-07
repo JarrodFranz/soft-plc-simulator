@@ -30,6 +30,40 @@ class _CountingOpcUaHost extends OpcUaHost {
   }
 }
 
+/// A fake host that fakes `status`/counts directly (no real socket) — used
+/// ONLY by the "Subscriptions: N · Monitored items: M" line tests, where the
+/// point is purely to prove the screen renders/hides that line off the
+/// host's counts, not to exercise the real networking stack (that's what
+/// `opcua_host_test.dart`'s E2E test is for).
+class _FakeCountsOpcUaHost extends OpcUaHost {
+  OpcUaHostStatus _fakeStatus = OpcUaHostStatus.stopped;
+  int _fakeSubscriptionCount = 0;
+  int _fakeMonitoredItemCount = 0;
+
+  @override
+  OpcUaHostStatus get status => _fakeStatus;
+
+  @override
+  int get subscriptionCount => _fakeSubscriptionCount;
+
+  @override
+  int get monitoredItemCount => _fakeMonitoredItemCount;
+
+  void setRunning({required int subscriptions, required int monitoredItems}) {
+    _fakeStatus = OpcUaHostStatus.running;
+    _fakeSubscriptionCount = subscriptions;
+    _fakeMonitoredItemCount = monitoredItems;
+    notifyListeners();
+  }
+
+  void setStopped() {
+    _fakeStatus = OpcUaHostStatus.stopped;
+    _fakeSubscriptionCount = 0;
+    _fakeMonitoredItemCount = 0;
+    notifyListeners();
+  }
+}
+
 PlcProject _project({String id = 'proj_gw_ui_test', int? port}) {
   final project = PlcProject(
     id: id,
@@ -285,5 +319,80 @@ void main() {
     await tester.tap(find.byType(Switch));
     await tester.pump();
     expect(tester.takeException(), isNull);
+  });
+
+  group('Subscriptions/Monitored items status line (Task 3)', () {
+    testWidgets('shows "Subscriptions: N · Monitored items: M" when running', (tester) async {
+      final project = _project();
+      final host = _FakeCountsOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(Switch));
+      await tester.pump();
+
+      host.setRunning(subscriptions: 2, monitoredItems: 5);
+      await tester.pump();
+
+      expect(find.text('Subscriptions: 2 · Monitored items: 5'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('the counts line is absent when stopped', (tester) async {
+      final project = _project();
+      final host = _FakeCountsOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(Switch));
+      await tester.pump();
+
+      expect(host.status, OpcUaHostStatus.stopped);
+      expect(find.textContaining('Subscriptions:'), findsNothing);
+
+      // Running then stopped again: the line must disappear.
+      host.setRunning(subscriptions: 1, monitoredItems: 1);
+      await tester.pump();
+      expect(find.textContaining('Subscriptions:'), findsOneWidget);
+
+      host.setStopped();
+      await tester.pump();
+      expect(find.textContaining('Subscriptions:'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 320 width while running with the counts line shown', (tester) async {
+      final project = _project();
+      final host = _FakeCountsOpcUaHost();
+      addTearDown(host.dispose);
+      await setSurface(tester, smallPhoneSize);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(Switch));
+      await tester.pump();
+      host.setRunning(subscriptions: 12, monitoredItems: 345);
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 1400 width while running with the counts line shown', (tester) async {
+      final project = _project();
+      final host = _FakeCountsOpcUaHost();
+      addTearDown(host.dispose);
+      await setSurface(tester, desktopSize);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(Switch));
+      await tester.pump();
+      host.setRunning(subscriptions: 12, monitoredItems: 345);
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+    });
   });
 }

@@ -35,10 +35,11 @@ const int _maxFrameBytes = 16 * 1024 * 1024;
 class _Connection {
   final Socket socket;
   final OpcUaServerSession session;
+  final int Function() nowMs;
   final List<int> _buffer = [];
   bool _closed = false;
 
-  _Connection(this.socket, this.session);
+  _Connection(this.socket, this.session, this.nowMs);
 
   /// Feeds newly-arrived [data] into the reassembly buffer, then extracts
   /// and dispatches as many complete frames as are available. A single
@@ -65,7 +66,7 @@ class _Connection {
         }
         final frame = Uint8List.fromList(_buffer.sublist(0, size));
         _buffer.removeRange(0, size);
-        final outFrames = session.onBytes(frame);
+        final outFrames = session.onBytes(frame, nowMs());
         for (final out in outFrames) {
           socket.add(out);
         }
@@ -136,6 +137,17 @@ class OpcUaHost extends ChangeNotifier {
   final List<_Connection> _connections = [];
   StreamSubscription<Socket>? _acceptSub;
 
+  /// The ONLY Timer this app ever owns for OPC UA: a 20 Hz (50ms) clock tick
+  /// driving every connection's `onClockTick`. Exists ONLY between a
+  /// successful `start()` and `stop()` — never idles the app when hosting
+  /// isn't running (see file doc, "byte-identical when hosting is stopped").
+  Timer? _tickTimer;
+
+  /// Monotonic clock fed to `session.onBytes`/`onClockTick` as `nowMs`.
+  /// Reset+started in `start()`, stopped in `stop()` — never read while
+  /// hosting is stopped (no timer exists to read it).
+  final Stopwatch _clock = Stopwatch();
+
   OpcUaHostStatus _status = OpcUaHostStatus.stopped;
   OpcUaHostStatus get status => _status;
 
@@ -146,6 +158,17 @@ class OpcUaHost extends ChangeNotifier {
   String? get endpointUrl => _endpointUrl;
 
   int get clientCount => _connections.length;
+
+  /// Sum of every live connection's subscription/monitored-item count. 0
+  /// when stopped (no connections) or when no client has created any
+  /// subscriptions yet.
+  int get subscriptionCount =>
+      _connections.fold(0, (sum, c) => sum + c.session.subscriptionCount);
+  int get monitoredItemCount =>
+      _connections.fold(0, (sum, c) => sum + c.session.monitoredItemCount);
+
+  int _lastNotifiedSubscriptionCount = 0;
+  int _lastNotifiedMonitoredItemCount = 0;
 
   bool _disposed = false;
 
@@ -209,6 +232,13 @@ class OpcUaHost extends ChangeNotifier {
         cancelOnError: false,
       );
 
+      _clock
+        ..reset()
+        ..start();
+      _lastNotifiedSubscriptionCount = 0;
+      _lastNotifiedMonitoredItemCount = 0;
+      _tickTimer = Timer.periodic(const Duration(milliseconds: 50), _onTick);
+
       _setStatus(OpcUaHostStatus.running);
     } catch (e) {
       _serverSocket = null;
@@ -216,10 +246,42 @@ class OpcUaHost extends ChangeNotifier {
     }
   }
 
+  /// The 20 Hz clock tick: pushes every live connection's
+  /// `session.onClockTick` output straight to its socket (unsolicited
+  /// PublishResponse pushes), then notifies listeners ONLY when the
+  /// subscription/monitored-item counts actually changed since the last
+  /// notification — never spamming `notifyListeners()` at 20 Hz when
+  /// nothing observable changed.
+  void _onTick(Timer timer) {
+    final nowMs = _clock.elapsedMilliseconds;
+    for (final conn in List<_Connection>.from(_connections)) {
+      try {
+        final frames = conn.session.onClockTick(nowMs);
+        for (final f in frames) {
+          conn.socket.add(f);
+        }
+      } catch (_) {
+        // A crash driving this connection's tick must never take down the
+        // host or the other connections — drop just this one.
+        _dropConnection(conn);
+      }
+    }
+
+    final subs = subscriptionCount;
+    final items = monitoredItemCount;
+    if (subs != _lastNotifiedSubscriptionCount || items != _lastNotifiedMonitoredItemCount) {
+      _lastNotifiedSubscriptionCount = subs;
+      _lastNotifiedMonitoredItemCount = items;
+      if (!_disposed) {
+        notifyListeners();
+      }
+    }
+  }
+
   void _acceptConnection(Socket socket, OpcUaServerInfo info, OpcUaProjectServices services) {
     try {
-      final session = OpcUaServerSession(info: info, services: services);
-      final conn = _Connection(socket, session);
+      final session = OpcUaServerSession(info: info, services: services, sampler: services.sample);
+      final conn = _Connection(socket, session, () => _clock.elapsedMilliseconds);
       _connections.add(conn);
       if (!_disposed) {
         notifyListeners();
@@ -262,8 +324,13 @@ class OpcUaHost extends ChangeNotifier {
   }
 
   /// Stops hosting: closes every live connection and the listening socket.
-  /// Safe to call when already stopped.
+  /// Safe to call when already stopped. Cancels the tick timer FIRST (before
+  /// any other teardown) so no further tick can ever fire mid-stop.
   Future<void> stop() async {
+    _tickTimer?.cancel();
+    _tickTimer = null;
+    _clock.stop();
+
     try {
       await _acceptSub?.cancel();
     } catch (_) {

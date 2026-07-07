@@ -57,6 +57,20 @@ class OpcUaProjectServices implements OpcUaServiceHandler {
 
   OpcUaProjectServices({required this.projectProvider});
 
+  /// Samples the live Value attribute of [nodeId] RIGHT NOW: builds a fresh
+  /// `OpcUaAddressSpace` from the CURRENT `projectProvider()` project (same
+  /// "always live, never cached" contract as Read/Write) and returns exactly
+  /// what a Read of that node's Value attribute (attributeId 13, no
+  /// indexRange) would — shares the one `_readAttribute` code path with
+  /// `_handleRead` so there is no risk of the two ever drifting apart. Used
+  /// by [SubscriptionManager] (Task 3's `sampler` callback) to sample
+  /// monitored items on every clock tick.
+  OpcDataValue sample(OpcNodeId nodeId) {
+    final project = projectProvider();
+    final space = OpcUaAddressSpace.build(project);
+    return _readAttribute(project, space, nodeId, OpcUaAttributeIds.value, null);
+  }
+
   @override
   Uint8List? handle(
     int requestTypeId,

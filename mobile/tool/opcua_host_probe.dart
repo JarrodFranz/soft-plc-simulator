@@ -97,10 +97,11 @@ PlcProject _fixtureProject(int port) {
 class _Connection {
   final Socket socket;
   final OpcUaServerSession session;
+  final Stopwatch clock;
   final List<int> _buffer = [];
   bool _closed = false;
 
-  _Connection(this.socket, this.session);
+  _Connection(this.socket, this.session, this.clock);
 
   void onData(List<int> data) {
     if (_closed) return;
@@ -116,7 +117,7 @@ class _Connection {
         if (_buffer.length < size) return;
         final frame = Uint8List.fromList(_buffer.sublist(0, size));
         _buffer.removeRange(0, size);
-        for (final out in session.onBytes(frame)) {
+        for (final out in session.onBytes(frame, clock.elapsedMilliseconds)) {
           socket.add(out);
         }
         if (session.shouldClose) {
@@ -171,10 +172,11 @@ Future<void> main(List<String> args) async {
     namespaceUri: opcua.namespaceUri,
   );
 
+  final clock = Stopwatch()..start();
   serverSocket.listen((socket) {
     try {
-      final session = OpcUaServerSession(info: info, services: services);
-      final conn = _Connection(socket, session);
+      final session = OpcUaServerSession(info: info, services: services, sampler: services.sample);
+      final conn = _Connection(socket, session, clock);
       socket.listen(
         (data) {
           try {

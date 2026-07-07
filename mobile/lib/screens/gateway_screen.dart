@@ -259,6 +259,11 @@ class _GatewayScreenState extends State<GatewayScreen> {
                       'Clients: ${widget.host.clientCount}',
                       style: const TextStyle(color: Colors.grey, fontSize: 12),
                     ),
+                  if (running)
+                    Text(
+                      'Subscriptions: ${widget.host.subscriptionCount} · Monitored items: ${widget.host.monitoredItemCount}',
+                      style: const TextStyle(color: Colors.grey, fontSize: 12),
+                    ),
                 ],
               ),
               const SizedBox(height: 12),

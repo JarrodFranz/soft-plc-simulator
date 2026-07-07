@@ -11,8 +11,19 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/opcua_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
+import 'package:soft_plc_mobile/models/tag_resolver.dart';
+import 'package:soft_plc_mobile/protocols/opcua/opcua_binary.dart';
 import 'package:soft_plc_mobile/protocols/opcua/opcua_transport.dart';
 import 'package:soft_plc_mobile/services/opcua_host.dart';
+
+// --- Encoding ids, verified against types/node_ids.rs -----------------------
+const _openSecureChannelRequestId = 446;
+const _createSessionRequestId = 461;
+const _activateSessionRequestId = 467;
+const _createSubscriptionRequestId = 787;
+const _createMonitoredItemsRequestId = 751;
+const _publishRequestId = 826;
+const _publishResponseId = 829;
 
 PlcProject _enabledProject({int port = 0}) {
   final project = PlcProject(
@@ -58,6 +69,167 @@ Uint8List _helHandshakeFrame() {
   return hello.build();
 }
 
+RequestHeader _reqHeader({
+  OpcNodeId authToken = const OpcNodeId.numeric(0, 0),
+  int requestHandle = 1,
+}) {
+  return RequestHeader(
+    authToken: authToken,
+    timestamp: DateTime.utc(2026, 7, 6),
+    requestHandle: requestHandle,
+  );
+}
+
+Uint8List _opnRequestFrame({int requestId = 10}) {
+  final w = OpcUaWriter();
+  w.nodeId(const OpcNodeId.numeric(0, _openSecureChannelRequestId));
+  w.requestHeader(_reqHeader());
+  w.uint32(0); // clientProtocolVersion
+  w.int32(0); // requestType: Issue
+  w.int32(1); // securityMode: None
+  w.byteString(null); // clientNonce
+  w.uint32(60000); // requestedLifetime
+  return buildOpnChunk(
+    secureChannelId: 0,
+    securityPolicyUri: kSecurityPolicyNoneUri,
+    sequenceNumber: 1,
+    requestId: requestId,
+    body: w.take(),
+  );
+}
+
+Uint8List _createSessionRequestFrame(int channelId, int tokenId, {int requestId = 11}) {
+  final w = OpcUaWriter();
+  w.nodeId(const OpcNodeId.numeric(0, _createSessionRequestId));
+  w.requestHeader(_reqHeader(requestHandle: 3));
+  w.string('urn:test:client');
+  w.string('urn:test:client:product');
+  w.localizedText(const OpcLocalizedText(text: 'Test Client'));
+  w.int32(1); // ApplicationType.Client
+  w.string(null);
+  w.string(null);
+  w.int32(-1);
+  w.string(null);
+  w.string('opc.tcp://127.0.0.1:0');
+  w.string('test-session');
+  w.byteString(null);
+  w.byteString(null);
+  w.float64(1200000);
+  w.uint32(0);
+  return buildMsgChunk(
+    secureChannelId: channelId,
+    tokenId: tokenId,
+    sequenceNumber: 2,
+    requestId: requestId,
+    body: w.take(),
+  );
+}
+
+Uint8List _activateSessionRequestFrame(
+  int channelId,
+  int tokenId,
+  OpcNodeId authToken, {
+  int requestId = 12,
+}) {
+  final w = OpcUaWriter();
+  w.nodeId(const OpcNodeId.numeric(0, _activateSessionRequestId));
+  w.requestHeader(_reqHeader(authToken: authToken, requestHandle: 4));
+  w.string(null);
+  w.byteString(null);
+  w.int32(-1);
+  w.int32(-1);
+  final tokenWriter = OpcUaWriter();
+  tokenWriter.string('anonymous');
+  w.extensionObjectHeader(const OpcNodeId.numeric(0, 321), hasBody: true);
+  w.byteString(tokenWriter.take());
+  w.string(null);
+  w.byteString(null);
+  return buildMsgChunk(
+    secureChannelId: channelId,
+    tokenId: tokenId,
+    sequenceNumber: 3,
+    requestId: requestId,
+    body: w.take(),
+  );
+}
+
+Uint8List _createSubscriptionRequestFrame(
+  int channelId,
+  int tokenId,
+  OpcNodeId authToken, {
+  int requestId = 13,
+}) {
+  final w = OpcUaWriter();
+  w.nodeId(const OpcNodeId.numeric(0, _createSubscriptionRequestId));
+  w.requestHeader(_reqHeader(authToken: authToken, requestHandle: 5));
+  w.float64(100); // requestedPublishingInterval
+  w.uint32(100); // requestedLifetimeCount
+  w.uint32(10); // requestedMaxKeepAliveCount
+  w.uint32(0); // maxNotificationsPerPublish
+  w.boolean(true); // publishingEnabled
+  w.uint8(0); // priority
+  return buildMsgChunk(
+    secureChannelId: channelId,
+    tokenId: tokenId,
+    sequenceNumber: 4,
+    requestId: requestId,
+    body: w.take(),
+  );
+}
+
+Uint8List _createMonitoredItemsRequestFrame(
+  int channelId,
+  int tokenId,
+  OpcNodeId authToken,
+  int subscriptionId,
+  OpcNodeId nodeId, {
+  int requestId = 14,
+}) {
+  final w = OpcUaWriter();
+  w.nodeId(const OpcNodeId.numeric(0, _createMonitoredItemsRequestId));
+  w.requestHeader(_reqHeader(authToken: authToken, requestHandle: 6));
+  w.uint32(subscriptionId);
+  w.int32(2); // timestampsToReturn
+  w.int32(1); // itemsToCreate: one entry
+  w.nodeId(nodeId);
+  w.uint32(13); // attributeId: Value
+  w.string(null); // indexRange
+  w.qualifiedName(const OpcQualifiedName(ns: 0, name: null));
+  w.int32(2); // monitoringMode: Reporting
+  w.uint32(1); // clientHandle
+  w.float64(0); // samplingInterval: linked to publishing interval
+  w.extensionObjectHeader(const OpcNodeId.numeric(0, 0), hasBody: false); // filter: none
+  w.uint32(1); // queueSize
+  w.boolean(true); // discardOldest
+  return buildMsgChunk(
+    secureChannelId: channelId,
+    tokenId: tokenId,
+    sequenceNumber: 5,
+    requestId: requestId,
+    body: w.take(),
+  );
+}
+
+Uint8List _publishRequestFrame(
+  int channelId,
+  int tokenId,
+  OpcNodeId authToken, {
+  int requestId = 15,
+  int sequenceNumber = 6,
+}) {
+  final w = OpcUaWriter();
+  w.nodeId(const OpcNodeId.numeric(0, _publishRequestId));
+  w.requestHeader(_reqHeader(authToken: authToken, requestHandle: 7));
+  w.int32(-1); // subscriptionAcknowledgements: null array
+  return buildMsgChunk(
+    secureChannelId: channelId,
+    tokenId: tokenId,
+    sequenceNumber: sequenceNumber,
+    requestId: requestId,
+    body: w.take(),
+  );
+}
+
 /// Reads until at least [n] bytes are available on [socket], bounded by a
 /// timeout so a server that never responds fails the test instead of
 /// hanging the suite.
@@ -78,6 +250,8 @@ Future<Uint8List> _readAtLeast(Socket socket, int n, {Duration timeout = const D
 class _SocketAccumulator {
   final List<int> _buffer = [];
   final List<void Function()> _waiters = [];
+
+  int get length => _buffer.length;
 
   _SocketAccumulator(Socket socket) {
     socket.listen((chunk) {
@@ -317,5 +491,151 @@ void main() {
       expect(MessageHeader.parse(respB).messageType, 'ACK');
       expect(host.clientCount, greaterThanOrEqualTo(2));
     });
+  });
+
+  group('OpcUaHost — clock tick / subscription push (Task 3 E2E)', () {
+    test(
+      'CreateSubscription + CreateMonitoredItems + parked Publish -> the tick timer pushes an unsolicited PublishResponse when the served tag changes',
+      () async {
+        final host = OpcUaHost();
+        final project = _enabledProject(port: 0);
+        await host.start(() => project);
+        addTearDown(host.stop);
+
+        final endpoint = Uri.parse(host.endpointUrl!.replaceFirst('opc.tcp://', 'tcp://'));
+        const connectHost = '127.0.0.1';
+        final socket = await Socket.connect(connectHost, endpoint.port);
+        addTearDown(socket.destroy);
+        final acc = _SocketAccumulator(socket);
+
+        // HEL -> ACK
+        socket.add(_helHandshakeFrame());
+        await socket.flush();
+        final ack = await acc.atLeast(kMessageHeaderLen);
+        expect(MessageHeader.parse(ack).messageType, 'ACK');
+        var consumed = MessageHeader.parse(ack).size;
+
+        // OPN -> OpenSecureChannelResponse
+        socket.add(_opnRequestFrame());
+        await socket.flush();
+        var buf = await acc.atLeast(consumed + kChunkHeaderLen);
+        var frameBytes = Uint8List.fromList(buf.sublist(consumed));
+        var frameSize = MessageHeader.parse(frameBytes).size;
+        buf = await acc.atLeast(consumed + frameSize);
+        frameBytes = Uint8List.fromList(buf.sublist(consumed, consumed + frameSize));
+        var chunk = parseChunk(frameBytes);
+        consumed += frameSize;
+        var reader = OpcUaReader(chunk.body);
+        reader.nodeId();
+        reader.responseHeader();
+        reader.uint32(); // serverProtocolVersion
+        final channelId = reader.uint32();
+        final tokenId = reader.uint32();
+
+        // CreateSession -> CreateSessionResponse
+        socket.add(_createSessionRequestFrame(channelId, tokenId));
+        await socket.flush();
+        buf = await acc.atLeast(consumed + kChunkHeaderLen);
+        frameBytes = Uint8List.fromList(buf.sublist(consumed));
+        frameSize = MessageHeader.parse(frameBytes).size;
+        buf = await acc.atLeast(consumed + frameSize);
+        frameBytes = Uint8List.fromList(buf.sublist(consumed, consumed + frameSize));
+        chunk = parseChunk(frameBytes);
+        consumed += frameSize;
+        reader = OpcUaReader(chunk.body);
+        reader.nodeId();
+        reader.responseHeader();
+        reader.nodeId(); // sessionId
+        final authToken = reader.nodeId();
+
+        // ActivateSession -> ActivateSessionResponse
+        socket.add(_activateSessionRequestFrame(channelId, tokenId, authToken));
+        await socket.flush();
+        buf = await acc.atLeast(consumed + kChunkHeaderLen);
+        frameBytes = Uint8List.fromList(buf.sublist(consumed));
+        frameSize = MessageHeader.parse(frameBytes).size;
+        buf = await acc.atLeast(consumed + frameSize);
+        consumed += frameSize;
+
+        // CreateSubscription -> CreateSubscriptionResponse
+        socket.add(_createSubscriptionRequestFrame(channelId, tokenId, authToken));
+        await socket.flush();
+        buf = await acc.atLeast(consumed + kChunkHeaderLen);
+        frameBytes = Uint8List.fromList(buf.sublist(consumed));
+        frameSize = MessageHeader.parse(frameBytes).size;
+        buf = await acc.atLeast(consumed + frameSize);
+        frameBytes = Uint8List.fromList(buf.sublist(consumed, consumed + frameSize));
+        chunk = parseChunk(frameBytes);
+        consumed += frameSize;
+        reader = OpcUaReader(chunk.body);
+        reader.nodeId();
+        reader.responseHeader();
+        final subscriptionId = reader.uint32();
+
+        expect(host.subscriptionCount, greaterThanOrEqualTo(1));
+
+        // CreateMonitoredItems on the served project's Start_PB tag ->
+        // CreateMonitoredItemsResponse.
+        const monitoredNodeId = OpcNodeId.string(1, 'Start_PB');
+        socket.add(_createMonitoredItemsRequestFrame(
+          channelId,
+          tokenId,
+          authToken,
+          subscriptionId,
+          monitoredNodeId,
+        ));
+        await socket.flush();
+        buf = await acc.atLeast(consumed + kChunkHeaderLen);
+        frameBytes = Uint8List.fromList(buf.sublist(consumed));
+        frameSize = MessageHeader.parse(frameBytes).size;
+        buf = await acc.atLeast(consumed + frameSize);
+        consumed += frameSize;
+
+        expect(host.monitoredItemCount, greaterThanOrEqualTo(1));
+
+        // Park a Publish: the host must send NOTHING more right away.
+        socket.add(_publishRequestFrame(channelId, tokenId, authToken));
+        await socket.flush();
+        final consumedAfterPublish = consumed;
+        // Give the tick timer a couple of cycles to prove it does NOT push a
+        // keep-alive/data response before the tag actually changes AND the
+        // publishing interval has elapsed at least once with queued data.
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+
+        // Mutate the served project's tag via writePath — this is what the
+        // NEXT tick's sampling must pick up.
+        writePath(project, 'Start_PB', true);
+
+        // Await the pushed PublishResponse frame, bounded by a generous
+        // timeout so a broken timer/tick path fails the test instead of
+        // hanging the suite.
+        var withPush = await acc.atLeast(consumedAfterPublish + kChunkHeaderLen, timeout: const Duration(seconds: 5));
+        final pushFrameSize =
+            MessageHeader.parse(Uint8List.fromList(withPush.sublist(consumedAfterPublish))).size;
+        withPush = await acc.atLeast(
+          consumedAfterPublish + pushFrameSize,
+          timeout: const Duration(seconds: 5),
+        );
+        final pushChunk = parseChunk(
+          Uint8List.fromList(withPush.sublist(consumedAfterPublish, consumedAfterPublish + pushFrameSize)),
+        );
+        expect(pushChunk.messageType, 'MSG');
+        final pushReader = OpcUaReader(pushChunk.body);
+        final typeId = pushReader.nodeId();
+        expect(typeId.numericId, _publishResponseId);
+        final header = pushReader.responseHeader();
+        expect(header.serviceResult, 0);
+        final respSubId = pushReader.uint32();
+        expect(respSubId, subscriptionId);
+
+        // Stop hosting: no further frames should ever arrive, and the test
+        // must end without a pending-timer flake.
+        final bytesBeforeStop = acc.length;
+        await host.stop();
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        expect(acc.length, bytesBeforeStop);
+      },
+      timeout: const Timeout(Duration(seconds: 15)),
+    );
   });
 }
