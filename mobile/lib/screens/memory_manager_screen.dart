@@ -518,6 +518,12 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
   Widget _buildStructDefsTab() {
     final structs = widget.currentProject.structDefs;
     return Scaffold(
+      floatingActionButton: FloatingActionButton.extended(
+        icon: const Icon(Icons.add),
+        label: const Text('Add DUT'),
+        backgroundColor: Colors.cyan,
+        onPressed: _showAddStructDialog,
+      ),
       body: structs.isEmpty
           ? const Center(child: Text('No Struct definitions defined yet.'))
           : ListView.builder(
@@ -531,6 +537,21 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
                     leading: const Icon(Icons.dataset, color: Colors.tealAccent),
                     title: Text(s.name, style: const TextStyle(fontWeight: FontWeight.bold)),
                     subtitle: Text('${s.fields.length} Fields'),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.edit, color: Colors.cyanAccent, size: 20),
+                          tooltip: 'Edit DUT',
+                          onPressed: () => _showEditStructDialog(s),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete, color: Colors.redAccent, size: 20),
+                          tooltip: 'Delete DUT',
+                          onPressed: () => _confirmDeleteStruct(s),
+                        ),
+                      ],
+                    ),
                     children: s.fields.map((f) => ListTile(
                       dense: true,
                       contentPadding: const EdgeInsets.only(left: 32, right: 16),
@@ -541,6 +562,237 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
                 );
               },
             ),
+    );
+  }
+
+  bool _isStructNameTaken(String name) {
+    return widget.currentProject.structDefs.any((s) => s.name == name) ||
+        builtinCompositeNames().contains(name);
+  }
+
+  void _showAddStructDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        final nameCtrl = TextEditingController(text: '');
+        String? errorText;
+
+        return StatefulBuilder(
+          builder: (context, setDlgState) => AlertDialog(
+            title: const Text('Add Struct Definition (DUT)'),
+            content: TextField(
+              controller: nameCtrl,
+              autofocus: true,
+              decoration: InputDecoration(labelText: 'DUT Name', errorText: errorText),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              ElevatedButton(
+                onPressed: () {
+                  final name = nameCtrl.text.trim();
+                  if (name.isEmpty) {
+                    setDlgState(() => errorText = 'Name cannot be empty');
+                    return;
+                  }
+                  if (_isStructNameTaken(name)) {
+                    setDlgState(() => errorText = 'A type named "$name" already exists');
+                    return;
+                  }
+                  setState(() {
+                    widget.currentProject.structDefs.add(PlcStructDef(name: name, fields: []));
+                  });
+                  widget.onProjectUpdated();
+                  Navigator.pop(ctx);
+                },
+                child: const Text('Add'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _confirmDeleteStruct(PlcStructDef s) {
+    if (structDefInUse(widget.currentProject, s.name)) {
+      final referencedByTags = widget.currentProject.tags
+          .where((t) => t.dataType == s.name)
+          .map((t) => t.name)
+          .toList();
+      final referencedByStructs = widget.currentProject.structDefs
+          .where((other) => other.fields.any((f) => f.dataType == s.name))
+          .map((other) => other.name)
+          .toList();
+      final refs = [...referencedByTags, ...referencedByStructs].join(', ');
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Cannot Delete DUT'),
+          content: Text(
+            '"${s.name}" is still in use by: $refs. '
+            'Remove or retype those references before deleting this DUT.',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
+          ],
+        ),
+      );
+      return;
+    }
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete DUT'),
+        content: Text('Delete struct definition "${s.name}"? This cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              setState(() {
+                widget.currentProject.structDefs.remove(s);
+              });
+              widget.onProjectUpdated();
+              Navigator.pop(ctx);
+            },
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showEditStructDialog(PlcStructDef s) {
+    final nameCtrl = TextEditingController(text: s.name);
+    final fields = s.fields
+        .map((f) => StructFieldDef(
+              name: f.name,
+              dataType: f.dataType,
+              arrayLength: f.arrayLength,
+              defaultValue: f.defaultValue,
+            ))
+        .toList();
+    String? errorText;
+
+    final availableTypes = [
+      'BOOL', 'INT16', 'INT32', 'INT64', 'FLOAT64', 'STRING',
+      ...builtinCompositeNames(),
+      ...widget.currentProject.structDefs.map((d) => d.name),
+    ];
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setDlgState) => AlertDialog(
+            title: const Text('Edit Struct Definition (DUT)'),
+            content: SizedBox(
+              width: 420,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TextField(
+                      controller: nameCtrl,
+                      decoration: InputDecoration(labelText: 'DUT Name', errorText: errorText),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text('Fields', style: TextStyle(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 4),
+                    ...fields.asMap().entries.map((entry) {
+                      final i = entry.key;
+                      final f = entry.value;
+                      final fieldNameCtrl = TextEditingController(text: f.name);
+                      final arrayLenCtrl = TextEditingController(text: f.arrayLength.toString());
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              flex: 3,
+                              child: TextField(
+                                controller: fieldNameCtrl,
+                                decoration: const InputDecoration(labelText: 'Field Name', isDense: true),
+                                onChanged: (val) => f.name = val,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              flex: 3,
+                              child: DropdownButton<String>(
+                                value: availableTypes.contains(f.dataType) ? f.dataType : availableTypes.first,
+                                isExpanded: true,
+                                items: availableTypes
+                                    .map((t) => DropdownMenuItem(value: t, child: Text(t)))
+                                    .toList(),
+                                onChanged: (val) => setDlgState(() => f.dataType = val!),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              flex: 2,
+                              child: TextField(
+                                controller: arrayLenCtrl,
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(labelText: 'Array Len', isDense: true),
+                                onChanged: (val) => f.arrayLength = int.tryParse(val) ?? 0,
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.remove_circle, color: Colors.redAccent, size: 20),
+                              tooltip: 'Remove Field',
+                              onPressed: () => setDlgState(() => fields.removeAt(i)),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add Field'),
+                      onPressed: () => setDlgState(() {
+                        fields.add(StructFieldDef(
+                          name: 'Field${fields.length + 1}',
+                          dataType: 'BOOL',
+                          defaultValue: false,
+                        ));
+                      }),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              ElevatedButton(
+                onPressed: () {
+                  final newName = nameCtrl.text.trim();
+                  if (newName.isEmpty) {
+                    setDlgState(() => errorText = 'Name cannot be empty');
+                    return;
+                  }
+                  if (newName != s.name && _isStructNameTaken(newName)) {
+                    setDlgState(() => errorText = 'A type named "$newName" already exists');
+                    return;
+                  }
+                  setState(() {
+                    if (newName != s.name) {
+                      renameStructDef(widget.currentProject, s.name, newName);
+                    }
+                    s.fields
+                      ..clear()
+                      ..addAll(fields);
+                  });
+                  widget.onProjectUpdated();
+                  Navigator.pop(ctx);
+                },
+                child: const Text('Save'),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

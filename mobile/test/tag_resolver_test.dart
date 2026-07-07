@@ -122,4 +122,38 @@ void main() {
     writePath(p, 'Arr[2].5', false);
     expect(readPath(p, 'Arr[2]'), equals(0));
   });
+
+  test('structDefInUse detects tag and nested-field references', () {
+    final p = _proj(
+      [_tag('P1', 'PumpStatusDUT', null)],
+      defs: [
+        PlcStructDef(name: 'PumpStatusDUT', fields: [
+          StructFieldDef(name: 'Running', dataType: 'BOOL', defaultValue: false),
+        ]),
+        PlcStructDef(name: 'Skid', fields: [
+          StructFieldDef(name: 'Pump', dataType: 'PumpStatusDUT', defaultValue: null),
+        ]),
+      ],
+    );
+    expect(structDefInUse(p, 'PumpStatusDUT'), isTrue); // used by tag P1 and by Skid.Pump
+    expect(structDefInUse(p, 'Skid'), isFalse);
+  });
+
+  test('renameStructDef cascades to tags and nested fields', () {
+    final p = _proj(
+      [_tag('P1', 'PumpStatusDUT', null)],
+      defs: [
+        PlcStructDef(name: 'PumpStatusDUT', fields: [
+          StructFieldDef(name: 'Running', dataType: 'BOOL', defaultValue: false),
+        ]),
+        PlcStructDef(name: 'Skid', fields: [
+          StructFieldDef(name: 'Pump', dataType: 'PumpStatusDUT', defaultValue: null),
+        ]),
+      ],
+    );
+    renameStructDef(p, 'PumpStatusDUT', 'PumpDUT');
+    expect(p.structDefs.any((s) => s.name == 'PumpDUT'), isTrue);
+    expect(p.tags.firstWhere((t) => t.name == 'P1').dataType, 'PumpDUT');
+    expect(p.structDefs.firstWhere((s) => s.name == 'Skid').fields.first.dataType, 'PumpDUT');
+  });
 }

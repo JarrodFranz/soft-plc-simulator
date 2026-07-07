@@ -40,6 +40,44 @@ final List<PlcStructDef> _builtinComposites = [
 
 List<String> builtinCompositeNames() => _builtinComposites.map((s) => s.name).toList();
 
+/// True if any tag or struct field in [p] references the struct definition
+/// named [name] as its data type.
+bool structDefInUse(PlcProject p, String name) {
+  if (p.tags.any((t) => t.dataType == name)) {
+    return true;
+  }
+  return p.structDefs.any((s) => s.fields.any((f) => f.dataType == name));
+}
+
+/// Renames struct definition [oldName] to [newName] everywhere it is
+/// referenced: tag data types, nested struct field data types, and the
+/// definition's own name. No-op if the names are equal or no such def exists.
+void renameStructDef(PlcProject p, String oldName, String newName) {
+  if (oldName == newName) {
+    return;
+  }
+  if (!p.structDefs.any((s) => s.name == oldName)) {
+    return;
+  }
+  for (final t in p.tags) {
+    if (t.dataType == oldName) {
+      t.dataType = newName;
+    }
+  }
+  for (final s in p.structDefs) {
+    for (final f in s.fields) {
+      if (f.dataType == oldName) {
+        f.dataType = newName;
+      }
+    }
+  }
+  for (final s in p.structDefs) {
+    if (s.name == oldName) {
+      s.name = newName;
+    }
+  }
+}
+
 /// The DUT/composite definition for a type name, or null if it is a scalar.
 PlcStructDef? lookupComposite(PlcProject p, String typeName) {
   for (final s in p.structDefs) {
