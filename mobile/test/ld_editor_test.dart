@@ -716,4 +716,90 @@ void main() {
       });
     }
   });
+
+  group('Final-review fixes (open-branch series-insert guard + rung-scoped branch key)', () {
+    // Matches only `_wireInsertTarget`'s "+" icon (size 14). In Contact/Block
+    // mode the always-present coil-mode `_addOutputTarget` (also size 14) is
+    // never built, and the toolbar's "Add Rung" icon is size 15, and the
+    // link-slot fill affordance's icon is size 18 — so this predicate is
+    // unambiguous for a Contact-mode pump.
+    Finder wireInsertPlusIcons() =>
+        find.byWidgetPredicate((w) => w is Icon && w.icon == Icons.add && w.size == 14);
+
+    for (final size in [desktopSize, smallPhoneSize]) {
+      testWidgets(
+          'FIX1: an empty branch adds a slot "+", not new wire-insert "+" targets, in Contact mode '
+          '(${size.width.toInt()}px)', (tester) async {
+        await setSurface(tester, size);
+
+        // Baseline: same two-rung shape, no branch.
+        final baseProgram = _twoRungProgram();
+        await tester.pumpWidget(_app(baseProgram));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Contact'));
+        await tester.pumpAndSettle();
+        final baselineCount = wireInsertPlusIcons().evaluate().length;
+
+        // Same shape, but rung 0 now has an empty (open) branch: L1 -> link -> Q0.
+        final branchProgram = _twoRungProgram();
+        final rung = branchProgram.rungs[0];
+        final coilQ0 = rung.nodes.firstWhere((n) => n.variable == 'Q0');
+        addEmptyBranch(rung, kLeftRailId, coilQ0.id);
+
+        await tester.pumpWidget(_app(branchProgram));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Contact'));
+        await tester.pumpAndSettle();
+        final withBranchCount = wireInsertPlusIcons().evaluate().length;
+
+        // The link's own fill slot ("+") is a separate affordance (icon size
+        // 18, asserted by the WS22 tests above) — it must not add to the
+        // wire-insert count. Wires touching the still-open link (source->link,
+        // link->dest) must be excluded, or tapping them would insert an
+        // element IN SERIES with the open link: a permanently dead branch
+        // (open AND element = open).
+        expect(withBranchCount, baselineCount,
+            reason: 'wires touching an open LdKind.link must be excluded from '
+                'wire-insert targets — filling only ever happens via the link '
+                'slot itself');
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets(
+          'FIX2: picking a branch start in rung 0 highlights only rung 0\'s dot, not the '
+          'same-key dot in a structurally-identical rung 1 (${size.width.toInt()}px)', (tester) async {
+        await setSurface(tester, size);
+        // Two structurally-identical rungs: main-line ids are per-rung
+        // (m0/m1/...), so both rungs' first junction wire shares the
+        // un-namespaced key 'L>m0' / 'm0>m1' etc.
+        final program = _twoRungProgram();
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Branch'));
+        await tester.pumpAndSettle();
+
+        // Pick rung 0's first junction (L -> A) as the branch start.
+        final junctionDots = find.byWidgetPredicate(
+            (w) => w is Icon && (w.icon == Icons.circle || w.icon == Icons.check));
+        final firstDot = junctionDots.at(0);
+        final gd = tester.widget<GestureDetector>(
+          find.ancestor(of: firstDot, matching: find.byType(GestureDetector)).first,
+        );
+        gd.onTap?.call();
+        await tester.pumpAndSettle();
+
+        // Exactly one dot (rung 0's) shows the highlighted "start" check icon —
+        // a rung-1 dot sharing the same un-namespaced wire key must not also
+        // light up as the start.
+        final checkIcons = find.byWidgetPredicate((w) => w is Icon && w.icon == Icons.check);
+        expect(checkIcons, findsOneWidget,
+            reason: 'the branch-start key must be scoped per rung so a '
+                'structurally-identical rung does not share the highlighted dot');
+
+        expect(tester.takeException(), isNull);
+      });
+    }
+  });
 }

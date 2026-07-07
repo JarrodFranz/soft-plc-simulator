@@ -85,7 +85,10 @@ String _blockOperatorGlyph(String blockType) {
 class _LdEditorScreenState extends State<LdEditorScreen> {
   String _editMode = 'select'; // 'select' | 'contact' | 'coil' | 'block' | 'branch'
   String _pendingBlockType = 'TON';
-  // Key of the picked start junction wire in guided Branch mode, e.g. 'm0>m1'.
+  // Key of the picked start junction wire in guided Branch mode, e.g.
+  // '0|m0>m1' — namespaced by rung index, since main-line node ids (m0/m1/...)
+  // are per-rung and two structurally-identical rungs would otherwise share
+  // a key (highlighting/activating the wrong rung's dot).
   String? _branchStartWireKey;
   LdBranchView? _dragBranch;
   bool _dragTapEnd = false; // true = dragging the tap (start) handle; false = merge (end)
@@ -528,15 +531,21 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                             n.kind == LdKind.block ||
                             n.kind == LdKind.link)
                         .map((n) => _positionedNode(rung, n, col, width)),
-                    // Insert targets on wires (contact/block modes).
+                    // Insert targets on wires (contact/block modes). Wires
+                    // touching a still-open LdKind.link are excluded — an
+                    // empty branch is filled ONLY by tapping its slot; a
+                    // wire-insert there would splice a new element IN SERIES
+                    // with the open link (link -> newNode -> dest), which is
+                    // a permanently dead branch (open AND element = open).
                     if (_editMode == 'contact' || _editMode == 'block')
                       ...rung.wires
-                          .where((w) => canInsertContactOnWire(rung, w))
+                          .where((w) => canInsertContactOnWire(rung, w) && !_wireTouchesLink(rung, w))
                           .map((w) => _wireInsertTarget(rung, w, col, width)),
-                    // Insert targets on wires (coil mode).
+                    // Insert targets on wires (coil mode). Same link-exclusion
+                    // as above.
                     if (_editMode == 'coil')
                       ...rung.wires
-                          .where((w) => canInsertCoilOnWire(rung, w))
+                          .where((w) => canInsertCoilOnWire(rung, w) && !_wireTouchesLink(rung, w))
                           .map((w) => _wireInsertTarget(rung, w, col, width)),
                     // Always-present stacked-output affordance (coil mode):
                     // adds a brand new terminal coil lane at the right rail,
@@ -544,7 +553,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     if (_editMode == 'coil') _addOutputTarget(rung, width),
                     // Guided junction-anchor pick targets (branch mode): one
                     // dot per lane-0 (main-line) wire.
-                    if (_editMode == 'branch') ..._branchJunctionDots(rung, col, width),
+                    if (_editMode == 'branch') ..._branchJunctionDots(rung, index, col, width),
                     // Draggable branch start/end handles.
                     ...findBranches(rung).expand((br) => _branchHandles(rung, br, col, width)),
                   ],
@@ -634,7 +643,18 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
   LdNode _nodeById(LdRung rung, String id) => rung.nodes.firstWhere((n) => n.id == id);
 
-  String _wireKey(LdWire w) => '${w.fromId}>${w.toId}';
+  /// True if either endpoint of [w] is a still-open `LdKind.link` (empty
+  /// branch placeholder). Such wires must never offer a wire-insert "+" —
+  /// the link is filled (replaced) only by tapping its own slot; a series
+  /// insert next to an open link would leave the branch permanently dead.
+  bool _wireTouchesLink(LdRung rung, LdWire w) =>
+      _nodeById(rung, w.fromId).kind == LdKind.link || _nodeById(rung, w.toId).kind == LdKind.link;
+
+  // Junction-wire key is namespaced by rung index — main-line node ids
+  // (m0/m1/...) are per-rung, so two structurally-identical rungs would
+  // otherwise share a key and a start picked in one rung would highlight
+  // (or let you branch into) the same-key dot in the other rung.
+  String _wireKey(int rungIndex, LdWire w) => '$rungIndex|${w.fromId}>${w.toId}';
 
   bool _isLaneZero(LdWire w, LdRung rung) {
     final from = _nodeById(rung, w.fromId);
@@ -656,27 +676,28 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
   /// mode. Before a start is picked, every dot is active. Once a start is
   /// picked, that dot is highlighted; only dots strictly to its right stay
   /// active (valid end picks) and the rest are dimmed + non-tappable.
-  List<Widget> _branchJunctionDots(LdRung rung, Map<String, int> col, double width) {
+  List<Widget> _branchJunctionDots(LdRung rung, int rungIndex, Map<String, int> col, double width) {
     final wires = _mainLineWires(rung);
     LdWire? startWire;
     if (_branchStartWireKey != null) {
       for (final w in wires) {
-        if (_wireKey(w) == _branchStartWireKey) {
+        if (_wireKey(rungIndex, w) == _branchStartWireKey) {
           startWire = w;
           break;
         }
       }
     }
-    return [for (final w in wires) _junctionDot(rung, w, col, width, startWire)];
+    return [for (final w in wires) _junctionDot(rung, rungIndex, w, col, width, startWire)];
   }
 
-  Widget _junctionDot(LdRung rung, LdWire w, Map<String, int> col, double width, LdWire? startWire) {
+  Widget _junctionDot(
+      LdRung rung, int rungIndex, LdWire w, Map<String, int> col, double width, LdWire? startWire) {
     final src = _nodeById(rung, w.fromId);
     final dst = _nodeById(rung, w.toId);
     final p1 = _outPort(rung, src, col, width);
     final p2 = _inPort(rung, dst, col, width);
     final mid = Offset((p1.dx + p2.dx) / 2, (p1.dy + p2.dy) / 2);
-    final isStart = startWire != null && _wireKey(w) == _wireKey(startWire);
+    final isStart = startWire != null && _wireKey(rungIndex, w) == _wireKey(rungIndex, startWire);
     final active = startWire == null || isStart || (col[w.fromId] ?? 0) > (col[startWire.fromId] ?? 0);
     final color = isStart ? Colors.tealAccent : Colors.cyanAccent;
     return Positioned(
@@ -685,7 +706,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       width: 22,
       height: 22,
       child: GestureDetector(
-        onTap: active ? () => _onJunctionDotTap(rung, w) : null,
+        onTap: active ? () => _onJunctionDotTap(rung, rungIndex, w) : null,
         child: Container(
           decoration: BoxDecoration(
             color: active ? color.withValues(alpha: 0.85) : color.withValues(alpha: 0.3),
@@ -697,8 +718,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     );
   }
 
-  void _onJunctionDotTap(LdRung rung, LdWire w) {
-    final key = _wireKey(w);
+  void _onJunctionDotTap(LdRung rung, int rungIndex, LdWire w) {
+    final key = _wireKey(rungIndex, w);
     if (_branchStartWireKey == null) {
       setState(() => _branchStartWireKey = key);
       return;
@@ -709,7 +730,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       return;
     }
     final wires = _mainLineWires(rung);
-    final startWire = wires.firstWhere((ww) => _wireKey(ww) == _branchStartWireKey);
+    final startWire = wires.firstWhere((ww) => _wireKey(rungIndex, ww) == _branchStartWireKey);
     setState(() {
       addEmptyBranch(rung, startWire.fromId, w.toId);
       _branchStartWireKey = null;
