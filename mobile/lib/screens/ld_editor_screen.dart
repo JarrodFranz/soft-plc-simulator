@@ -184,7 +184,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     final rungs = widget.program.rungs;
     double contentHeight = 0;
     for (final r in rungs) {
-      contentHeight += _rungHeight(r) + 44 /* rung chrome: label + padding */ + _kRungGap;
+      final rungExtra = _editMode == 'coil' ? _kContactH + _kLaneGap : 0;
+      contentHeight += _rungHeight(r) + rungExtra + 44 /* rung chrome: label + padding */ + _kRungGap;
     }
     double contentWidth = _kCompactPaneWidth;
     for (final r in rungs) {
@@ -300,6 +301,46 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     );
   }
 
+  Widget _rungActionButton({required IconData icon, required Color color, required VoidCallback? onPressed}) {
+    return touchable(
+      IconButton(
+        icon: Icon(icon, size: 16),
+        color: color,
+        disabledColor: color.withValues(alpha: 0.25),
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+        onPressed: onPressed,
+      ),
+    );
+  }
+
+  void _moveRungBy(int index, int delta) {
+    setState(() => moveRung(widget.program, index, index + delta));
+    widget.onProgramUpdated();
+  }
+
+  Future<void> _confirmDeleteRung(int index) async {
+    final confirmed = await showAdaptiveWidthDialog<bool>(
+      context,
+      child: AlertDialog(
+        title: const Text('Delete Rung'),
+        content: Text('Delete RUNG $index? This cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed ?? false) {
+      setState(() => deleteRung(widget.program, index));
+      widget.onProgramUpdated();
+    }
+  }
+
   void _addRung() {
     setState(() {
       widget.program.rungs.add(buildRung(
@@ -316,7 +357,12 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
   Widget _buildRungCanvas(LdRung rung, int index, {bool compact = false}) {
     final col = colAssignment(rung);
-    final height = _rungHeight(rung);
+    // In Coil mode, reserve an extra lane's worth of height for the
+    // always-present "add output" affordance so it never sits outside the
+    // canvas's clipped bounds.
+    final height = _editMode == 'coil'
+        ? _rungHeight(rung) + _kContactH + _kLaneGap
+        : _rungHeight(rung);
 
     return Container(
       decoration: BoxDecoration(
@@ -329,9 +375,31 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.only(left: 8, bottom: 6),
-            child: Text('RUNG $index   ${rung.comment}',
-                style: const TextStyle(fontSize: 11, color: Colors.grey)),
+            padding: const EdgeInsets.only(left: 8, bottom: 6, right: 4),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text('RUNG $index   ${rung.comment}',
+                      style: const TextStyle(fontSize: 11, color: Colors.grey),
+                      overflow: TextOverflow.ellipsis),
+                ),
+                _rungActionButton(
+                  icon: Icons.arrow_upward,
+                  color: Colors.cyanAccent,
+                  onPressed: index == 0 ? null : () => _moveRungBy(index, -1),
+                ),
+                _rungActionButton(
+                  icon: Icons.arrow_downward,
+                  color: Colors.cyanAccent,
+                  onPressed: index == widget.program.rungs.length - 1 ? null : () => _moveRungBy(index, 1),
+                ),
+                _rungActionButton(
+                  icon: Icons.delete_outline,
+                  color: Colors.redAccent,
+                  onPressed: () => _confirmDeleteRung(index),
+                ),
+              ],
+            ),
           ),
           LayoutBuilder(
             builder: (context, constraints) {
@@ -364,6 +432,10 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                       ...rung.wires
                           .where((w) => canInsertCoilOnWire(rung, w))
                           .map((w) => _wireInsertTarget(rung, w, col, width)),
+                    // Always-present stacked-output affordance (coil mode):
+                    // adds a brand new terminal coil lane at the right rail,
+                    // independent of any specific wire.
+                    if (_editMode == 'coil') _addOutputTarget(rung, width),
                     // Draggable branch start/end handles.
                     ...findBranches(rung).expand((br) => _branchHandles(rung, br, col, width)),
                   ],
@@ -452,6 +524,40 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
         ),
       ),
     );
+  }
+
+  /// Always-present "add output" affordance near the right rail (Coil mode)
+  /// that adds a brand new stacked output coil on a fresh lane, independent
+  /// of any existing wire.
+  Widget _addOutputTarget(LdRung rung, double width) {
+    final lane = maxLane(rung) + 1;
+    final y = _laneTop(rung, lane) + _kContactH / 2;
+    return Positioned(
+      left: width - kLdCellW - kLdCoilRailGap - 11,
+      top: y - 11,
+      width: 22,
+      height: 22,
+      child: GestureDetector(
+        onTap: () => _addOutputCoilAndEdit(rung),
+        child: Container(
+          decoration: BoxDecoration(
+            color: Colors.cyanAccent.withValues(alpha: 0.85),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(Icons.add, size: 14, color: Colors.black),
+        ),
+      ),
+    );
+  }
+
+  void _addOutputCoilAndEdit(LdRung rung) {
+    late final LdNode coilNode;
+    setState(() {
+      coilNode = addOutputCoil(rung);
+      _editMode = 'select';
+    });
+    widget.onProgramUpdated();
+    _showEditNodeDialog(rung, coilNode);
   }
 
   void _insertOnWire(LdRung rung, LdWire w) {

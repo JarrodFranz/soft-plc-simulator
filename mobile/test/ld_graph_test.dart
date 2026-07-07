@@ -150,4 +150,44 @@ void main() {
     final dOut = r.wires.firstWhere((w) => w.fromId == d.id);
     expect(dOut.toId, equals(right.id)); // still terminal at the rail
   });
+
+  test('deleteRung removes the rung and is a no-op out of range', () {
+    final prog = PlcProgram(name: 'P', language: 'LadderLogic', rungs: [
+      buildRung(index: 0, main: [contact('A'), coil('Q')]),
+      buildRung(index: 1, main: [contact('B'), coil('R')]),
+    ]);
+    deleteRung(prog, 0);
+    expect(prog.rungs.length, 1);
+    expect(prog.rungs.first.nodes.any((n) => n.variable == 'B'), isTrue);
+    deleteRung(prog, 5); // out of range
+    expect(prog.rungs.length, 1);
+    deleteRung(prog, 0);
+    expect(prog.rungs, isEmpty); // may go to zero
+  });
+
+  test('moveRung reorders and clamps', () {
+    final prog = PlcProgram(name: 'P', language: 'LadderLogic', rungs: [
+      buildRung(index: 0, main: [coil('A')]),
+      buildRung(index: 1, main: [coil('B')]),
+      buildRung(index: 2, main: [coil('C')]),
+    ]);
+    moveRung(prog, 0, 2); // A to the end
+    expect(prog.rungs.map((r) => r.nodes.firstWhere((n) => n.kind == LdKind.coil).variable).toList(), ['B', 'C', 'A']);
+    moveRung(prog, 2, 2); // no-op
+    expect(prog.rungs.first.nodes.firstWhere((n) => n.kind == LdKind.coil).variable, 'B'); // unchanged order
+  });
+
+  test('addOutputCoil adds a new terminal coil lane', () {
+    final rung = buildRung(index: 0, main: [
+      contact('A'),
+      coil('Q1'),
+    ]);
+    final before = maxLane(rung);
+    final newCoil = addOutputCoil(rung);
+    expect(newCoil.kind, LdKind.coil);
+    expect(newCoil.row, before + 1);
+    // the new coil feeds the right rail (terminal) and is fed from the left rail
+    expect(rung.wires.any((w) => w.fromId == newCoil.id && w.toId == kRightRailId), isTrue);
+    expect(rung.wires.any((w) => w.toId == newCoil.id), isTrue);
+  });
 }
