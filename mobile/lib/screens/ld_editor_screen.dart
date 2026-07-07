@@ -52,6 +52,7 @@ const List<String> _kCompareBlockTypes = ['GT', 'LT', 'GE', 'LE', 'EQ', 'NE'];
 const List<String> _kMathBlockTypes = ['ADD', 'SUB', 'MUL', 'DIV', 'MOVE'];
 bool _isCompareBlock(String blockType) => _kCompareBlockTypes.contains(blockType);
 bool _isMathBlock(String blockType) => _kMathBlockTypes.contains(blockType);
+bool _isDataBlock(String blockType) => _isCompareBlock(blockType) || _isMathBlock(blockType);
 
 /// Operator glyph shown centred in a compare/math data-block body.
 String _blockOperatorGlyph(String blockType) {
@@ -524,7 +525,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     ...rung.nodes
                         .where((n) => n.kind == LdKind.contact ||
                             n.kind == LdKind.coil ||
-                            n.kind == LdKind.block)
+                            n.kind == LdKind.block ||
+                            n.kind == LdKind.link)
                         .map((n) => _positionedNode(rung, n, col, width)),
                     // Insert targets on wires (contact/block modes).
                     if (_editMode == 'contact' || _editMode == 'block')
@@ -582,14 +584,52 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       child: GestureDetector(
         onTap: () => _onNodeTap(rung, n),
         onDoubleTap: () => _showEditNodeDialog(rung, n),
-        child: n.kind == LdKind.block ? _buildBlock(n) : _buildContactCoil(n),
+        child: n.kind == LdKind.block
+            ? _buildBlock(n)
+            : (n.kind == LdKind.link ? _buildLink(n) : _buildContactCoil(n)),
       ),
     );
   }
 
+  /// In an element mode (contact/coil/block), tapping an empty `link` slot
+  /// fills it in place (replaces, not inserts in series) and opens its edit
+  /// dialog — mirroring `_insertOnWire`'s "insert then edit" flow. In select
+  /// mode (or tapping a non-link node), this is a no-op for now — branches
+  /// are created via the guided junction-anchor dots in Branch mode, not
+  /// element taps.
   void _onNodeTap(LdRung rung, LdNode n) {
-    // select mode: single tap selects (no-op for now — branches are created
-    // via the guided junction-anchor dots in Branch mode, not element taps).
+    if (n.kind != LdKind.link) {
+      return;
+    }
+    if (_editMode != 'contact' && _editMode != 'coil' && _editMode != 'block') {
+      return;
+    }
+    late final LdNode filled;
+    setState(() {
+      if (_editMode == 'contact') {
+        filled = fillLink(rung, n, LdNode(id: '', kind: LdKind.contact, variable: 'New_Contact'));
+      } else if (_editMode == 'coil') {
+        filled = fillLink(rung, n, LdNode(id: '', kind: LdKind.coil, variable: 'Output_Coil'));
+      } else {
+        final blockType = _pendingBlockType;
+        filled = fillLink(
+          rung,
+          n,
+          LdNode(
+            id: '',
+            kind: LdKind.block,
+            blockType: blockType,
+            variable: 'T1',
+            presetMs: 5000,
+            operandA: _isDataBlock(blockType) ? '0' : '',
+            operandB: _isDataBlock(blockType) ? '0' : '',
+          ),
+        );
+      }
+      _editMode = 'select';
+    });
+    widget.onProgramUpdated();
+    _showEditNodeDialog(rung, filled);
   }
 
   LdNode _nodeById(LdRung rung, String id) => rung.nodes.firstWhere((n) => n.id == id);
@@ -1041,7 +1081,20 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           actions: [
             TextButton(
               onPressed: () {
-                setState(() => deleteNode(rung, n));
+                setState(() {
+                  if (n.kind == LdKind.link) {
+                    // An open link has no logical content to remove — deleting
+                    // it drops the whole (still-empty) branch.
+                    collapseLink(rung, n);
+                  } else if (n.row > 0 &&
+                      !rung.nodes.any((o) => o.id != n.id && o.row == n.row)) {
+                    // Sole element on a branch lane: revert to an open link
+                    // (keep the branch) instead of dropping the lane entirely.
+                    emptyBranch(rung, n);
+                  } else {
+                    deleteNode(rung, n);
+                  }
+                });
                 widget.onProgramUpdated();
                 Navigator.pop(context);
               },
@@ -1075,6 +1128,21 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  /// An open (unfilled) branch: a ghosted, low-alpha "＋" slot inviting the
+  /// user to tap it in Contact/Coil/Block mode to fill it in place.
+  Widget _buildLink(LdNode n) {
+    return Container(
+      key: const Key('ld_link_slot'),
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: Colors.cyanAccent.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.35), width: 1.5),
+      ),
+      child: Icon(Icons.add, size: 18, color: Colors.cyanAccent.withValues(alpha: 0.8)),
     );
   }
 

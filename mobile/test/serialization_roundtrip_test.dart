@@ -190,6 +190,67 @@ void main() {
     expect(wiresB.contains('${coil.id}->$kRightRailId'), isTrue);
   });
 
+  test('WS22: empty link branch + filled branch round-trip deep-equal', () {
+    final rung = buildRung(
+      index: 0,
+      comment: 'WS22 branches',
+      main: [
+        LdNode(id: '', kind: LdKind.contact, variable: 'Start_PB'),
+        LdNode(id: '', kind: LdKind.coil, variable: 'Motor_Run'),
+      ],
+    );
+    // An empty (unfilled) branch — a bare LdKind.link.
+    addEmptyBranch(rung, kLeftRailId, 'm1');
+    // A filled parallel branch (a real contact spanning the main line).
+    final contactA = rung.nodes.firstWhere((n) => n.id == 'm0');
+    final coilQ = rung.nodes.firstWhere((n) => n.id == 'm1');
+    final br = addParallelBranch(rung, contactA, coilQ);
+    rung.nodes.firstWhere((n) => n.id == br.firstNodeId).variable = 'Seal_In';
+
+    final program = PlcProgram(name: 'WS22Program', language: 'LadderLogic', rungs: [rung]);
+    final original = PlcProject(
+      id: 'ws22_roundtrip',
+      name: 'WS22 Round-Trip Fixture',
+      controllerName: 'PLC_TEST',
+      tags: [],
+      structDefs: [],
+      programs: [program],
+      tasks: [],
+      hmis: [],
+    );
+
+    final restored = _roundTrip(original);
+    final rA = original.programs[0].rungs[0];
+    final rB = restored.programs[0].rungs[0];
+
+    final nodesA = {for (final n in rA.nodes) n.id: n};
+    final nodesB = {for (final n in rB.nodes) n.id: n};
+    expect(nodesB.keys.toSet(), nodesA.keys.toSet(), reason: 'node ids must be preserved 1:1');
+
+    for (final id in nodesA.keys) {
+      final a = nodesA[id]!;
+      final b = nodesB[id]!;
+      expect(b.kind, a.kind, reason: 'node $id kind');
+      expect(b.variable, a.variable, reason: 'node $id variable');
+      expect(b.blockType, a.blockType, reason: 'node $id blockType');
+      expect(b.row, a.row, reason: 'node $id row (lane)');
+    }
+
+    // Both the empty link and the filled branch actually made it through
+    // (not a tautology against a degenerate rung).
+    expect(nodesB.values.where((n) => n.kind == LdKind.link).length, 1);
+    expect(nodesB.values.any((n) => n.kind == LdKind.contact && n.variable == 'Seal_In'), isTrue);
+
+    String wireKey(LdWire w) => '${w.fromId}->${w.toId}';
+    final wiresA = rA.wires.map(wireKey).toSet();
+    final wiresB = rB.wires.map(wireKey).toSet();
+    expect(wiresB, wiresA, reason: 'wire set must be preserved exactly');
+    expect(rB.wires.length, rA.wires.length, reason: 'no wires duplicated or dropped');
+
+    // Strongest check: the whole project is byte-identical after round-trip.
+    expect(jsonEncode(restored.toJson()), jsonEncode(original.toJson()));
+  });
+
   for (final original in DefaultProjects.all()) {
     group('round-trip ${original.id}', () {
       test('structural: collections and struct defs are preserved', () {

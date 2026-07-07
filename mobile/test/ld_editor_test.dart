@@ -515,4 +515,170 @@ void main() {
       });
     }
   });
+
+  group('Empty-branch link rendering + fill/delete (WS22 Task 3)', () {
+    // The link slot is identified by a distinct Key regardless of viewport —
+    // Icons.add alone is ambiguous (also used by Add Rung / wire-insert /
+    // add-output affordances).
+    Finder linkSlot() => find.byKey(const Key('ld_link_slot'));
+
+    GestureDetector nodeGestureDetector(WidgetTester tester, Finder target) {
+      return tester.widget<GestureDetector>(
+        find.ancestor(of: target, matching: find.byType(GestureDetector)).first,
+      );
+    }
+
+    for (final size in [desktopSize, smallPhoneSize]) {
+      testWidgets('a link renders a ghosted + slot with no overflow (${size.width.toInt()}px)', (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        final rung = program.rungs[0];
+        final coilQ0 = rung.nodes.firstWhere((n) => n.variable == 'Q0');
+        addEmptyBranch(rung, kLeftRailId, coilQ0.id);
+
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        expect(linkSlot(), findsOneWidget);
+        expect(find.byIcon(Icons.add), findsWidgets); // includes the link's + affordance
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('Contact mode tapping a link REPLACES it with a contact (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        final rung = program.rungs[0];
+        final coilQ0 = rung.nodes.firstWhere((n) => n.variable == 'Q0');
+        final link = addEmptyBranch(rung, kLeftRailId, coilQ0.id);
+
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Contact'));
+        await tester.pumpAndSettle();
+
+        final slot = linkSlot();
+        expect(slot, findsOneWidget);
+        nodeGestureDetector(tester, slot).onTap!();
+        await tester.pumpAndSettle();
+
+        // No LdKind.link remains on that lane; the id was reused by a contact.
+        expect(rung.nodes.where((n) => n.row == link.row && n.kind == LdKind.link), isEmpty);
+        final filled = rung.nodes.firstWhere((n) => n.id == link.id);
+        expect(filled.kind, LdKind.contact);
+        expect(find.text('Edit Contact'), findsOneWidget);
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('Coil mode tapping a right-rail-merged link fills it with a coil (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        final rung = program.rungs[0];
+        final contactA = rung.nodes.firstWhere((n) => n.variable == 'A');
+        final link = addEmptyBranch(rung, contactA.id, kRightRailId);
+
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Coil'));
+        await tester.pumpAndSettle();
+
+        final slot = linkSlot();
+        expect(slot, findsOneWidget);
+        nodeGestureDetector(tester, slot).onTap!();
+        await tester.pumpAndSettle();
+
+        final filled = rung.nodes.firstWhere((n) => n.id == link.id);
+        expect(filled.kind, LdKind.coil);
+        expect(find.text('Edit Coil'), findsOneWidget);
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('Block mode (pending TON) tapping a link fills it with a block (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        final rung = program.rungs[0];
+        final coilQ0 = rung.nodes.firstWhere((n) => n.variable == 'Q0');
+        final link = addEmptyBranch(rung, kLeftRailId, coilQ0.id);
+
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Block'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('TON'));
+        await tester.pumpAndSettle();
+
+        final slot = linkSlot();
+        expect(slot, findsOneWidget);
+        nodeGestureDetector(tester, slot).onTap!();
+        await tester.pumpAndSettle();
+
+        final filled = rung.nodes.firstWhere((n) => n.id == link.id);
+        expect(filled.kind, LdKind.block);
+        expect(filled.blockType, 'TON');
+        expect(find.text('Edit TON'), findsOneWidget);
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('deleting the sole element of a branch reverts it to a link (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        final rung = program.rungs[0];
+        final contactA = rung.nodes.firstWhere((n) => n.variable == 'A');
+        final coilQ0 = rung.nodes.firstWhere((n) => n.variable == 'Q0');
+        final br = addParallelBranch(rung, contactA, coilQ0);
+        final branchesBefore = findBranches(rung).length;
+
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        final nodeText = find.text('New_Contact');
+        expect(nodeText, findsOneWidget);
+        nodeGestureDetector(tester, nodeText).onDoubleTap!();
+        await tester.pumpAndSettle();
+        expect(find.text('Delete'), findsOneWidget);
+        await tester.tap(find.text('Delete'));
+        await tester.pumpAndSettle();
+
+        // The branch lane persists (reverted to a link), not removed.
+        expect(findBranches(rung).length, branchesBefore);
+        final reverted = rung.nodes.firstWhere((n) => n.id == br.firstNodeId);
+        expect(reverted.kind, LdKind.link);
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('deleting a link removes the branch (${size.width.toInt()}px)', (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        final rung = program.rungs[0];
+        final coilQ0 = rung.nodes.firstWhere((n) => n.variable == 'Q0');
+        addEmptyBranch(rung, kLeftRailId, coilQ0.id);
+        final branchesBefore = findBranches(rung).length;
+
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        final slot = linkSlot();
+        expect(slot, findsOneWidget);
+        nodeGestureDetector(tester, slot).onDoubleTap!();
+        await tester.pumpAndSettle();
+        expect(find.text('Delete'), findsOneWidget);
+        await tester.tap(find.text('Delete'));
+        await tester.pumpAndSettle();
+
+        expect(findBranches(rung).length, branchesBefore - 1);
+
+        expect(tester.takeException(), isNull);
+      });
+    }
+  });
 }
