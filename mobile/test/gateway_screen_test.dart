@@ -99,12 +99,13 @@ PlcProject _project({String id = 'proj_gw_ui_test', int? port}) {
   return project;
 }
 
-Widget _app(PlcProject project, OpcUaHost host) {
+Widget _app(PlcProject project, OpcUaHost host, {bool hostingSupported = true}) {
   return MaterialApp(
     home: GatewayScreen(
       currentProject: project,
       host: host,
       onProjectUpdated: () {},
+      hostingSupported: hostingSupported,
     ),
   );
 }
@@ -206,6 +207,43 @@ void main() {
     expect(host.startCalls, 1);
     expect(find.text('Running'), findsOneWidget);
     expect(find.textContaining('opc.tcp://'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('hosting unsupported (web): Start hosting disabled + native-only note shown', (tester) async {
+    final project = _project();
+    final host = _CountingOpcUaHost();
+    addTearDown(host.dispose);
+
+    await tester.pumpWidget(_app(project, host, hostingSupported: false));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(Switch)); // reveal hosting controls
+    await tester.pump();
+
+    final startBtn = tester.widget<ElevatedButton>(
+      find.widgetWithText(ElevatedButton, 'Start hosting'),
+    );
+    expect(startBtn.onPressed, isNull); // disabled — can't attempt a doomed bind
+    expect(find.textContaining('web browsers do not allow'), findsOneWidget);
+    expect(host.startCalls, 0);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('hosting supported (native): Start hosting enabled + no note', (tester) async {
+    final project = _project();
+    final host = _CountingOpcUaHost();
+    addTearDown(host.dispose);
+
+    await tester.pumpWidget(_app(project, host, hostingSupported: true));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(Switch));
+    await tester.pump();
+
+    final startBtn = tester.widget<ElevatedButton>(
+      find.widgetWithText(ElevatedButton, 'Start hosting'),
+    );
+    expect(startBtn.onPressed, isNotNull); // enabled
+    expect(find.textContaining('web browsers do not allow'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

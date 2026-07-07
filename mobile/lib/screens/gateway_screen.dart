@@ -10,6 +10,7 @@
 // ADR-010: the app now hosts the OPC UA server in-process instead of
 // syncing tags out to a companion process.
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../models/opcua_map.dart';
@@ -25,11 +26,19 @@ class GatewayScreen extends StatefulWidget {
   final OpcUaHost host;
   final VoidCallback onProjectUpdated;
 
+  /// Whether this platform can host the in-app OPC UA server. Hosting binds a
+  /// real TCP `ServerSocket`, which web browsers do not allow (a start attempt
+  /// throws `Unsupported operation: InternetAddress.anyIPv4`), so hosting is
+  /// native-only (Android/iOS/desktop). Defaults to `!kIsWeb`; overridable for
+  /// tests.
+  final bool hostingSupported;
+
   const GatewayScreen({
     super.key,
     required this.currentProject,
     required this.host,
     required this.onProjectUpdated,
+    this.hostingSupported = !kIsWeb,
   });
 
   @override
@@ -290,7 +299,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
                   SizedBox(
                     width: isCompact ? double.infinity : null,
                     child: ElevatedButton(
-                      onPressed: running ? null : _startHosting,
+                      onPressed: (running || !widget.hostingSupported) ? null : _startHosting,
                       child: const Text('Start hosting'),
                     ),
                   ),
@@ -304,6 +313,16 @@ class _GatewayScreenState extends State<GatewayScreen> {
                   ),
                 ],
               ),
+              if (!widget.hostingSupported) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Hosting runs the OPC UA server inside the app on a TCP socket, '
+                  'which web browsers do not allow. Run the desktop '
+                  '(Windows/macOS/Linux) or mobile (Android/iOS) app to host — '
+                  'you can still design the tag map here.',
+                  style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                ),
+              ],
               if (running && widget.host.endpointUrl != null) ...[
                 const SizedBox(height: 8),
                 SelectableText(
