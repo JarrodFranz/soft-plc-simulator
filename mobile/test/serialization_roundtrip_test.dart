@@ -1,7 +1,10 @@
 import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/data/default_projects.dart';
+import 'package:soft_plc_mobile/models/modbus_map.dart';
+import 'package:soft_plc_mobile/models/opcua_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/models/ld_graph.dart';
 import 'package:soft_plc_mobile/models/sim_engine.dart';
 import 'package:soft_plc_mobile/models/ld_exec.dart';
@@ -307,6 +310,62 @@ void main() {
     // The referencing tag's dataType survives the rename + round-trip too.
     expect(restored.tags.single.dataType, 'DriveParams',
         reason: 'tag dataType must still point at the renamed struct def');
+  });
+
+  test('WS24: opcua + modbus protocol settings both round-trip together', () {
+    final tag = PlcTag(
+      name: 'Run',
+      path: 'Run',
+      dataType: 'BOOL',
+      value: false,
+      ioType: 'Internal',
+    );
+    final original = PlcProject(
+      id: 'ws24_modbus_roundtrip',
+      name: 'WS24 Modbus + OPC UA Round-Trip Fixture',
+      controllerName: 'PLC_TEST',
+      tags: [tag],
+      structDefs: [],
+      programs: [],
+      tasks: [],
+      hmis: [],
+      protocols: ProtocolSettings(
+        opcua: OpcUaProtocolConfig(
+          enabled: true,
+          namespaceUri: 'urn:softplc:ws24',
+          map: OpcuaMap(namespaceUri: 'urn:softplc:ws24', nodes: [
+            OpcuaNode(nodeId: 'ns=1;s=Run', tag: 'Run', access: 'ReadWrite'),
+          ]),
+        ),
+        modbus: ModbusProtocolConfig(
+          enabled: true,
+          port: 502,
+          map: ModbusMap(entries: [
+            ModbusMapEntry(tag: 'Run', table: 'coil', address: 0, access: 'ReadWrite'),
+          ]),
+        ),
+      ),
+    );
+
+    final restored = _roundTrip(original);
+
+    expect(restored.protocols, isNotNull);
+    expect(restored.protocols!.opcua, isNotNull);
+    expect(restored.protocols!.opcua!.enabled, true);
+    expect(restored.protocols!.opcua!.namespaceUri, 'urn:softplc:ws24');
+    expect(restored.protocols!.opcua!.map.nodes.single.tag, 'Run');
+
+    expect(restored.protocols!.modbus, isNotNull);
+    expect(restored.protocols!.modbus!.enabled, true);
+    expect(restored.protocols!.modbus!.port, 502);
+    final entry = restored.protocols!.modbus!.map.entries.single;
+    expect(entry.tag, 'Run');
+    expect(entry.table, 'coil');
+    expect(entry.address, 0);
+    expect(entry.access, 'ReadWrite');
+
+    // Strongest check: byte-identical after round-trip.
+    expect(jsonEncode(restored.toJson()), jsonEncode(original.toJson()));
   });
 
   for (final original in DefaultProjects.all()) {
