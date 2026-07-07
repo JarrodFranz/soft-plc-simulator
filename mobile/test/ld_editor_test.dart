@@ -112,8 +112,9 @@ void main() {
         expect(tester.takeException(), isNull);
       });
 
-      testWidgets('Coil mode shows add-output affordance and tapping it adds a coil (${size.width.toInt()}px)',
-          (tester) async {
+      testWidgets(
+          'Add-output lives in the rung header (not a phantom lane below the rung), works in any '
+          'mode, and no RenderFlex overflow (${size.width.toInt()}px)', (tester) async {
         await setSurface(tester, size);
         final program = _twoRungProgram();
         await tester.pumpWidget(_app(program));
@@ -121,25 +122,17 @@ void main() {
 
         final nodesBefore = program.rungs[0].nodes.length;
 
-        await tester.tap(find.text('Coil'));
-        await tester.pumpAndSettle();
+        // The old phantom-lane affordance (_addOutputTarget) only ever
+        // appeared in Coil mode, reserving dead space below the rung. The
+        // add-output control must now be an always-present header
+        // IconButton — available in select mode too (no need to switch to
+        // Coil mode first).
+        final addOutputButton = tester
+            .widgetList<IconButton>(find.byWidgetPredicate((w) => w is IconButton && w.tooltip == 'Add output'))
+            .first;
+        expect(addOutputButton.onPressed, isNotNull);
 
-        // The add-output affordance is a cyan "+" icon. Icons.add is also
-        // used by the toolbar's "Add Rung" button (built first in the tree),
-        // so the per-rung add-output targets follow it in document order:
-        // index 0 = Add Rung, index 1 = rung 0's add-output, index 2 = rung 1's.
-        final addTargets = find.byIcon(Icons.add);
-        expect(addTargets, findsNWidgets(3));
-
-        // At the compact (phone) width the ladder canvas sits inside an
-        // InteractiveViewer, so the affordance may be panned/scaled out of
-        // the visible viewport — invoke its GestureDetector.onTap directly
-        // (same production code path as a tap) rather than fighting
-        // hit-testing through an arbitrary pan/zoom transform.
-        final addOutputTarget = tester.widget<GestureDetector>(
-          find.ancestor(of: addTargets.at(1), matching: find.byType(GestureDetector)).first,
-        );
-        addOutputTarget.onTap!();
+        addOutputButton.onPressed!();
         await tester.pumpAndSettle();
 
         expect(program.rungs[0].nodes.length, greaterThan(nodesBefore));
@@ -147,6 +140,18 @@ void main() {
         // The edit dialog opens after adding.
         expect(find.text('Edit Coil'), findsOneWidget);
 
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('add-output header button is present per rung, one per rung (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        // One "Add output" affordance per rung — two rungs, two buttons.
+        expect(find.byTooltip('Add output'), findsNWidgets(2));
         expect(tester.takeException(), isNull);
       });
     }
@@ -261,11 +266,12 @@ void main() {
         await tester.tap(find.text('GT'));
         await tester.pumpAndSettle();
 
-        // Insert targets are the small cyan "+" GestureDetectors on wires.
-        final addTargets = find.byIcon(Icons.add);
-        // index 0 = Add Rung button; subsequent ones are per-rung wire targets.
+        // Insert targets are the small cyan "+" GestureDetectors on wires
+        // (icon size 14) — distinct from the toolbar's "Add Rung" (size 15)
+        // and the rung header's always-present "Add output" button (size 18).
+        final addTargets = find.byWidgetPredicate((w) => w is Icon && w.icon == Icons.add && w.size == 14);
         final insertTarget = tester.widget<GestureDetector>(
-          find.ancestor(of: addTargets.at(1), matching: find.byType(GestureDetector)).first,
+          find.ancestor(of: addTargets.first, matching: find.byType(GestureDetector)).first,
         );
         insertTarget.onTap!();
         await tester.pumpAndSettle();

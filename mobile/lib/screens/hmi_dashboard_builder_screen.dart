@@ -526,7 +526,7 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
                                                       overflow: TextOverflow.ellipsis,
                                                     ),
                                                   ),
-                                                  ..._componentHeaderControls(comp, index, components),
+                                                  if (isEditMode) ..._componentHeaderControls(comp, index, components),
                                                 ],
                                               )
                                             else ...[

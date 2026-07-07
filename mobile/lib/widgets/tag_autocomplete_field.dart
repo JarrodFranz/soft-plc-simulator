@@ -115,30 +115,32 @@ class _TagAutocompleteFieldState extends State<TagAutocompleteField> {
             link: _layerLink,
             showWhenUnlinked: false,
             offset: const Offset(0, 44),
-            child: Material(
-              elevation: 4,
-              color: const Color(0xFF1E293B),
-              borderRadius: BorderRadius.circular(6),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 220),
-                child: ListView.builder(
-                  padding: EdgeInsets.zero,
-                  shrinkWrap: true,
-                  itemCount: _matches.length,
-                  itemBuilder: (context, i) {
-                    final option = _matches[i];
-                    return InkWell(
-                      onTap: () => _onSelect(option),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        child: Text(
-                          option,
-                          style: const TextStyle(fontSize: 12, color: Colors.white),
-                          overflow: TextOverflow.ellipsis,
+            child: TextFieldTapRegion(
+              child: Material(
+                elevation: 4,
+                color: const Color(0xFF1E293B),
+                borderRadius: BorderRadius.circular(6),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 220),
+                  child: ListView.builder(
+                    padding: EdgeInsets.zero,
+                    shrinkWrap: true,
+                    itemCount: _matches.length,
+                    itemBuilder: (context, i) {
+                      final option = _matches[i];
+                      return InkWell(
+                        onTap: () => _onSelect(option),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          child: Text(
+                            option,
+                            style: const TextStyle(fontSize: 12, color: Colors.white),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
-                      ),
-                    );
-                  },
+                      );
+                    },
+                  ),
                 ),
               ),
             ),
