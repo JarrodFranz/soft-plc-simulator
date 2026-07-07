@@ -210,6 +210,51 @@ void moveBranchMerge(LdRung rung, LdBranchView br, LdNode newDest) {
   }
 }
 
+/// Removes `program.rungs[index]` if in range, else no-op.
+void deleteRung(PlcProgram program, int index) {
+  if (index < 0 || index >= program.rungs.length) {
+    return;
+  }
+  program.rungs.removeAt(index);
+}
+
+/// Moves the rung at [from] to [to]. No-op if either is out of range or they
+/// are equal. After removal, [to] is clamped into `[0, length]` so moving to
+/// (or past) the end lands the rung last.
+void moveRung(PlcProgram program, int from, int to) {
+  final rungs = program.rungs;
+  // `to` may equal length (append past the end); `from` must be a real index.
+  if (from < 0 || from >= rungs.length || to < 0 || to > rungs.length) {
+    return;
+  }
+  if (from == to) {
+    return;
+  }
+  final rung = rungs.removeAt(from);
+  int dest = to;
+  if (dest > rungs.length) {
+    dest = rungs.length;
+  }
+  rungs.insert(dest, rung);
+}
+
+/// Adds a new terminal output coil on a fresh lane, wired left-rail -> coil
+/// -> right-rail (mirrors `addParallelBranch`'s wiring pattern but spans the
+/// full rung width instead of tapping/merging into the main line).
+LdNode addOutputCoil(LdRung rung) {
+  final lane = maxLane(rung) + 1;
+  final node = LdNode(
+    id: newNodeId(rung),
+    kind: LdKind.coil,
+    variable: 'Output_Coil',
+    row: lane,
+  );
+  rung.nodes.add(node);
+  rung.wires.add(LdWire(fromId: kLeftRailId, toId: node.id));
+  rung.wires.add(LdWire(fromId: node.id, toId: kRightRailId));
+  return node;
+}
+
 /// Removes [n]. For a series node it reconnects sources to destinations
 /// (heals the line); for the sole node on a branch lane it drops the branch
 /// entirely (no bypass jumper) instead of shorting the parallel span.

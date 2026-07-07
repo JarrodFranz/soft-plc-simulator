@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/data/default_projects.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/ld_graph.dart';
 import 'package:soft_plc_mobile/models/sim_engine.dart';
 import 'package:soft_plc_mobile/models/ld_exec.dart';
 import 'package:soft_plc_mobile/models/fbd_exec.dart';
@@ -28,6 +29,154 @@ PlcProject _roundTrip(PlcProject p) =>
     PlcProject.fromJson(jsonDecode(jsonEncode(p.toJson())));
 
 void main() {
+  test('LdNode operand fields round-trip and are omitted when empty', () {
+    final bare = LdNode(id: 'n1', kind: LdKind.contact, variable: 'A');
+    expect(bare.toJson().containsKey('operand_a'), isFalse); // additive: absent when empty
+    final data = LdNode(id: 'n2', kind: LdKind.block, blockType: 'GT', operandA: 'Level', operandB: '80');
+    final j = data.toJson();
+    expect(j['operand_a'], 'Level');
+    expect(j['operand_b'], '80');
+    final back = LdNode.fromJson(j);
+    expect(back.operandA, 'Level');
+    expect(back.operandB, '80');
+    // legacy JSON without the keys still loads
+    final legacy = LdNode.fromJson({'id': 'n3', 'kind': 'block', 'block_type': 'TON', 'preset_ms': 3000});
+    expect(legacy.operandA, '');
+  });
+
+  test('WS21: full-block round-trip — TP/CTU/CTD/CTUD/GT/ADD/MOVE + stacked coil', () {
+    // Build a rung containing one node of each new block type, with
+    // realistic operandA/operandB/variable/presetMs, via buildRung so the
+    // main-line wiring (rail -> ... -> rail) matches what the editor emits.
+    final rung = buildRung(
+      index: 0,
+      comment: 'WS21 block coverage',
+      main: [
+        LdNode(id: '', kind: LdKind.contact, variable: 'Start_PB'),
+        LdNode(
+          id: '',
+          kind: LdKind.block,
+          blockType: 'TP',
+          variable: 'Pulse1',
+          presetMs: 1500,
+        ),
+        LdNode(
+          id: '',
+          kind: LdKind.block,
+          blockType: 'CTU',
+          variable: 'Count1',
+          presetMs: 10,
+        ),
+        LdNode(
+          id: '',
+          kind: LdKind.block,
+          blockType: 'CTD',
+          variable: 'Count2',
+          presetMs: 5,
+        ),
+        LdNode(
+          id: '',
+          kind: LdKind.block,
+          blockType: 'CTUD',
+          variable: 'Count3',
+          presetMs: 20,
+        ),
+        LdNode(
+          id: '',
+          kind: LdKind.block,
+          blockType: 'GT',
+          operandA: 'Level',
+          operandB: '80',
+        ),
+        LdNode(
+          id: '',
+          kind: LdKind.block,
+          blockType: 'ADD',
+          operandA: 'Total',
+          operandB: 'Increment',
+        ),
+        LdNode(
+          id: '',
+          kind: LdKind.block,
+          blockType: 'MOVE',
+          operandA: 'Source_Tag',
+          operandB: 'Dest_Tag',
+        ),
+      ],
+    );
+    // Add a stacked output coil on its own lane, as the editor does via
+    // the "+" affordance in ld_editor_screen.dart.
+    final coil = addOutputCoil(rung);
+    coil.variable = 'Run_Lamp';
+
+    final program = PlcProgram(
+      name: 'WS21_Coverage',
+      language: 'LadderLogic',
+      rungs: [rung],
+    );
+    final original = PlcProject(
+      id: 'ws21_roundtrip',
+      name: 'WS21 Round-Trip Fixture',
+      controllerName: 'PLC_TEST',
+      tags: [],
+      structDefs: [],
+      programs: [program],
+      tasks: [],
+      hmis: [],
+    );
+
+    final restored = _roundTrip(original);
+
+    expect(restored.programs.length, 1);
+    final rA = original.programs[0].rungs[0];
+    final rB = restored.programs[0].rungs[0];
+
+    // Lane structure: every node's row must survive, keyed by id (order is
+    // stable but keying by id makes the assertion resilient to any future
+    // reordering during (de)serialization).
+    final nodesA = {for (final n in rA.nodes) n.id: n};
+    final nodesB = {for (final n in rB.nodes) n.id: n};
+    expect(nodesB.keys.toSet(), nodesA.keys.toSet(),
+        reason: 'node ids must be preserved 1:1');
+
+    for (final id in nodesA.keys) {
+      final a = nodesA[id]!;
+      final b = nodesB[id]!;
+      expect(b.kind, a.kind, reason: 'node $id kind');
+      expect(b.blockType, a.blockType, reason: 'node $id blockType');
+      expect(b.variable, a.variable, reason: 'node $id variable');
+      expect(b.presetMs, a.presetMs, reason: 'node $id presetMs');
+      expect(b.operandA, a.operandA, reason: 'node $id operandA');
+      expect(b.operandB, a.operandB, reason: 'node $id operandB');
+      expect(b.row, a.row, reason: 'node $id row (lane)');
+    }
+
+    // Confirm every new block type actually made it through, so this
+    // assertion isn't a tautology against an empty/degenerate rung.
+    final blockTypesB =
+        nodesB.values.map((n) => n.blockType).where((t) => t.isNotEmpty).toSet();
+    expect(blockTypesB, {'TP', 'CTU', 'CTD', 'CTUD', 'GT', 'ADD', 'MOVE'});
+
+    // Stacked coil landed on its own lane (> 0), separate from the main line.
+    final coilB = nodesB.values.firstWhere((n) => n.variable == 'Run_Lamp');
+    expect(coilB.kind, LdKind.coil);
+    expect(coilB.row, greaterThan(0));
+    expect(coilB.row, coil.row);
+
+    // Wires: exact (fromId, toId) pair set must match, including the
+    // stacked coil's left-rail -> coil -> right-rail wiring.
+    String wireKey(LdWire w) => '${w.fromId}->${w.toId}';
+    final wiresA = rA.wires.map(wireKey).toSet();
+    final wiresB = rB.wires.map(wireKey).toSet();
+    expect(wiresB, wiresA, reason: 'wire set must be preserved exactly');
+    expect(rB.wires.length, rA.wires.length,
+        reason: 'no wires duplicated or dropped');
+
+    // Sanity: the coil's rail-to-rail wires are actually present.
+    expect(wiresB.contains('$kLeftRailId->${coil.id}'), isTrue);
+    expect(wiresB.contains('${coil.id}->$kRightRailId'), isTrue);
+  });
+
   for (final original in DefaultProjects.all()) {
     group('round-trip ${original.id}', () {
       test('structural: collections and struct defs are preserved', () {

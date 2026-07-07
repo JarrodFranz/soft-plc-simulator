@@ -7,10 +7,36 @@ import 'package:soft_plc_mobile/models/tag_resolver.dart';
 PlcTag _tag(String n, String type, dynamic v, {bool forced = false, dynamic fv}) =>
     PlcTag(name: n, path: n, dataType: type, value: v, ioType: 'Internal', isForced: forced, forcedValue: fv);
 
-PlcProject _proj(List<PlcTag> tags, List<PlcProgram> programs) => PlcProject(
+PlcProject _proj(List<PlcTag> tags, List<PlcProgram> programs, {List<PlcStructDef>? structDefs}) => PlcProject(
       id: 'p', name: 'p', controllerName: 'c',
-      tags: tags, structDefs: [], programs: programs, tasks: [], hmis: [],
+      tags: tags, structDefs: structDefs ?? [], programs: programs, tasks: [], hmis: [],
     );
+
+/// A minimal counter DUT with the fields every CTU/CTD/CTUD test needs;
+/// unused fields for a given block are simply ignored by the engine.
+final PlcStructDef _counterDef = PlcStructDef(name: 'COUNTER', fields: [
+  StructFieldDef(name: 'CU', dataType: 'BOOL', defaultValue: false),
+  StructFieldDef(name: 'CD', dataType: 'BOOL', defaultValue: false),
+  StructFieldDef(name: 'PV', dataType: 'INT32', defaultValue: 0),
+  StructFieldDef(name: 'CV', dataType: 'INT32', defaultValue: 0),
+  StructFieldDef(name: 'QU', dataType: 'BOOL', defaultValue: false),
+  StructFieldDef(name: 'QD', dataType: 'BOOL', defaultValue: false),
+  StructFieldDef(name: 'R', dataType: 'BOOL', defaultValue: false),
+]);
+
+PlcTag _counterTag(String n) => PlcTag(
+      name: n, path: n, dataType: 'COUNTER',
+      value: defaultValueFor(_proj([], [], structDefs: [_counterDef]), 'COUNTER', 0),
+      ioType: 'Internal',
+    );
+
+/// A counter tag with `.CV` absent (as if never yet written) so CTD's
+/// "load PV when absent" branch (`readPath(...) == null`) is exercised.
+PlcTag _counterTagNoCv(String n) {
+  final v = defaultValueFor(_proj([], [], structDefs: [_counterDef]), 'COUNTER', 0) as Map;
+  final m = Map<String, dynamic>.from(v)..remove('CV');
+  return PlcTag(name: n, path: n, dataType: 'COUNTER', value: m, ioType: 'Internal');
+}
 
 LdNode _no(String v) => LdNode(id: '', kind: LdKind.contact, variable: v);
 LdNode _nc(String v) => LdNode(id: '', kind: LdKind.contact, variable: v, modifier: 'negated');
@@ -255,5 +281,441 @@ void main() {
     writePath(p, 'Gate', true);
     executeLdPrograms(p, 100, rt); // DN AND Gate
     expect(_b(p, 'Y'), isTrue);
+  });
+
+  test('TP emits a pulse of exactly ceil(pre/dt) scans and is not retriggerable mid-pulse', () {
+    final r = buildRung(index: 0, main: [
+      _no('In'),
+      LdNode(id: '', kind: LdKind.block, blockType: 'TP', variable: 'T', presetMs: 300),
+      _coil('Q'),
+    ]);
+    final p = _proj([
+      _tag('In', 'BOOL', false),
+      _tag('T', 'TIMER', defaultValueFor(_proj([], []), 'TIMER', 0)),
+      _tag('Q', 'BOOL', false),
+    ], [_ldProg([r])]);
+    final rt = LdExecRuntime();
+    executeLdPrograms(p, 100, rt); // no edge yet
+    expect(_b(p, 'Q'), isFalse);
+
+    writePath(p, 'In', true);
+    executeLdPrograms(p, 100, rt); // rising edge -> pulse starts, ACC=100
+    expect(_b(p, 'Q'), isTrue);
+
+    writePath(p, 'In', false); // mid-pulse IN drop must NOT cut the pulse short
+    executeLdPrograms(p, 100, rt); // ACC=200
+    expect(_b(p, 'Q'), isTrue);
+
+    executeLdPrograms(p, 100, rt); // ACC=300 -> pulse complete, Q drops
+    expect(_b(p, 'Q'), isFalse);
+    expect((readPath(p, 'T.ACC') as num).toInt(), equals(0));
+
+    // A held-high input after completion should not keep it pulsing; only a
+    // fresh rising edge retriggers.
+    executeLdPrograms(p, 100, rt);
+    expect(_b(p, 'Q'), isFalse);
+
+    writePath(p, 'In', true);
+    executeLdPrograms(p, 100, rt); // fresh rising edge -> retriggers
+    expect(_b(p, 'Q'), isTrue);
+  });
+
+  test('TP with a sub-scan preset (presetMs <= dtMs) still pulses Q true for the starting scan', () {
+    final r = buildRung(index: 0, main: [
+      _no('In'),
+      LdNode(id: '', kind: LdKind.block, blockType: 'TP', variable: 'T', presetMs: 50),
+      _coil('Q'),
+    ]);
+    final p = _proj([
+      _tag('In', 'BOOL', false),
+      _tag('T', 'TIMER', defaultValueFor(_proj([], []), 'TIMER', 0)),
+      _tag('Q', 'BOOL', false),
+    ], [_ldProg([r])]);
+    final rt = LdExecRuntime();
+    executeLdPrograms(p, 100, rt); // no edge yet
+    expect(_b(p, 'Q'), isFalse);
+
+    writePath(p, 'In', true);
+    executeLdPrograms(p, 100, rt); // rising edge, dtMs(100) >= presetMs(50)
+    // The pulse must be observable for at least this starting scan.
+    expect(_b(p, 'Q'), isTrue);
+    expect(_b(p, 'T.DN'), isTrue);
+
+    executeLdPrograms(p, 100, rt); // next scan -> pulse has completed
+    expect(_b(p, 'Q'), isFalse);
+    expect((readPath(p, 'T.ACC') as num).toInt(), equals(0));
+  });
+
+  test('CTU counts once per rising edge, saturates, QU at PV, resets on R', () {
+    final r = buildRung(index: 0, main: [
+      _no('PB'),
+      LdNode(id: '', kind: LdKind.block, blockType: 'CTU', variable: 'Cnt', presetMs: 2),
+      _coil('Done'),
+    ]);
+    final p = _proj(
+      [_tag('PB', 'BOOL', false), _counterTag('Cnt'), _tag('Done', 'BOOL', false)],
+      [_ldProg([r])],
+      structDefs: [_counterDef],
+    );
+    final rt = LdExecRuntime();
+    executeLdPrograms(p, 100, rt);
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0));
+
+    writePath(p, 'PB', true);
+    executeLdPrograms(p, 100, rt); // edge 1 -> CV 1
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(1));
+
+    executeLdPrograms(p, 100, rt); // held high, no new edge -> CV still 1
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(1));
+
+    writePath(p, 'PB', false);
+    executeLdPrograms(p, 100, rt);
+    writePath(p, 'PB', true);
+    executeLdPrograms(p, 100, rt); // edge 2 -> CV 2, QU true (PV 2)
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(2));
+    expect(_b(p, 'Cnt.QU'), isTrue);
+    expect(_b(p, 'Done'), isTrue); // block output feeds the coil
+
+    writePath(p, 'Cnt.R', true);
+    executeLdPrograms(p, 100, rt);
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0));
+    expect(_b(p, 'Cnt.QU'), isFalse);
+  });
+
+  test('CTD reloads CV to PV and decrements to 0 on rising edges', () {
+    final r = buildRung(index: 0, main: [
+      _no('PB'),
+      LdNode(id: '', kind: LdKind.block, blockType: 'CTD', variable: 'Cnt', presetMs: 2),
+      _coil('Done'),
+    ]);
+    final p = _proj(
+      [_tag('PB', 'BOOL', false), _counterTagNoCv('Cnt'), _tag('Done', 'BOOL', false)],
+      [_ldProg([r])],
+      structDefs: [_counterDef],
+    );
+    final rt = LdExecRuntime();
+    executeLdPrograms(p, 100, rt); // CV absent (null) -> loads to PV=2
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(2));
+    expect(_b(p, 'Cnt.QD'), isFalse);
+
+    writePath(p, 'PB', true);
+    executeLdPrograms(p, 100, rt); // edge -> CV 1
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(1));
+
+    writePath(p, 'PB', false);
+    executeLdPrograms(p, 100, rt);
+    writePath(p, 'PB', true);
+    executeLdPrograms(p, 100, rt); // edge -> CV 0 -> QD
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0));
+    expect(_b(p, 'Cnt.QD'), isTrue);
+    expect(_b(p, 'Done'), isTrue);
+
+    writePath(p, 'Cnt.R', true);
+    executeLdPrograms(p, 100, rt); // reset reloads PV
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(2));
+  });
+
+  test('CTD preloads CV to PV on its first scan even when CV starts at 0 (editor default)', () {
+    final r = buildRung(index: 0, main: [
+      _no('PB'),
+      LdNode(id: '', kind: LdKind.block, blockType: 'CTD', variable: 'Cnt', presetMs: 3),
+      _coil('Done'),
+    ]);
+    // A normal editor-placed COUNTER tag: CV is present and initialized to 0,
+    // not absent/null. Before the fix, CTD only preloaded when CV was null,
+    // so this tag would start at CV=0 -> QD true immediately.
+    final p = _proj(
+      [_tag('PB', 'BOOL', false), _counterTag('Cnt'), _tag('Done', 'BOOL', false)],
+      [_ldProg([r])],
+      structDefs: [_counterDef],
+    );
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0)); // sanity: starts at 0, not null
+
+    final rt = LdExecRuntime();
+    executeLdPrograms(p, 100, rt); // first scan, no count input yet -> must preload CV to PV
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(3));
+    expect(_b(p, 'Cnt.QD'), isFalse);
+
+    writePath(p, 'PB', true);
+    executeLdPrograms(p, 100, rt); // edge -> CV 2
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(2));
+
+    writePath(p, 'PB', false);
+    executeLdPrograms(p, 100, rt);
+    writePath(p, 'PB', true);
+    executeLdPrograms(p, 100, rt); // edge -> CV 1
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(1));
+
+    writePath(p, 'PB', false);
+    executeLdPrograms(p, 100, rt);
+    writePath(p, 'PB', true);
+    executeLdPrograms(p, 100, rt); // edge -> CV 0 -> QD
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0));
+    expect(_b(p, 'Cnt.QD'), isTrue);
+    expect(_b(p, 'Done'), isTrue);
+
+    writePath(p, 'Cnt.R', true);
+    executeLdPrograms(p, 100, rt); // reset reloads PV
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(3));
+  });
+
+  test('CTUD counts up then down and clamps at [0, PV]', () {
+    final r = buildRung(index: 0, main: [
+      _no('Up'),
+      LdNode(id: '', kind: LdKind.block, blockType: 'CTUD', variable: 'Cnt', presetMs: 2, operandA: 'Down'),
+      _coil('Done'),
+    ]);
+    final p = _proj(
+      [
+        _tag('Up', 'BOOL', false),
+        _tag('Down', 'BOOL', false),
+        _counterTag('Cnt'),
+        _tag('Done', 'BOOL', false),
+      ],
+      [_ldProg([r])],
+      structDefs: [_counterDef],
+    );
+    final rt = LdExecRuntime();
+    executeLdPrograms(p, 100, rt);
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0));
+
+    writePath(p, 'Up', true);
+    executeLdPrograms(p, 100, rt); // up edge -> CV 1
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(1));
+
+    writePath(p, 'Up', false);
+    executeLdPrograms(p, 100, rt);
+    writePath(p, 'Up', true);
+    executeLdPrograms(p, 100, rt); // up edge -> CV 2 (== PV) -> QU
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(2));
+    expect(_b(p, 'Cnt.QU'), isTrue);
+    expect(_b(p, 'Done'), isTrue);
+
+    writePath(p, 'Up', false);
+    executeLdPrograms(p, 100, rt);
+    writePath(p, 'Up', true);
+    executeLdPrograms(p, 100, rt); // another up edge -> clamp at PV=2
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(2));
+
+    writePath(p, 'Down', true);
+    executeLdPrograms(p, 100, rt); // down edge -> CV 1
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(1));
+    expect(_b(p, 'Cnt.QU'), isFalse);
+
+    writePath(p, 'Down', false);
+    executeLdPrograms(p, 100, rt);
+    writePath(p, 'Down', true);
+    executeLdPrograms(p, 100, rt); // down edge -> CV 0 -> QD
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0));
+    expect(_b(p, 'Cnt.QD'), isTrue);
+
+    writePath(p, 'Down', false);
+    executeLdPrograms(p, 100, rt);
+    writePath(p, 'Down', true);
+    executeLdPrograms(p, 100, rt); // another down edge -> clamp at 0
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0));
+
+    writePath(p, 'Cnt.R', true);
+    executeLdPrograms(p, 100, rt);
+    expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0));
+  });
+
+  group('compare blocks', () {
+    LdNode cmpNode(String op, {String a = 'A', String b = 'B'}) => LdNode(
+        id: '', kind: LdKind.block, blockType: op, operandA: a, operandB: b);
+
+    PlcProject cmpProj(String op, num aVal, num bVal) {
+      final r = buildRung(index: 0, main: [
+        _no('In'),
+        cmpNode(op),
+        _coil('Out'),
+      ]);
+      return _proj([
+        _tag('In', 'BOOL', true),
+        _tag('A', 'FLOAT64', aVal),
+        _tag('B', 'FLOAT64', bVal),
+        _tag('Out', 'BOOL', false),
+      ], [_ldProg([r])]);
+    }
+
+    test('GT is false when A == B', () {
+      final p = cmpProj('GT', 5, 5);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isFalse);
+    });
+
+    test('LT is false when A == B', () {
+      final p = cmpProj('LT', 5, 5);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isFalse);
+    });
+
+    test('GE is true when A == B', () {
+      final p = cmpProj('GE', 5, 5);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isTrue);
+    });
+
+    test('LE is true when A == B', () {
+      final p = cmpProj('LE', 5, 5);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isTrue);
+    });
+
+    test('EQ is true when A == B', () {
+      final p = cmpProj('EQ', 5, 5);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isTrue);
+    });
+
+    test('NE is false when A == B', () {
+      final p = cmpProj('NE', 5, 5);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isFalse);
+    });
+
+    test('GT is true when A > B and false when input power is absent', () {
+      final p = cmpProj('GT', 10, 5);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isTrue);
+      writePath(p, 'In', false);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isFalse); // no input power gates the result off
+    });
+
+    test('operand as a literal resolves without needing a tag', () {
+      final r = buildRung(index: 0, main: [
+        _no('In'),
+        cmpNode('GT', a: 'A', b: '3'),
+        _coil('Out'),
+      ]);
+      final p = _proj([
+        _tag('In', 'BOOL', true),
+        _tag('A', 'FLOAT64', 5),
+        _tag('Out', 'BOOL', false),
+      ], [_ldProg([r])]);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isTrue); // 5 > 3 literal
+    });
+
+    test('non-numeric/absent operand resolves to 0, does not throw', () {
+      final r = buildRung(index: 0, main: [
+        _no('In'),
+        cmpNode('EQ', a: 'Ghost', b: '0'),
+        _coil('Out'),
+      ]);
+      final p = _proj([
+        _tag('In', 'BOOL', true),
+        _tag('Out', 'BOOL', false),
+      ], [_ldProg([r])]);
+      executeLdPrograms(p, 100, LdExecRuntime()); // must not throw
+      expect(_b(p, 'Out'), isTrue); // Ghost -> 0, 0 == 0
+    });
+  });
+
+  group('math blocks', () {
+    LdNode mathNode(String op, {String a = 'A', String b = 'B', String out = 'R'}) =>
+        LdNode(id: '', kind: LdKind.block, blockType: op, operandA: a, operandB: b, variable: out);
+
+    PlcProject mathProj(String op, num aVal, num bVal, {bool inPower = true, String outType = 'FLOAT64', num rInit = 0}) {
+      final r = buildRung(index: 0, main: [
+        _no('In'),
+        mathNode(op),
+      ]);
+      return _proj([
+        _tag('In', 'BOOL', inPower),
+        _tag('A', 'FLOAT64', aVal),
+        _tag('B', 'FLOAT64', bVal),
+        _tag('R', outType, rInit),
+      ], [_ldProg([r])]);
+    }
+
+    test('ADD writes A+B when powered', () {
+      final p = mathProj('ADD', 4, 3);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(readPath(p, 'R'), equals(7));
+    });
+
+    test('SUB writes A-B when powered', () {
+      final p = mathProj('SUB', 4, 3);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(readPath(p, 'R'), equals(1));
+    });
+
+    test('MUL writes A*B when powered', () {
+      final p = mathProj('MUL', 4, 3);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(readPath(p, 'R'), equals(12));
+    });
+
+    test('MOVE copies A, ignoring B', () {
+      final p = mathProj('MOVE', 42, 999);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(readPath(p, 'R'), equals(42));
+    });
+
+    test('DIV by zero writes 0 and power still passes (ENO true)', () {
+      final r = buildRung(index: 0, main: [
+        _no('In'),
+        mathNode('DIV'),
+        _coil('Eno'),
+      ]);
+      final p = _proj([
+        _tag('In', 'BOOL', true),
+        _tag('A', 'FLOAT64', 10),
+        _tag('B', 'FLOAT64', 0),
+        _tag('R', 'FLOAT64', -1),
+        _tag('Eno', 'BOOL', false),
+      ], [_ldProg([r])]);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(readPath(p, 'R'), equals(0));
+      expect(_b(p, 'Eno'), isTrue); // ENO passthrough of input power
+    });
+
+    test('math with input power false writes nothing and ENO is false', () {
+      final p = mathProj('ADD', 4, 3, inPower: false, rInit: 99);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(readPath(p, 'R'), equals(99)); // unchanged
+    });
+
+    test('math with input power false drives downstream power off', () {
+      final r = buildRung(index: 0, main: [
+        _no('In'),
+        mathNode('ADD'),
+        _coil('Eno'),
+      ]);
+      final p = _proj([
+        _tag('In', 'BOOL', false),
+        _tag('A', 'FLOAT64', 4),
+        _tag('B', 'FLOAT64', 3),
+        _tag('R', 'FLOAT64', 99),
+        _tag('Eno', 'BOOL', true),
+      ], [_ldProg([r])]);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(readPath(p, 'R'), equals(99));
+      expect(_b(p, 'Eno'), isFalse);
+    });
+
+    test('operand as literal vs tag both resolve for math', () {
+      final r = buildRung(index: 0, main: [
+        _no('In'),
+        mathNode('ADD', a: 'A', b: '10'),
+      ]);
+      final p = _proj([
+        _tag('In', 'BOOL', true),
+        _tag('A', 'FLOAT64', 5),
+        _tag('R', 'FLOAT64', 0),
+      ], [_ldProg([r])]);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(readPath(p, 'R'), equals(15));
+    });
+
+    test('math output to an integer tag stores a truncated int', () {
+      final p = mathProj('DIV', 7, 2, outType: 'INT32');
+      executeLdPrograms(p, 100, LdExecRuntime());
+      final v = readPath(p, 'R');
+      expect(v, equals(3));
+      expect(v, isA<int>());
+    });
   });
 }

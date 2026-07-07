@@ -27,6 +27,15 @@ final List<PlcStructDef> _builtinComposites = [
     StructFieldDef(name: 'PRE', dataType: 'INT32', defaultValue: 5000),
     StructFieldDef(name: 'ACC', dataType: 'INT32', defaultValue: 0),
   ]),
+  PlcStructDef(name: 'COUNTER', fields: [
+    StructFieldDef(name: 'CU', dataType: 'BOOL', defaultValue: false),
+    StructFieldDef(name: 'CD', dataType: 'BOOL', defaultValue: false),
+    StructFieldDef(name: 'QU', dataType: 'BOOL', defaultValue: false),
+    StructFieldDef(name: 'QD', dataType: 'BOOL', defaultValue: false),
+    StructFieldDef(name: 'R', dataType: 'BOOL', defaultValue: false),
+    StructFieldDef(name: 'CV', dataType: 'INT32', defaultValue: 0),
+    StructFieldDef(name: 'PV', dataType: 'INT32', defaultValue: 0),
+  ]),
 ];
 
 List<String> builtinCompositeNames() => _builtinComposites.map((s) => s.name).toList();
