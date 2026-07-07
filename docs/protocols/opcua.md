@@ -69,7 +69,8 @@ connection.
 
 **Deferred (v2+):**
 - **Subscriptions/MonitoredItems** — v1 clients poll via `Read`; there is no
-  server-push/monitored-item support yet.
+  server-push/monitored-item support yet. **Shipped in v2 — see
+  "Subscriptions (v2)" below.**
 - **Encryption** (`Basic256Sha256` etc.) — v1 is Security Policy `None` only,
   appropriate for LAN commissioning/training, not a certified/secure
   deployment.
@@ -78,6 +79,74 @@ connection.
   is rejected cleanly rather than crashing.
 - User-token authentication, `TranslateBrowsePaths`, and other optional
   services (all answer `ServiceFault`).
+
+## Subscriptions (v2)
+
+v2 adds real server-push: a client can subscribe to a set of nodes and
+receive **DataChangeNotifications** whenever a value changes, instead of
+having to poll with `Read`. All nine subscription-related services are
+implemented:
+
+- `CreateSubscription` / `DeleteSubscription` / `ModifySubscription` /
+  `SetPublishingMode`
+- `CreateMonitoredItems` / `ModifyMonitoredItems` / `DeleteMonitoredItems` /
+  `SetMonitoringMode`
+- `Publish` / `Republish` (retransmission of a notification the client
+  missed, by sequence number)
+
+**What's monitored:** data-change monitored items on the **Value**
+attribute only (no Event monitored items). Change detection uses an
+**absolute deadband** (a numeric monitored item only reports when its value
+moves by more than the configured deadband; boolean/string/enum values
+report on any change). Each subscription has its own **keep-alive** and
+**lifetime** counters — a subscription that goes `max_keep_alive_count`
+publishing intervals without anything to report sends an empty keep-alive
+`PublishResponse`; one that goes `lifetime_count` intervals with no
+`Publish` request outstanding from the client is deleted server-side, same
+as the spec requires.
+
+**Caps** (fixed, not client-negotiable, sized for a single-app/LAN
+simulator rather than an industrial-scale historian):
+- **10 subscriptions per session**
+- **500 monitored items per subscription**
+- **10 parked (queued) Publish requests per session**
+- **20 retransmission messages retained per subscription** (for
+  `Republish`)
+
+Exceeding a cap returns the appropriate `Bad_*` status (e.g.
+`Bad_TooManySubscriptions`, `Bad_TooManyMonitoredItems`) rather than
+silently truncating.
+
+**Seeing it in UAExpert:** drag a mapped tag from the address space into
+the **Data Access View** (or any view that subscribes, such as dragging
+onto the graph view) — UAExpert automatically creates a subscription and a
+monitored item on that node, and its value column starts updating live as
+the app's scan changes it, with no manual "Read" needed. The OPC UA card in
+**Outbound Protocols** also surfaces this at a glance: once a client has an
+active subscription, the card's status line reads `Subscriptions: N ·
+Monitored items: M`, alongside the existing connected-client count.
+
+**v2 simplifications** (documented deliberately, not implementation gaps
+that will silently bite you):
+- **Sampling mode is reported like Reporting.** The spec's `Sampling`
+  monitoring mode (value is sampled and queued but notifications are
+  suppressed until the mode changes back to `Reporting`) is accepted and
+  stored, but this server currently reports the same as `Reporting` — there
+  is no server-side notification suppression while a monitored item sits in
+  `Sampling` mode.
+- **`TimestampsToReturn` is ignored.** Every `DataValue` the server produces
+  (from `Read`, monitored-item creation, and Publish notifications) always
+  carries server timestamps; the client's requested
+  `Neither`/`Source`/`Server`/`Both` selection has no effect. This mirrors
+  v1's `Read` behavior.
+- **Keep-alives continue while publishing is disabled.** After
+  `SetPublishingMode(enabled: false)`, data-change notifications stop, but
+  the subscription's keep-alive/lifetime counters keep ticking and
+  keep-alive `PublishResponse`s still go out — the subscription itself
+  stays alive and does not silently expire just because publishing was
+  paused.
+- No sequence-number wraparound handling (not reachable in any session
+  short-lived enough for a training/simulator deployment).
 
 ## Platform notes
 
@@ -131,7 +200,13 @@ genuine Rust `opcua` crate **client** (`gateway/examples/opcua_probe.rs`,
 kept as a dev-time verification harness per ADR-010) connects over the real
 `opc.tcp` binary protocol to the Dart server hosted by a small fixture
 runner (`mobile/tool/opcua_host_probe.dart`), and exercises
-`GetEndpoints` → `Browse` (Objects) → `Read` → `Write` → `Read`-back-verify.
+`GetEndpoints` → `Browse` (Objects) → `Read` → `Write` → `Read`-back-verify
+→ **`CreateSubscription` + `CreateMonitoredItems`, then waits for a real
+pushed `DataChangeNotification`**. The fixture host mutates a tag
+server-side on its own timer (T+4s after `READY`, entirely independent of
+the probing client) so the notification the probe observes can only have
+come from the server's own publish loop — proof that a third-party client
+receives pushed data changes, not just polled reads.
 
 Run it from the repo root (bash/Git Bash):
 
@@ -145,6 +220,7 @@ the Dart host on exit (propagating the probe's exit code). A successful run
 ends with:
 
 ```
+SUBSCRIPTION PASS
 PROBE PASS
 ```
 
