@@ -233,6 +233,12 @@ DateTime? _ticksToDateTime(int ticks) {
 class OpcUaWriter {
   final BytesBuilder _builder = BytesBuilder(copy: true);
 
+  /// Appends raw already-encoded bytes verbatim (e.g. a NotificationMessage
+  /// body built once and reused byte-identical across a PublishResponse's
+  /// live send and a later Republish — WS20/Task 2). Added for WS20/Task 2;
+  /// the pre-subscriptions codec never needed to splice pre-encoded bytes.
+  void bytes(Uint8List value) => _builder.add(value);
+
   void boolean(bool value) => uint8(value ? 1 : 0);
 
   void uint8(int value) {
@@ -500,6 +506,17 @@ class OpcUaWriter {
   void extensionObjectHeader(OpcNodeId typeId, {required bool hasBody}) {
     nodeId(typeId);
     uint8(hasBody ? 0x01 : 0x00);
+  }
+
+  /// ExtensionObject with a ByteString body: NodeId typeId + 0x01 (ByteString
+  /// encoding present) + the body itself as a ByteString (Int32 length +
+  /// bytes). (extension_object.rs) Added for WS20/Task 1 — used to encode
+  /// MonitoringParameters.filter / MonitoredItemCreateResult.filterResult
+  /// (DataChangeFilter bodies), which the pre-subscriptions codec never
+  /// needed to write.
+  void extensionObject(OpcNodeId typeId, Uint8List body) {
+    extensionObjectHeader(typeId, hasBody: true);
+    byteString(body);
   }
 
   /// DiagnosticInfo: writes the empty (all-fields-absent) 0x00 form.

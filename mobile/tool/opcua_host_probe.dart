@@ -28,6 +28,7 @@ import 'dart:typed_data';
 import 'package:soft_plc_mobile/models/opcua_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
+import 'package:soft_plc_mobile/models/tag_resolver.dart' show writePath;
 import 'package:soft_plc_mobile/protocols/opcua/opcua_services.dart';
 import 'package:soft_plc_mobile/protocols/opcua/opcua_session.dart';
 import 'package:soft_plc_mobile/protocols/opcua/opcua_transport.dart';
@@ -97,10 +98,11 @@ PlcProject _fixtureProject(int port) {
 class _Connection {
   final Socket socket;
   final OpcUaServerSession session;
+  final Stopwatch clock;
   final List<int> _buffer = [];
   bool _closed = false;
 
-  _Connection(this.socket, this.session);
+  _Connection(this.socket, this.session, this.clock);
 
   void onData(List<int> data) {
     if (_closed) return;
@@ -116,7 +118,7 @@ class _Connection {
         if (_buffer.length < size) return;
         final frame = Uint8List.fromList(_buffer.sublist(0, size));
         _buffer.removeRange(0, size);
-        for (final out in session.onBytes(frame)) {
+        for (final out in session.onBytes(frame, clock.elapsedMilliseconds)) {
           socket.add(out);
         }
         if (session.shouldClose) {
@@ -132,6 +134,7 @@ class _Connection {
   void close() {
     if (_closed) return;
     _closed = true;
+    _connections.remove(this);
     try {
       socket.destroy();
     } catch (_) {
@@ -139,6 +142,16 @@ class _Connection {
     }
   }
 }
+
+/// The list of currently-live connections, ticked at 20 Hz by [main] below
+/// so the subscription engine's clock-driven publishes (unsolicited
+/// PublishResponse pushes on data change / keep-alive) actually fire —
+/// mirrors `OpcUaHost._onTick` (see `mobile/lib/services/opcua_host.dart`),
+/// which is the ONLY thing that drives `OpcUaServerSession.onClockTick` in
+/// the real app. Without this, a fixture host that only feeds bytes on
+/// `onData` would never push a subscription notification no matter how
+/// long a client waits, since nothing ever calls `onClockTick`.
+final List<_Connection> _connections = [];
 
 Future<void> main(List<String> args) async {
   if (args.isEmpty) {
@@ -171,10 +184,12 @@ Future<void> main(List<String> args) async {
     namespaceUri: opcua.namespaceUri,
   );
 
+  final clock = Stopwatch()..start();
   serverSocket.listen((socket) {
     try {
-      final session = OpcUaServerSession(info: info, services: services);
-      final conn = _Connection(socket, session);
+      final session = OpcUaServerSession(info: info, services: services, sampler: services.sample);
+      final conn = _Connection(socket, session, clock);
+      _connections.add(conn);
       socket.listen(
         (data) {
           try {
@@ -196,8 +211,48 @@ Future<void> main(List<String> args) async {
     }
   });
 
+  // 20 Hz clock tick, mirroring `OpcUaHost._onTick`: this is what actually
+  // drives the subscription engine's unsolicited PublishResponse pushes
+  // (data-change notifications, keep-alives). Without it, `onBytes` alone
+  // (only called when a client frame arrives) never fires the tick-driven
+  // publish path, so a subscribed client would never receive a push no
+  // matter how long it waits.
+  Timer.periodic(const Duration(milliseconds: 50), (timer) {
+    final nowMs = clock.elapsedMilliseconds;
+    for (final conn in List<_Connection>.from(_connections)) {
+      try {
+        final frames = conn.session.onClockTick(nowMs);
+        for (final f in frames) {
+          conn.socket.add(f);
+        }
+      } catch (_) {
+        conn.close();
+      }
+    }
+  });
+
   // ignore: avoid_print
   print('READY $endpoint');
+
+  // WS20 Task 4 subscription E2E: mutate the served project's `Counter` tag
+  // server-side (via the same `writePath` other fixtures/tests use), on a
+  // fixed schedule after READY, entirely independently of any client
+  // connection. This is what a real third-party OPC UA subscriber
+  // (`gateway/examples/opcua_probe.rs`) is meant to observe as a *pushed*
+  // DataChangeNotification, proving the change did not originate from the
+  // probing client itself. Two mutations so a second notification is also
+  // observable, though the probe only needs to assert the first (7777).
+  // `Timer` is fine here: this is a `dart run` dev/test tool, not app code.
+  Timer(const Duration(seconds: 4), () {
+    writePath(project, 'Counter', 7777);
+    // ignore: avoid_print
+    print('[fixture host] mutated Counter -> 7777 at T+4s');
+  });
+  Timer(const Duration(seconds: 8), () {
+    writePath(project, 'Counter', 8888);
+    // ignore: avoid_print
+    print('[fixture host] mutated Counter -> 8888 at T+8s');
+  });
 
   // Serve until killed. SIGINT is watched for a graceful Ctrl+C exit;
   // SIGTERM is intentionally NOT watched here (unsupported on Windows and

@@ -16,6 +16,7 @@ library opcua_session;
 import 'dart:typed_data';
 
 import 'opcua_binary.dart';
+import 'opcua_subscriptions.dart';
 import 'opcua_transport.dart';
 
 // ---------------------------------------------------------------------------
@@ -163,6 +164,7 @@ class _SessionState {
 class OpcUaServerSession {
   final OpcUaServerInfo info;
   final OpcUaServiceHandler? services;
+  final OpcDataValue Function(OpcNodeId)? sampler;
 
   bool _helloReceived = false;
   bool _shouldClose = false;
@@ -180,17 +182,33 @@ class OpcUaServerSession {
   /// first sequence number is 1).
   int _serverSequenceNumber = 1;
 
-  OpcUaServerSession({required this.info, required this.services});
+  /// Lazily created the first time a subscription-service request arrives
+  /// AND [sampler] is non-null (a `sampler: null` session always faults
+  /// subscription services with Bad_ServiceUnsupported, preserving pre-Task-3
+  /// behavior for tests/hosts that don't wire one up).
+  SubscriptionManager? _subscriptionManager;
+
+  OpcUaServerSession({required this.info, required this.services, this.sampler});
 
   bool get shouldClose => _shouldClose;
+
+  /// 0 when no subscriptions have ever been created (including when
+  /// [sampler] is null, so no manager was ever instantiated).
+  int get subscriptionCount => _subscriptionManager?.subscriptionCount ?? 0;
+
+  /// 0 when no monitored items exist (including when [sampler] is null).
+  int get monitoredItemCount => _subscriptionManager?.monitoredItemCount ?? 0;
 
   int _nextSeq() => _serverSequenceNumber++;
 
   /// Feeds one inbound framed message (a full HEL/ACK/ERR frame, or a full
-  /// OPN/MSG/CLO chunk) and returns the frames to send back. Never throws.
-  List<Uint8List> onBytes(Uint8List frame) {
+  /// OPN/MSG/CLO chunk) and returns the frames to send back. [nowMs] is the
+  /// monotonic clock reading (ms) used for subscription/monitored-item
+  /// scheduling — irrelevant to every non-subscription service, so tests
+  /// that don't exercise subscriptions may pass 0. Never throws.
+  List<Uint8List> onBytes(Uint8List frame, int nowMs) {
     try {
-      return _onBytesInner(frame);
+      return _onBytesInner(frame, nowMs);
     } catch (_) {
       // Catch-all: any decode failure/format exception/cast error anywhere
       // below degrades to a clean ERR frame + close, never an uncaught
@@ -205,7 +223,31 @@ class OpcUaServerSession {
     }
   }
 
-  List<Uint8List> _onBytesInner(Uint8List frame) {
+  /// Clock-tick entry point: drives the [SubscriptionManager]'s time-based
+  /// publish engine (keep-alives, sampling, retransmission, lifetime
+  /// timeouts) and returns any resulting MSG frames to push to the socket
+  /// NOW (unsolicited — no matching inbound request this tick). Returns
+  /// `const []` when there is no channel yet, no session, no activated
+  /// session, no manager (sampler-less session), or no subscriptions ready
+  /// to publish. NEVER throws — unlike [onBytes]'s ERR+close degrade path,
+  /// a tick failure is swallowed silently and the connection stays open
+  /// (a single misbehaving tick must not tear down an otherwise-healthy
+  /// connection).
+  List<Uint8List> onClockTick(int nowMs) {
+    try {
+      final manager = _subscriptionManager;
+      if (_channel == null || _session == null || !_session!.activated || manager == null) {
+        return const [];
+      }
+      final outs = manager.onTick(nowMs);
+      if (outs.isEmpty) return const [];
+      return [for (final out in outs) _wrapMsgResponseForRequestId(out.requestId, out.body)];
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  List<Uint8List> _onBytesInner(Uint8List frame, int nowMs) {
     if (frame.length < kMessageHeaderLen) {
       return _err(OpcUaStatusCodes.badTcpMessageTypeInvalid, 'frame too short');
     }
@@ -225,7 +267,7 @@ class OpcUaServerSession {
       case 'OPN':
         return _handleOpn(frame);
       case 'MSG':
-        return _handleMsg(frame);
+        return _handleMsg(frame, nowMs);
       case 'CLO':
         return _handleClo(frame);
       default:
@@ -369,7 +411,7 @@ class OpcUaServerSession {
 
   // --- MSG (service dispatch) --------------------------------------------
 
-  List<Uint8List> _handleMsg(Uint8List frame) {
+  List<Uint8List> _handleMsg(Uint8List frame, int nowMs) {
     final chunk = parseChunk(frame);
     if (!chunk.isFinal) {
       return _err(
@@ -413,6 +455,9 @@ class OpcUaServerSession {
         _shouldClose = true;
         return const [];
       default:
+        if (SubscriptionManager.serviceIds.contains(id)) {
+          return _dispatchToSubscriptionManager(chunk, id, reader, header, nowMs);
+        }
         return _dispatchToServiceHandler(chunk, id, reader, header);
     }
   }
@@ -446,6 +491,23 @@ class OpcUaServerSession {
       tokenId: _channel!.tokenId,
       sequenceNumber: _nextSeq(),
       requestId: requestChunk.requestId,
+      body: body,
+    );
+  }
+
+  /// Same as [_wrapMsgResponse] but for a [PublishOut] whose `requestId` is
+  /// NOT the chunk currently being processed — used both for
+  /// [SubscriptionManager] responses (which may resolve an EARLIER parked
+  /// Publish, not necessarily the just-arrived request) and for
+  /// [onClockTick] (no inbound chunk at all). Uses the CURRENT channel/token
+  /// ids and the server's own next sequence number, same as every other
+  /// outbound frame.
+  Uint8List _wrapMsgResponseForRequestId(int requestId, Uint8List body) {
+    return buildMsgChunk(
+      secureChannelId: _channel!.channelId,
+      tokenId: _channel!.tokenId,
+      sequenceNumber: _nextSeq(),
+      requestId: requestId,
       body: body,
     );
   }
@@ -717,5 +779,69 @@ class OpcUaServerSession {
       );
     }
     return [_wrapMsgResponse(chunk, responseBody)];
+  }
+
+  /// Routes one of the nine [SubscriptionManager.serviceIds] requests.
+  /// Applies EXACTLY the same activation guards as
+  /// [_dispatchToServiceHandler] (no session -> Bad_ServiceUnsupported;
+  /// closed/wrong authToken -> Bad_SessionIdInvalid; not activated ->
+  /// Bad_SessionNotActivated) before ever touching the manager, then lazily
+  /// creates the ONE [SubscriptionManager] for this session (only when
+  /// [sampler] is non-null — a sampler-less session faults
+  /// Bad_ServiceUnsupported, same as an unrecognized service). A parked
+  /// Publish yields an empty `handleService` result, which this method
+  /// turns into `const []` — i.e. sending nothing back for this chunk is
+  /// the deferral mechanism, not an error.
+  List<Uint8List> _dispatchToSubscriptionManager(
+    OpcChunk chunk,
+    int requestTypeId,
+    OpcUaReader reader,
+    RequestHeader header,
+    int nowMs,
+  ) {
+    if (_session == null) {
+      return _fault(
+        chunk,
+        requestHandle: header.requestHandle,
+        serviceResult: OpcUaStatusCodes.badServiceUnsupported,
+      );
+    }
+    if (_session!.closed) {
+      return _fault(
+        chunk,
+        requestHandle: header.requestHandle,
+        serviceResult: OpcUaStatusCodes.badSessionIdInvalid,
+      );
+    }
+    if (header.authToken != _session!.authToken) {
+      return _fault(
+        chunk,
+        requestHandle: header.requestHandle,
+        serviceResult: OpcUaStatusCodes.badSessionIdInvalid,
+      );
+    }
+    if (!_session!.activated) {
+      return _fault(
+        chunk,
+        requestHandle: header.requestHandle,
+        serviceResult: OpcUaStatusCodes.badSessionNotActivated,
+      );
+    }
+    final samplerFn = sampler;
+    if (samplerFn == null) {
+      return _fault(
+        chunk,
+        requestHandle: header.requestHandle,
+        serviceResult: OpcUaStatusCodes.badServiceUnsupported,
+      );
+    }
+    final manager = _subscriptionManager ??= SubscriptionManager(sampler: samplerFn);
+
+    final outs = manager.handleService(requestTypeId, reader, header, chunk.requestId, nowMs);
+    if (outs.isEmpty) {
+      // Parked Publish: the deferral IS the behavior — send nothing now.
+      return const [];
+    }
+    return [for (final out in outs) _wrapMsgResponseForRequestId(out.requestId, out.body)];
   }
 }

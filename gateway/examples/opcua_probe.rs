@@ -23,18 +23,27 @@
 use std::env;
 use std::process::ExitCode;
 use std::str::FromStr;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use opcua::client::prelude::{
-    AttributeService, ClientBuilder, IdentityToken, MessageSecurityMode, UserTokenPolicy,
-    ViewService,
+    AttributeService, ClientBuilder, DataChangeCallback, IdentityToken, MessageSecurityMode,
+    MonitoredItemService, Session, SubscriptionService, UserTokenPolicy, ViewService,
 };
 use opcua::types::{
-    AttributeId, BrowseDescription, BrowseDirection, DataValue, NodeId, ObjectId,
+    AttributeId, BrowseDescription, BrowseDirection, DataValue, ExtensionObject,
+    MonitoredItemCreateRequest, MonitoringMode, MonitoringParameters, NodeId, ObjectId,
     ReferenceTypeId, ReadValueId, TimestampsToReturn, Variant, WriteValue,
 };
 
 const NODE_TEMP: &str = "ns=1;s=Temp";
 const NODE_COUNTER: &str = "ns=1;s=Counter";
+
+/// Value the Dart fixture host (`mobile/tool/opcua_host_probe.dart`) writes
+/// to `NODE_COUNTER` at T+4s after printing READY, purely as a server-side
+/// mutation for the subscription half of this probe to observe (a real
+/// SCADA-style "value changed on the device" push, not a client write).
+const SUBSCRIPTION_EXPECTED_VALUE: i32 = 7777;
 
 fn test_pki_dir() -> String {
     let mut dir = std::env::temp_dir();
@@ -88,12 +97,12 @@ fn run(endpoint_url: &str) -> Result<(), String> {
     )
         .into();
 
-    let session = client
+    let session_arc = client
         .connect_to_endpoint(endpoint, IdentityToken::Anonymous)
         .map_err(|e| format!("connect_to_endpoint failed: {e}"))?;
     println!("[probe] session connected.");
 
-    let session = session.read();
+    let session = session_arc.read();
 
     // --- Step 2: Browse the Objects folder ---------------------------
     println!("[probe] Browse Objects (i=85)...");
@@ -191,6 +200,140 @@ fn run(endpoint_url: &str) -> Result<(), String> {
         }
     }
 
+    // --- Step 6: Subscribe to data changes and observe a server-side push --
+    //
+    // This is the machine-proof that a real, independent OPC UA client
+    // receives *pushed* data changes from the in-app Dart server's
+    // subscription engine (WS20), as opposed to only ever polling with
+    // Read. The Dart fixture host (`mobile/tool/opcua_host_probe.dart`)
+    // mutates `NODE_COUNTER` server-side to `SUBSCRIPTION_EXPECTED_VALUE`
+    // (7777) at T+4s after printing READY, entirely independently of this
+    // client -- so a DataChangeNotification arriving with that value can
+    // only have come from the server's own publish loop, not from anything
+    // this probe wrote.
+    //
+    // The `opcua` client crate's synchronous service calls (`browse`,
+    // `read`, `write` above, and `create_subscription`/
+    // `create_monitored_items` below) all work against the `Session`
+    // directly. But actually *receiving* publish responses (and thus
+    // getting the `DataChangeCallback` invoked) requires the session's
+    // background poll loop to be running -- see `Session::run_async` in
+    // the vendored crate (`client/session/session.rs`), which spawns a
+    // thread that repeatedly calls `session.poll()`. Without that running,
+    // PublishRequests are never sent/serviced and no notifications ever
+    // arrive, no matter how long we wait. So: create the subscription and
+    // monitored item first (still fine synchronously on the read-locked
+    // session), THEN start `run_async` on the shared `Arc<RwLock<Session>>`
+    // to drive the actual publish/notify traffic.
+    println!("[probe] creating subscription (publishing interval 500ms)...");
+    let (tx, rx) = mpsc::channel::<Variant>();
+    // `mpsc::Sender` is `Send` but not `Sync`, and `DataChangeCallback::new`
+    // requires `Fn(..) + Send + Sync + 'static` (the crate may invoke the
+    // callback from its poll thread, but the bound still demands `Sync`).
+    // Wrap it in a `Mutex` so the whole captured closure is `Sync`.
+    let tx = std::sync::Mutex::new(tx);
+    let subscription_id = session
+        .create_subscription(
+            500.0, // publishing_interval (ms)
+            30,    // lifetime_count
+            10,    // max_keep_alive_count
+            0,     // max_notifications_per_publish (0 = no limit)
+            0,     // priority
+            true,  // publishing_enabled
+            DataChangeCallback::new(move |changed_monitored_items| {
+                for item in changed_monitored_items {
+                    let data_value = item.last_value();
+                    if let Some(value) = data_value.value.clone() {
+                        println!("[probe] data change callback: {value:?}");
+                        if let Ok(sender) = tx.lock() {
+                            let _ = sender.send(value);
+                        }
+                    }
+                }
+            }),
+        )
+        .map_err(|e| format!("create_subscription failed: {e}"))?;
+    println!("[probe] subscription created: id={subscription_id}");
+
+    println!("[probe] creating monitored item on {NODE_COUNTER} (queue size 10, no filter)...");
+    let monitor_node = NodeId::from_str(NODE_COUNTER).map_err(|_| format!("bad NodeId literal {NODE_COUNTER}"))?;
+    let item_to_monitor = ReadValueId {
+        node_id: monitor_node,
+        attribute_id: AttributeId::Value as u32,
+        index_range: opcua::types::UAString::null(),
+        data_encoding: opcua::types::QualifiedName::null(),
+    };
+    let create_request = MonitoredItemCreateRequest::new(
+        item_to_monitor,
+        MonitoringMode::Reporting,
+        MonitoringParameters {
+            client_handle: 0,
+            sampling_interval: -1.0, // inherit the subscription's publishing interval
+            filter: ExtensionObject::null(),
+            queue_size: 10,
+            discard_oldest: true,
+        },
+    );
+    let create_results = session
+        .create_monitored_items(subscription_id, TimestampsToReturn::Both, &[create_request])
+        .map_err(|e| format!("create_monitored_items failed: {e}"))?;
+    let create_result = create_results
+        .first()
+        .ok_or_else(|| "create_monitored_items returned zero results".to_string())?;
+    if !create_result.status_code.is_good() {
+        return Err(format!(
+            "create_monitored_items returned non-Good status: {:?}",
+            create_result.status_code
+        ));
+    }
+    println!(
+        "[probe] monitored item created: id={} revised_queue_size={}",
+        create_result.monitored_item_id, create_result.revised_queue_size
+    );
+
+    // The session was only read-locked so far (fine for the synchronous
+    // service calls above). Drop that guard before handing the shared Arc
+    // to `Session::run_async`, which needs to take its own write lock on
+    // every poll iteration.
+    drop(session);
+
+    println!("[probe] starting session poll loop (Session::run_async) to drive publishing...");
+    let _run_handle = Session::run_async(session_arc.clone());
+
+    println!(
+        "[probe] waiting up to 10s for a DataChangeNotification with value {SUBSCRIPTION_EXPECTED_VALUE}..."
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut observed_expected = false;
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(remaining) {
+            Ok(Variant::Int32(v)) if v == SUBSCRIPTION_EXPECTED_VALUE => {
+                observed_expected = true;
+                break;
+            }
+            Ok(other) => {
+                println!("[probe] (ignoring intermediate data change: {other:?})");
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("data change channel disconnected while waiting for subscription notification".to_string());
+            }
+        }
+    }
+
+    if !observed_expected {
+        return Err(format!(
+            "timed out after 10s waiting for a DataChangeNotification with value {SUBSCRIPTION_EXPECTED_VALUE} on {NODE_COUNTER}"
+        ));
+    }
+    println!("[probe] observed pushed DataChangeNotification: {NODE_COUNTER} = {SUBSCRIPTION_EXPECTED_VALUE}");
+    println!("SUBSCRIPTION PASS");
+
+    let session = session_arc.read();
     session.disconnect();
     Ok(())
 }

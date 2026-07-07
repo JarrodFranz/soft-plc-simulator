@@ -478,6 +478,41 @@ void main() {
       expect(secondDv.variant!.value, 99);
     });
 
+    test('sample() returns the live value; mutating the tag between two calls gives two different values', () {
+      final space = OpcUaAddressSpace.build(project);
+      final nodeId = space.byNodeId(const OpcNodeId.string(1, 'Counter'))!.nodeId;
+
+      final first = services.sample(nodeId);
+      expect(first.status, _statusGood);
+      expect(first.variant!.value, 42);
+
+      writePath(project, 'Counter', 777);
+
+      final second = services.sample(nodeId);
+      expect(second.variant!.value, 777);
+      expect(second.variant!.value, isNot(first.variant!.value));
+    });
+
+    test('sample() result equals a Read of the same node', () {
+      final space = OpcUaAddressSpace.build(project);
+      final nodeId = space.byNodeId(const OpcNodeId.string(1, 'Temperature'))!.nodeId;
+
+      final sampled = services.sample(nodeId);
+
+      final body = _readRequestBody(
+        toRead: [(nodeId: nodeId, attributeId: _attrValue, indexRange: null)],
+      );
+      final resp = callHandler(_readRequestId, body)!;
+      final reader = OpcUaReader(resp);
+      reader.nodeId();
+      reader.responseHeader();
+      reader.int32();
+      final readDv = reader.dataValue();
+
+      expect(sampled.status, readDv.status);
+      expect(sampled.variant, readDv.variant);
+    });
+
     test('Read maps each dataType to the right Variant type', () {
       final space = OpcUaAddressSpace.build(project);
       final boolNodeId = space.byNodeId(const OpcNodeId.string(1, 'StartPB'))!.nodeId;
@@ -958,8 +993,8 @@ void main() {
       final services = OpcUaProjectServices(projectProvider: () => project);
       final session = OpcUaServerSession(info: info, services: services);
 
-      session.onBytes(buildTestHello());
-      final opnFrames = session.onBytes(buildTestOpn(1, 10));
+      session.onBytes(buildTestHello(), 0);
+      final opnFrames = session.onBytes(buildTestOpn(1, 10), 0);
       final opnReader = OpcUaReader(parseChunk(opnFrames.single).body);
       opnReader.nodeId();
       opnReader.responseHeader();
@@ -967,7 +1002,7 @@ void main() {
       final channelId = opnReader.uint32();
       final tokenId = opnReader.uint32();
 
-      final createFrames = session.onBytes(buildTestCreateSession(channelId, tokenId, 2, 11));
+      final createFrames = session.onBytes(buildTestCreateSession(channelId, tokenId, 2, 11), 0);
       final createReader = OpcUaReader(parseChunk(createFrames.single).body);
       createReader.nodeId();
       createReader.responseHeader();
@@ -975,10 +1010,10 @@ void main() {
       final authToken = createReader.nodeId();
       expect(sessionId, isNotNull);
 
-      session.onBytes(buildTestActivateSession(channelId, tokenId, 3, 12, authToken));
+      session.onBytes(buildTestActivateSession(channelId, tokenId, 3, 12, authToken), 0);
 
       final browseFrames =
-          session.onBytes(buildTestBrowseObjects(channelId, tokenId, 4, 13, authToken));
+          session.onBytes(buildTestBrowseObjects(channelId, tokenId, 4, 13, authToken), 0);
       expect(browseFrames, hasLength(1));
       final respChunk = parseChunk(browseFrames.single);
       final respReader = OpcUaReader(respChunk.body);

@@ -20,6 +20,14 @@ import 'package:soft_plc_mobile/protocols/opcua/opcua_binary.dart';
 import 'package:soft_plc_mobile/protocols/opcua/opcua_session.dart';
 import 'package:soft_plc_mobile/protocols/opcua/opcua_transport.dart';
 
+// --- Subscription service encoding ids, verified against types/node_ids.rs -
+const _createSubscriptionRequestId = 787;
+const _createSubscriptionResponseId = 790;
+const _createMonitoredItemsRequestId = 751;
+const _createMonitoredItemsResponseId = 754;
+const _publishRequestId = 826;
+const _publishResponseId = 829;
+
 // --- Encoding ids, verified against types/node_ids.rs -----------------------
 const _openSecureChannelRequestId = 446;
 const _getEndpointsRequestId = 428;
@@ -260,6 +268,110 @@ Uint8List _buildGenericServiceRequestChunk({
   );
 }
 
+/// CreateSubscriptionRequest body (create_subscription_request.rs):
+/// requestHeader(consumed), requestedPublishingInterval f64,
+/// requestedLifetimeCount u32, requestedMaxKeepAliveCount u32,
+/// maxNotificationsPerPublish u32, publishingEnabled bool, priority u8.
+Uint8List _buildCreateSubscriptionRequestChunk({
+  required int secureChannelId,
+  required int tokenId,
+  required int sequenceNumber,
+  required int requestId,
+  required OpcNodeId authToken,
+  double requestedPublishingInterval = 100,
+  int requestedLifetimeCount = 100,
+  int requestedMaxKeepAliveCount = 10,
+  int maxNotificationsPerPublish = 0,
+  bool publishingEnabled = true,
+  int requestHandle = 20,
+}) {
+  final w = OpcUaWriter();
+  w.nodeId(const OpcNodeId.numeric(0, _createSubscriptionRequestId));
+  w.requestHeader(_reqHeader(authToken: authToken, requestHandle: requestHandle));
+  w.float64(requestedPublishingInterval);
+  w.uint32(requestedLifetimeCount);
+  w.uint32(requestedMaxKeepAliveCount);
+  w.uint32(maxNotificationsPerPublish);
+  w.boolean(publishingEnabled);
+  w.uint8(0); // priority
+  return buildMsgChunk(
+    secureChannelId: secureChannelId,
+    tokenId: tokenId,
+    sequenceNumber: sequenceNumber,
+    requestId: requestId,
+    body: w.take(),
+  );
+}
+
+/// CreateMonitoredItemsRequest body (create_monitored_items_request.rs):
+/// requestHeader(consumed), subscriptionId u32, timestampsToReturn Int32
+/// enum, itemsToCreate[] MonitoredItemCreateRequest{itemToMonitor
+/// ReadValueId{nodeId, attributeId u32, indexRange String, dataEncoding
+/// QualifiedName}, monitoringMode Int32 enum, requestedParameters
+/// MonitoringParameters{clientHandle u32, samplingInterval f64, filter
+/// ExtensionObject, queueSize u32, discardOldest bool}}.
+Uint8List _buildCreateMonitoredItemsRequestChunk({
+  required int secureChannelId,
+  required int tokenId,
+  required int sequenceNumber,
+  required int requestId,
+  required OpcNodeId authToken,
+  required int subscriptionId,
+  required OpcNodeId nodeId,
+  int clientHandle = 1,
+  double samplingInterval = 0,
+  int queueSize = 1,
+  int requestHandle = 21,
+}) {
+  final w = OpcUaWriter();
+  w.nodeId(const OpcNodeId.numeric(0, _createMonitoredItemsRequestId));
+  w.requestHeader(_reqHeader(authToken: authToken, requestHandle: requestHandle));
+  w.uint32(subscriptionId);
+  w.int32(2); // timestampsToReturn: Both (unused by v1)
+  w.int32(1); // itemsToCreate: one entry
+  w.nodeId(nodeId);
+  w.uint32(13); // attributeId: Value
+  w.string(null); // indexRange
+  w.qualifiedName(const OpcQualifiedName(ns: 0, name: null)); // dataEncoding
+  w.int32(2); // monitoringMode: Reporting
+  w.uint32(clientHandle);
+  w.float64(samplingInterval);
+  w.extensionObjectHeader(const OpcNodeId.numeric(0, 0), hasBody: false); // filter: none
+  w.uint32(queueSize);
+  w.boolean(true); // discardOldest
+  return buildMsgChunk(
+    secureChannelId: secureChannelId,
+    tokenId: tokenId,
+    sequenceNumber: sequenceNumber,
+    requestId: requestId,
+    body: w.take(),
+  );
+}
+
+/// PublishRequest body (publish_request.rs): requestHeader(consumed),
+/// subscriptionAcknowledgements Option<Vec<SubscriptionAcknowledgement>>
+/// (null here — no prior notifications to acknowledge in these tests).
+Uint8List _buildPublishRequestChunk({
+  required int secureChannelId,
+  required int tokenId,
+  required int sequenceNumber,
+  required int requestId,
+  required OpcNodeId authToken,
+  int requestHandle = 22,
+}) {
+  final w = OpcUaWriter();
+  w.nodeId(const OpcNodeId.numeric(0, _publishRequestId));
+  w.requestHeader(_reqHeader(authToken: authToken, requestHandle: requestHandle));
+  w.int32(-1); // subscriptionAcknowledgements: null array
+  return buildMsgChunk(
+    secureChannelId: secureChannelId,
+    tokenId: tokenId,
+    sequenceNumber: sequenceNumber,
+    requestId: requestId,
+    body: w.take(),
+  );
+}
+
 /// Reads the response envelope from a MSG/OPN chunk: NodeId encoding id +
 /// ResponseHeader, returning the id and a reader positioned right after the
 /// ResponseHeader (at the start of the response-specific fields).
@@ -314,7 +426,7 @@ void main() {
       final outFrames = session.onBytes(_buildHello(
         receiveBufferSize: 65536,
         sendBufferSize: 65536,
-      ));
+      ), 0);
       expect(outFrames, hasLength(1));
       final ack = AcknowledgeMessage.parse(outFrames.single);
       expect(ack.protocolVersion, 0);
@@ -330,7 +442,7 @@ void main() {
       final outFrames = session.onBytes(_buildHello(
         receiveBufferSize: 100 * 1024 * 1024,
         sendBufferSize: 100 * 1024 * 1024,
-      ));
+      ), 0);
       final ack = AcknowledgeMessage.parse(outFrames.single);
       expect(ack.receiveBufferSize, lessThanOrEqualTo(1048576));
       expect(ack.sendBufferSize, lessThanOrEqualTo(1048576));
@@ -343,7 +455,7 @@ void main() {
         sequenceNumber: 1,
         requestId: 1,
       );
-      final outFrames = session.onBytes(chunk);
+      final outFrames = session.onBytes(chunk, 0);
       expect(outFrames, hasLength(1));
       final header = MessageHeader.parse(outFrames.single);
       expect(header.messageType, 'ERR');
@@ -356,7 +468,7 @@ void main() {
 
     setUp(() {
       session = OpcUaServerSession(info: _info, services: null);
-      session.onBytes(_buildHello());
+      session.onBytes(_buildHello(), 0);
     });
 
     test('Issue allocates a non-zero channelId + tokenId, bounded lifetime', () {
@@ -365,7 +477,7 @@ void main() {
         sequenceNumber: 1,
         requestId: 10,
         requestedLifetime: 60000,
-      ));
+      ), 0);
       expect(outFrames, hasLength(1));
       final chunk = parseChunk(outFrames.single);
       expect(chunk.messageType, 'OPN');
@@ -395,7 +507,7 @@ void main() {
         secureChannelId: 0,
         sequenceNumber: 1,
         requestId: 10,
-      ));
+      ), 0);
       final issueChunk = parseChunk(issueFrames.single);
       final issueReader = OpcUaReader(issueChunk.body);
       issueReader.nodeId();
@@ -409,7 +521,7 @@ void main() {
         sequenceNumber: 2,
         requestId: 11,
         requestType: 1, // Renew
-      ));
+      ), 0);
       final renewChunk = parseChunk(renewFrames.single);
       final renewReader = OpcUaReader(renewChunk.body);
       renewReader.nodeId();
@@ -430,7 +542,7 @@ void main() {
         secureChannelId: 0,
         sequenceNumber: 1,
         requestId: 10,
-      ));
+      ), 0);
       final opnReader = OpcUaReader(parseChunk(opnFrames.single).body);
       opnReader.nodeId();
       opnReader.responseHeader();
@@ -444,7 +556,7 @@ void main() {
         sequenceNumber: 2,
         requestId: 11,
         authToken: const OpcNodeId.numeric(0, 0),
-      ));
+      ), 0);
       expect(outFrames, hasLength(1));
       final header = MessageHeader.parse(outFrames.single);
       expect(header.messageType, 'ERR');
@@ -455,12 +567,12 @@ void main() {
   group('GetEndpoints', () {
     test('returns exactly one endpoint with None policy + anonymous token', () {
       final session = OpcUaServerSession(info: _info, services: null);
-      session.onBytes(_buildHello());
+      session.onBytes(_buildHello(), 0);
       final opnFrames = session.onBytes(_buildOpenSecureChannelRequestChunk(
         secureChannelId: 0,
         sequenceNumber: 1,
         requestId: 10,
-      ));
+      ), 0);
       final opnReader = OpcUaReader(parseChunk(opnFrames.single).body);
       opnReader.nodeId();
       opnReader.responseHeader();
@@ -474,7 +586,7 @@ void main() {
         sequenceNumber: 2,
         requestId: 11,
         authToken: const OpcNodeId.numeric(0, 0),
-      ));
+      ), 0);
       expect(geFrames, hasLength(1));
       final decoded = _decodeResponseChunk(geFrames.single);
       expect(decoded.encodingId, _getEndpointsResponseId);
@@ -532,12 +644,12 @@ void main() {
 
     setUp(() {
       session = OpcUaServerSession(info: _info, services: null);
-      session.onBytes(_buildHello());
+      session.onBytes(_buildHello(), 0);
       final opnFrames = session.onBytes(_buildOpenSecureChannelRequestChunk(
         secureChannelId: 0,
         sequenceNumber: 1,
         requestId: 10,
-      ));
+      ), 0);
       final opnReader = OpcUaReader(parseChunk(opnFrames.single).body);
       opnReader.nodeId();
       opnReader.responseHeader();
@@ -553,7 +665,7 @@ void main() {
         sequenceNumber: 2,
         requestId: 11,
         requestedSessionTimeout: 100 * 60 * 60 * 1000, // way over 1hr cap
-      ));
+      ), 0);
       final decoded = _decodeResponseChunk(frames.single);
       expect(decoded.encodingId, _createSessionResponseId);
       expect(decoded.header.serviceResult, _statusGood);
@@ -575,7 +687,7 @@ void main() {
         tokenId: tokenId,
         sequenceNumber: 2,
         requestId: 11,
-      ));
+      ), 0);
       final createDecoded = _decodeResponseChunk(createFrames.single);
       final authToken = createDecoded.reader.nodeId();
 
@@ -585,7 +697,7 @@ void main() {
         sequenceNumber: 3,
         requestId: 12,
         authToken: authToken,
-      ));
+      ), 0);
       final activateDecoded = _decodeResponseChunk(activateFrames.single);
       expect(activateDecoded.encodingId, _activateSessionResponseId);
       expect(activateDecoded.header.serviceResult, _statusGood);
@@ -596,7 +708,7 @@ void main() {
         sequenceNumber: 4,
         requestId: 13,
         authToken: authToken,
-      ));
+      ), 0);
       final closeDecoded = _decodeResponseChunk(closeFrames.single);
       expect(closeDecoded.encodingId, _closeSessionResponseId);
       expect(closeDecoded.header.serviceResult, _statusGood);
@@ -608,7 +720,7 @@ void main() {
         tokenId: tokenId,
         sequenceNumber: 2,
         requestId: 11,
-      ));
+      ), 0);
       final createDecoded = _decodeResponseChunk(createFrames.single);
       final authToken = createDecoded.reader.nodeId();
 
@@ -620,7 +732,7 @@ void main() {
         serviceEncodingId: 527, // BrowseRequest_Encoding_DefaultBinary (Task 3's domain)
         authToken: authToken,
         requestHandle: 42,
-      ));
+      ), 0);
       final decoded = _decodeResponseChunk(serviceFrames.single);
       expect(decoded.encodingId, _serviceFaultId);
       expect(decoded.header.serviceResult, _statusBadSessionNotActivated);
@@ -630,12 +742,12 @@ void main() {
     test('Task-3 service call AFTER activation with a stub handler -> handler response', () {
       final handler = _StubServiceHandler();
       final activatedSession = OpcUaServerSession(info: _info, services: handler);
-      activatedSession.onBytes(_buildHello());
+      activatedSession.onBytes(_buildHello(), 0);
       final opnFrames = activatedSession.onBytes(_buildOpenSecureChannelRequestChunk(
         secureChannelId: 0,
         sequenceNumber: 1,
         requestId: 10,
-      ));
+      ), 0);
       final opnReader = OpcUaReader(parseChunk(opnFrames.single).body);
       opnReader.nodeId();
       opnReader.responseHeader();
@@ -648,7 +760,7 @@ void main() {
         tokenId: tkId,
         sequenceNumber: 2,
         requestId: 11,
-      ));
+      ), 0);
       final authToken = _decodeResponseChunk(createFrames.single).reader.nodeId();
 
       activatedSession.onBytes(_buildActivateSessionRequestChunk(
@@ -657,7 +769,7 @@ void main() {
         sequenceNumber: 3,
         requestId: 12,
         authToken: authToken,
-      ));
+      ), 0);
 
       final serviceFrames = activatedSession.onBytes(_buildGenericServiceRequestChunk(
         secureChannelId: chId,
@@ -667,7 +779,7 @@ void main() {
         serviceEncodingId: 527,
         authToken: authToken,
         requestHandle: 77,
-      ));
+      ), 0);
       expect(handler.callCount, 1);
       expect(handler.lastRequestTypeId, 527);
 
@@ -692,7 +804,7 @@ void main() {
         serviceEncodingId: 999999,
         authToken: const OpcNodeId.numeric(0, 0),
         requestHandle: 123,
-      ));
+      ), 0);
       final decoded = _decodeResponseChunk(frames.single);
       expect(decoded.encodingId, _serviceFaultId);
       expect(decoded.header.serviceResult, _statusBadServiceUnsupported);
@@ -705,7 +817,7 @@ void main() {
         tokenId: tokenId,
         sequenceNumber: 2,
         requestId: 11,
-      ));
+      ), 0);
       final authToken = _decodeResponseChunk(createFrames.single).reader.nodeId();
 
       session.onBytes(_buildActivateSessionRequestChunk(
@@ -714,7 +826,7 @@ void main() {
         sequenceNumber: 3,
         requestId: 12,
         authToken: authToken,
-      ));
+      ), 0);
 
       session.onBytes(_buildCloseSessionRequestChunk(
         secureChannelId: channelId,
@@ -722,7 +834,7 @@ void main() {
         sequenceNumber: 4,
         requestId: 13,
         authToken: authToken,
-      ));
+      ), 0);
 
       final frames = session.onBytes(_buildGenericServiceRequestChunk(
         secureChannelId: channelId,
@@ -732,7 +844,7 @@ void main() {
         serviceEncodingId: 527,
         authToken: authToken,
         requestHandle: 200,
-      ));
+      ), 0);
       final decoded = _decodeResponseChunk(frames.single);
       expect(decoded.encodingId, _serviceFaultId);
       expect(decoded.header.serviceResult, _statusBadSessionIdInvalid);
@@ -743,11 +855,11 @@ void main() {
   group('Malformed input', () {
     test('garbage bytes -> ERR + shouldClose, never a throw', () {
       final session = OpcUaServerSession(info: _info, services: null);
-      session.onBytes(_buildHello());
+      session.onBytes(_buildHello(), 0);
       final garbage = Uint8List.fromList(List<int>.filled(20, 0xFF));
       List<Uint8List> outFrames = [];
       expect(() {
-        outFrames = session.onBytes(garbage);
+        outFrames = session.onBytes(garbage, 0);
       }, returnsNormally);
       expect(outFrames, hasLength(1));
       final header = MessageHeader.parse(outFrames.single);
@@ -757,7 +869,7 @@ void main() {
 
     test('truncated chunk -> ERR + shouldClose, never a throw', () {
       final session = OpcUaServerSession(info: _info, services: null);
-      session.onBytes(_buildHello());
+      session.onBytes(_buildHello(), 0);
       final full = _buildOpenSecureChannelRequestChunk(
         secureChannelId: 0,
         sequenceNumber: 1,
@@ -766,7 +878,7 @@ void main() {
       final truncated = Uint8List.sublistView(full, 0, full.length ~/ 2);
       List<Uint8List> outFrames = [];
       expect(() {
-        outFrames = session.onBytes(truncated);
+        outFrames = session.onBytes(truncated, 0);
       }, returnsNormally);
       expect(outFrames, hasLength(1));
       final header = MessageHeader.parse(outFrames.single);
@@ -778,13 +890,13 @@ void main() {
   group('Sequence numbers', () {
     test('server response sequence numbers strictly increase across responses', () {
       final session = OpcUaServerSession(info: _info, services: null);
-      session.onBytes(_buildHello());
+      session.onBytes(_buildHello(), 0);
 
       final opnFrames = session.onBytes(_buildOpenSecureChannelRequestChunk(
         secureChannelId: 0,
         sequenceNumber: 1,
         requestId: 10,
-      ));
+      ), 0);
       final opnSeq = parseChunk(opnFrames.single).sequenceNumber;
 
       final opnReader = OpcUaReader(parseChunk(opnFrames.single).body);
@@ -800,7 +912,7 @@ void main() {
         sequenceNumber: 2,
         requestId: 11,
         authToken: const OpcNodeId.numeric(0, 0),
-      ));
+      ), 0);
       final geSeq = parseChunk(geFrames.single).sequenceNumber;
 
       final ge2Frames = session.onBytes(_buildGetEndpointsRequestChunk(
@@ -809,11 +921,317 @@ void main() {
         sequenceNumber: 3,
         requestId: 12,
         authToken: const OpcNodeId.numeric(0, 0),
-      ));
+      ), 0);
       final ge2Seq = parseChunk(ge2Frames.single).sequenceNumber;
 
       expect(geSeq, greaterThan(opnSeq));
       expect(ge2Seq, greaterThan(geSeq));
+    });
+  });
+
+  group('Subscription routing (Task 3)', () {
+    /// Drives HEL -> OPN(Issue) -> CreateSession -> ActivateSession on a
+    /// fresh [session] and returns the channel/token/authToken needed to
+    /// build further MSG requests.
+    ({int channelId, int tokenId, OpcNodeId authToken}) activate(OpcUaServerSession session) {
+      session.onBytes(_buildHello(), 0);
+      final opnFrames = session.onBytes(
+        _buildOpenSecureChannelRequestChunk(secureChannelId: 0, sequenceNumber: 1, requestId: 10),
+        0,
+      );
+      final opnReader = OpcUaReader(parseChunk(opnFrames.single).body);
+      opnReader.nodeId();
+      opnReader.responseHeader();
+      opnReader.uint32();
+      final channelId = opnReader.uint32();
+      final tokenId = opnReader.uint32();
+
+      final createFrames = session.onBytes(
+        _buildCreateSessionRequestChunk(
+          secureChannelId: channelId,
+          tokenId: tokenId,
+          sequenceNumber: 2,
+          requestId: 11,
+        ),
+        0,
+      );
+      final authToken = _decodeResponseChunk(createFrames.single).reader.nodeId();
+
+      session.onBytes(
+        _buildActivateSessionRequestChunk(
+          secureChannelId: channelId,
+          tokenId: tokenId,
+          sequenceNumber: 3,
+          requestId: 12,
+          authToken: authToken,
+        ),
+        0,
+      );
+      return (channelId: channelId, tokenId: tokenId, authToken: authToken);
+    }
+
+    const monitoredNodeId = OpcNodeId.string(1, 'Counter');
+
+    OpcUaServerSession sessionWithSampler(Map<OpcNodeId, OpcDataValue> values) {
+      return OpcUaServerSession(
+        info: _info,
+        services: null,
+        sampler: (nodeId) => values[nodeId] ?? const OpcDataValue(status: 0x80340000),
+      );
+    }
+
+    test('full handshake then CreateSubscription via a real MSG frame -> revised values sane', () {
+      final values = {monitoredNodeId: const OpcDataValue(variant: OpcVariant(typeId: 6, value: 1))};
+      final session = sessionWithSampler(values);
+      final ch = activate(session);
+
+      final frames = session.onBytes(
+        _buildCreateSubscriptionRequestChunk(
+          secureChannelId: ch.channelId,
+          tokenId: ch.tokenId,
+          sequenceNumber: 4,
+          requestId: 13,
+          authToken: ch.authToken,
+        ),
+        0,
+      );
+      expect(frames, hasLength(1));
+      final decoded = _decodeResponseChunk(frames.single);
+      expect(decoded.encodingId, _createSubscriptionResponseId);
+      expect(decoded.header.serviceResult, _statusGood);
+
+      final subscriptionId = decoded.reader.uint32();
+      final revisedPublishingInterval = decoded.reader.float64();
+      final revisedLifetimeCount = decoded.reader.uint32();
+      final revisedMaxKeepAliveCount = decoded.reader.uint32();
+
+      expect(subscriptionId, greaterThanOrEqualTo(1));
+      expect(revisedPublishingInterval, greaterThanOrEqualTo(100));
+      expect(revisedLifetimeCount, greaterThanOrEqualTo(30));
+      expect(revisedMaxKeepAliveCount, greaterThanOrEqualTo(1));
+      expect(session.subscriptionCount, 1);
+    });
+
+    test('CreateMonitoredItems on a fake-sampler node -> Good result', () {
+      final values = {monitoredNodeId: const OpcDataValue(variant: OpcVariant(typeId: 6, value: 1))};
+      final session = sessionWithSampler(values);
+      final ch = activate(session);
+
+      final subFrames = session.onBytes(
+        _buildCreateSubscriptionRequestChunk(
+          secureChannelId: ch.channelId,
+          tokenId: ch.tokenId,
+          sequenceNumber: 4,
+          requestId: 13,
+          authToken: ch.authToken,
+        ),
+        0,
+      );
+      final subscriptionId = _decodeResponseChunk(subFrames.single).reader.uint32();
+
+      final cmiFrames = session.onBytes(
+        _buildCreateMonitoredItemsRequestChunk(
+          secureChannelId: ch.channelId,
+          tokenId: ch.tokenId,
+          sequenceNumber: 5,
+          requestId: 14,
+          authToken: ch.authToken,
+          subscriptionId: subscriptionId,
+          nodeId: monitoredNodeId,
+        ),
+        0,
+      );
+      final decoded = _decodeResponseChunk(cmiFrames.single);
+      expect(decoded.encodingId, _createMonitoredItemsResponseId);
+      expect(decoded.header.serviceResult, _statusGood);
+      final resultCount = decoded.reader.int32();
+      expect(resultCount, 1);
+      final statusCode = decoded.reader.statusCode();
+      expect(statusCode, _statusGood);
+      expect(session.monitoredItemCount, 1);
+    });
+
+    test('Publish is parked (onBytes returns empty); onClockTick past the publishing interval delivers it', () {
+      final values = {monitoredNodeId: const OpcDataValue(variant: OpcVariant(typeId: 6, value: 1))};
+      final session = sessionWithSampler(values);
+      final ch = activate(session);
+
+      final subFrames = session.onBytes(
+        _buildCreateSubscriptionRequestChunk(
+          secureChannelId: ch.channelId,
+          tokenId: ch.tokenId,
+          sequenceNumber: 4,
+          requestId: 13,
+          authToken: ch.authToken,
+          requestedPublishingInterval: 100,
+        ),
+        0,
+      );
+      final subDecoded = _decodeResponseChunk(subFrames.single);
+      final subscriptionId = subDecoded.reader.uint32();
+      final revisedPublishingInterval = subDecoded.reader.float64();
+
+      session.onBytes(
+        _buildCreateMonitoredItemsRequestChunk(
+          secureChannelId: ch.channelId,
+          tokenId: ch.tokenId,
+          sequenceNumber: 5,
+          requestId: 14,
+          authToken: ch.authToken,
+          subscriptionId: subscriptionId,
+          nodeId: monitoredNodeId,
+        ),
+        0,
+      );
+
+      // Park a Publish: onBytes must return NOTHING (the deferral).
+      final publishFrames = session.onBytes(
+        _buildPublishRequestChunk(
+          secureChannelId: ch.channelId,
+          tokenId: ch.tokenId,
+          sequenceNumber: 6,
+          requestId: 15,
+          authToken: ch.authToken,
+        ),
+        0,
+      );
+      expect(publishFrames, isEmpty);
+
+      // Mutate the fake sampler's value.
+      values[monitoredNodeId] = const OpcDataValue(variant: OpcVariant(typeId: 6, value: 42));
+
+      // Advance the clock past the publishing interval (revised >= 100ms;
+      // sampling interval defaults to the subscription's interval too).
+      final tickFrames = session.onClockTick((revisedPublishingInterval * 3).round());
+      expect(tickFrames, hasLength(1));
+
+      final chunk = parseChunk(tickFrames.single);
+      expect(chunk.requestId, 15); // echoes the parked Publish's requestId
+      final reader = OpcUaReader(chunk.body);
+      final typeId = reader.nodeId();
+      expect(typeId.numericId, _publishResponseId);
+      final header = reader.responseHeader();
+      expect(header.serviceResult, _statusGood);
+      final respSubId = reader.uint32();
+      expect(respSubId, subscriptionId);
+    });
+
+    test('subscription service before ActivateSession -> Bad_SessionNotActivated fault', () {
+      final values = {monitoredNodeId: const OpcDataValue(variant: OpcVariant(typeId: 6, value: 1))};
+      final session = sessionWithSampler(values);
+      session.onBytes(_buildHello(), 0);
+      final opnFrames = session.onBytes(
+        _buildOpenSecureChannelRequestChunk(secureChannelId: 0, sequenceNumber: 1, requestId: 10),
+        0,
+      );
+      final opnReader = OpcUaReader(parseChunk(opnFrames.single).body);
+      opnReader.nodeId();
+      opnReader.responseHeader();
+      opnReader.uint32();
+      final channelId = opnReader.uint32();
+      final tokenId = opnReader.uint32();
+
+      final createFrames = session.onBytes(
+        _buildCreateSessionRequestChunk(
+          secureChannelId: channelId,
+          tokenId: tokenId,
+          sequenceNumber: 2,
+          requestId: 11,
+        ),
+        0,
+      );
+      final authToken = _decodeResponseChunk(createFrames.single).reader.nodeId();
+
+      // No ActivateSession call — go straight to CreateSubscription.
+      final frames = session.onBytes(
+        _buildCreateSubscriptionRequestChunk(
+          secureChannelId: channelId,
+          tokenId: tokenId,
+          sequenceNumber: 3,
+          requestId: 12,
+          authToken: authToken,
+        ),
+        0,
+      );
+      final decoded = _decodeResponseChunk(frames.single);
+      expect(decoded.encodingId, _serviceFaultId);
+      expect(decoded.header.serviceResult, _statusBadSessionNotActivated);
+    });
+
+    test('session WITHOUT sampler -> Bad_ServiceUnsupported for subscription services', () {
+      final session = OpcUaServerSession(info: _info, services: null); // sampler: null (default)
+      final ch = activate(session);
+
+      final frames = session.onBytes(
+        _buildCreateSubscriptionRequestChunk(
+          secureChannelId: ch.channelId,
+          tokenId: ch.tokenId,
+          sequenceNumber: 4,
+          requestId: 13,
+          authToken: ch.authToken,
+        ),
+        0,
+      );
+      final decoded = _decodeResponseChunk(frames.single);
+      expect(decoded.encodingId, _serviceFaultId);
+      expect(decoded.header.serviceResult, _statusBadServiceUnsupported);
+      expect(session.subscriptionCount, 0);
+      expect(session.monitoredItemCount, 0);
+    });
+
+    test('onClockTick with no subscriptions ever created -> empty list', () {
+      final session = OpcUaServerSession(
+        info: _info,
+        services: null,
+        sampler: (nodeId) => const OpcDataValue(status: 0x80340000),
+      );
+      activate(session);
+      expect(session.onClockTick(100000), isEmpty);
+    });
+
+    test('onClockTick before any channel/session exists -> empty list, never throws', () {
+      final session = OpcUaServerSession(
+        info: _info,
+        services: null,
+        sampler: (nodeId) => const OpcDataValue(status: 0x80340000),
+      );
+      expect(() => session.onClockTick(100000), returnsNormally);
+      expect(session.onClockTick(100000), isEmpty);
+    });
+
+    test('subscriptionCount/monitoredItemCount track create/delete lifecycle', () {
+      final values = {monitoredNodeId: const OpcDataValue(variant: OpcVariant(typeId: 6, value: 1))};
+      final session = sessionWithSampler(values);
+      final ch = activate(session);
+      expect(session.subscriptionCount, 0);
+      expect(session.monitoredItemCount, 0);
+
+      final subFrames = session.onBytes(
+        _buildCreateSubscriptionRequestChunk(
+          secureChannelId: ch.channelId,
+          tokenId: ch.tokenId,
+          sequenceNumber: 4,
+          requestId: 13,
+          authToken: ch.authToken,
+        ),
+        0,
+      );
+      final subscriptionId = _decodeResponseChunk(subFrames.single).reader.uint32();
+      expect(session.subscriptionCount, 1);
+
+      session.onBytes(
+        _buildCreateMonitoredItemsRequestChunk(
+          secureChannelId: ch.channelId,
+          tokenId: ch.tokenId,
+          sequenceNumber: 5,
+          requestId: 14,
+          authToken: ch.authToken,
+          subscriptionId: subscriptionId,
+          nodeId: monitoredNodeId,
+        ),
+        0,
+      );
+      expect(session.monitoredItemCount, 1);
     });
   });
 }

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# WS19 Task 4 E2E machine-proof: starts the in-app OPC UA server (the Dart
-# fixture host, mobile/tool/opcua_host_probe.dart) on a non-default port,
-# waits for it to report READY, then runs a REAL third-party OPC UA client
-# (the Rust `opcua` crate's client, gateway/examples/opcua_probe.rs)
-# against it -- GetEndpoints, Browse, Read, Write, Read-back-verify. Kills
-# the Dart host unconditionally on exit and propagates the probe's exit
-# code.
+# WS19/WS20 Task 4 E2E machine-proof: starts the in-app OPC UA server (the
+# Dart fixture host, mobile/tool/opcua_host_probe.dart) on a non-default
+# port, waits for it to report READY, then runs a REAL third-party OPC UA
+# client (the Rust `opcua` crate's client, gateway/examples/opcua_probe.rs)
+# against it -- GetEndpoints, Browse, Read, Write, Read-back-verify, then
+# creates a subscription + monitored item and waits (up to 10s) for a
+# pushed DataChangeNotification reflecting a server-side mutation the Dart
+# fixture host makes on its own timer at T+4s (WS20 Task 4). Kills the Dart
+# host unconditionally on exit and propagates the probe's exit code.
 #
 # Usage: tool/opcua_e2e.sh   (run from the repo root; bash/Git-Bash)
 #
@@ -87,7 +89,11 @@ log "Dart host is READY:"
 cat "${DART_LOG}"
 
 log "running the Rust opcua client probe against ${ENDPOINT}..."
-timeout 120 cargo run --manifest-path "${REPO_ROOT}/gateway/Cargo.toml" --example opcua_probe -- "${ENDPOINT}"
+# 120s base budget (GetEndpoints/Browse/Read/Write/read-back) + ~15s for the
+# subscription wait (10s bound inside the probe for the DataChangeNotification,
+# plus margin for subscription/monitored-item creation and the session poll
+# loop spin-up) = 135s, rounded up to 140s.
+timeout 140 cargo run --manifest-path "${REPO_ROOT}/gateway/Cargo.toml" --example opcua_probe -- "${ENDPOINT}"
 PROBE_EXIT=$?
 
 log "probe exit code: ${PROBE_EXIT}"
