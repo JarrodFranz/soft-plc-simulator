@@ -1,15 +1,18 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
+import '../models/tag_resolver.dart';
 import '../ui/responsive.dart';
 
 class TagInspectorDock extends StatefulWidget {
+  final PlcProject project;
   final List<PlcTag> tags;
   final VoidCallback onTagStateChanged;
   final VoidCallback onClose;
 
   const TagInspectorDock({
     super.key,
+    required this.project,
     required this.tags,
     required this.onTagStateChanged,
     required this.onClose,
@@ -22,6 +25,7 @@ class TagInspectorDock extends StatefulWidget {
 class _TagInspectorDockState extends State<TagInspectorDock> {
   String _searchQuery = '';
   String _filterIoType = 'ALL';
+  final Set<String> _expandedTags = {};
 
   @override
   Widget build(BuildContext context) {
@@ -117,6 +121,8 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                       final tag = filteredTags[index];
                       final isBool = tag.dataType == 'BOOL';
                       final effectiveVal = tag.isForced ? tag.forcedValue : tag.value;
+                      final kids = childrenOf(widget.project, tag.name);
+                      final isExpanded = _expandedTags.contains(tag.name);
 
                       return Card(
                         margin: EdgeInsets.zero,
@@ -136,6 +142,27 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                               // Tag Name & Path
                               Row(
                                 children: [
+                                  if (kids.isNotEmpty)
+                                    IconButton(
+                                      key: ValueKey('inspector-expand-${tag.name}'),
+                                      icon: Icon(
+                                        isExpanded ? Icons.expand_more : Icons.chevron_right,
+                                        size: 18,
+                                        color: Colors.cyan,
+                                      ),
+                                      padding: EdgeInsets.zero,
+                                      constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                                      tooltip: isExpanded ? 'Collapse members' : 'Expand members',
+                                      onPressed: () {
+                                        setState(() {
+                                          if (isExpanded) {
+                                            _expandedTags.remove(tag.name);
+                                          } else {
+                                            _expandedTags.add(tag.name);
+                                          }
+                                        });
+                                      },
+                                    ),
                                   Expanded(
                                     child: Column(
                                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -240,6 +267,14 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                                   ),
                                 ],
                               ),
+
+                              // Expanded child members (read-only; live values).
+                              if (isExpanded && kids.isNotEmpty) ...[
+                                const SizedBox(height: 6),
+                                const Divider(height: 1, color: Colors.white12),
+                                const SizedBox(height: 4),
+                                ...kids.map((child) => _buildChildRow(child, 1)),
+                              ],
                             ],
                           ),
                         ),
@@ -251,6 +286,69 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
           ),
         );
       },
+    );
+  }
+
+  // Read-only row for a composite/array/integer-bit child, recursing into
+  // its own children when expanded. Mirrors memory_manager_screen's
+  // _childRowData pattern but rendered as an indented row (not a table).
+  Widget _buildChildRow(TagChild child, int depth) {
+    final isExpanded = _expandedTags.contains(child.path);
+    final value = readPath(widget.project, child.path);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: EdgeInsets.only(left: 16.0 * depth, top: 2, bottom: 2),
+          child: Row(
+            children: [
+              if (child.hasChildren)
+                IconButton(
+                  key: ValueKey('inspector-expand-${child.path}'),
+                  icon: Icon(
+                    isExpanded ? Icons.expand_more : Icons.chevron_right,
+                    size: 14,
+                    color: Colors.grey,
+                  ),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
+                  tooltip: isExpanded ? 'Collapse members' : 'Expand members',
+                  onPressed: () {
+                    setState(() {
+                      if (isExpanded) {
+                        _expandedTags.remove(child.path);
+                      } else {
+                        _expandedTags.add(child.path);
+                      }
+                    });
+                  },
+                )
+              else
+                const SizedBox(width: 20),
+              Expanded(
+                child: Text(
+                  child.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  '$value',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.cyanAccent),
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (isExpanded)
+          ...childrenOf(widget.project, child.path).map((c) => _buildChildRow(c, depth + 1)),
+      ],
     );
   }
 
