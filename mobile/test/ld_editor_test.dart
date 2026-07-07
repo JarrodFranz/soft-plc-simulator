@@ -359,6 +359,26 @@ void main() {
 
         expect(tester.takeException(), isNull);
       });
+
+      testWidgets('Math block face shows its output tag with no overflow (${size.width.toInt()}px)', (tester) async {
+        await setSurface(tester, size);
+        final program = PlcProgram(
+          name: 'TestProgram',
+          language: 'LadderLogic',
+          rungs: [
+            buildRung(index: 0, comment: 'Rung 0', main: [
+              LdNode(id: '', kind: LdKind.block, blockType: 'ADD', variable: 'Total', operandA: 'A', operandB: 'B'),
+            ]),
+          ],
+        );
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        // Parity with timer/counter blocks: the result destination must be
+        // visible on the block face, not only in the edit dialog.
+        expect(find.textContaining('Total'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
     }
   });
 }

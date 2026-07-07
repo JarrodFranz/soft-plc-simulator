@@ -1177,7 +1177,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 textAlign: TextAlign.center),
           ),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -1197,6 +1197,15 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 9, color: Colors.white, fontFamily: 'monospace'),
                     textAlign: TextAlign.center),
+                // Math blocks write a result — surface its destination on the
+                // block face for parity with timer/counter blocks (compare
+                // blocks have no output tag, so this line is math-only).
+                if (!isCompare)
+                  Text('→ ${n.variable}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 7, color: Colors.cyanAccent, fontFamily: 'monospace'),
+                      textAlign: TextAlign.center),
               ],
             ),
           ),
