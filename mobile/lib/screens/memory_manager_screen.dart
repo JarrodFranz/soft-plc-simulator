@@ -673,10 +673,13 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
         .toList();
     String? errorText;
 
+    // A field cannot reference its own containing struct directly (that would
+    // create a self-referencing DUT and infinitely recurse when resolving
+    // default values), so exclude it from the offered field types here.
     final availableTypes = [
       'BOOL', 'INT16', 'INT32', 'INT64', 'FLOAT64', 'STRING',
       ...builtinCompositeNames(),
-      ...widget.currentProject.structDefs.map((d) => d.name),
+      ...widget.currentProject.structDefs.map((d) => d.name).where((n) => n != s.name),
     ];
 
     showDialog(
@@ -725,7 +728,14 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
                                 items: availableTypes
                                     .map((t) => DropdownMenuItem(value: t, child: Text(t)))
                                     .toList(),
-                                onChanged: (val) => setDlgState(() => f.dataType = val!),
+                                onChanged: (val) => setDlgState(() {
+                                  f.dataType = val!;
+                                  // Reset the stale default so it is
+                                  // recomputed for the new type (e.g. a BOOL
+                                  // `false` must not survive a retype to
+                                  // INT32).
+                                  f.defaultValue = null;
+                                }),
                               ),
                             ),
                             const SizedBox(width: 8),

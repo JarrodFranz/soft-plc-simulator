@@ -141,5 +141,94 @@ void main() {
       expect(renamed.fields.length, equals(fieldsBefore + 1));
       expect(project.structDefs.any((s) => s.name == 'SpareDUT'), isFalse);
     });
+
+    testWidgets('edit dialog remove field decreases the field count', (tester) async {
+      final project = _project();
+      project.structDefs.add(PlcStructDef(name: 'TwoFieldDUT', fields: [
+        StructFieldDef(name: 'A', dataType: 'BOOL', defaultValue: false),
+        StructFieldDef(name: 'B', dataType: 'INT32', defaultValue: 0),
+      ]));
+      await tester.pumpWidget(app(project));
+      await goToStructTab(tester);
+
+      final card = find.ancestor(
+        of: find.text('TwoFieldDUT'),
+        matching: find.byType(Card),
+      );
+      final editIcon = find.descendant(of: card, matching: find.byIcon(Icons.edit));
+      await tester.tap(editIcon);
+      await tester.pumpAndSettle();
+
+      expect(find.byIcon(Icons.remove_circle), findsNWidgets(2));
+      await tester.tap(find.byIcon(Icons.remove_circle).first);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      final saved = project.structDefs.firstWhere((s) => s.name == 'TwoFieldDUT');
+      expect(saved.fields.length, equals(1));
+    });
+
+    testWidgets('retyping a field resets its stale default value', (tester) async {
+      final project = _project();
+      project.structDefs.add(PlcStructDef(name: 'RetypeDUT', fields: [
+        StructFieldDef(name: 'Flag', dataType: 'BOOL', defaultValue: false),
+      ]));
+      await tester.pumpWidget(app(project));
+      await goToStructTab(tester);
+
+      final card = find.ancestor(
+        of: find.text('RetypeDUT'),
+        matching: find.byType(Card),
+      );
+      final editIcon = find.descendant(of: card, matching: find.byIcon(Icons.edit));
+      await tester.tap(editIcon);
+      await tester.pumpAndSettle();
+
+      // Change the field's data type dropdown from BOOL to INT32.
+      await tester.tap(find.byType(DropdownButton<String>).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('INT32').last);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      final saved = project.structDefs.firstWhere((s) => s.name == 'RetypeDUT');
+      final field = saved.fields.first;
+      expect(field.dataType, equals('INT32'));
+      // The instantiated default for the retyped field must match its new
+      // type (int 0), not the stale BOOL default (false).
+      final resolved = field.defaultValue ?? defaultValueFor(project, field.dataType, field.arrayLength);
+      expect(resolved, isA<int>());
+      expect(resolved, equals(0));
+    });
+
+    testWidgets('edit dialog excludes the struct being edited from its own field-type options', (tester) async {
+      final project = _project();
+      await tester.pumpWidget(app(project));
+      await goToStructTab(tester);
+
+      final card = find.ancestor(
+        of: find.text('SpareDUT'),
+        matching: find.byType(Card),
+      );
+      final editIcon = find.descendant(of: card, matching: find.byIcon(Icons.edit));
+      await tester.tap(editIcon);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byType(DropdownButton<String>).first);
+      await tester.pumpAndSettle();
+
+      // 'SpareDUT' (the struct currently being edited) must not be offered
+      // as a field type for its own fields, to prevent a self-referencing
+      // (infinitely recursive) DUT. The only legitimate remaining
+      // occurrences are the struct-list card label behind the dialog and
+      // the dialog's own "DUT Name" field content — not a dropdown option.
+      expect(find.text('SpareDUT'), findsNWidgets(2));
+      // Other DUTs remain available.
+      expect(find.text('PumpStatusDUT'), findsWidgets);
+    });
   });
 }

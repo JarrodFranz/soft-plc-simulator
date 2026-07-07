@@ -110,14 +110,28 @@ int bitWidth(String base) {
 
 /// Recursive default value for a base type + arrayLength.
 dynamic defaultValueFor(PlcProject p, String base, int arrayLength) {
+  return _defaultValueFor(p, base, arrayLength, <String>{});
+}
+
+/// Cycle-safe worker for [defaultValueFor]. [visiting] tracks composite type
+/// names currently being expanded on this recursion path; a composite that
+/// re-appears (direct self-reference or a mutual A->B->A cycle) is treated
+/// as an empty struct instead of being recursed into again, so malformed or
+/// maliciously-crafted DUT graphs (from the UI or legacy JSON) can never
+/// stack-overflow.
+dynamic _defaultValueFor(PlcProject p, String base, int arrayLength, Set<String> visiting) {
   if (arrayLength > 0) {
-    return List<dynamic>.generate(arrayLength, (_) => defaultValueFor(p, base, 0));
+    return List<dynamic>.generate(arrayLength, (_) => _defaultValueFor(p, base, 0, visiting));
   }
   final comp = lookupComposite(p, base);
   if (comp != null) {
+    if (visiting.contains(base)) {
+      return <String, dynamic>{}; // cycle detected — bail out safely
+    }
+    final nextVisiting = {...visiting, base};
     final m = <String, dynamic>{};
     for (final f in comp.fields) {
-      m[f.name] = f.defaultValue ?? defaultValueFor(p, f.dataType, f.arrayLength);
+      m[f.name] = f.defaultValue ?? _defaultValueFor(p, f.dataType, f.arrayLength, nextVisiting);
     }
     return m;
   }
