@@ -49,7 +49,13 @@ class _Ids {
   static const publishRequest = 826; // node_ids.rs:1793
   static const republishRequest = 832; // node_ids.rs:1795
   static const serviceFault = 397; // node_ids.rs:1662 (opcua_session.dart's _Ids.serviceFault)
-  static const dataChangeFilter = 722; // node_ids.rs:217
+  // NOTE: node_ids.rs:217 `DataChangeFilter = 722` is the plain NodeId for
+  // the DataChangeFilter DataType/structure, NOT the wire ExtensionObject
+  // typeId. On the wire an ExtensionObject's typeId must be the
+  // DefaultBinary ENCODING id: node_ids.rs:1761
+  // `DataChangeFilter_Encoding_DefaultBinary = 724`. 722 would never appear
+  // as an ExtensionObject typeId from a real client.
+  static const dataChangeFilter = 724; // node_ids.rs:1761
 }
 
 /// StatusCodes used by this file. Verified one-by-one against
@@ -92,39 +98,71 @@ const int _deadbandPercent = 2;
 /// Sampling = 1, Reporting = 2.
 const int _monitoringModeDisabled = 0;
 
-/// Subscription revision caps/grids (v1 simplification — documented in the
-/// task brief's "Global Constraints" / revision-rule list; not derived from
-/// the Rust reference's runtime config since this server has no
-/// configurable server-wide timer rate in v1).
+/// Subscription revision caps/grids — spec: "Subscription parameters
+/// (revision rules)" / "Monitored item parameters"
+/// (docs/superpowers/specs/2026-07-07-opcua-subscriptions-design.md).
 const double _defaultPublishingIntervalMs = 500;
-const double _publishingIntervalGridMs = 50;
+const double _intervalGridMs = 50;
 const double _publishingIntervalFloorMs = 100;
+const double _publishingIntervalCeilMs = 60000;
+const double _samplingIntervalFloorMs = 50;
+const double _samplingIntervalCeilMs = 60000;
 const int _defaultMaxKeepAliveCount = 10;
+const int _maxKeepAliveCountFloor = 1;
+const int _maxKeepAliveCountCeil = 3000;
+const int _lifetimeCountFloor = 30;
+const int _lifetimeCountCeil = 10000;
+const int _queueSizeFloor = 1;
+const int _queueSizeCeil = 100;
 const int _maxSubscriptions = 10;
 const int _maxMonitoredItemsPerSubscription = 500;
 
-double _reviseSamplingOrPublishingInterval(double requested) {
-  if (requested.isNaN || !requested.isFinite || requested <= 0) {
+/// Rounds [value] UP to the nearest [_intervalGridMs] multiple (e.g. 60 ->
+/// 100, 125 -> 150).
+double _roundUpToGrid(double value) {
+  final gridCount = (value / _intervalGridMs).ceil();
+  return gridCount * _intervalGridMs;
+}
+
+/// revisedPublishingInterval (spec "Subscription parameters"): NaN or <= 0
+/// -> 500ms default; else clamp to [100, 60000]; THEN round up to the 50ms
+/// grid.
+double _revisePublishingInterval(double requested) {
+  if (requested.isNaN || requested <= 0) {
     return _defaultPublishingIntervalMs;
   }
-  // Round UP to the nearest 50ms grid multiple (60 -> 100, 125 -> 150), then
-  // enforce the 100ms floor (brief's revision-rule list: 60ms -> 100ms).
-  final gridCount = (requested / _publishingIntervalGridMs).ceil();
-  final grid = gridCount * _publishingIntervalGridMs;
-  return grid < _publishingIntervalFloorMs ? _publishingIntervalFloorMs : grid;
+  final clamped = requested.clamp(_publishingIntervalFloorMs, _publishingIntervalCeilMs);
+  return _roundUpToGrid(clamped);
 }
 
+/// revisedSamplingInterval (spec "Monitored item parameters"): <= 0
+/// (including 0 and -1, the publishing-interval-linked sentinel) -> the
+/// subscription's revised publishing interval (caller's responsibility —
+/// see call sites); else clamp to [50, 60000]; then round up to the 50ms
+/// grid.
+double _reviseSamplingInterval(double requested) {
+  final clamped = requested.clamp(_samplingIntervalFloorMs, _samplingIntervalCeilMs);
+  return _roundUpToGrid(clamped);
+}
+
+/// revisedMaxKeepAliveCount (spec): 0 -> 10; clamp to [1, 3000].
 int _reviseKeepAliveCount(int requested) {
-  return requested <= 0 ? _defaultMaxKeepAliveCount : requested;
+  if (requested == 0) return _defaultMaxKeepAliveCount;
+  return requested.clamp(_maxKeepAliveCountFloor, _maxKeepAliveCountCeil);
 }
 
+/// revisedLifetimeCount (spec): clamp to [30, 10000] FIRST, then raise to
+/// >= 3 * revisedMaxKeepAliveCount.
 int _reviseLifetimeCount(int requested, int revisedKeepAliveCount) {
+  final clamped = requested.clamp(_lifetimeCountFloor, _lifetimeCountCeil);
   final minLifetime = revisedKeepAliveCount * 3;
-  return requested < minLifetime ? minLifetime : requested;
+  return clamped < minLifetime ? minLifetime : clamped;
 }
 
+/// revisedQueueSize (spec): 0 -> 1; clamp to [1, 100].
 int _reviseQueueSize(int requested) {
-  return requested <= 0 ? 1 : requested;
+  if (requested == 0) return 1;
+  return requested.clamp(_queueSizeFloor, _queueSizeCeil);
 }
 
 /// One monitored item inside a [_Subscription]. The initial sample (and,
@@ -356,7 +394,7 @@ class SubscriptionManager {
     }
 
     final revisedPublishingInterval =
-        _reviseSamplingOrPublishingInterval(requestedPublishingInterval);
+        _revisePublishingInterval(requestedPublishingInterval);
     final revisedKeepAlive = _reviseKeepAliveCount(requestedMaxKeepAliveCount);
     final revisedLifetime = _reviseLifetimeCount(requestedLifetimeCount, revisedKeepAlive);
 
@@ -406,7 +444,7 @@ class SubscriptionManager {
     }
 
     final revisedPublishingInterval =
-        _reviseSamplingOrPublishingInterval(requestedPublishingInterval);
+        _revisePublishingInterval(requestedPublishingInterval);
     final revisedKeepAlive = _reviseKeepAliveCount(requestedMaxKeepAliveCount);
     final revisedLifetime = _reviseLifetimeCount(requestedLifetimeCount, revisedKeepAlive);
 
@@ -566,9 +604,9 @@ class SubscriptionManager {
         continue;
       }
 
-      final revisedSampling = requestedSamplingInterval < 0
+      final revisedSampling = requestedSamplingInterval <= 0
           ? sub.publishingIntervalMs
-          : _reviseSamplingOrPublishingInterval(requestedSamplingInterval);
+          : _reviseSamplingInterval(requestedSamplingInterval);
       final revisedQueueSize = _reviseQueueSize(queueSize);
 
       final itemId = _nextMonitoredItemId++;
@@ -654,9 +692,9 @@ class SubscriptionManager {
         continue;
       }
 
-      final revisedSampling = requestedSamplingInterval < 0
+      final revisedSampling = requestedSamplingInterval <= 0
           ? sub.publishingIntervalMs
-          : _reviseSamplingOrPublishingInterval(requestedSamplingInterval);
+          : _reviseSamplingInterval(requestedSamplingInterval);
       final revisedQueueSize = _reviseQueueSize(queueSize);
 
       item.clientHandle = clientHandle;
@@ -727,9 +765,11 @@ class SubscriptionManager {
   /// Decodes+validates a monitoring filter ExtensionObject per the brief:
   /// empty (typeId ns0/i=0, no body) => no filter (statusOnly = false,
   /// i.e. status+value — the OPC UA default absent an explicit
-  /// DataChangeTrigger of Status-only); typeId 722 (DataChangeFilter) +
-  /// body => decode deadbandType/deadbandValue/trigger; any other typeId
-  /// with a body => Bad_MonitoredItemFilterUnsupported.
+  /// DataChangeTrigger of Status-only); typeId 724
+  /// (DataChangeFilter_Encoding_DefaultBinary, node_ids.rs:1761) + body =>
+  /// decode deadbandType/deadbandValue/trigger; any other typeId with a
+  /// body (including the non-encoding NodeId 722, node_ids.rs:217) =>
+  /// Bad_MonitoredItemFilterUnsupported.
   _FilterOutcome _decodeFilter(OpcNodeId typeId, Uint8List? filterBody) {
     final isEmptyFilter = filterBody == null &&
         typeId.isNumeric &&

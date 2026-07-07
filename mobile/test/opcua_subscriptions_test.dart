@@ -38,7 +38,15 @@ const _deleteMonitoredItemsResponseId = 784;
 const _publishRequestId = 826;
 const _republishRequestId = 832;
 const _serviceFaultId = 397;
-const _dataChangeFilterTypeId = 722;
+// DataChangeFilter wire ExtensionObject typeId MUST be the DefaultBinary
+// ENCODING id, not the plain DataType NodeId. Verified against the vendored
+// Rust opcua 0.12.0 reference,
+// C:/Users/jarro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opcua-0.12.0/src/types/node_ids.rs:1761
+// `DataChangeFilter_Encoding_DefaultBinary = 724` (node_ids.rs:217's
+// `DataChangeFilter = 722` is the non-encoding NodeId and must be REJECTED
+// as an ExtensionObject typeId with Bad_MonitoredItemFilterUnsupported).
+const _dataChangeFilterTypeId = 724;
+const _dataChangeFilterNonEncodingTypeId = 722; // node_ids.rs:217 — invalid on the wire
 
 // --- StatusCodes, verified against types/status_codes.rs -------------------
 const _statusGood = 0;
@@ -350,6 +358,16 @@ void main() {
       expect(reader.float64(), 150);
     });
 
+    test('revision: publishingInterval 5000000 (way over ceiling) clamps to 60000', () {
+      final mgr = buildManager();
+      final body = _createSubBody(publishingInterval: 5000000, lifetimeCount: 30, maxKeepAlive: 10);
+      final reader = callAndDecode(mgr, _createSubscriptionRequestId, body);
+      reader.nodeId();
+      reader.responseHeader();
+      reader.uint32();
+      expect(reader.float64(), 60000);
+    });
+
     test('revision: keepAlive 0 -> revised to 10', () {
       final mgr = buildManager();
       final body = _createSubBody(publishingInterval: 1000, lifetimeCount: 30, maxKeepAlive: 0);
@@ -362,10 +380,57 @@ void main() {
       expect(reader.uint32(), 10); // keepAlive
     });
 
+    test('revision: keepAlive 999999 (way over ceiling) clamps to 3000', () {
+      final mgr = buildManager();
+      final body = _createSubBody(publishingInterval: 1000, lifetimeCount: 30, maxKeepAlive: 999999);
+      final reader = callAndDecode(mgr, _createSubscriptionRequestId, body);
+      reader.nodeId();
+      reader.responseHeader();
+      reader.uint32();
+      reader.float64();
+      reader.uint32(); // lifetime
+      expect(reader.uint32(), 3000); // keepAlive
+    });
+
+    test('revision: lifetimeCount raised to 3x revised keepAliveCount when too low (requested 10, keepAlive 1 -> 30, NOT 10)', () {
+      final mgr = buildManager();
+      // keepAlive requested 1 stays 1 (within [1,3000]); lifetime requested
+      // 10 clamps to [30,10000] FIRST (-> 30), which already satisfies
+      // 3*1=3, so revised lifetime must be 30 (reviewer's regression
+      // scenario — a naive "clamp lifetime to max(requested,3*keepAlive)"
+      // without the floor-clamp-first step would wrongly yield 10 here
+      // since 10 >= 3*1).
+      final body = _createSubBody(publishingInterval: 1000, lifetimeCount: 10, maxKeepAlive: 1);
+      final reader = callAndDecode(mgr, _createSubscriptionRequestId, body);
+      reader.nodeId();
+      reader.responseHeader();
+      reader.uint32();
+      reader.float64();
+      final revisedLifetime = reader.uint32();
+      final revisedKeepAlive = reader.uint32();
+      expect(revisedKeepAlive, 1);
+      expect(revisedLifetime, 30);
+    });
+
+    test('revision: lifetimeCount 99999 (way over ceiling) clamps to 10000, still >= 3x keepAlive', () {
+      final mgr = buildManager();
+      final body = _createSubBody(publishingInterval: 1000, lifetimeCount: 99999, maxKeepAlive: 10);
+      final reader = callAndDecode(mgr, _createSubscriptionRequestId, body);
+      reader.nodeId();
+      reader.responseHeader();
+      reader.uint32();
+      reader.float64();
+      final revisedLifetime = reader.uint32();
+      final revisedKeepAlive = reader.uint32();
+      expect(revisedKeepAlive, 10);
+      expect(revisedLifetime, 10000);
+      expect(revisedLifetime, greaterThanOrEqualTo(3 * revisedKeepAlive));
+    });
+
     test('revision: lifetimeCount raised to 3x revised keepAliveCount when too low', () {
       final mgr = buildManager();
-      // keepAlive revises to 10 (from 0); lifetime requested as 5 must be
-      // raised to 3*10=30.
+      // keepAlive revises to 10 (from 0); lifetime requested as 5 clamps to
+      // the [30,10000] floor first (-> 30), which already satisfies 3*10=30.
       final body = _createSubBody(publishingInterval: 1000, lifetimeCount: 5, maxKeepAlive: 0);
       final reader = callAndDecode(mgr, _createSubscriptionRequestId, body);
       reader.nodeId();
@@ -720,8 +785,33 @@ void main() {
           (w) => _writeMonitoredItemCreateRequest(
                 w,
                 nodeId: knownNode,
-                filterTypeId: 9999, // not DataChangeFilter (722)
+                filterTypeId: 9999, // not DataChangeFilter (724)
                 filterBody: Uint8List.fromList([1, 2, 3]),
+              ),
+        ],
+      );
+      final reader = callAndDecode(mgr, _createMonitoredItemsRequestId, body);
+      reader.nodeId();
+      reader.responseHeader();
+      expect(reader.int32(), 1);
+      expect(reader.statusCode(), _statusBadMonitoredItemFilterUnsupported);
+    });
+
+    test('DataChangeFilter non-encoding NodeId (722) with a body -> per-item Bad_MonitoredItemFilterUnsupported', () {
+      // node_ids.rs:217 `DataChangeFilter = 722` is the plain DataType
+      // NodeId, not the DefaultBinary encoding id (724, node_ids.rs:1761).
+      // A real client would never send 722 as an ExtensionObject typeId;
+      // the server must reject it like any other unsupported filter type
+      // rather than silently accepting it as if it were 724 (the bug this
+      // test guards against).
+      final body = _createMonitoredItemsBody(
+        subscriptionId: subId,
+        items: [
+          (w) => _writeMonitoredItemCreateRequest(
+                w,
+                nodeId: knownNode,
+                filterTypeId: _dataChangeFilterNonEncodingTypeId, // 722
+                filterBody: _dataChangeFilterBody(deadbandType: 1, deadbandValue: 0.5),
               ),
         ],
       );
@@ -815,6 +905,74 @@ void main() {
       reader.uint32(); // itemId
       final revisedSampling = reader.float64();
       expect(revisedSampling, 1000); // the subscription's publishing interval
+    });
+
+    test('zero sampling interval revised to the subscription publishing interval', () {
+      // Spec: samplingInterval <= 0 (INCLUDING 0, not just negative) ->
+      // inherit the subscription's revised publishing interval.
+      final body = _createMonitoredItemsBody(
+        subscriptionId: subId,
+        items: [
+          (w) => _writeMonitoredItemCreateRequest(
+                w,
+                nodeId: knownNode,
+                samplingInterval: 0,
+                filterBody: null,
+              ),
+        ],
+      );
+      final reader = callAndDecode(mgr, _createMonitoredItemsRequestId, body);
+      reader.nodeId();
+      reader.responseHeader();
+      reader.int32();
+      expect(reader.statusCode(), _statusGood);
+      reader.uint32(); // itemId
+      final revisedSampling = reader.float64();
+      expect(revisedSampling, 1000); // the subscription's publishing interval
+    });
+
+    test('sampling interval 1e9 (way over ceiling) clamps to 60000', () {
+      final body = _createMonitoredItemsBody(
+        subscriptionId: subId,
+        items: [
+          (w) => _writeMonitoredItemCreateRequest(
+                w,
+                nodeId: knownNode,
+                samplingInterval: 1e9,
+                filterBody: null,
+              ),
+        ],
+      );
+      final reader = callAndDecode(mgr, _createMonitoredItemsRequestId, body);
+      reader.nodeId();
+      reader.responseHeader();
+      reader.int32();
+      expect(reader.statusCode(), _statusGood);
+      reader.uint32(); // itemId
+      final revisedSampling = reader.float64();
+      expect(revisedSampling, 60000);
+    });
+
+    test('queueSize 99999 (way over ceiling) clamps to 100', () {
+      final body = _createMonitoredItemsBody(
+        subscriptionId: subId,
+        items: [
+          (w) => _writeMonitoredItemCreateRequest(
+                w,
+                nodeId: knownNode,
+                queueSize: 99999,
+                filterBody: null,
+              ),
+        ],
+      );
+      final reader = callAndDecode(mgr, _createMonitoredItemsRequestId, body);
+      reader.nodeId();
+      reader.responseHeader();
+      reader.int32();
+      expect(reader.statusCode(), _statusGood);
+      reader.uint32(); // itemId
+      reader.float64(); // sampling
+      expect(reader.uint32(), 100); // revised queue size
     });
 
     test('501st monitored item -> per-item Bad_TooManyMonitoredItems', () {
