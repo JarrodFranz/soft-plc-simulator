@@ -44,8 +44,11 @@ void main() {
         builder: (ctx) => Scaffold(
           body: Center(
             child: ElevatedButton(
+              // Real callers always pass an AlertDialog (its own dialog
+              // surface); use one here so the test mirrors production usage.
               onPressed: () => showAdaptiveWidthDialog(ctx,
-                  desiredWidth: 460, child: const SizedBox(height: 80)),
+                  desiredWidth: 460,
+                  child: const AlertDialog(content: SizedBox(height: 80))),
               child: const Text('open'),
             ),
           ),
@@ -55,22 +58,28 @@ void main() {
     await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
     // Assert the CLAMP CONSTRAINT itself, not a rendered size (the child is
-    // narrow so its rendered width is 280 regardless of the constraint, and the
-    // screen physically caps width anyway — either would pass even if the clamp
-    // were removed). The dialog subtree has the framework's own ConstrainedBox
-    // (maxWidth == infinity) plus ours (finite). Ours must be clamped to
+    // narrow so its rendered width is bounded regardless, and the screen
+    // physically caps width anyway — either would pass even if the clamp were
+    // removed). Our ConstrainedBox must be clamped to
     // min(desiredWidth 460, screenWidth 360 - 32) == 328, so every finite
-    // maxWidth must be <= 328 and 328 must be present. Deleting the clamp makes
-    // our box maxWidth 460 > 328 and fails this test.
+    // maxWidth in the dialog subtree must be <= 328 and 328 must be present.
+    // Deleting the clamp makes our box maxWidth 460 > 328 and fails this test.
     final finiteMaxWidths = tester
-        .widgetList<ConstrainedBox>(find.descendant(
-            of: find.byType(Dialog), matching: find.byType(ConstrainedBox)))
+        .widgetList<ConstrainedBox>(find.ancestor(
+            of: find.byType(AlertDialog), matching: find.byType(ConstrainedBox)))
         .map((b) => b.constraints.maxWidth)
         .where((w) => w.isFinite)
         .toList();
     expect(finiteMaxWidths, isNotEmpty);
     expect(finiteMaxWidths.every((w) => w <= 360 - 32), isTrue);
     expect(finiteMaxWidths, contains(360.0 - 32));
+    // Regression guard for the vertical over-expansion this replaced: the old
+    // wrapper put an outer Dialog around the caller's AlertDialog (itself a
+    // Dialog), and that nesting painted the outer surface as a full-height
+    // sheet. The fix wraps in a plain Align, so exactly ONE Dialog (the
+    // AlertDialog's own) must exist in the tree — two means the double-wrap
+    // is back.
+    expect(find.byType(Dialog), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

@@ -55,8 +55,12 @@ Future<T?> showAdaptiveWidthDialog<T>(
     context: context,
     builder: (ctx) {
       final maxW = math.min(desiredWidth, MediaQuery.sizeOf(ctx).width - 32);
-      return Dialog(
-        insetPadding: const EdgeInsets.all(16),
+      // Every caller passes an AlertDialog, which is itself a dialog surface
+      // that vertically centers itself via an expanding Align. Wrapping it in
+      // a second Dialog painted that expansion as a full-height sheet behind
+      // the real content — so only cap the width here and let the child be
+      // the one and only dialog surface.
+      return Align(
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: maxW),
           child: child,
