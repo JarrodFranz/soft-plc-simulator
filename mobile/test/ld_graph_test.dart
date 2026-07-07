@@ -175,6 +175,11 @@ void main() {
     expect(prog.rungs.map((r) => r.nodes.firstWhere((n) => n.kind == LdKind.coil).variable).toList(), ['B', 'C', 'A']);
     moveRung(prog, 2, 2); // no-op
     expect(prog.rungs.first.nodes.firstWhere((n) => n.kind == LdKind.coil).variable, 'B'); // unchanged order
+    // `to == length` is the append case (honors the [0, length] contract).
+    moveRung(prog, 0, 3); // B (now first) to past-the-end -> last
+    expect(prog.rungs.map((r) => r.nodes.firstWhere((n) => n.kind == LdKind.coil).variable).toList(), ['C', 'A', 'B']);
+    moveRung(prog, 0, 4); // to > length -> rejected no-op
+    expect(prog.rungs.first.nodes.firstWhere((n) => n.kind == LdKind.coil).variable, 'C');
   });
 
   test('addOutputCoil adds a new terminal coil lane', () {

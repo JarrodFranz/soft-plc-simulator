@@ -223,7 +223,8 @@ void deleteRung(PlcProgram program, int index) {
 /// (or past) the end lands the rung last.
 void moveRung(PlcProgram program, int from, int to) {
   final rungs = program.rungs;
-  if (from < 0 || from >= rungs.length || to < 0 || to >= rungs.length) {
+  // `to` may equal length (append past the end); `from` must be a real index.
+  if (from < 0 || from >= rungs.length || to < 0 || to > rungs.length) {
     return;
   }
   if (from == to) {
