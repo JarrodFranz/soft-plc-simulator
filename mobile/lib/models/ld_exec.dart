@@ -32,6 +32,24 @@ void _forceAwareWrite(PlcProject p, String path, dynamic value) {
   writePath(p, path, value);
 }
 
+/// Resolves a compare/math operand: a numeric literal parses directly,
+/// otherwise it is treated as a tag path. Never throws — a non-numeric or
+/// absent tag resolves to 0.
+double _operandValue(PlcProject p, String s) {
+  final lit = num.tryParse(s);
+  if (lit != null) {
+    return lit.toDouble();
+  }
+  final v = readPath(p, s);
+  if (v is bool) {
+    return v ? 1 : 0;
+  }
+  if (v is num) {
+    return v.toDouble();
+  }
+  return 0;
+}
+
 /// Executes every LadderLogic program in [p], rungs top-to-bottom, once.
 /// Writes are immediately visible to later rungs (seal-in works).
 void executeLdPrograms(PlcProject p, int dtMs, LdExecRuntime rt) {
@@ -130,6 +148,66 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
         final base = n.variable;
         final pre = n.presetMs;
         final key = '$progName|${rung.rungIndex}|${n.id}';
+
+        const compareOps = {'GT', 'LT', 'GE', 'LE', 'EQ', 'NE'};
+        const mathOps = {'ADD', 'SUB', 'MUL', 'DIV', 'MOVE'};
+
+        if (compareOps.contains(n.blockType)) {
+          final a = _operandValue(p, n.operandA);
+          final b = _operandValue(p, n.operandB);
+          bool res;
+          switch (n.blockType) {
+            case 'GT':
+              res = a > b;
+              break;
+            case 'LT':
+              res = a < b;
+              break;
+            case 'GE':
+              res = a >= b;
+              break;
+            case 'LE':
+              res = a <= b;
+              break;
+            case 'EQ':
+              res = a == b;
+              break;
+            default: // NE
+              res = a != b;
+          }
+          power[n.id] = inP && res;
+          break;
+        }
+
+        if (mathOps.contains(n.blockType)) {
+          if (inP) {
+            final a = _operandValue(p, n.operandA);
+            final b = _operandValue(p, n.operandB);
+            double r;
+            switch (n.blockType) {
+              case 'ADD':
+                r = a + b;
+                break;
+              case 'SUB':
+                r = a - b;
+                break;
+              case 'MUL':
+                r = a * b;
+                break;
+              case 'DIV':
+                r = b == 0 ? 0 : a / b;
+                break;
+              default: // MOVE
+                r = a;
+            }
+            final outRoot = _rootTagOf(p, n.variable);
+            final dynamic outVal =
+                outRoot != null && isIntegerType(outRoot.dataType) ? r.truncate() : r;
+            write(n.variable, outVal);
+          }
+          power[n.id] = inP;
+          break;
+        }
 
         if (n.blockType == 'TP') {
           int acc = (readPath(p, '$base.ACC') as num?)?.toInt() ?? 0;

@@ -519,4 +519,203 @@ void main() {
     executeLdPrograms(p, 100, rt);
     expect((readPath(p, 'Cnt.CV') as num).toInt(), equals(0));
   });
+
+  group('compare blocks', () {
+    LdNode cmpNode(String op, {String a = 'A', String b = 'B'}) => LdNode(
+        id: '', kind: LdKind.block, blockType: op, operandA: a, operandB: b);
+
+    PlcProject cmpProj(String op, num aVal, num bVal) {
+      final r = buildRung(index: 0, main: [
+        _no('In'),
+        cmpNode(op),
+        _coil('Out'),
+      ]);
+      return _proj([
+        _tag('In', 'BOOL', true),
+        _tag('A', 'FLOAT64', aVal),
+        _tag('B', 'FLOAT64', bVal),
+        _tag('Out', 'BOOL', false),
+      ], [_ldProg([r])]);
+    }
+
+    test('GT is false when A == B', () {
+      final p = cmpProj('GT', 5, 5);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isFalse);
+    });
+
+    test('LT is false when A == B', () {
+      final p = cmpProj('LT', 5, 5);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isFalse);
+    });
+
+    test('GE is true when A == B', () {
+      final p = cmpProj('GE', 5, 5);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isTrue);
+    });
+
+    test('LE is true when A == B', () {
+      final p = cmpProj('LE', 5, 5);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isTrue);
+    });
+
+    test('EQ is true when A == B', () {
+      final p = cmpProj('EQ', 5, 5);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isTrue);
+    });
+
+    test('NE is false when A == B', () {
+      final p = cmpProj('NE', 5, 5);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isFalse);
+    });
+
+    test('GT is true when A > B and false when input power is absent', () {
+      final p = cmpProj('GT', 10, 5);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isTrue);
+      writePath(p, 'In', false);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isFalse); // no input power gates the result off
+    });
+
+    test('operand as a literal resolves without needing a tag', () {
+      final r = buildRung(index: 0, main: [
+        _no('In'),
+        cmpNode('GT', a: 'A', b: '3'),
+        _coil('Out'),
+      ]);
+      final p = _proj([
+        _tag('In', 'BOOL', true),
+        _tag('A', 'FLOAT64', 5),
+        _tag('Out', 'BOOL', false),
+      ], [_ldProg([r])]);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(_b(p, 'Out'), isTrue); // 5 > 3 literal
+    });
+
+    test('non-numeric/absent operand resolves to 0, does not throw', () {
+      final r = buildRung(index: 0, main: [
+        _no('In'),
+        cmpNode('EQ', a: 'Ghost', b: '0'),
+        _coil('Out'),
+      ]);
+      final p = _proj([
+        _tag('In', 'BOOL', true),
+        _tag('Out', 'BOOL', false),
+      ], [_ldProg([r])]);
+      executeLdPrograms(p, 100, LdExecRuntime()); // must not throw
+      expect(_b(p, 'Out'), isTrue); // Ghost -> 0, 0 == 0
+    });
+  });
+
+  group('math blocks', () {
+    LdNode mathNode(String op, {String a = 'A', String b = 'B', String out = 'R'}) =>
+        LdNode(id: '', kind: LdKind.block, blockType: op, operandA: a, operandB: b, variable: out);
+
+    PlcProject mathProj(String op, num aVal, num bVal, {bool inPower = true, String outType = 'FLOAT64', num rInit = 0}) {
+      final r = buildRung(index: 0, main: [
+        _no('In'),
+        mathNode(op),
+      ]);
+      return _proj([
+        _tag('In', 'BOOL', inPower),
+        _tag('A', 'FLOAT64', aVal),
+        _tag('B', 'FLOAT64', bVal),
+        _tag('R', outType, rInit),
+      ], [_ldProg([r])]);
+    }
+
+    test('ADD writes A+B when powered', () {
+      final p = mathProj('ADD', 4, 3);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(readPath(p, 'R'), equals(7));
+    });
+
+    test('SUB writes A-B when powered', () {
+      final p = mathProj('SUB', 4, 3);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(readPath(p, 'R'), equals(1));
+    });
+
+    test('MUL writes A*B when powered', () {
+      final p = mathProj('MUL', 4, 3);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(readPath(p, 'R'), equals(12));
+    });
+
+    test('MOVE copies A, ignoring B', () {
+      final p = mathProj('MOVE', 42, 999);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(readPath(p, 'R'), equals(42));
+    });
+
+    test('DIV by zero writes 0 and power still passes (ENO true)', () {
+      final r = buildRung(index: 0, main: [
+        _no('In'),
+        mathNode('DIV'),
+        _coil('Eno'),
+      ]);
+      final p = _proj([
+        _tag('In', 'BOOL', true),
+        _tag('A', 'FLOAT64', 10),
+        _tag('B', 'FLOAT64', 0),
+        _tag('R', 'FLOAT64', -1),
+        _tag('Eno', 'BOOL', false),
+      ], [_ldProg([r])]);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(readPath(p, 'R'), equals(0));
+      expect(_b(p, 'Eno'), isTrue); // ENO passthrough of input power
+    });
+
+    test('math with input power false writes nothing and ENO is false', () {
+      final p = mathProj('ADD', 4, 3, inPower: false, rInit: 99);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(readPath(p, 'R'), equals(99)); // unchanged
+    });
+
+    test('math with input power false drives downstream power off', () {
+      final r = buildRung(index: 0, main: [
+        _no('In'),
+        mathNode('ADD'),
+        _coil('Eno'),
+      ]);
+      final p = _proj([
+        _tag('In', 'BOOL', false),
+        _tag('A', 'FLOAT64', 4),
+        _tag('B', 'FLOAT64', 3),
+        _tag('R', 'FLOAT64', 99),
+        _tag('Eno', 'BOOL', true),
+      ], [_ldProg([r])]);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(readPath(p, 'R'), equals(99));
+      expect(_b(p, 'Eno'), isFalse);
+    });
+
+    test('operand as literal vs tag both resolve for math', () {
+      final r = buildRung(index: 0, main: [
+        _no('In'),
+        mathNode('ADD', a: 'A', b: '10'),
+      ]);
+      final p = _proj([
+        _tag('In', 'BOOL', true),
+        _tag('A', 'FLOAT64', 5),
+        _tag('R', 'FLOAT64', 0),
+      ], [_ldProg([r])]);
+      executeLdPrograms(p, 100, LdExecRuntime());
+      expect(readPath(p, 'R'), equals(15));
+    });
+
+    test('math output to an integer tag stores a truncated int', () {
+      final p = mathProj('DIV', 7, 2, outType: 'INT32');
+      executeLdPrograms(p, 100, LdExecRuntime());
+      final v = readPath(p, 'R');
+      expect(v, equals(3));
+      expect(v, isA<int>());
+    });
+  });
 }
