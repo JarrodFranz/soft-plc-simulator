@@ -672,9 +672,16 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     final extensible = _typeIsExtensible(block.type);
 
     return GestureDetector(
-      onTap: () {
-        if (_selectedWireIndex != null) _selectWire(null);
-      },
+      // Only claim the tap gesture in expanded/inline mode (where the outer
+      // card GestureDetector's onTap is null and drag is enabled). In
+      // non-expanded (phone) mode this must stay null so the outer
+      // Positioned > GestureDetector's onTap (opens the configure dialog)
+      // wins the gesture arena instead of being shadowed by this inner one.
+      onTap: showInlineEditors
+          ? () {
+              if (_selectedWireIndex != null) _selectWire(null);
+            }
+          : null,
       child: Container(
         width: _kBlockWidth,
         padding: const EdgeInsets.all(6),

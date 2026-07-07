@@ -339,5 +339,31 @@ void main() {
 
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets('real tap on a block card in non-expanded (phone) mode opens the configure dialog',
+        (tester) async {
+      // Regression test for I1: the card's inner GestureDetector (which only
+      // clears wire selection) used to sit deeper in the tree than the outer
+      // Positioned > GestureDetector that opens the configure dialog, so it
+      // always won the gesture arena and swallowed the tap before the outer
+      // handler ever ran. A real `tester.tap` (unlike invoking a captured
+      // onTap callback directly) exercises the actual gesture-arena
+      // resolution and would have failed before the fix.
+      await setSurface(tester, phoneSize);
+      final project = _buildProject();
+      final program = _buildProgram();
+      await tester.pumpWidget(app(project, program));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Configure: Timer Block'), findsNothing);
+
+      await tester.tap(find.text('Timer Block'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Configure: Timer Block'), findsOneWidget);
+      expect(find.widgetWithText(TextFormField, 'Block name'), findsOneWidget);
+
+      expect(tester.takeException(), isNull);
+    });
   });
 }
