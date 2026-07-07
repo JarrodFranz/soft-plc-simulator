@@ -40,8 +40,50 @@ class LdEditorScreen extends StatefulWidget {
   State<LdEditorScreen> createState() => _LdEditorScreenState();
 }
 
+/// Grouped block-type picker choices, in display order.
+const Map<String, List<String>> _kBlockGroups = {
+  'Timers': ['TON', 'TOF', 'TP'],
+  'Counters': ['CTU', 'CTD', 'CTUD'],
+  'Compare': ['GT', 'LT', 'GE', 'LE', 'EQ', 'NE'],
+  'Math': ['ADD', 'SUB', 'MUL', 'DIV', 'MOVE'],
+};
+
+const List<String> _kCompareBlockTypes = ['GT', 'LT', 'GE', 'LE', 'EQ', 'NE'];
+const List<String> _kMathBlockTypes = ['ADD', 'SUB', 'MUL', 'DIV', 'MOVE'];
+bool _isCompareBlock(String blockType) => _kCompareBlockTypes.contains(blockType);
+bool _isMathBlock(String blockType) => _kMathBlockTypes.contains(blockType);
+
+/// Operator glyph shown centred in a compare/math data-block body.
+String _blockOperatorGlyph(String blockType) {
+  switch (blockType) {
+    case 'GT':
+      return '>';
+    case 'LT':
+      return '<';
+    case 'GE':
+      return '≥';
+    case 'LE':
+      return '≤';
+    case 'EQ':
+      return '=';
+    case 'NE':
+      return '≠';
+    case 'ADD':
+      return '+';
+    case 'SUB':
+      return '−';
+    case 'MUL':
+      return '×';
+    case 'DIV':
+      return '÷';
+    default: // MOVE
+      return 'MOVE';
+  }
+}
+
 class _LdEditorScreenState extends State<LdEditorScreen> {
   String _editMode = 'select'; // 'select' | 'contact' | 'coil' | 'block' | 'branch'
+  String _pendingBlockType = 'TON';
   LdNode? _branchStart; // first element tapped in branch mode
   LdBranchView? _dragBranch;
   bool _dragTapEnd = false; // true = dragging the tap (start) handle; false = merge (end)
@@ -231,7 +273,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
   }
 
   Widget _buildToolbar() {
-    Widget modeBtn(String mode, IconData icon, String label) {
+    Widget modeBtn(String mode, IconData icon, String label, {VoidCallback? onPressed}) {
       final active = _editMode == mode;
       return Padding(
         padding: const EdgeInsets.symmetric(horizontal: 3),
@@ -242,10 +284,11 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
             backgroundColor: active ? Colors.cyanAccent : Colors.transparent,
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           ),
-          onPressed: () => setState(() {
-            _editMode = mode;
-            _branchStart = null;
-          }),
+          onPressed: onPressed ??
+              () => setState(() {
+                    _editMode = mode;
+                    _branchStart = null;
+                  }),
         ),
       );
     }
@@ -254,7 +297,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       modeBtn('select', Icons.near_me, 'Select'),
       modeBtn('contact', Icons.horizontal_rule, 'Contact'),
       modeBtn('coil', Icons.radio_button_unchecked, 'Coil'),
-      modeBtn('block', Icons.widgets, 'Block'),
+      modeBtn('block', Icons.widgets, 'Block', onPressed: _showBlockTypePicker),
       modeBtn('branch', Icons.account_tree, 'Branch'),
     ];
     final addRungBtn = TextButton.icon(
@@ -303,6 +346,59 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
         );
       },
     );
+  }
+
+  /// Opens a grouped picker (Timers / Counters / Compare / Math) for the
+  /// "Block" toolbar button. Selecting a type sets [_pendingBlockType] and
+  /// switches the editor into block-insert mode.
+  Future<void> _showBlockTypePicker() async {
+    final selected = await showAdaptiveWidthDialog<String>(
+      context,
+      desiredWidth: 360,
+      child: AlertDialog(
+        title: const Text('Insert Block'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final group in _kBlockGroups.entries) ...[
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8, bottom: 4),
+                    child: Text(group.key,
+                        style: const TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.bold, color: Colors.cyanAccent)),
+                  ),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final type in group.value)
+                        ActionChip(
+                          label: Text(type, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                          onPressed: () => Navigator.pop(context, type),
+                        ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        ],
+      ),
+    );
+    if (selected != null) {
+      setState(() {
+        _pendingBlockType = selected;
+        _editMode = 'block';
+        _branchStart = null;
+      });
+    }
   }
 
   Widget _rungActionButton({required IconData icon, required Color color, required VoidCallback? onPressed}) {
@@ -569,7 +665,34 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     if (_editMode == 'coil') {
       node = LdNode(id: newNodeId(rung), kind: LdKind.coil, variable: 'Output_Coil');
     } else if (_editMode == 'block') {
-      node = LdNode(id: newNodeId(rung), kind: LdKind.block, blockType: 'TON', variable: 'Timer', presetMs: 5000);
+      final blockType = _pendingBlockType;
+      if (_isCompareBlock(blockType)) {
+        node = LdNode(
+          id: newNodeId(rung),
+          kind: LdKind.block,
+          blockType: blockType,
+          variable: '',
+          operandA: '0',
+          operandB: '0',
+        );
+      } else if (_isMathBlock(blockType)) {
+        node = LdNode(
+          id: newNodeId(rung),
+          kind: LdKind.block,
+          blockType: blockType,
+          variable: 'Result',
+          operandA: '0',
+          operandB: '0',
+        );
+      } else {
+        node = LdNode(
+          id: newNodeId(rung),
+          kind: LdKind.block,
+          blockType: blockType,
+          variable: _isCounterBlock(blockType) ? 'Counter' : 'Timer',
+          presetMs: _isCounterBlock(blockType) ? 10 : 5000,
+        );
+      }
     } else {
       node = LdNode(id: newNodeId(rung), kind: LdKind.contact, variable: 'New_Contact');
     }
@@ -722,11 +845,17 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     final tagCtrl = TextEditingController(text: n.variable);
     final presetCtrl = TextEditingController(text: n.presetMs.toString());
     final downTagCtrl = TextEditingController(text: n.operandA);
+    final operandACtrl = TextEditingController(text: n.operandA);
+    final operandBCtrl = TextEditingController(text: n.operandB);
     String modifier = n.modifier;
+    String blockType = n.blockType;
     final isCoil = n.kind == LdKind.coil;
     final isBlock = n.kind == LdKind.block;
     final isCounter = isBlock && _isCounterBlock(n.blockType);
     final isCtud = isBlock && n.blockType == 'CTUD';
+    final isCompare = isBlock && _isCompareBlock(n.blockType);
+    final isMath = isBlock && _isMathBlock(n.blockType);
+    final isDataBlock = isCompare || isMath;
 
     const contactMods = [
       DropdownMenuItem(value: 'normal', child: Text('Normally Open  -| |-')),
@@ -742,6 +871,14 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       DropdownMenuItem(value: 'rising', child: Text('Rising  -(P)-')),
       DropdownMenuItem(value: 'falling', child: Text('Falling  -(N)-')),
     ];
+    final compareOpItems = [
+      for (final t in _kCompareBlockTypes)
+        DropdownMenuItem(value: t, child: Text('$t  (${_blockOperatorGlyph(t)})')),
+    ];
+    final mathOpItems = [
+      for (final t in _kMathBlockTypes)
+        DropdownMenuItem(value: t, child: Text('$t  (${_blockOperatorGlyph(t)})')),
+    ];
 
     showAdaptiveWidthDialog(
       context,
@@ -754,12 +891,22 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                TagAutocompleteField(
-                  options: leafAndNodePaths(widget.currentProject),
-                  initialValue: tagCtrl.text,
-                  label: 'Tag / literal',
-                  onChanged: (v) => tagCtrl.text = v,
-                ),
+                if (!isDataBlock)
+                  TagAutocompleteField(
+                    options: leafAndNodePaths(widget.currentProject),
+                    initialValue: tagCtrl.text,
+                    label: 'Tag / literal',
+                    onChanged: (v) => tagCtrl.text = v,
+                  ),
+                if (isMath) ...[
+                  TagAutocompleteField(
+                    options: leafAndNodePaths(widget.currentProject),
+                    initialValue: tagCtrl.text,
+                    label: 'Output tag',
+                    onChanged: (v) => tagCtrl.text = v,
+                  ),
+                  const SizedBox(height: 12),
+                ],
                 if (!isBlock) ...[
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
@@ -770,7 +917,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     onChanged: (v) => setDlg(() => modifier = v!),
                   ),
                 ],
-                if (isBlock) ...[
+                if (isBlock && !isDataBlock) ...[
                   const SizedBox(height: 12),
                   TextField(
                     controller: presetCtrl,
@@ -789,6 +936,29 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     onChanged: (v) => downTagCtrl.text = v,
                   ),
                 ],
+                if (isDataBlock) ...[
+                  TagAutocompleteField(
+                    options: leafAndNodePaths(widget.currentProject),
+                    initialValue: operandACtrl.text,
+                    label: 'Operand A',
+                    onChanged: (v) => operandACtrl.text = v,
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: blockType,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Operator'),
+                    items: isCompare ? compareOpItems : mathOpItems,
+                    onChanged: (v) => setDlg(() => blockType = v!),
+                  ),
+                  const SizedBox(height: 12),
+                  TagAutocompleteField(
+                    options: leafAndNodePaths(widget.currentProject),
+                    initialValue: operandBCtrl.text,
+                    label: 'Operand B',
+                    onChanged: (v) => operandBCtrl.text = v,
+                  ),
+                ],
               ],
             ),
           ),
@@ -805,11 +975,20 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
             ElevatedButton(
               onPressed: () {
                 setState(() {
-                  n.variable = tagCtrl.text.trim();
-                  n.modifier = modifier;
-                  n.presetMs = int.tryParse(presetCtrl.text) ?? n.presetMs;
-                  if (isCtud) {
-                    n.operandA = downTagCtrl.text.trim();
+                  if (isDataBlock) {
+                    n.blockType = blockType;
+                    n.operandA = operandACtrl.text.trim();
+                    n.operandB = operandBCtrl.text.trim();
+                    if (isMath) {
+                      n.variable = tagCtrl.text.trim();
+                    }
+                  } else {
+                    n.variable = tagCtrl.text.trim();
+                    n.modifier = modifier;
+                    n.presetMs = int.tryParse(presetCtrl.text) ?? n.presetMs;
+                    if (isCtud) {
+                      n.operandA = downTagCtrl.text.trim();
+                    }
                   }
                 });
                 widget.onProgramUpdated();
@@ -889,6 +1068,9 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
   }
 
   Widget _buildBlock(LdNode n) {
+    if (_isCompareBlock(n.blockType) || _isMathBlock(n.blockType)) {
+      return _buildDataBlock(n);
+    }
     final isCounter = _isCounterBlock(n.blockType);
     String topLeft;
     String topRight;
@@ -956,6 +1138,65 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 7, color: Colors.grey)),
                 _BlockPinRow(left: bottomLeft, right: bottomRight),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Compare (GT/LT/GE/LE/EQ/NE) and math (ADD/SUB/MUL/DIV/MOVE) blocks share
+  /// a two-row operand body: operand A on top, the operator glyph centred,
+  /// operand B below — with a left `EN` pin and a right pin (`Q` for
+  /// compare, `ENO` for math).
+  Widget _buildDataBlock(LdNode n) {
+    final isCompare = _isCompareBlock(n.blockType);
+    final rightPin = isCompare ? 'Q' : 'ENO';
+    final glyph = _blockOperatorGlyph(n.blockType);
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: Colors.grey.shade500, width: 1.5),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+            decoration: const BoxDecoration(
+              color: Color(0xFF334155),
+              borderRadius: BorderRadius.only(topLeft: Radius.circular(3), topRight: Radius.circular(3)),
+            ),
+            child: Text(n.blockType,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Colors.white, fontFamily: 'monospace'),
+                textAlign: TextAlign.center),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _BlockPinRow(left: 'EN', right: rightPin),
+                Text(n.operandA,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 9, color: Colors.white, fontFamily: 'monospace'),
+                    textAlign: TextAlign.center),
+                Text(glyph,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.amberAccent, fontFamily: 'monospace'),
+                    textAlign: TextAlign.center),
+                Text(n.operandB,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 9, color: Colors.white, fontFamily: 'monospace'),
+                    textAlign: TextAlign.center),
               ],
             ),
           ),

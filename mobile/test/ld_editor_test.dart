@@ -222,4 +222,143 @@ void main() {
       });
     }
   });
+
+  group('Block-type picker + data blocks', () {
+    for (final size in [desktopSize, smallPhoneSize]) {
+      testWidgets('tapping Block opens a picker listing all four groups and their types (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Block'));
+        await tester.pumpAndSettle();
+
+        // Groups.
+        expect(find.text('Timers'), findsOneWidget);
+        expect(find.text('Counters'), findsOneWidget);
+        expect(find.text('Compare'), findsOneWidget);
+        expect(find.text('Math'), findsOneWidget);
+
+        // Types.
+        for (final t in ['TON', 'TOF', 'TP', 'CTU', 'CTD', 'CTUD', 'GT', 'LT', 'GE', 'LE', 'EQ', 'NE', 'ADD', 'SUB', 'MUL', 'DIV', 'MOVE']) {
+          expect(find.text(t), findsOneWidget, reason: 'expected type $t in picker');
+        }
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('picking GT then tapping a wire insert-target inserts a GT block and opens its dialog '
+          '(${size.width.toInt()}px)', (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Block'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('GT'));
+        await tester.pumpAndSettle();
+
+        // Insert targets are the small cyan "+" GestureDetectors on wires.
+        final addTargets = find.byIcon(Icons.add);
+        // index 0 = Add Rung button; subsequent ones are per-rung wire targets.
+        final insertTarget = tester.widget<GestureDetector>(
+          find.ancestor(of: addTargets.at(1), matching: find.byType(GestureDetector)).first,
+        );
+        insertTarget.onTap!();
+        await tester.pumpAndSettle();
+
+        final inserted = program.rungs[0].nodes.where((n) => n.kind == LdKind.block && n.blockType == 'GT');
+        expect(inserted.length, 1);
+
+        // Its edit dialog opened.
+        expect(find.text('Edit GT'), findsOneWidget);
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('GT edit dialog shows operand A, operator dropdown, operand B, no preset field '
+          '(${size.width.toInt()}px)', (tester) async {
+        await setSurface(tester, size);
+        final program = PlcProgram(
+          name: 'TestProgram',
+          language: 'LadderLogic',
+          rungs: [
+            buildRung(index: 0, comment: 'Rung 0', main: [
+              LdNode(id: '', kind: LdKind.block, blockType: 'GT', variable: '', operandA: '10', operandB: '20'),
+            ]),
+          ],
+        );
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('GT'));
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.tap(find.text('GT'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Edit GT'), findsOneWidget);
+        expect(find.text('Operand A'), findsOneWidget);
+        expect(find.text('Operand B'), findsOneWidget);
+        expect(find.byType(DropdownButtonFormField<String>), findsOneWidget);
+        expect(find.text('Preset Count (PV)'), findsNothing);
+        expect(find.text('Preset Time (PT) ms'), findsNothing);
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('Math ADD edit dialog shows output-tag + A + operator + B (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = PlcProgram(
+          name: 'TestProgram',
+          language: 'LadderLogic',
+          rungs: [
+            buildRung(index: 0, comment: 'Rung 0', main: [
+              LdNode(id: '', kind: LdKind.block, blockType: 'ADD', variable: 'Result', operandA: '1', operandB: '2'),
+            ]),
+          ],
+        );
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('ADD'));
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.tap(find.text('ADD'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Edit ADD'), findsOneWidget);
+        expect(find.text('Output tag'), findsOneWidget);
+        expect(find.text('Operand A'), findsOneWidget);
+        expect(find.text('Operand B'), findsOneWidget);
+        expect(find.byType(DropdownButtonFormField<String>), findsOneWidget);
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('GT block renders A, >, B without overflow (${size.width.toInt()}px)', (tester) async {
+        await setSurface(tester, size);
+        final program = PlcProgram(
+          name: 'TestProgram',
+          language: 'LadderLogic',
+          rungs: [
+            buildRung(index: 0, comment: 'Rung 0', main: [
+              LdNode(id: '', kind: LdKind.block, blockType: 'GT', variable: '', operandA: 'Speed', operandB: '100'),
+            ]),
+          ],
+        );
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        expect(find.text('GT'), findsOneWidget);
+        expect(find.text('Speed'), findsOneWidget);
+        expect(find.text('>'), findsOneWidget);
+        expect(find.text('100'), findsOneWidget);
+
+        expect(tester.takeException(), isNull);
+      });
+    }
+  });
 }
