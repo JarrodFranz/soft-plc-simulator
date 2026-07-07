@@ -138,6 +138,8 @@ class LdNode {
   String comment;
   int col;           // grid column (series index) — assigned by layout
   int row;           // grid lane (0 = main line)
+  String operandA;   // first data operand (e.g. compare/move block LHS)
+  String operandB;   // second data operand (e.g. compare/move block RHS)
 
   LdNode({
     required this.id,
@@ -149,6 +151,8 @@ class LdNode {
     this.comment = '',
     this.col = 0,
     this.row = 0,
+    this.operandA = '',
+    this.operandB = '',
   });
 
   factory LdNode.fromJson(Map<String, dynamic> json) {
@@ -165,20 +169,20 @@ class LdNode {
       comment: json['comment'] ?? '',
       col: json['col'] ?? 0,
       row: json['row'] ?? 0,
+      operandA: json['operand_a'] ?? '',
+      operandB: json['operand_b'] ?? '',
     );
   }
 
-  Map<String, dynamic> toJson() => {
-    'id': id,
-    'kind': kind.name,
-    'variable': variable,
-    'modifier': modifier,
-    'block_type': blockType,
-    'preset_ms': presetMs,
-    'comment': comment,
-    'col': col,
-    'row': row,
-  };
+  Map<String, dynamic> toJson() {
+    final m = <String, dynamic>{
+      'id': id, 'kind': kind.name, 'variable': variable, 'modifier': modifier,
+      'block_type': blockType, 'preset_ms': presetMs, 'comment': comment, 'col': col, 'row': row,
+    };
+    if (operandA.isNotEmpty) m['operand_a'] = operandA;
+    if (operandB.isNotEmpty) m['operand_b'] = operandB;
+    return m;
+  }
 }
 
 class LdWire {

@@ -28,6 +28,21 @@ PlcProject _roundTrip(PlcProject p) =>
     PlcProject.fromJson(jsonDecode(jsonEncode(p.toJson())));
 
 void main() {
+  test('LdNode operand fields round-trip and are omitted when empty', () {
+    final bare = LdNode(id: 'n1', kind: LdKind.contact, variable: 'A');
+    expect(bare.toJson().containsKey('operand_a'), isFalse); // additive: absent when empty
+    final data = LdNode(id: 'n2', kind: LdKind.block, blockType: 'GT', operandA: 'Level', operandB: '80');
+    final j = data.toJson();
+    expect(j['operand_a'], 'Level');
+    expect(j['operand_b'], '80');
+    final back = LdNode.fromJson(j);
+    expect(back.operandA, 'Level');
+    expect(back.operandB, '80');
+    // legacy JSON without the keys still loads
+    final legacy = LdNode.fromJson({'id': 'n3', 'kind': 'block', 'block_type': 'TON', 'preset_ms': 3000});
+    expect(legacy.operandA, '');
+  });
+
   for (final original in DefaultProjects.all()) {
     group('round-trip ${original.id}', () {
       test('structural: collections and struct defs are preserved', () {
