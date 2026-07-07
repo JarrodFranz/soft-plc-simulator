@@ -120,6 +120,25 @@ void main() {
     expect(_b(p, 'Out'), isTrue);
   });
 
+  test('empty link branch is a no-op; filling with a closed contact ORs power', () {
+    // Rung: L - Enable(contact) - Q(coil). Enable drives Q.
+    final r = buildRung(index: 0, main: [_no('Enable'), _coil('Q')]);
+    final p = _proj(
+        [_tag('Enable', 'BOOL', false), _tag('Seal', 'BOOL', false), _tag('Q', 'BOOL', false)],
+        [_ldProg([r])]);
+    final rt = LdExecRuntime();
+    // Empty branch paralleling 'Enable' (source L, dest the coil node m1):
+    addEmptyBranch(r, kLeftRailId, 'm1');
+    executeLdPrograms(p, 100, rt);
+    expect(_b(p, 'Q'), isFalse); // link is OPEN -> no power, Enable false -> Q false
+    // Fill the link with a normally-open 'Seal' contact and close it:
+    final link = r.nodes.firstWhere((n) => n.kind == LdKind.link);
+    fillLink(r, link, LdNode(id: 'x', kind: LdKind.contact, variable: 'Seal'));
+    writePath(p, 'Seal', true);
+    executeLdPrograms(p, 100, rt);
+    expect(_b(p, 'Q'), isTrue); // seal branch ORs power around the open Enable
+  });
+
   test('TON accumulates by dt, DN at PRE, resets when IN drops', () {
     final r = buildRung(index: 0, main: [
       _no('Run'),

@@ -273,3 +273,41 @@ void deleteNode(LdRung rung, LdNode n) {
   }
   rung.nodes.remove(n);
 }
+
+/// Adds an EMPTY parallel branch on a new lane: sourceId -> link -> destId.
+/// The link is open (LdKind.link); it has no logical effect until filled.
+LdNode addEmptyBranch(LdRung rung, String sourceId, String destId) {
+  final lane = maxLane(rung) + 1;
+  final link = LdNode(id: newNodeId(rung), kind: LdKind.link, row: lane);
+  rung.nodes.add(link);
+  rung.wires.add(LdWire(fromId: sourceId, toId: link.id));
+  rung.wires.add(LdWire(fromId: link.id, toId: destId));
+  return link;
+}
+
+/// Replaces [link] with [replacement] in place, reusing the link's id and lane
+/// so the existing tap/merge wires stay valid. Filling REPLACES (does not
+/// insert in series) — an open link left in series would keep the branch dead.
+LdNode fillLink(LdRung rung, LdNode link, LdNode replacement) {
+  assert(link.kind == LdKind.link);
+  replacement.id = link.id;
+  replacement.row = link.row;
+  final i = rung.nodes.indexWhere((n) => n.id == link.id);
+  rung.nodes[i] = replacement;
+  return replacement;
+}
+
+/// Inverse of [fillLink]: turns a real branch node back into an open link
+/// (same id/row), preserving the branch lane and wiring.
+LdNode emptyBranch(LdRung rung, LdNode element) {
+  final link = LdNode(id: element.id, kind: LdKind.link, row: element.row);
+  final i = rung.nodes.indexWhere((n) => n.id == element.id);
+  rung.nodes[i] = link;
+  return link;
+}
+
+/// Removes an empty branch entirely: drops the link node and its two wires.
+void collapseLink(LdRung rung, LdNode link) {
+  rung.wires.removeWhere((w) => w.fromId == link.id || w.toId == link.id);
+  rung.nodes.removeWhere((n) => n.id == link.id);
+}

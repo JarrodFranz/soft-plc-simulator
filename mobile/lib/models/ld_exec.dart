@@ -352,6 +352,11 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
         write('$base.TT', n.blockType == 'TOF' ? (!inP && dn) : (inP && !dn));
         power[n.id] = dn; // block output (Q) feeds downstream elements
         break;
+      case LdKind.link:
+        // Empty branch placeholder: open (no power), writes nothing. A
+        // guided-editing scaffold until filled with a real element.
+        power[n.id] = false;
+        break;
     }
   }
 }

@@ -44,6 +44,19 @@ void main() {
     expect(legacy.operandA, '');
   });
 
+  test('a link (empty branch) round-trips', () {
+    final rung = buildRung(index: 0, main: [
+      LdNode(id: '', kind: LdKind.contact, variable: 'A'),
+      LdNode(id: '', kind: LdKind.coil, variable: 'Q'),
+    ]);
+    addEmptyBranch(rung, kLeftRailId, 'm1');
+    final prog = PlcProgram(name: 'P', language: 'LadderLogic', rungs: [rung]);
+    final back = PlcProgram.fromJson(prog.toJson());
+    final r = back.rungs.single;
+    expect(r.nodes.any((n) => n.kind == LdKind.link), isTrue);
+    expect(r.wires.length, rung.wires.length);
+  });
+
   test('WS21: full-block round-trip — TP/CTU/CTD/CTUD/GT/ADD/MOVE + stacked coil', () {
     // Build a rung containing one node of each new block type, with
     // realistic operandA/operandB/variable/presetMs, via buildRung so the
