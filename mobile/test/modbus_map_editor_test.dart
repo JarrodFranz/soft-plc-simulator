@@ -11,6 +11,7 @@ import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/screens/gateway_screen.dart';
 import 'package:soft_plc_mobile/services/modbus_host.dart';
+import 'package:soft_plc_mobile/services/mqtt_host.dart';
 import 'package:soft_plc_mobile/services/opcua_host.dart';
 import 'support/responsive_test_utils.dart';
 
@@ -52,6 +53,7 @@ Widget _app(PlcProject project, {required VoidCallback onProjectUpdated}) {
       currentProject: project,
       host: OpcUaHost(),
       modbusHost: ModbusHost(),
+      mqttHost: MqttHost(),
       onProjectUpdated: onProjectUpdated,
     ),
   );

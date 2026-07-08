@@ -5,6 +5,7 @@ import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/screens/gateway_screen.dart';
 import 'package:soft_plc_mobile/services/modbus_host.dart';
+import 'package:soft_plc_mobile/services/mqtt_host.dart';
 import 'package:soft_plc_mobile/services/opcua_host.dart';
 import 'support/responsive_test_utils.dart';
 
@@ -126,12 +127,14 @@ Widget _app(
   OpcUaHost host, {
   bool hostingSupported = true,
   ModbusHost? modbusHost,
+  MqttHost? mqttHost,
 }) {
   return MaterialApp(
     home: GatewayScreen(
       currentProject: project,
       host: host,
       modbusHost: modbusHost ?? _CountingModbusHost(),
+      mqttHost: mqttHost ?? MqttHost(),
       onProjectUpdated: () {},
       hostingSupported: hostingSupported,
     ),
@@ -685,6 +688,193 @@ void main() {
 
       await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
       await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('opcua_enable_switch')));
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('MQTT / Sparkplug B card (WS-mqtt Task 5)', () {
+    testWidgets('renders the MQTT card, starts disabled with config hidden', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final mqttHost = MqttHost();
+      addTearDown(mqttHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, mqttHost: mqttHost));
+      await tester.pumpAndSettle();
+
+      expect(find.text('MQTT / Sparkplug B'), findsOneWidget);
+      expect(find.byKey(const Key('mqtt_enable_switch')), findsOneWidget);
+      final sw = tester.widget<Switch>(find.byKey(const Key('mqtt_enable_switch')));
+      expect(sw.value, false);
+      expect(find.text('MQTT Tag Map'), findsNothing);
+      expect(find.widgetWithText(ElevatedButton, 'Connect'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('toggling the MQTT switch ON reveals broker fields, controls, and map editor',
+        (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final mqttHost = MqttHost();
+      addTearDown(mqttHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, mqttHost: mqttHost));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
+      await tester.pump();
+
+      expect(project.protocols?.mqtt?.enabled, true);
+      expect(find.text('MQTT Tag Map'), findsOneWidget);
+      expect(find.widgetWithText(TextField, '1883'), findsOneWidget);
+      expect(find.byKey(const Key('mqtt_tls_switch')), findsOneWidget);
+      expect(find.byKey(const Key('mqtt_format_dropdown')), findsOneWidget);
+      expect(find.text('Base topic'), findsOneWidget); // default format is 'json'
+      expect(find.widgetWithText(ElevatedButton, 'Connect'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, 'Disconnect'), findsOneWidget);
+      expect(find.byKey(const Key('mqtt_password_field')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('switching payload format to sparkplug swaps base-topic for group/edge-node fields',
+        (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final mqttHost = MqttHost();
+      addTearDown(mqttHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, mqttHost: mqttHost));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
+      await tester.pump();
+
+      await tester.tap(find.byKey(const Key('mqtt_format_dropdown')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('sparkplug').last);
+      await tester.pumpAndSettle();
+
+      expect(project.protocols?.mqtt?.format, 'sparkplug');
+      expect(find.text('Base topic'), findsNothing);
+      expect(find.text('Group ID'), findsOneWidget);
+      expect(find.text('Edge node ID'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('toggling the MQTT switch OFF hides the config again', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final mqttHost = MqttHost();
+      addTearDown(mqttHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, mqttHost: mqttHost));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
+      await tester.pump();
+      expect(project.protocols?.mqtt?.enabled, true);
+
+      await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
+      await tester.pump();
+
+      expect(project.protocols?.mqtt?.enabled, false);
+      expect(find.text('MQTT Tag Map'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Regenerate populates entries from the project tags', (tester) async {
+      final project = _project();
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.mqtt!.enabled = true;
+      project.protocols!.mqtt!.map.entries.clear();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final mqttHost = MqttHost();
+      addTearDown(mqttHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, mqttHost: mqttHost));
+      await tester.pumpAndSettle();
+      expect(find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
+          findsOneWidget);
+
+      final regenerateButton = find.widgetWithText(TextButton, 'Regenerate');
+      // The MQTT card sits below the OPC UA/Modbus cards and has many of its
+      // own fields, so its Regenerate button can be scrolled off the
+      // default test viewport — scroll it into view before tapping.
+      await tester.ensureVisible(regenerateButton);
+      await tester.pumpAndSettle();
+      await tester.tap(regenerateButton);
+      await tester.pump();
+
+      expect(project.protocols?.mqtt?.map.entries, isNotEmpty);
+      expect(find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
+          findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('hosting unsupported (web): Connect disabled + native-only note shown', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final mqttHost = MqttHost();
+      addTearDown(mqttHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, mqttHost: mqttHost, hostingSupported: false));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
+      await tester.pump();
+
+      final connectBtn = tester.widget<ElevatedButton>(
+        find.widgetWithText(ElevatedButton, 'Connect'),
+      );
+      expect(connectBtn.onPressed, isNull);
+      expect(find.textContaining('web browsers do not allow'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 320 width with all three cards expanded', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+      final mqttHost = MqttHost();
+      addTearDown(mqttHost.dispose);
+      await setSurface(tester, smallPhoneSize);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost, mqttHost: mqttHost));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('opcua_enable_switch')));
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 1400 width with all three cards expanded', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+      final mqttHost = MqttHost();
+      addTearDown(mqttHost.dispose);
+      await setSurface(tester, desktopSize);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost, mqttHost: mqttHost));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
+      await tester.pump();
       await tester.tap(find.byKey(const Key('modbus_enable_switch')));
       await tester.pump();
       await tester.tap(find.byKey(const Key('opcua_enable_switch')));
