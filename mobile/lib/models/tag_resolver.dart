@@ -207,6 +207,37 @@ StructFieldDef? _field(PlcProject p, String typeName, String name) {
   return null;
 }
 
+/// The data type of a (possibly dotted, possibly indexed) path, or null if
+/// the path doesn't resolve — e.g. an unknown root tag or an unknown field
+/// name partway through. Reuses the same field-def walk as [childrenOf]
+/// (`_rootTag` + `_field`), but only tracks the type, not the value, so it's
+/// safe to call even when the path's containers haven't been populated yet.
+/// An array-index segment (`[i]`) doesn't change the element's base type, so
+/// it's skipped rather than resolved against a live value.
+String? dataTypeOfPath(PlcProject p, String path) {
+  final segs = _segments(path);
+  if (segs.isEmpty) {
+    return null;
+  }
+  final root = _rootTag(p, segs.first.raw);
+  if (root == null) {
+    return null;
+  }
+  String curType = root.dataType;
+  for (int i = 1; i < segs.length; i++) {
+    final seg = segs[i];
+    if (seg.isIndex) {
+      continue;
+    }
+    final f = _field(p, curType, seg.raw);
+    if (f == null) {
+      return null;
+    }
+    curType = f.dataType;
+  }
+  return curType;
+}
+
 /// Reads a leaf/subtree value by path, or null if the path is invalid.
 dynamic readPath(PlcProject p, String path) {
   final segs = _segments(path);

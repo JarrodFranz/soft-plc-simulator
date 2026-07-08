@@ -174,6 +174,29 @@ class _GatewayScreenState extends State<GatewayScreen> {
     widget.onProjectUpdated();
   }
 
+  /// Appends a default entry (first available tag option, `holding` table,
+  /// address 0, `ReadWrite`) to the Modbus map — the user edits it in place
+  /// via the row's tag/table/address/access controls afterward.
+  void _addModbusEntry(List<String> tagOptions) {
+    setState(() {
+      _ensureModbus();
+      widget.currentProject.protocols!.modbus!.map.entries.add(ModbusMapEntry(
+        tag: tagOptions.isNotEmpty ? tagOptions.first : '',
+        table: 'holding',
+        address: 0,
+        access: 'ReadWrite',
+      ));
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _deleteModbusEntry(ModbusMapEntry entry) {
+    setState(() {
+      widget.currentProject.protocols!.modbus!.map.entries.remove(entry);
+    });
+    widget.onProjectUpdated();
+  }
+
   /// Creates a default `ProtocolSettings` (and its OPC UA config) in place
   /// when the project has none yet, mirroring WS16's `_ensureMap`: mutate in
   /// memory only — do NOT call `onProjectUpdated` here, so an untouched
@@ -709,18 +732,29 @@ class _GatewayScreenState extends State<GatewayScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            runSpacing: 4,
             children: [
-              const Expanded(
-                child: Text(
-                  'Modbus Register Map',
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
-                ),
+              const Text(
+                'Modbus Register Map',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
               ),
-              TextButton.icon(
-                icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
-                label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
-                onPressed: _autoGenerateModbusMap,
+              Wrap(
+                spacing: 4,
+                children: [
+                  TextButton.icon(
+                    icon: const Icon(Icons.add, size: 16, color: Colors.cyanAccent),
+                    label: const Text('Add entry', style: TextStyle(color: Colors.cyanAccent)),
+                    onPressed: () => _addModbusEntry(tagOptions),
+                  ),
+                  TextButton.icon(
+                    icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
+                    label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
+                    onPressed: _autoGenerateModbusMap,
+                  ),
+                ],
               ),
             ],
           ),
@@ -804,6 +838,11 @@ class _GatewayScreenState extends State<GatewayScreen> {
               widget.onProjectUpdated();
             },
           );
+          final deleteButton = IconButton(
+            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+            tooltip: 'Delete entry',
+            onPressed: () => _deleteModbusEntry(entry),
+          );
 
           if (isCompact) {
             return Column(
@@ -816,6 +855,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 addressField,
                 const SizedBox(height: 4),
                 accessDropdown,
+                Align(alignment: Alignment.centerRight, child: deleteButton),
               ],
             );
           }
@@ -829,6 +869,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
               SizedBox(width: 100, child: addressField),
               const SizedBox(width: 8),
               SizedBox(width: 160, child: accessDropdown),
+              SizedBox(width: 40, child: deleteButton),
             ],
           );
         },

@@ -210,32 +210,38 @@ int _widthForEntry(PlcProject project, ModbusMapEntry entry) {
   return ModbusMap.regsForType(dt);
 }
 
-String? _tagDataType(PlcProject project, String tagName) {
-  for (final t in project.tags) {
-    if (t.name == tagName) {
-      return t.dataType;
-    }
-  }
-  return null;
+/// The data type of a mapped entry's (possibly dotted, e.g. `Motor.Speed`)
+/// tag path — delegates to `tag_resolver.dart`'s field-def walk so a struct
+/// member resolves to its OWN type (e.g. INT32) instead of the INT16
+/// fallback a bare top-level-name lookup would produce.
+String? _tagDataType(PlcProject project, String tagPath) {
+  return dataTypeOfPath(project, tagPath);
 }
 
-PlcTag? _findRootTag(PlcProject project, String tagName) {
+/// The root tag of a (possibly dotted/indexed) path — mirrors the engines'
+/// `_forceAwareWrite`/`_rootTagOf` root resolution (`fbd_exec.dart`,
+/// `ld_exec.dart`, `sfc_exec.dart`, `st_exec.dart`): the tag name is
+/// everything before the first `.` or `[`.
+PlcTag? _findRootTag(PlcProject project, String path) {
+  final rootName = path.split('.').first.split('[').first;
   for (final t in project.tags) {
-    if (t.name == tagName) {
+    if (t.name == rootName) {
       return t;
     }
   }
   return null;
 }
 
-/// Force-aware write guard: mirrors `opcua_services.dart`'s `_writeAttribute`
-/// force check (find the root tag; if it's forced and its name matches the
-/// written path, the write is skipped) — except Modbus skips SILENTLY and
-/// still answers with the normal echo response (no exception), unlike the
-/// OPC UA path which refuses visibly with Bad_UserAccessDenied.
-bool _isForcedSkip(PlcProject project, String tagName) {
-  final root = _findRootTag(project, tagName);
-  return root != null && root.isForced && root.name == tagName;
+/// Force-aware write guard: mirrors the engines' `_forceAwareWrite` root
+/// resolution — find the ROOT tag of the (possibly dotted) path and honor
+/// its `isForced` flag, so forcing a struct tag (e.g. `Motor`) skips writes
+/// to any of its members (e.g. `Motor.Speed`), not just a bare top-level
+/// write — except Modbus skips SILENTLY and still answers with the normal
+/// echo response (no exception), unlike the OPC UA path which refuses
+/// visibly with Bad_UserAccessDenied.
+bool _isForcedSkip(PlcProject project, String path) {
+  final root = _findRootTag(project, path);
+  return root != null && root.isForced;
 }
 
 ModbusMap _mapFor(PlcProject project) {
