@@ -150,10 +150,20 @@ class OpcUaProjectServices implements OpcUaServiceHandler {
   /// (reference_description.rs): referenceTypeId NodeId, isForward bool,
   /// nodeId ExpandedNodeId, browseName QualifiedName, displayName
   /// LocalizedText, nodeClass Int32 enum, typeDefinition ExpandedNodeId.
+  ///
+  /// Task 2 (discovery): a top-down client starts at Root (i=84) and expects
+  /// exactly one Organizes reference down to Objects (i=85); Browsing
+  /// Objects now ALSO surfaces the standard Server object (i=2253) ahead of
+  /// the flat tag list, so the address space looks like a real OPC UA server
+  /// rather than "Objects > tags only". Browsing the Server node itself (or
+  /// any mapped variable) is Good with zero references — v1 doesn't model
+  /// the Server object's own children.
   void _writeBrowseResult(OpcUaWriter w, OpcUaAddressSpace space, OpcNodeId nodeId) {
+    final isRoot = space.isRootFolder(nodeId);
     final isObjects = space.isObjectsFolder(nodeId);
+    final isServer = space.isServerNode(nodeId);
     final entry = space.byNodeId(nodeId);
-    if (!isObjects && entry == null) {
+    if (!isRoot && !isObjects && !isServer && entry == null) {
       w.statusCode(OpcUaServiceStatusCodes.badNodeIdUnknown);
       w.byteString(null); // continuationPoint
       w.int32(-1); // references: null array
@@ -163,10 +173,32 @@ class OpcUaProjectServices implements OpcUaServiceHandler {
     w.statusCode(OpcUaServiceStatusCodes.good);
     w.byteString(null); // continuationPoint — v1 never paginates.
 
+    if (isRoot) {
+      // Root organizes exactly the Objects folder — the top-down client's
+      // entry point into the rest of the address space.
+      w.int32(1);
+      w.nodeId(OpcUaStandardNodeIds.organizesReferenceType);
+      w.boolean(true); // isForward
+      w.expandedNodeId(OpcUaStandardNodeIds.objectsFolder);
+      w.qualifiedName(const OpcQualifiedName(ns: 0, name: 'Objects'));
+      w.localizedText(const OpcLocalizedText(text: 'Objects'));
+      w.int32(OpcUaNodeClass.object);
+      w.expandedNodeId(OpcUaStandardNodeIds.folderType);
+      return;
+    }
+
     if (isObjects) {
-      // Browsing Objects lists every exposed variable.
+      // Browsing Objects lists the standard Server object first, then every
+      // exposed variable (v1's flat tag layout).
       final children = space.children(OpcUaStandardNodeIds.objectsFolder);
-      w.int32(children.length);
+      w.int32(children.length + 1);
+      w.nodeId(OpcUaStandardNodeIds.organizesReferenceType);
+      w.boolean(true); // isForward
+      w.expandedNodeId(OpcUaStandardNodeIds.serverNode);
+      w.qualifiedName(const OpcQualifiedName(ns: 0, name: 'Server'));
+      w.localizedText(const OpcLocalizedText(text: 'Server'));
+      w.int32(OpcUaNodeClass.object);
+      w.expandedNodeId(OpcUaStandardNodeIds.serverType);
       for (final child in children) {
         w.nodeId(OpcUaStandardNodeIds.organizesReferenceType);
         w.boolean(true); // isForward
@@ -179,7 +211,7 @@ class OpcUaProjectServices implements OpcUaServiceHandler {
       return;
     }
 
-    // Browsing a variable node: no further children (v1's flat layout).
+    // Browsing the Server node or a variable node: no further children.
     w.int32(0);
   }
 
@@ -231,6 +263,16 @@ class OpcUaProjectServices implements OpcUaServiceHandler {
     int attributeId,
     String? indexRange,
   ) {
+    // Task 2 (discovery): the standard NamespaceArray/Server nodes are
+    // special-cased BEFORE the `space.byNodeId` lookup — neither is a mapped
+    // tag, so both would otherwise fall through to Bad_NodeIdUnknown.
+    if (space.isNamespaceArrayNode(nodeId)) {
+      return _readNamespaceArrayAttribute(space, attributeId, indexRange);
+    }
+    if (space.isServerNode(nodeId)) {
+      return _readServerNodeAttribute(attributeId, indexRange);
+    }
+
     final entry = space.byNodeId(nodeId);
     if (entry == null) {
       return const OpcDataValue(status: OpcUaServiceStatusCodes.badNodeIdUnknown);
@@ -286,6 +328,111 @@ class OpcUaProjectServices implements OpcUaServiceHandler {
       case OpcUaAttributeIds.userAccessLevel:
         return OpcDataValue(
           variant: OpcVariant(typeId: 3, value: entry.accessLevelByte), // Byte
+          status: OpcUaServiceStatusCodes.good,
+          serverTs: now,
+        );
+      default:
+        return const OpcDataValue(status: OpcUaServiceStatusCodes.badAttributeIdInvalid);
+    }
+  }
+
+  /// Answers a Read of `Server_NamespaceArray` (ns=0;i=2255): the ONE
+  /// attribute a strict client actually needs from it is `Value` (to resolve
+  /// what namespace index 1 means), but the identity attributes
+  /// (NodeClass/BrowseName/DisplayName/DataType/AccessLevel) are answered too
+  /// so a client that reads them before Value (e.g. to render a browse tree)
+  /// doesn't see a bare Bad_NodeIdUnknown gap.
+  OpcDataValue _readNamespaceArrayAttribute(
+    OpcUaAddressSpace space,
+    int attributeId,
+    String? indexRange,
+  ) {
+    if (indexRange != null) {
+      return const OpcDataValue(status: OpcUaServiceStatusCodes.badIndexRangeInvalid);
+    }
+    final now = DateTime.now().toUtc();
+    switch (attributeId) {
+      case OpcUaAttributeIds.value:
+        return OpcDataValue(
+          variant: OpcVariant(typeId: 12, isArray: true, value: space.namespaceArray), // String[]
+          status: OpcUaServiceStatusCodes.good,
+          serverTs: now,
+        );
+      case OpcUaAttributeIds.nodeClass:
+        return OpcDataValue(
+          variant: const OpcVariant(typeId: 6, value: OpcUaNodeClass.variable), // Int32
+          status: OpcUaServiceStatusCodes.good,
+          serverTs: now,
+        );
+      case OpcUaAttributeIds.browseName:
+        return OpcDataValue(
+          variant: const OpcVariant(
+            typeId: 20, // QualifiedName
+            value: OpcQualifiedName(ns: 0, name: 'NamespaceArray'),
+          ),
+          status: OpcUaServiceStatusCodes.good,
+          serverTs: now,
+        );
+      case OpcUaAttributeIds.displayName:
+        return OpcDataValue(
+          variant: const OpcVariant(
+            typeId: 21, // LocalizedText
+            value: OpcLocalizedText(text: 'NamespaceArray'),
+          ),
+          status: OpcUaServiceStatusCodes.good,
+          serverTs: now,
+        );
+      case OpcUaAttributeIds.dataType:
+        return OpcDataValue(
+          variant: const OpcVariant(typeId: 17, value: OpcNodeId.numeric(0, 12)), // NodeId -> String
+          status: OpcUaServiceStatusCodes.good,
+          serverTs: now,
+        );
+      case OpcUaAttributeIds.accessLevel:
+      case OpcUaAttributeIds.userAccessLevel:
+        return OpcDataValue(
+          variant: const OpcVariant(typeId: 3, value: kAccessLevelCurrentRead), // Byte, read-only
+          status: OpcUaServiceStatusCodes.good,
+          serverTs: now,
+        );
+      default:
+        return const OpcDataValue(status: OpcUaServiceStatusCodes.badAttributeIdInvalid);
+    }
+  }
+
+  /// Answers a Read of the standard `Server` object (ns=0;i=2253): only the
+  /// identity attributes are meaningful for an Object node — `Value` is not
+  /// applicable (matching the existing default-case behavior for any
+  /// non-Value attribute on a Variable), so it falls through to
+  /// Bad_AttributeIdInvalid same as everything else this method doesn't
+  /// explicitly answer.
+  OpcDataValue _readServerNodeAttribute(int attributeId, String? indexRange) {
+    if (indexRange != null) {
+      return const OpcDataValue(status: OpcUaServiceStatusCodes.badIndexRangeInvalid);
+    }
+    final now = DateTime.now().toUtc();
+    switch (attributeId) {
+      case OpcUaAttributeIds.nodeClass:
+        return OpcDataValue(
+          variant: const OpcVariant(typeId: 6, value: OpcUaNodeClass.object), // Int32
+          status: OpcUaServiceStatusCodes.good,
+          serverTs: now,
+        );
+      case OpcUaAttributeIds.browseName:
+        return OpcDataValue(
+          variant: const OpcVariant(
+            typeId: 20, // QualifiedName
+            value: OpcQualifiedName(ns: 0, name: 'Server'),
+          ),
+          status: OpcUaServiceStatusCodes.good,
+          serverTs: now,
+        );
+      case OpcUaAttributeIds.displayName:
+        return OpcDataValue(
+          variant: const OpcVariant(
+            typeId: 21, // LocalizedText
+            value: OpcLocalizedText(text: 'Server'),
+          ),
           status: OpcUaServiceStatusCodes.good,
           serverTs: now,
         );

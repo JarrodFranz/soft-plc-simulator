@@ -172,6 +172,18 @@ class OpcUaServerSession {
   _ChannelState? _channel;
   _SessionState? _session;
 
+  /// Task 2 (discovery/endpoint-echo): the most recently observed
+  /// client-supplied `endpointUrl` (from Hello, then possibly overwritten by
+  /// GetEndpointsRequest, then possibly overwritten by CreateSessionRequest —
+  /// "last non-empty wins", so whichever of these the client actually sent
+  /// most recently is what gets echoed back). A client may reach this server
+  /// at an address our own best-effort guess (`OpcUaHost._bestDisplayHost()`)
+  /// can't reproduce (different NIC, NAT, container hostname, etc.) — since
+  /// the client just told us what it dialed, echoing that HOST back in
+  /// EndpointDescription.endpointUrl is more likely to be reachable than our
+  /// guess. `null` until the client sends one.
+  String? _clientEndpointUrl;
+
   int _nextChannelId = 1;
   int _nextTokenId = 1;
   int _nextSessionNumericId = 1;
@@ -303,6 +315,9 @@ class OpcUaServerSession {
     final recvSize = negotiate(hello.sendBufferSize); // our receive <= their send
     final sendSize = negotiate(hello.receiveBufferSize); // our send <= their receive
 
+    if (hello.endpointUrl.isNotEmpty) {
+      _clientEndpointUrl = hello.endpointUrl;
+    }
     _helloReceived = true;
     final ack = AcknowledgeMessage(
       protocolVersion: 0,
@@ -444,7 +459,7 @@ class OpcUaServerSession {
 
     switch (id) {
       case _Ids.getEndpointsRequest:
-        return _handleGetEndpoints(chunk, header);
+        return _handleGetEndpoints(chunk, reader, header);
       case _Ids.createSessionRequest:
         return _handleCreateSession(chunk, reader, header);
       case _Ids.activateSessionRequest:
@@ -512,7 +527,20 @@ class OpcUaServerSession {
     );
   }
 
-  List<Uint8List> _handleGetEndpoints(OpcChunk chunk, RequestHeader header) {
+  /// GetEndpointsRequest (get_endpoints_request.rs): requestHeader(consumed
+  /// by `_handleMsg`), endpointUrl String, localeIds array (unused), profileUris
+  /// array (unused). The endpointUrl is the address the CLIENT dialed to
+  /// reach us — captured into [_clientEndpointUrl] (Task 2 endpoint echo) so
+  /// [_writeEndpointDescription] can advertise a host the client already
+  /// knows works, instead of only ever our own best-effort guess.
+  List<Uint8List> _handleGetEndpoints(OpcChunk chunk, OpcUaReader reader, RequestHeader header) {
+    final endpointUrl = reader.string();
+    _skipArrayOfStrings(reader); // localeIds
+    _skipArrayOfStrings(reader); // profileUris
+    if (endpointUrl != null && endpointUrl.isNotEmpty) {
+      _clientEndpointUrl = endpointUrl;
+    }
+
     final w = OpcUaWriter();
     w.nodeId(const OpcNodeId.numeric(0, _Ids.getEndpointsResponse));
     w.responseHeader(_respond(header));
@@ -526,7 +554,7 @@ class OpcUaServerSession {
   /// securityMode Int32 enum, securityPolicyUri, userIdentityTokens array,
   /// transportProfileUri, securityLevel Byte.
   void _writeEndpointDescription(OpcUaWriter w) {
-    w.string(info.endpointUrl);
+    w.string(_advertisedEndpointUrl());
     _writeApplicationDescription(w);
     w.byteString(null); // serverCertificate
     w.int32(_securityModeNone);
@@ -535,6 +563,33 @@ class OpcUaServerSession {
     _writeAnonymousUserTokenPolicy(w);
     w.string(_transportProfileUriUaTcp);
     w.uint8(0); // securityLevel
+  }
+
+  /// Task 2 (discovery/endpoint-echo): the endpointUrl to advertise in
+  /// EndpointDescription — [info.endpointUrl]'s own host/port (our own
+  /// best-effort `opc.tcp://<bestDisplayHost>:<port>` guess, from
+  /// `OpcUaHost._bestDisplayHost()`) with the HOST swapped for whatever host
+  /// the CLIENT most recently told us it dialed ([_clientEndpointUrl] — see
+  /// its doc for precedence). Falls back to [info.endpointUrl] verbatim when
+  /// the client hasn't supplied a usable `opc.tcp://` URL yet (empty,
+  /// unparseable, or missing a host) — never worse than pre-Task-2 behavior.
+  /// This does NOT touch [info.endpointUrl] itself or the UI-displayed
+  /// endpoint (`OpcUaHost._endpointUrl`) — only what THIS response advertises.
+  String _advertisedEndpointUrl() {
+    final client = _clientEndpointUrl;
+    if (client == null || client.isEmpty) {
+      return info.endpointUrl;
+    }
+    final clientUri = Uri.tryParse(client);
+    if (clientUri == null || clientUri.host.isEmpty) {
+      return info.endpointUrl;
+    }
+    final serverUri = Uri.tryParse(info.endpointUrl);
+    if (serverUri == null) {
+      return info.endpointUrl;
+    }
+    final portSuffix = serverUri.hasPort ? ':${serverUri.port}' : '';
+    return 'opc.tcp://${clientUri.host}$portSuffix';
   }
 
   /// ApplicationDescription (application_description.rs): applicationUri,
@@ -565,22 +620,27 @@ class OpcUaServerSession {
     OpcUaReader reader,
     RequestHeader header,
   ) {
-    // We decode only what CreateSessionResponse needs to compute; the rest
-    // of CreateSessionRequest (clientDescription, serverUri, endpointUrl,
-    // sessionName, clientNonce, clientCertificate) is intentionally NOT
-    // decoded — Task 2 v1 doesn't need any of it, and since the response is
-    // built fresh (not derived from those fields) there is no alignment
-    // requirement to keep reading. See report for this documented choice.
-    // We DO need requestedSessionTimeout, which sits after all of the
-    // above — so we must skip over them correctly to reach it.
+    // We decode only what CreateSessionResponse needs to compute; most of
+    // CreateSessionRequest (clientDescription, serverUri, sessionName,
+    // clientNonce, clientCertificate) is intentionally NOT decoded further —
+    // v1 doesn't need any of it, and since the response is built fresh (not
+    // derived from those fields) there is no alignment requirement to keep
+    // reading. See report for this documented choice.
+    // We DO need endpointUrl (Task 2 endpoint echo — see [_clientEndpointUrl])
+    // and requestedSessionTimeout, both of which sit after clientDescription
+    // — so we must skip over it correctly to reach them.
     _skipApplicationDescription(reader); // clientDescription
     reader.string(); // serverUri
-    reader.string(); // endpointUrl
+    final endpointUrl = reader.string();
     reader.string(); // sessionName
     reader.byteString(); // clientNonce
     reader.byteString(); // clientCertificate
     final requestedTimeout = reader.float64();
     reader.uint32(); // maxResponseMessageSize — ignored.
+
+    if (endpointUrl != null && endpointUrl.isNotEmpty) {
+      _clientEndpointUrl = endpointUrl;
+    }
 
     final sessionId = OpcNodeId.numeric(1, _nextSessionNumericId++);
     final authToken = OpcNodeId.numeric(1, _nextAuthTokenNumericId++);

@@ -57,6 +57,7 @@ const _attrDescription = 5; // not answered -> Bad_AttributeIdInvalid
 
 // --- NodeClass enum (service_types/enums.rs) --------------------------------
 const _nodeClassVariable = 2;
+const _nodeClassObject = 1;
 
 // --- Standard node ids (types/node_ids.rs) ----------------------------------
 const _objectsFolderId = 85;
@@ -313,7 +314,12 @@ void main() {
       return services.handle(requestTypeId, body, h, _respondBuilder(h));
     }
 
-    test('Browse Objects returns exactly the 3 variables with right BrowseNames', () {
+    test('Browse Objects returns the standard Server object plus the 3 variables with right BrowseNames', () {
+      // Task 2 (discovery): Browsing Objects now ALSO surfaces the standard
+      // Server object (i=2253) ahead of the flat tag list — see
+      // opcua_discovery_test.dart for the dedicated discovery-fix coverage;
+      // this test just confirms the existing tag references still come
+      // through unchanged alongside it.
       final body = _browseRequestBody(
         nodesToBrowse: [const OpcNodeId.numeric(0, _objectsFolderId)],
       );
@@ -331,7 +337,7 @@ void main() {
       final continuationPoint = reader.byteString();
       expect(continuationPoint, isNull);
       final refCount = reader.int32();
-      expect(refCount, 3);
+      expect(refCount, 4); // Server + StartPB + Temperature + Counter
       final names = <String>[];
       for (var i = 0; i < refCount; i++) {
         reader.nodeId(); // referenceTypeId
@@ -342,12 +348,12 @@ void main() {
         names.add(browseName.name!);
         reader.localizedText(); // displayName
         final nodeClass = reader.int32();
-        expect(nodeClass, _nodeClassVariable);
+        expect(nodeClass, browseName.name == 'Server' ? _nodeClassObject : _nodeClassVariable);
         reader.expandedNodeId(); // typeDefinition
       }
       final diagCount = reader.int32();
       expect(diagCount, -1);
-      expect(names.toSet(), {'StartPB', 'Temperature', 'Counter'});
+      expect(names.toSet(), {'Server', 'StartPB', 'Temperature', 'Counter'});
     });
 
     test('Browse of a variable node returns an empty Good result', () {
@@ -419,7 +425,10 @@ void main() {
         browseReader.int32();
         browseReader.expandedNodeId();
       }
-      expect(names.toSet(), {'StartPB', 'Temperature', 'Counter'});
+      // Task 2 (discovery): Browse of Objects now also includes the standard
+      // Server object — irrelevant to this test's "dangling tag" concern, so
+      // just excluded from the set under test.
+      expect(names.toSet(), {'Server', 'StartPB', 'Temperature', 'Counter'});
       expect(names.contains('Ghost'), isFalse);
 
       // Read of the dangling node id -> Bad_NodeIdUnknown.
@@ -988,7 +997,7 @@ void main() {
       );
     }
 
-    test('after activation, a Browse via onBytes returns the 3 variables (proves handler wiring)', () {
+    test('after activation, a Browse via onBytes returns Server + the 3 variables (proves handler wiring)', () {
       final project = _buildProject();
       final services = OpcUaProjectServices(projectProvider: () => project);
       final session = OpcUaServerSession(info: info, services: services);
@@ -1025,7 +1034,7 @@ void main() {
       expect(respReader.statusCode(), _statusGood);
       respReader.byteString();
       final refCount = respReader.int32();
-      expect(refCount, 3);
+      expect(refCount, 4); // Server + StartPB + Temperature + Counter (Task 2)
     });
   });
 }

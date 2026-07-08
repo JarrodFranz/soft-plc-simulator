@@ -26,7 +26,33 @@ class OpcUaStandardNodeIds {
   static const hasTypeDefinitionReferenceType = OpcNodeId.numeric(0, 40); // node_ids.rs:854
   static const folderType = OpcNodeId.numeric(0, 61); // node_ids.rs:975
   static const baseDataVariableType = OpcNodeId.numeric(0, 63); // node_ids.rs:1450
+
+  // --- Task 2 (discovery) additions --- all cross-checked against
+  // C:/Users/jarro/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opcua-0.12.0/src/types/node_ids.rs
+  /// `ObjectId::Server`. node_ids.rs:1827.
+  static const serverNode = OpcNodeId.numeric(0, 2253);
+
+  /// `VariableId::Server_NamespaceArray`. node_ids.rs:3936.
+  static const serverNamespaceArray = OpcNodeId.numeric(0, 2255);
+
+  /// `ObjectTypeId::ServerType`. node_ids.rs:979.
+  static const serverType = OpcNodeId.numeric(0, 2004);
+
+  /// `ReferenceTypeId::HasComponent`. node_ids.rs:859.
+  static const hasComponentReferenceType = OpcNodeId.numeric(0, 47);
+
+  /// `ReferenceTypeId::HasProperty`. node_ids.rs:858.
+  static const hasPropertyReferenceType = OpcNodeId.numeric(0, 46);
+
+  /// `VariableTypeId::PropertyType`. node_ids.rs:1451.
+  static const propertyType = OpcNodeId.numeric(0, 68);
 }
+
+/// The standard "OPC Foundation" namespace URI — always index 0 of every OPC
+/// UA server's NamespaceArray (Part 3 §8.2.3). Verified against
+/// opcua-0.12.0/src/server/address_space/address_space.rs:193
+/// (`AddressSpace::new()`'s initial `namespaces: vec!["http://opcfoundation.org/UA/"...]`).
+const String kOpcFoundationNamespaceUri = 'http://opcfoundation.org/UA/';
 
 /// NodeClass enum values (service_types/enums.rs:589-599), Int32-encoded.
 class OpcUaNodeClass {
@@ -177,7 +203,13 @@ class OpcUaAddressSpace {
   final List<OpcUaAddressSpaceEntry> _entries;
   final Map<OpcNodeId, OpcUaAddressSpaceEntry> _byNodeId;
 
-  OpcUaAddressSpace._(this._entries, this._byNodeId);
+  /// `project.protocols?.opcua?.namespaceUri`, captured at build time so the
+  /// services layer can serve `Server_NamespaceArray` (i=2255) without a
+  /// second lookup into the project. Empty string when the project has no
+  /// `opcua` config (matches the map/entries also being empty in that case).
+  final String namespaceUri;
+
+  OpcUaAddressSpace._(this._entries, this._byNodeId, this.namespaceUri);
 
   /// Builds the address space from `project.protocols?.opcua` (the map +
   /// namespaceUri). Nodes whose `node_id` string cannot be parsed as either
@@ -208,7 +240,7 @@ class OpcUaAddressSpace {
         byNodeId[parsed] = entry;
       }
     }
-    return OpcUaAddressSpace._(entries, byNodeId);
+    return OpcUaAddressSpace._(entries, byNodeId, opcua?.namespaceUri ?? '');
   }
 
   static PlcTag? _findTag(PlcProject project, String name) {
@@ -247,6 +279,26 @@ class OpcUaAddressSpace {
   OpcUaAddressSpaceEntry? byNodeId(OpcNodeId nodeId) => _byNodeId[nodeId];
 
   bool isObjectsFolder(OpcNodeId nodeId) => nodeId == OpcUaStandardNodeIds.objectsFolder;
+
+  /// Task 2 (discovery): true for the standard Root folder (i=84) — the
+  /// entry point a top-down client (Root -> Objects -> tags) starts from.
+  bool isRootFolder(OpcNodeId nodeId) => nodeId == OpcUaStandardNodeIds.rootFolder;
+
+  /// Task 2 (discovery): true for the standard Server object (i=2253),
+  /// served (Browse-only) so a strict client sees SOMETHING organized under
+  /// Objects besides the flat tag list — matches a real server's shape.
+  bool isServerNode(OpcNodeId nodeId) => nodeId == OpcUaStandardNodeIds.serverNode;
+
+  /// Task 2 (discovery): true for the standard `Server_NamespaceArray`
+  /// variable (i=2255), whose Value a strict client reads to resolve what
+  /// namespace index 1 (this project's tags) actually means.
+  bool isNamespaceArrayNode(OpcNodeId nodeId) => nodeId == OpcUaStandardNodeIds.serverNamespaceArray;
+
+  /// The `Server_NamespaceArray` Value: index 0 is always the OPC
+  /// Foundation's standard namespace URI, index 1 is this project's tag
+  /// namespace URI (matches the `ns=1;...` prefix every mapped tag NodeId
+  /// carries — see [_parseNodeId]).
+  List<String> get namespaceArray => [kOpcFoundationNamespaceUri, namespaceUri];
 
   /// The direct children of [parent] in the Organizes hierarchy: all
   /// variables when [parent] is the Objects folder, otherwise empty (v1's

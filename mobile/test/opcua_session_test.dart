@@ -115,11 +115,12 @@ Uint8List _buildGetEndpointsRequestChunk({
   required int requestId,
   required OpcNodeId authToken,
   int requestHandle = 2,
+  String endpointUrl = 'opc.tcp://127.0.0.1:4840',
 }) {
   final w = OpcUaWriter();
   w.nodeId(const OpcNodeId.numeric(0, _getEndpointsRequestId));
   w.requestHeader(_reqHeader(authToken: authToken, requestHandle: requestHandle));
-  w.string('opc.tcp://127.0.0.1:4840');
+  w.string(endpointUrl);
   w.int32(-1); // localeIds: null array
   w.int32(-1); // profileUris: null array
   return buildMsgChunk(
@@ -145,6 +146,7 @@ Uint8List _buildCreateSessionRequestChunk({
   required int requestId,
   double requestedSessionTimeout = 1200000,
   int requestHandle = 3,
+  String endpointUrl = 'opc.tcp://127.0.0.1:4840',
 }) {
   final w = OpcUaWriter();
   w.nodeId(const OpcNodeId.numeric(0, _createSessionRequestId));
@@ -158,7 +160,7 @@ Uint8List _buildCreateSessionRequestChunk({
   w.string(null); // discoveryProfileUri
   w.int32(-1); // discoveryUrls: null array
   w.string(null); // serverUri
-  w.string('opc.tcp://127.0.0.1:4840'); // endpointUrl
+  w.string(endpointUrl); // endpointUrl
   w.string('test-session'); // sessionName
   w.byteString(null); // clientNonce
   w.byteString(null); // clientCertificate
@@ -635,6 +637,69 @@ void main() {
       expect(securityLevel, 0);
       expect(reader.atEnd, isTrue);
     });
+
+    test('Task 2 endpoint echo: advertises the CLIENT-dialed host, keeping our own port', () {
+      final session = OpcUaServerSession(info: _info, services: null);
+      session.onBytes(_buildHello(), 0);
+      final opnFrames = session.onBytes(_buildOpenSecureChannelRequestChunk(
+        secureChannelId: 0,
+        sequenceNumber: 1,
+        requestId: 10,
+      ), 0);
+      final opnReader = OpcUaReader(parseChunk(opnFrames.single).body);
+      opnReader.nodeId();
+      opnReader.responseHeader();
+      opnReader.uint32();
+      final channelId = opnReader.uint32();
+      final tokenId = opnReader.uint32();
+
+      // The client dialed a DIFFERENT host than our own best-effort guess
+      // (_info.endpointUrl == 'opc.tcp://127.0.0.1:4840') — e.g. a LAN IP our
+      // own NetworkInterface.list() guess didn't produce.
+      final geFrames = session.onBytes(_buildGetEndpointsRequestChunk(
+        secureChannelId: channelId,
+        tokenId: tokenId,
+        sequenceNumber: 2,
+        requestId: 11,
+        authToken: const OpcNodeId.numeric(0, 0),
+        endpointUrl: 'opc.tcp://192.168.50.7:4840',
+      ), 0);
+      final decoded = _decodeResponseChunk(geFrames.single);
+      expect(decoded.header.serviceResult, _statusGood);
+      expect(decoded.reader.int32(), 1); // endpoints count
+      final endpointUrl = decoded.reader.string();
+      // Host echoed back from the client's request; port kept from our info.
+      expect(endpointUrl, 'opc.tcp://192.168.50.7:4840');
+    });
+
+    test('Task 2 endpoint echo: empty/unparseable client endpointUrl falls back to the server\'s own guess', () {
+      final session = OpcUaServerSession(info: _info, services: null);
+      session.onBytes(_buildHello(endpointUrl: 'opc.tcp://127.0.0.1:4840'), 0);
+      final opnFrames = session.onBytes(_buildOpenSecureChannelRequestChunk(
+        secureChannelId: 0,
+        sequenceNumber: 1,
+        requestId: 10,
+      ), 0);
+      final opnReader = OpcUaReader(parseChunk(opnFrames.single).body);
+      opnReader.nodeId();
+      opnReader.responseHeader();
+      opnReader.uint32();
+      final channelId = opnReader.uint32();
+      final tokenId = opnReader.uint32();
+
+      final geFrames = session.onBytes(_buildGetEndpointsRequestChunk(
+        secureChannelId: channelId,
+        tokenId: tokenId,
+        sequenceNumber: 2,
+        requestId: 11,
+        authToken: const OpcNodeId.numeric(0, 0),
+        endpointUrl: '', // client sent nothing usable
+      ), 0);
+      final decoded = _decodeResponseChunk(geFrames.single);
+      expect(decoded.reader.int32(), 1); // endpoints count
+      final endpointUrl = decoded.reader.string();
+      expect(endpointUrl, _info.endpointUrl); // unchanged fallback
+    });
   });
 
   group('CreateSession / ActivateSession / CloseSession', () {
@@ -679,6 +744,27 @@ void main() {
       expect(authToken, isNotNull);
       expect(revisedTimeout, lessThanOrEqualTo(3600000));
       expect(revisedTimeout, greaterThanOrEqualTo(10000));
+    });
+
+    test('Task 2 endpoint echo: CreateSessionResponse advertises the CLIENT-dialed host', () {
+      final frames = session.onBytes(_buildCreateSessionRequestChunk(
+        secureChannelId: channelId,
+        tokenId: tokenId,
+        sequenceNumber: 2,
+        requestId: 11,
+        endpointUrl: 'opc.tcp://10.0.0.42:4840',
+      ), 0);
+      final decoded = _decodeResponseChunk(frames.single);
+      final reader = decoded.reader;
+      reader.nodeId(); // sessionId
+      reader.nodeId(); // authToken
+      reader.float64(); // revisedSessionTimeout
+      reader.byteString(); // serverNonce
+      reader.byteString(); // serverCertificate
+      final endpointCount = reader.int32();
+      expect(endpointCount, 1);
+      final endpointUrl = reader.string();
+      expect(endpointUrl, 'opc.tcp://10.0.0.42:4840');
     });
 
     test('full CreateSession -> ActivateSession -> CloseSession happy path', () {
