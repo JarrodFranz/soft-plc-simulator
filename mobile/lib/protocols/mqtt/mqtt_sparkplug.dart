@@ -25,26 +25,35 @@
 // timestamp — so there's no per-metric timestamp field to wire up.
 //
 // Signed ints in an unsigned wire field: `int_value` is wire-typed as a
-// uint32 varint, so a negative Int8/Int16/Int32 (e.g. Int16 -5) cannot be
-// varint-encoded directly (Dart's `_writeVarint` here only ever emits
-// non-negative values). Instead, per Sparkplug/Tahu convention, a negative
-// value is first reinterpreted as its same-width unsigned twin — Int16 -5
-// becomes 65531 (-5 + 0x10000), Int32 -5 becomes 4294967291 (-5 +
-// 0x100000000) — and *that* non-negative number is varint-encoded. The
-// test-only decoder reverses this by checking the datatype's sign bit and
-// subtracting the width back out.
+// uint32 varint, so a negative Int8/Int16/Int32 (e.g. Int16 -5) is first
+// reinterpreted as its same-width unsigned twin — Int16 -5 becomes 65531
+// (-5 + 0x10000), Int32 -5 becomes 4294967291 (-5 + 0x100000000) — and
+// *that* non-negative number is varint-encoded. The test-only decoder
+// reverses this by checking the datatype's sign bit and subtracting the
+// width back out.
 //
-// dart2js-safety: every varint produced/consumed by this codec is
-// non-negative (timestamps, seq, alias, datatype, the unsigned-reinterpreted
-// int_value, and long_value/bdSeq), so the simple 7-bit-group loop below is
-// sufficient and `setInt64`/`getInt64` (unimplemented on dart2js) are never
-// needed. `bdSeq` is a small birth/death rebirth counter — it increments by
-// one per NBIRTH — so across any realistic device uptime it stays far below
-// 2^53, the largest integer dart2js's double-backed `int` can represent
-// exactly; `long_value` for it is therefore just another non-negative
-// varint, not a true 64-bit field. `double_value` is the one genuinely
-// 64-bit field, and it goes through `ByteData.setFloat64`, which dart2js
-// implements correctly (only the integer accessors are unsupported).
+// `long_value` (field 6) is shared by UInt64 (`bdSeq`, always non-negative —
+// see below) and Int64 (a genuine signed 64-bit value). Unlike Int8/16/32,
+// Int64 is NOT reinterpreted through a same-width-unsigned helper before
+// encoding: `_writeVarint` itself now emits the full 64-bit two's-complement
+// varint for any int, including negatives (up to 10 bytes, standard
+// protobuf int64 wire format), so a negative Int64 rides straight through
+// `_writeVarint(out, value as int)` unchanged and decodes back to the exact
+// same signed value with no extra sign-fixup step.
+//
+// dart2js-safety: `_writeVarint` uses Dart's unsigned right-shift (`>>>`)
+// rather than the integer-accessor tricks that are unimplemented on
+// dart2js (`getInt64`/`setInt64`), so it safely encodes ANY 64-bit value —
+// including negatives, as a 10-byte two's-complement varint — without ever
+// touching those APIs, and always terminates (the old `~/ 128`-based loop
+// never reached zero for a negative input and spun forever). `bdSeq` is a
+// small birth/death rebirth counter — it increments by one per NBIRTH — so
+// across any realistic device uptime it stays far below 2^53, the largest
+// integer dart2js's double-backed `int` can represent exactly; `long_value`
+// for it is therefore just another small non-negative varint. `double_value`
+// is the one genuinely 64-bit *floating-point* field, and it goes through
+// `ByteData.setFloat64`, which dart2js implements correctly (only the
+// integer accessors are unsupported).
 library mqtt_sparkplug;
 
 import 'dart:typed_data';
@@ -200,7 +209,14 @@ void _writeMetricValue(BytesBuilder out, int datatype, Object value) {
       _writeVarint(out, _toUnsignedWireInt(datatype, value as int));
       break;
     case SparkplugDatatype.int64:
+      // Signed 64-bit value: `_writeVarint` encodes any int (including
+      // negatives) as its full two's-complement varint, so no same-width
+      // unsigned reinterpretation (unlike Int8/16/32) is needed here.
+      _writeTag(out, 6, _wireVarint);
+      _writeVarint(out, value as int);
+      break;
     case SparkplugDatatype.uint64:
+      // Non-negative counter (bdSeq): also rides `_writeVarint` directly.
       _writeTag(out, 6, _wireVarint);
       _writeVarint(out, value as int);
       break;
@@ -253,13 +269,23 @@ void _writeTag(BytesBuilder out, int fieldNumber, int wireType) {
 }
 
 /// Writes [value] as a protobuf base-128 varint (7 data bits per byte, LSB
-/// group first, high bit set on every byte but the last). Every call site in
-/// this file passes a non-negative value (see the dart2js-safety note above).
+/// group first, high bit set on every byte but the last).
+///
+/// Uses the unsigned right shift `>>>` (not `~/ 128`) to advance between
+/// groups, so this terminates for ANY 64-bit `int`, including negatives:
+/// `>>>` always zero-fills from the top regardless of sign, so after at
+/// most 10 groups (70 bits shifted, covering all 64 bits of the value) the
+/// remainder reaches exactly zero and the loop stops. A negative value is
+/// therefore emitted as the standard protobuf 10-byte two's-complement
+/// int64 varint. The previous `(v - byte) ~/ 128` form used truncating
+/// division, which for a negative `v` converges to -1 forever (each step
+/// producing byte 0x7F and dividing -1 by 128 truncating back to -1) and
+/// never terminated.
 void _writeVarint(BytesBuilder out, int value) {
   int v = value;
   while (true) {
     final int byte = v & 0x7F;
-    v = (v - byte) ~/ 128;
+    v = v >>> 7;
     if (v == 0) {
       out.addByte(byte);
       break;

@@ -101,12 +101,31 @@ void main() {
     });
 
     test('Int32 (70000)', () {
-      final SparkplugPayload got = roundTrip(
-        const SparkplugMetric(name: 'i32', alias: 5, datatype: SparkplugDatatype.int32, value: 70000),
+      const SparkplugMetric metric = SparkplugMetric(
+        name: 'i32',
+        alias: 5,
+        datatype: SparkplugDatatype.int32,
+        value: 70000,
       );
+      final SparkplugPayload got = roundTrip(metric);
       final SparkplugMetric m = got.metrics.single;
       expect(m.datatype, SparkplugDatatype.int32);
       expect(m.value, 70000);
+
+      // Byte-exact re-check (regression guard): this non-negative fixture's
+      // wire bytes must be unaffected by the _writeVarint termination fix
+      // (>>> 7 behaves identically to the old ~/ 128 for non-negative
+      // values).
+      final Uint8List metricBytes = encodeMetric(metric);
+      expect(
+        metricBytes,
+        Uint8List.fromList(<int>[
+          0x0A, 0x03, 0x69, 0x33, 0x32, // name field 1, len=3, "i32"
+          0x10, 0x05, // alias field 2 = 5
+          0x20, 0x03, // datatype field 4 = 3 (Int32)
+          0x28, 0xF0, 0xA2, 0x04, // int_value field 5 = 70000 (unsigned-reinterpreted, unchanged)
+        ]),
+      );
     });
 
     test('Int32 negative (-5)', () {
@@ -114,6 +133,43 @@ void main() {
         const SparkplugMetric(name: 'i32n', alias: 6, datatype: SparkplugDatatype.int32, value: -5),
       );
       expect(got.metrics.single.value, -5);
+    });
+
+    test('Int64 negative (-5) terminates and round-trips', () {
+      // Regression test for the latent _writeVarint non-termination bug:
+      // before the fix, `_writeVarint` used `(v - byte) ~/ 128`, which for
+      // any negative `v` converges to -1 and loops forever emitting 0xFF
+      // bytes, hanging the encoder. This test's mere completion (within the
+      // test runner's default timeout) demonstrates termination; the
+      // assertion below additionally proves the emitted bytes decode back
+      // to the exact original signed value.
+      final SparkplugPayload got = roundTrip(
+        const SparkplugMetric(name: 'i64n', alias: 10, datatype: SparkplugDatatype.int64, value: -5),
+      );
+      final SparkplugMetric m = got.metrics.single;
+      expect(m.datatype, SparkplugDatatype.int64);
+      expect(m.value, -5);
+    });
+
+    test('Int64 positive (70000) round-trips unchanged', () {
+      final SparkplugPayload got = roundTrip(
+        const SparkplugMetric(name: 'i64p', alias: 11, datatype: SparkplugDatatype.int64, value: 70000),
+      );
+      final SparkplugMetric m = got.metrics.single;
+      expect(m.datatype, SparkplugDatatype.int64);
+      expect(m.value, 70000);
+    });
+
+    test('Int64 large negative round-trips (-9223372036854775808, Int64.min)', () {
+      final SparkplugPayload got = roundTrip(
+        const SparkplugMetric(
+          name: 'i64min',
+          alias: 12,
+          datatype: SparkplugDatatype.int64,
+          value: -9223372036854775808,
+        ),
+      );
+      expect(got.metrics.single.value, -9223372036854775808);
     });
 
     test('Double (3.5)', () {
