@@ -150,8 +150,18 @@ class SparkplugSeq {
 /// pair so subscribers can tell rebirths apart. Unlike [SparkplugSeq] it
 /// does not wrap at 256 — see the dart2js-safety note above for why an
 /// unbounded increment here is still safe.
+///
+/// [initial] seeds the starting value (default 0, matching the original
+/// always-fresh-session behavior). A host that must keep bdSeq monotonic
+/// ACROSS reconnects (a fresh [SparkplugBdSeq]/[SparkplugSeq] pair is
+/// otherwise created per connection attempt, per `mqtt_host.dart`'s
+/// "bdSeq ordering" doc comment) seeds each new instance with the last
+/// value it observed from the previous one, via `MqttPublisher`'s own
+/// `initialBdSeq` constructor parameter (see `mqtt_publisher.dart`).
 class SparkplugBdSeq {
-  int _value = 0;
+  int _value;
+
+  SparkplugBdSeq({int initial = 0}) : _value = initial;
 
   /// Current bdSeq value (unchanged by reading it).
   int get value => _value;

@@ -66,6 +66,22 @@ class _FakeCountsOpcUaHost extends OpcUaHost {
   }
 }
 
+/// A fake host that fakes `status` directly (no real socket) — mirrors
+/// [_FakeCountsOpcUaHost]: used ONLY to prove the MQTT card disables its
+/// config-edit fields (format dropdown, topic/namespace fields, etc.) while
+/// `status == running`, without exercising the real networking stack.
+class _FakeConnectedMqttHost extends MqttHost {
+  MqttHostStatus _fakeStatus = MqttHostStatus.stopped;
+
+  @override
+  MqttHostStatus get status => _fakeStatus;
+
+  void setConnected() {
+    _fakeStatus = MqttHostStatus.running;
+    notifyListeners();
+  }
+}
+
 PlcProject _project({String id = 'proj_gw_ui_test', int? port}) {
   final project = PlcProject(
     id: id,
@@ -765,6 +781,95 @@ void main() {
       expect(find.text('Base topic'), findsNothing);
       expect(find.text('Group ID'), findsOneWidget);
       expect(find.text('Edge node ID'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+        'config-edit fields (format, group/edge-node, base topic, QoS, heartbeat, allow-remote-writes) '
+        'are disabled while connected', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final mqttHost = _FakeConnectedMqttHost();
+      addTearDown(mqttHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, mqttHost: mqttHost));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
+      await tester.pump();
+
+      // Default format is 'json' — Base topic is the visible topic field.
+      final baseTopicField = tester.widget<TextFormField>(
+        find.ancestor(of: find.text('Base topic'), matching: find.byType(TextFormField)).first,
+      );
+      expect(baseTopicField.enabled, isTrue);
+      final formatDropdownBefore =
+          tester.widget<DropdownButtonFormField<String>>(find.byKey(const Key('mqtt_format_dropdown')));
+      expect(formatDropdownBefore.onChanged, isNotNull);
+      final qosDropdownBefore =
+          tester.widget<DropdownButtonFormField<int>>(find.byKey(const Key('mqtt_qos_dropdown')));
+      expect(qosDropdownBefore.onChanged, isNotNull);
+      final allowRemoteWritesBefore =
+          tester.widget<Switch>(find.byKey(const Key('mqtt_allow_remote_writes_switch')));
+      expect(allowRemoteWritesBefore.onChanged, isNotNull);
+
+      mqttHost.setConnected();
+      await tester.pump();
+
+      final formatDropdown =
+          tester.widget<DropdownButtonFormField<String>>(find.byKey(const Key('mqtt_format_dropdown')));
+      expect(formatDropdown.onChanged, isNull, reason: 'format must be locked while connected');
+
+      final baseTopicFieldConnected = tester.widget<TextFormField>(
+        find.ancestor(of: find.text('Base topic'), matching: find.byType(TextFormField)).first,
+      );
+      expect(baseTopicFieldConnected.enabled, isFalse, reason: 'base topic must be locked while connected');
+
+      final qosDropdown =
+          tester.widget<DropdownButtonFormField<int>>(find.byKey(const Key('mqtt_qos_dropdown')));
+      expect(qosDropdown.onChanged, isNull, reason: 'QoS must be locked while connected');
+
+      final allowRemoteWrites =
+          tester.widget<Switch>(find.byKey(const Key('mqtt_allow_remote_writes_switch')));
+      expect(allowRemoteWrites.onChanged, isNull, reason: 'allow remote writes must be locked while connected');
+
+      final heartbeatField = tester.widget<TextFormField>(
+        find.ancestor(of: find.text('Heartbeat (s)'), matching: find.byType(TextFormField)).first,
+      );
+      expect(heartbeatField.enabled, isFalse, reason: 'heartbeat must be locked while connected');
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('group/edge-node fields are disabled while connected (sparkplug format)', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final mqttHost = _FakeConnectedMqttHost();
+      addTearDown(mqttHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, mqttHost: mqttHost));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('mqtt_format_dropdown')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('sparkplug').last);
+      await tester.pumpAndSettle();
+
+      mqttHost.setConnected();
+      await tester.pump();
+
+      final groupIdField = tester.widget<TextFormField>(
+        find.ancestor(of: find.text('Group ID'), matching: find.byType(TextFormField)).first,
+      );
+      expect(groupIdField.enabled, isFalse, reason: 'Group ID must be locked while connected');
+
+      final edgeNodeField = tester.widget<TextFormField>(
+        find.ancestor(of: find.text('Edge node ID'), matching: find.byType(TextFormField)).first,
+      );
+      expect(edgeNodeField.enabled, isFalse, reason: 'Edge node ID must be locked while connected');
+
       expect(tester.takeException(), isNull);
     });
 

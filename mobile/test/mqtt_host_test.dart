@@ -19,6 +19,15 @@ import 'package:soft_plc_mobile/models/tag_resolver.dart';
 import 'package:soft_plc_mobile/protocols/mqtt/mqtt_codec.dart';
 import 'package:soft_plc_mobile/services/mqtt_host.dart';
 
+// Reuses the test-only Sparkplug B `decodePayload`/`decodeMetric` decoder
+// from mqtt_sparkplug_test.dart (production code only ENCODES Sparkplug B —
+// see that file's own doc comment for why) rather than hand-rolling a third
+// copy of the same decode logic just to read a `bdSeq` metric back out of a
+// Will/NBIRTH payload here. Importing a sibling test file only brings its
+// top-level declarations into scope — its own `main()` is never invoked as
+// part of running this file.
+import 'mqtt_sparkplug_test.dart' as sparkplug_decode;
+
 PlcProject _project({
   int port = 0,
   bool allowRemoteWrites = false,
@@ -56,6 +65,23 @@ PlcProject _project({
     ]),
   );
   return project;
+}
+
+/// Same fixture as [_project] but configured for Sparkplug B (rather than
+/// JSON) so the Will/NBIRTH carry a decodable `bdSeq` metric.
+PlcProject _sparkplugProject({int port = 0}) {
+  final project = _project(port: port);
+  project.protocols!.mqtt!.format = 'sparkplug';
+  return project;
+}
+
+/// Extracts the `bdSeq` metric's value out of a raw Sparkplug B `Payload`
+/// (the Will's NDEATH bytes, or an NBIRTH/NDATA PUBLISH payload) — see the
+/// `sparkplug_decode` import above.
+int _bdSeqOf(Uint8List payload) {
+  final decoded = sparkplug_decode.decodePayload(payload);
+  final metric = decoded.metrics.firstWhere((m) => m.name == 'bdSeq');
+  return metric.value as int;
 }
 
 /// The test-side "broker": accepts one connection, reassembles the client's
@@ -406,6 +432,105 @@ void main() {
       expect(host.status, MqttHostStatus.running);
 
       await host.disconnect();
+    });
+  });
+
+  group('MqttHost — bdSeq monotonicity across reconnects', () {
+    test('bdSeq strictly increases across two successive connect cycles', () async {
+      final server = await ServerSocket.bind('127.0.0.1', 0);
+      final broker = _BrokerServer(server);
+      addTearDown(server.close);
+      final project = _sparkplugProject(port: server.port);
+      final host = MqttHost();
+      addTearDown(host.dispose);
+
+      // --- Session 1: bdSeq must be 1 in both the Will and the NBIRTH. ---
+      final connFuture1 = broker.acceptOne();
+      await host.connect(() => project, password: '');
+      final conn1 = await connFuture1;
+      final connectPacket1 = await _waitForPacketType(conn1, MqttPacketType.connect, 1);
+      final decodedConnect1 = _decodeConnect(connectPacket1);
+      expect(decodedConnect1.hasWill, isTrue);
+      final willBdSeq1 = _bdSeqOf(decodedConnect1.willPayload!);
+      expect(willBdSeq1, 1);
+
+      conn1.sendConnackAccepted();
+      final birth1 = await _waitForPacketType(conn1, MqttPacketType.publish, 1);
+      final birthBdSeq1 = _bdSeqOf(parsePublish(birth1)!.payload);
+      expect(birthBdSeq1, 1, reason: 'NBIRTH must carry the SAME bdSeq as its paired Will');
+
+      await host.disconnect();
+
+      // --- Session 2 (fresh connect after disconnect): bdSeq must climb to
+      // 2, not reset — this is the spec violation this fix corrects. ---
+      final connFuture2 = broker.acceptOne();
+      await host.connect(() => project, password: '');
+      final conn2 = await connFuture2;
+      final connectPacket2 = await _waitForPacketType(conn2, MqttPacketType.connect, 1);
+      final decodedConnect2 = _decodeConnect(connectPacket2);
+      final willBdSeq2 = _bdSeqOf(decodedConnect2.willPayload!);
+      expect(willBdSeq2, greaterThan(willBdSeq1));
+      expect(willBdSeq2, 2);
+
+      conn2.sendConnackAccepted();
+      final birth2 = await _waitForPacketType(conn2, MqttPacketType.publish, 1);
+      final birthBdSeq2 = _bdSeqOf(parsePublish(birth2)!.payload);
+      expect(birthBdSeq2, 2);
+
+      await host.disconnect();
+    });
+  });
+
+  group('MqttHost — keepalive ping never throws on a closed socket', () {
+    test('the guarded PINGREQ send survives the broker closing the connection', () async {
+      final server = await ServerSocket.bind('127.0.0.1', 0);
+      final broker = _BrokerServer(server);
+      addTearDown(server.close);
+      final project = _project(port: server.port);
+      // Shrinks the 30s production ping interval so several ping attempts
+      // land inside this test's bounded window, without changing default
+      // (no-argument) MqttHost behavior anywhere else.
+      final host = MqttHost(pingIntervalOverride: const Duration(milliseconds: 20));
+      addTearDown(host.dispose);
+
+      final connFuture = broker.acceptOne();
+      await host.connect(() => project, password: '');
+      final conn = await connFuture;
+      await _waitForPacketType(conn, MqttPacketType.connect, 1);
+      conn.sendConnackAccepted();
+
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(host.status, MqttHostStatus.running);
+
+      // Abruptly close the broker side out from under the still-"running"
+      // host — this is the race the guard covers: the host's own socket
+      // object may still be non-null (and a subsequent write may throw) for
+      // a brief window before the host notices the connection died and
+      // cancels the ping timer. Several 20ms-spaced ping attempts land in
+      // that window; the test's own success (no uncaught exception
+      // propagating out of the Timer.periodic callback's Zone, which would
+      // otherwise fail this test) is the assertion.
+      //
+      // NOTE on platform determinism: whether `Socket.add()` can actually
+      // throw synchronously in this exact window is platform-dependent —
+      // confirmed empirically that on Windows/this SDK, `add()` after the
+      // peer (or even the same local socket) is destroyed does NOT throw
+      // synchronously, so this test cannot force a pre-fix failure on every
+      // platform. It's kept anyway as a bounded (well under a second,
+      // versus the real 30s interval), non-flaky regression guard: it
+      // exercises the exact code path the guard covers and protects
+      // whichever platform's dart:io implementation (e.g. Linux/macOS,
+      // where a synchronous `SocketException: Broken pipe` from `add()` is
+      // a documented real occurrence) does throw here.
+      await conn.socket.close();
+      conn.socket.destroy();
+
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      // No crash occurred (the try/catch guard absorbed it, if it fired at
+      // all) and the host recovered to a non-running state via the normal
+      // onDone/onError path.
+      expect(host.status, isNot(MqttHostStatus.running));
     });
   });
 

@@ -185,8 +185,23 @@ class MqttPublisher {
   final Map<int, String> _tagByAlias = {};
   int _nextAlias = 1;
   final SparkplugSeq _seq = SparkplugSeq();
-  final SparkplugBdSeq _bdSeq = SparkplugBdSeq();
+  final SparkplugBdSeq _bdSeq;
   final Map<String, Object?> _lastPublished = {};
+
+  /// [initialBdSeq] seeds this session's `bdSeq` counter (default 0, so a
+  /// bare `MqttPublisher()` behaves exactly as before). The host
+  /// (`mqtt_host.dart`) constructs a brand-new [MqttPublisher] on every
+  /// (re)connect attempt, so it passes the last `bdSeq` value observed from
+  /// the PREVIOUS attempt's publisher here — that is what keeps `bdSeq`
+  /// monotonically increasing across reconnects (Sparkplug B's requirement
+  /// for distinguishing a stale NDEATH from the current session's) rather
+  /// than resetting to 0/1 on every fresh connection.
+  MqttPublisher({int initialBdSeq = 0}) : _bdSeq = SparkplugBdSeq(initial: initialBdSeq);
+
+  /// The current `bdSeq` value (unchanged by reading it) — the host reads
+  /// this after [willMessage] to remember where to seed the NEXT
+  /// connection attempt's [MqttPublisher].
+  int get bdSeq => _bdSeq.value;
 
   int _allocAlias(String tagPath) {
     final existing = _aliasByTag[tagPath];

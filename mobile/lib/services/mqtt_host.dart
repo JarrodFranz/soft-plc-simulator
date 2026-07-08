@@ -31,6 +31,22 @@
 // reused across reconnects), this ordering — and the pairing it produces —
 // holds on EVERY reconnect, not just the first.
 //
+// --- bdSeq monotonicity ACROSS reconnects ------------------------------
+// The pairing above holds WITHIN one attempt, but `bdSeq` must also never
+// reset across attempts (Sparkplug B requires it strictly increase every
+// (re)connect, so a subscriber can tell a stale NDEATH from the current
+// session's — see the design doc, "bdSeq increments each (re)connect").
+// This host owns `_bdSeqCounter`, an in-memory counter that survives across
+// the per-attempt `MqttPublisher` instances: each fresh publisher is
+// constructed with `MqttPublisher(initialBdSeq: _bdSeqCounter)`, and right
+// after `willMessage` advances it, `_bdSeqCounter` is updated to that
+// publisher's new `bdSeq` value so the NEXT attempt's publisher continues
+// from there (session 1 -> bdSeq 1, session 2 -> bdSeq 2, and so on).
+// `_bdSeqCounter` is NEVER reset by [connect]/[disconnect] — it only starts
+// at 0 for the lifetime of this [MqttHost] instance, so an explicit
+// disconnect-then-reconnect from the UI (not just the automatic backoff
+// loop) still advances bdSeq, exactly like every other reconnect.
+//
 // --- Max-frame guard ---------------------------------------------------------
 // `_FrameGuard` wraps `MqttFrameBuffer` with a proactive size check: as soon
 // as a fixed header + remaining-length varint can be decoded, the DECLARED
@@ -177,6 +193,17 @@ class MqttHost extends ChangeNotifier {
   _FrameGuard _guard = _FrameGuard();
   MqttPublisher _publisher = MqttPublisher();
 
+  /// Overrides the keep-alive PINGREQ timer's period. Production code never
+  /// passes this (it always uses the fixed `_keepAliveSecs ~/ 2` interval —
+  /// see [_startKeepAliveTimer]); it exists solely so tests can shrink the
+  /// timer far enough to deterministically exercise the guarded ping-send
+  /// path against a broker connection that closes mid-session, without
+  /// waiting out the real 30-second production interval.
+  @visibleForTesting
+  final Duration? pingIntervalOverride;
+
+  MqttHost({this.pingIntervalOverride});
+
   PlcProject Function()? _projectProvider;
   String _password = '';
 
@@ -188,6 +215,7 @@ class MqttHost extends ChangeNotifier {
   bool _disposed = false;
   bool _connacked = false;
   int _packetIdCounter = 1;
+  int _bdSeqCounter = 0;
   final Set<int> _pendingAcks = {};
   final Stopwatch _clock = Stopwatch();
   int _lastHeartbeatMs = 0;
@@ -265,8 +293,11 @@ class MqttHost extends ChangeNotifier {
 
     // Fresh per-attempt state — see the file doc comment, "bdSeq ordering",
     // for why a brand-new MqttPublisher (and a fresh frame guard/packet-id
-    // counter) on EVERY attempt (not just the first) matters.
-    final publisher = MqttPublisher();
+    // counter) on EVERY attempt (not just the first) matters. `_bdSeqCounter`
+    // is NOT reset here — see "bdSeq monotonicity ACROSS reconnects" — it
+    // seeds this fresh publisher so bdSeq keeps climbing instead of
+    // restarting at 0/1 on every (re)connect.
+    final publisher = MqttPublisher(initialBdSeq: _bdSeqCounter);
     _publisher = publisher;
     _guard = _FrameGuard();
     _packetIdCounter = 1;
@@ -276,6 +307,7 @@ class MqttHost extends ChangeNotifier {
     try {
       // MUST run before a single CONNECT byte is sent (see "bdSeq ordering").
       final will = publisher.willMessage(project);
+      _bdSeqCounter = publisher.bdSeq;
 
       final socket = cfg.tls
           ? await SecureSocket.connect(cfg.host, cfg.port, timeout: const Duration(seconds: 10))
@@ -533,8 +565,15 @@ class MqttHost extends ChangeNotifier {
 
   void _startKeepAliveTimer() {
     _pingTimer?.cancel();
-    _pingTimer = Timer.periodic(const Duration(seconds: _keepAliveSecs ~/ 2), (_) {
-      _socket?.add(encodePingReq());
+    final interval = pingIntervalOverride ?? const Duration(seconds: _keepAliveSecs ~/ 2);
+    _pingTimer = Timer.periodic(interval, (_) {
+      try {
+        _socket?.add(encodePingReq());
+      } catch (_) {
+        // A socket that closed in the window before onDone/onError fires
+        // (and thus before this timer is cancelled) must not crash the
+        // host — mirrors disconnect()'s own guarded DISCONNECT send below.
+      }
     });
   }
 

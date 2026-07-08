@@ -1211,10 +1211,12 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         DropdownMenuItem(value: 'json', child: Text('json')),
                         DropdownMenuItem(value: 'sparkplug', child: Text('sparkplug')),
                       ],
-                      onChanged: (v) {
-                        if (v == null) return;
-                        _setMqttFormat(v);
-                      },
+                      onChanged: (connected || connecting)
+                          ? null
+                          : (v) {
+                              if (v == null) return;
+                              _setMqttFormat(v);
+                            },
                     ),
                   ),
                 ],
@@ -1223,6 +1225,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
               if (isJson)
                 TextFormField(
                   initialValue: mqtt.baseTopic,
+                  enabled: !connected && !connecting,
                   style: const TextStyle(fontSize: 12, color: Colors.white),
                   decoration: const InputDecoration(
                     isDense: true,
@@ -1242,6 +1245,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
                       isCompact: isCompact,
                       child: TextFormField(
                         initialValue: mqtt.groupId,
+                        enabled: !connected && !connecting,
                         style: const TextStyle(fontSize: 12, color: Colors.white),
                         decoration: const InputDecoration(
                           isDense: true,
@@ -1258,6 +1262,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
                       isCompact: isCompact,
                       child: TextFormField(
                         initialValue: mqtt.edgeNodeId,
+                        enabled: !connected && !connecting,
                         style: const TextStyle(fontSize: 12, color: Colors.white),
                         decoration: const InputDecoration(
                           isDense: true,
@@ -1290,10 +1295,12 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         DropdownMenuItem(value: 1, child: Text('1')),
                         DropdownMenuItem(value: 2, child: Text('2')),
                       ],
-                      onChanged: (v) {
-                        if (v == null) return;
-                        _setMqttQos(v);
-                      },
+                      onChanged: (connected || connecting)
+                          ? null
+                          : (v) {
+                              if (v == null) return;
+                              _setMqttQos(v);
+                            },
                     ),
                   ),
                   SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
@@ -1301,6 +1308,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
                     width: isCompact ? double.infinity : 160,
                     child: TextFormField(
                       initialValue: mqtt.heartbeatSeconds.toString(),
+                      enabled: !connected && !connecting,
                       keyboardType: TextInputType.number,
                       style: const TextStyle(fontSize: 12, color: Colors.white),
                       decoration: const InputDecoration(isDense: true, labelText: 'Heartbeat (s)'),
@@ -1318,7 +1326,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
                   Switch(
                     key: const Key('mqtt_allow_remote_writes_switch'),
                     value: mqtt.allowRemoteWrites,
-                    onChanged: _setMqttAllowRemoteWrites,
+                    onChanged: (connected || connecting) ? null : _setMqttAllowRemoteWrites,
                   ),
                 ],
               ),
