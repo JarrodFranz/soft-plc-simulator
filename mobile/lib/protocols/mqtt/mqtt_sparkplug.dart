@@ -15,14 +15,19 @@
 // `Metric` fields used here: 1 `name` (string, only sent on NBIRTH-style
 // metrics — omitted whenever `name` is null to save bytes on NDATA), 2
 // `alias` (uint64 varint, omitted when null), 4 `datatype` (uint32 varint),
-// and exactly one value field chosen by `datatype`: 5 `int_value` (uint32
-// varint) for Int8/Int16/Int32, 6 `long_value` (uint64 varint) for UInt64
-// (used for the `bdSeq` metric), 8 `double_value` (64-bit, written
-// little-endian via `ByteData.setFloat64(..., Endian.little)`), 9
-// `boolean_value` (varint 0/1) for Boolean, 10 `string_value` (string) for
-// String. Metric field 3 (`timestamp`) is intentionally not emitted by this
-// encoder — every metric here is stamped only via the enclosing Payload's
-// timestamp — so there's no per-metric timestamp field to wire up.
+// and exactly one value field chosen by `datatype`. Per the real Eclipse
+// Tahu `sparkplug_b.proto` `Metric` message, fields 5-9 are reserved for
+// `is_historical`/`is_transient`/`is_null`/`metadata`/`properties` (this app
+// never emits any of them), and the VALUE oneof starts at field 10: 10
+// `int_value` (uint32 varint) for Int8/Int16/Int32, 11 `long_value` (uint64
+// varint) for UInt64 (used for the `bdSeq` metric), 13 `double_value`
+// (64-bit, written little-endian via `ByteData.setFloat64(...,
+// Endian.little)`), 14 `boolean_value` (varint 0/1) for Boolean, 15
+// `string_value` (string) for String (field 12 `float_value` and 16
+// `bytes_value` are also part of the spec's oneof but unused by this app's
+// tag model). Metric field 3 (`timestamp`) is intentionally not emitted by
+// this encoder — every metric here is stamped only via the enclosing
+// Payload's timestamp — so there's no per-metric timestamp field to wire up.
 //
 // Signed ints in an unsigned wire field: `int_value` is wire-typed as a
 // uint32 varint, so a negative Int8/Int16/Int32 (e.g. Int16 -5) is first
@@ -32,7 +37,7 @@
 // reverses this by checking the datatype's sign bit and subtracting the
 // width back out.
 //
-// `long_value` (field 6) is shared by UInt64 (`bdSeq`, always non-negative —
+// `long_value` (field 11) is shared by UInt64 (`bdSeq`, always non-negative —
 // see below) and Int64 (a genuine signed 64-bit value). Unlike Int8/16/32,
 // Int64 is NOT reinterpreted through a same-width-unsigned helper before
 // encoding: `_writeVarint` itself now emits the full 64-bit two's-complement
@@ -215,33 +220,40 @@ void _writeMetricValue(BytesBuilder out, int datatype, Object value) {
     case SparkplugDatatype.int8:
     case SparkplugDatatype.int16:
     case SparkplugDatatype.int32:
-      _writeTag(out, 5, _wireVarint);
+      // int_value = field 10 (Tahu spec; fields 5-9 are the metadata fields
+      // is_historical/is_transient/is_null/metadata/properties, not values).
+      _writeTag(out, 10, _wireVarint);
       _writeVarint(out, _toUnsignedWireInt(datatype, value as int));
       break;
     case SparkplugDatatype.int64:
-      // Signed 64-bit value: `_writeVarint` encodes any int (including
-      // negatives) as its full two's-complement varint, so no same-width
-      // unsigned reinterpretation (unlike Int8/16/32) is needed here.
-      _writeTag(out, 6, _wireVarint);
+      // long_value = field 11. Signed 64-bit value: `_writeVarint` encodes
+      // any int (including negatives) as its full two's-complement varint,
+      // so no same-width unsigned reinterpretation (unlike Int8/16/32) is
+      // needed here.
+      _writeTag(out, 11, _wireVarint);
       _writeVarint(out, value as int);
       break;
     case SparkplugDatatype.uint64:
-      // Non-negative counter (bdSeq): also rides `_writeVarint` directly.
-      _writeTag(out, 6, _wireVarint);
+      // long_value = field 11. Non-negative counter (bdSeq): also rides
+      // `_writeVarint` directly.
+      _writeTag(out, 11, _wireVarint);
       _writeVarint(out, value as int);
       break;
     case SparkplugDatatype.double_:
-      _writeTag(out, 8, _wire64Bit);
+      // double_value = field 13.
+      _writeTag(out, 13, _wire64Bit);
       final ByteData bd = ByteData(8);
       bd.setFloat64(0, (value as num).toDouble(), Endian.little);
       out.add(bd.buffer.asUint8List());
       break;
     case SparkplugDatatype.boolean:
-      _writeTag(out, 9, _wireVarint);
+      // boolean_value = field 14.
+      _writeTag(out, 14, _wireVarint);
       _writeVarint(out, (value as bool) ? 1 : 0);
       break;
     case SparkplugDatatype.string:
-      _writeTag(out, 10, _wireLengthDelimited);
+      // string_value = field 15.
+      _writeTag(out, 15, _wireLengthDelimited);
       final Uint8List strBytes = _utf8Encode(value as String);
       _writeVarint(out, strBytes.length);
       out.add(strBytes);

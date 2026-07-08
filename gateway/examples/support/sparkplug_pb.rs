@@ -14,12 +14,17 @@
 //! part of the shipped Dart/Flutter app itself.
 //!
 //! Field numbers below match this app's encoder exactly (see
-//! `mqtt_sparkplug.dart`'s file-level doc comment): `Payload` 1=timestamp,
-//! 2=metrics (repeated), 3=seq; `Metric` 1=name, 2=alias, 4=datatype, and
-//! exactly one value field selected by `datatype`: 5=int_value (uint32,
-//! unsigned-reinterpreted Int8/16/32), 6=long_value (uint64, used for
-//! `bdSeq`/UInt64), 8=double_value (double), 9=boolean_value (bool),
-//! 10=string_value (string).
+//! `mqtt_sparkplug.dart`'s file-level doc comment), which in turn match the
+//! REAL Eclipse Tahu `sparkplug_b.proto` numbering: `Payload` 1=timestamp,
+//! 2=metrics (repeated), 3=seq; `Metric` 1=name, 2=alias, 4=datatype
+//! (fields 5-9 are the spec's `is_historical`/`is_transient`/`is_null`/
+//! `metadata`/`properties` metadata fields — not populated by this app, and
+//! deliberately NOT declared as struct fields here since prost simply
+//! ignores unknown field numbers on decode), and exactly one value field
+//! selected by `datatype`: 10=int_value (uint32, unsigned-reinterpreted
+//! Int8/16/32), 11=long_value (uint64, used for `bdSeq`/UInt64),
+//! 13=double_value (double), 14=boolean_value (bool), 15=string_value
+//! (string).
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Payload {
@@ -39,15 +44,15 @@ pub struct Metric {
     pub alias: Option<u64>,
     #[prost(uint32, optional, tag = "4")]
     pub datatype: Option<u32>,
-    #[prost(uint32, optional, tag = "5")]
+    #[prost(uint32, optional, tag = "10")]
     pub int_value: Option<u32>,
-    #[prost(uint64, optional, tag = "6")]
+    #[prost(uint64, optional, tag = "11")]
     pub long_value: Option<u64>,
-    #[prost(double, optional, tag = "8")]
+    #[prost(double, optional, tag = "13")]
     pub double_value: Option<f64>,
-    #[prost(bool, optional, tag = "9")]
+    #[prost(bool, optional, tag = "14")]
     pub boolean_value: Option<bool>,
-    #[prost(string, optional, tag = "10")]
+    #[prost(string, optional, tag = "15")]
     pub string_value: Option<String>,
 }
 

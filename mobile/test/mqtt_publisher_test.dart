@@ -449,27 +449,27 @@ _DecodedMetric _decodeMetric(Uint8List data) {
         datatype = v.value;
         pos = v.nextPos;
         break;
-      case 5:
+      case 10:
         final v = _readVarint(data, pos);
         value = _fromUnsignedWireInt(datatype, v.value);
         pos = v.nextPos;
         break;
-      case 6:
+      case 11:
         final v = _readVarint(data, pos);
         value = v.value;
         pos = v.nextPos;
         break;
-      case 8:
+      case 13:
         final bd = ByteData.sublistView(data, pos, pos + 8);
         value = bd.getFloat64(0, Endian.little);
         pos += 8;
         break;
-      case 9:
+      case 14:
         final v = _readVarint(data, pos);
         value = v.value != 0;
         pos = v.nextPos;
         break;
-      case 10:
+      case 15:
         final len = _readVarint(data, pos);
         pos = len.nextPos;
         value = _utf8Decode(Uint8List.sublistView(data, pos, pos + len.value));
@@ -550,16 +550,16 @@ Uint8List _encodeMetric(_EncMetric m) {
   _writeVarint(out, m.datatype);
   switch (m.datatype) {
     case _SparkplugDatatype.boolean:
-      _writeTag(out, 9, 0);
+      _writeTag(out, 14, 0);
       _writeVarint(out, (m.value as bool) ? 1 : 0);
       break;
     case _SparkplugDatatype.int16:
     case _SparkplugDatatype.int32:
-      _writeTag(out, 5, 0);
+      _writeTag(out, 10, 0);
       _writeVarint(out, m.value as int);
       break;
     case _SparkplugDatatype.double_:
-      _writeTag(out, 8, 1);
+      _writeTag(out, 13, 1);
       final bd = ByteData(8)..setFloat64(0, (m.value as num).toDouble(), Endian.little);
       out.add(bd.buffer.asUint8List());
       break;

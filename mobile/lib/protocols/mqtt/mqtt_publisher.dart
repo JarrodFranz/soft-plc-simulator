@@ -400,13 +400,24 @@ class MqttPublisher {
   ) {
     final metrics = <SparkplugMetric>[];
     for (final entry in entries) {
+      // Only emit a data metric for a tag that already has an alias from the
+      // last NBIRTH. A tag whose `readPath` was null at birth time (so it
+      // was skipped there — see `birthMessages`) never got an alias
+      // assigned; minting a fresh one here at data-time would send an alias
+      // the subscriber never learned during NBIRTH, which Sparkplug B
+      // decoders can't resolve back to a name. Such a tag is simply skipped
+      // until the next NBIRTH re-establishes the alias table.
+      final alias = _aliasByTag[entry.tag];
+      if (alias == null) {
+        continue;
+      }
       final datatype = _sparkplugDatatypeFor(project, entry.tag);
       final value = readPath(project, entry.tag);
       if (datatype == null || value == null) {
         continue;
       }
       metrics.add(SparkplugMetric(
-        alias: _allocAlias(entry.tag),
+        alias: alias,
         datatype: datatype,
         value: value,
       ));
@@ -567,11 +578,13 @@ class MqttPublisher {
 // INBOUND NCMD payloads to service remote writes, so a small decoder lives
 // here instead. It mirrors the wire format documented at the top of
 // mqtt_sparkplug.dart (Payload fields 1 timestamp/2 metrics/3 seq; Metric
-// fields 1 name/2 alias/4 datatype/5 int_value/6 long_value/8 double_value/
-// 9 boolean_value/10 string_value) but is intentionally bounds-checked at
-// every step and never throws — any malformed byte returns null/partial
-// results instead, so [MqttPublisher.decodeCommand] can stay exception-free
-// even against a garbage/hostile payload.
+// fields 1 name/2 alias/4 datatype/10 int_value/11 long_value/13
+// double_value/14 boolean_value/15 string_value — the Tahu spec's real
+// field numbers, fields 5-9 being reserved for metadata this app never
+// emits) but is intentionally bounds-checked at every step and never
+// throws — any malformed byte returns null/partial results instead, so
+// [MqttPublisher.decodeCommand] can stay exception-free even against a
+// garbage/hostile payload.
 
 class _SparkplugMetricIn {
   final String? name;
@@ -677,7 +690,7 @@ _SparkplugMetricIn? _decodeSparkplugMetric(Uint8List data) {
         datatype = v.value;
         pos = v.nextPos;
         break;
-      case 5: // int_value (unsigned-reinterpreted)
+      case 10: // int_value (unsigned-reinterpreted)
         final v = _readVarint(data, pos);
         if (v == null) {
           return null;
@@ -685,7 +698,7 @@ _SparkplugMetricIn? _decodeSparkplugMetric(Uint8List data) {
         value = _fromUnsignedWireInt(datatype, v.value);
         pos = v.nextPos;
         break;
-      case 6: // long_value
+      case 11: // long_value
         final v = _readVarint(data, pos);
         if (v == null) {
           return null;
@@ -693,14 +706,14 @@ _SparkplugMetricIn? _decodeSparkplugMetric(Uint8List data) {
         value = v.value;
         pos = v.nextPos;
         break;
-      case 8: // double_value (64-bit little-endian)
+      case 13: // double_value (64-bit little-endian)
         if (pos + 8 > data.length) {
           return null;
         }
         value = ByteData.sublistView(data, pos, pos + 8).getFloat64(0, Endian.little);
         pos += 8;
         break;
-      case 9: // boolean_value
+      case 14: // boolean_value
         final v = _readVarint(data, pos);
         if (v == null) {
           return null;
@@ -708,7 +721,7 @@ _SparkplugMetricIn? _decodeSparkplugMetric(Uint8List data) {
         value = v.value != 0;
         pos = v.nextPos;
         break;
-      case 10: // string_value
+      case 15: // string_value
         final len = _readVarint(data, pos);
         if (len == null || len.nextPos + len.value > data.length) {
           return null;

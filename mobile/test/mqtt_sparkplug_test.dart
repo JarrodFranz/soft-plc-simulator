@@ -31,17 +31,24 @@ void main() {
       final Uint8List bytes = encodePayload(payload);
 
       // Metric submessage (encoded independently for field-order/length
-      // sanity, then reused as part of the full expected Payload bytes):
+      // sanity, then reused as part of the full expected Payload bytes).
+      // Field numbers per the corrected Tahu spec numbering (boolean_value
+      // is field 14, NOT field 9 -- field 9 is the spec's `properties`
+      // metadata field):
       //   0x0A 0x01 0x41       name field 1, len=1, 'A' (0x41)
       //   0x10 0x01            alias field 2, value=1
       //   0x20 0x0B            datatype field 4, value=11 (Boolean)
-      //   0x48 0x01            boolean_value field 9, value=1 (true)
-      // -> 9 bytes total, so Payload's field-2 metric entry is:
+      //   0x70 0x01            boolean_value field 14, value=1 (true)
+      //     tag byte derivation: (fieldNumber << 3) | wireType
+      //                        = (14 << 3) | 0 = 112 = 0x70
+      // -> 9 bytes total (unchanged length -- only the tag byte's field
+      // number component changed, from field 9 (0x48 = (9<<3)|0) to field 14
+      // (0x70 = (14<<3)|0)), so Payload's field-2 metric entry is:
       //   0x12 0x09 <9 bytes above>
       final Uint8List metricBytes = encodeMetric(payload.metrics.single);
       expect(
         metricBytes,
-        Uint8List.fromList(<int>[0x0A, 0x01, 0x41, 0x10, 0x01, 0x20, 0x0B, 0x48, 0x01]),
+        Uint8List.fromList(<int>[0x0A, 0x01, 0x41, 0x10, 0x01, 0x20, 0x0B, 0x70, 0x01]),
       );
       expect(metricBytes.length, 9);
 
@@ -51,7 +58,7 @@ void main() {
         0x0A, 0x01, 0x41, // metric field 1 (name) = "A"
         0x10, 0x01, // metric field 2 (alias) = 1
         0x20, 0x0B, // metric field 4 (datatype) = 11 (Boolean)
-        0x48, 0x01, // metric field 9 (boolean_value) = true
+        0x70, 0x01, // metric field 14 (boolean_value) = true (was field 9 -- the bug)
         0x18, 0x00, // Payload field 3 (seq) = 0
       ]);
       expect(bytes, expected);
@@ -113,9 +120,13 @@ void main() {
       expect(m.value, 70000);
 
       // Byte-exact re-check (regression guard): this non-negative fixture's
-      // wire bytes must be unaffected by the _writeVarint termination fix
-      // (>>> 7 behaves identically to the old ~/ 128 for non-negative
-      // values).
+      // varint PAYLOAD bytes (0xF0, 0xA2, 0x04 for 70000) are unaffected by
+      // either the _writeVarint termination fix (>>> 7 behaves identically
+      // to the old ~/ 128 for non-negative values) OR the field-number fix
+      // below -- only the tag byte's field-number component changes, from
+      // field 5 (0x28 = (5<<3)|0) to the corrected field 10
+      // (0x50 = (10<<3)|0) -- field 5 is really the Tahu spec's
+      // `is_historical` metadata field, not a value field.
       final Uint8List metricBytes = encodeMetric(metric);
       expect(
         metricBytes,
@@ -123,7 +134,7 @@ void main() {
           0x0A, 0x03, 0x69, 0x33, 0x32, // name field 1, len=3, "i32"
           0x10, 0x05, // alias field 2 = 5
           0x20, 0x03, // datatype field 4 = 3 (Int32)
-          0x28, 0xF0, 0xA2, 0x04, // int_value field 5 = 70000 (unsigned-reinterpreted, unchanged)
+          0x50, 0xF0, 0xA2, 0x04, // int_value field 10 = 70000 (unsigned-reinterpreted, unchanged; was field 5 -- the bug)
         ]),
       );
     });
@@ -374,27 +385,27 @@ SparkplugMetric decodeMetric(Uint8List data) {
         datatype = v.value;
         pos = v.nextPos;
         break;
-      case 5: // int_value (varint, unsigned-reinterpreted)
+      case 10: // int_value (varint, unsigned-reinterpreted)
         final _Varint v = _readVarint(data, pos);
         value = _fromUnsignedWireInt(datatype, v.value);
         pos = v.nextPos;
         break;
-      case 6: // long_value (varint)
+      case 11: // long_value (varint)
         final _Varint v = _readVarint(data, pos);
         value = v.value;
         pos = v.nextPos;
         break;
-      case 8: // double_value (64-bit little-endian)
+      case 13: // double_value (64-bit little-endian)
         final ByteData bd = ByteData.sublistView(data, pos, pos + 8);
         value = bd.getFloat64(0, Endian.little);
         pos += 8;
         break;
-      case 9: // boolean_value (varint 0/1)
+      case 14: // boolean_value (varint 0/1)
         final _Varint v = _readVarint(data, pos);
         value = v.value != 0;
         pos = v.nextPos;
         break;
-      case 10: // string_value (string)
+      case 15: // string_value (string)
         final _Varint len = _readVarint(data, pos);
         pos = len.nextPos;
         value = _utf8Decode(Uint8List.sublistView(data, pos, pos + len.value));
