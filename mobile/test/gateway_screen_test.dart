@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/screens/gateway_screen.dart';
+import 'package:soft_plc_mobile/services/modbus_host.dart';
 import 'package:soft_plc_mobile/services/opcua_host.dart';
 import 'support/responsive_test_utils.dart';
 
@@ -99,11 +100,38 @@ PlcProject _project({String id = 'proj_gw_ui_test', int? port}) {
   return project;
 }
 
-Widget _app(PlcProject project, OpcUaHost host, {bool hostingSupported = true}) {
+/// A thin instrumented subclass of the REAL [ModbusHost] — mirrors
+/// [_CountingOpcUaHost]: still binds a real (loopback, ephemeral-port)
+/// socket via the base class, but records call counts so tests can assert
+/// the UI actually invoked start/stop.
+class _CountingModbusHost extends ModbusHost {
+  int startCalls = 0;
+  int stopCalls = 0;
+
+  @override
+  Future<void> start(PlcProject Function() projectProvider) async {
+    startCalls++;
+    await super.start(projectProvider);
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCalls++;
+    await super.stop();
+  }
+}
+
+Widget _app(
+  PlcProject project,
+  OpcUaHost host, {
+  bool hostingSupported = true,
+  ModbusHost? modbusHost,
+}) {
   return MaterialApp(
     home: GatewayScreen(
       currentProject: project,
       host: host,
+      modbusHost: modbusHost ?? _CountingModbusHost(),
       onProjectUpdated: () {},
       hostingSupported: hostingSupported,
     ),
@@ -121,7 +149,7 @@ void main() {
 
     expect(find.text('Outbound Protocols'), findsOneWidget);
     expect(find.text('OPC UA'), findsOneWidget);
-    expect(find.byType(Switch), findsOneWidget);
+    expect(find.byKey(const Key('opcua_enable_switch')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -134,7 +162,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(project.protocols?.opcua?.enabled, false);
-    final sw = tester.widget<Switch>(find.byType(Switch));
+    final sw = tester.widget<Switch>(find.byKey(const Key('opcua_enable_switch')));
     expect(sw.value, false);
     expect(find.text('OPC UA Node Map'), findsNothing);
     expect(find.widgetWithText(ElevatedButton, 'Start hosting'), findsNothing);
@@ -149,7 +177,7 @@ void main() {
     await tester.pumpWidget(_app(project, host));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byType(Switch));
+    await tester.tap(find.byKey(const Key('opcua_enable_switch')));
     await tester.pump();
 
     expect(project.protocols?.opcua?.enabled, true);
@@ -169,11 +197,11 @@ void main() {
     await tester.pumpWidget(_app(project, host));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byType(Switch));
+    await tester.tap(find.byKey(const Key('opcua_enable_switch')));
     await tester.pump();
     expect(project.protocols?.opcua?.enabled, true);
 
-    await tester.tap(find.byType(Switch));
+    await tester.tap(find.byKey(const Key('opcua_enable_switch')));
     await tester.pump();
 
     expect(project.protocols?.opcua?.enabled, false);
@@ -188,7 +216,7 @@ void main() {
 
     await tester.pumpWidget(_app(project, host));
     await tester.pumpAndSettle();
-    await tester.tap(find.byType(Switch));
+    await tester.tap(find.byKey(const Key('opcua_enable_switch')));
     await tester.pump();
     // Port 0 -> the OS picks an ephemeral free port, so this test never
     // collides with a real port or leaks a fixed one across test runs.
@@ -217,7 +245,7 @@ void main() {
 
     await tester.pumpWidget(_app(project, host, hostingSupported: false));
     await tester.pumpAndSettle();
-    await tester.tap(find.byType(Switch)); // reveal hosting controls
+    await tester.tap(find.byKey(const Key('opcua_enable_switch'))); // reveal hosting controls
     await tester.pump();
 
     final startBtn = tester.widget<ElevatedButton>(
@@ -236,7 +264,7 @@ void main() {
 
     await tester.pumpWidget(_app(project, host, hostingSupported: true));
     await tester.pumpAndSettle();
-    await tester.tap(find.byType(Switch));
+    await tester.tap(find.byKey(const Key('opcua_enable_switch')));
     await tester.pump();
 
     final startBtn = tester.widget<ElevatedButton>(
@@ -254,7 +282,7 @@ void main() {
 
     await tester.pumpWidget(_app(project, host));
     await tester.pumpAndSettle();
-    await tester.tap(find.byType(Switch));
+    await tester.tap(find.byKey(const Key('opcua_enable_switch')));
     await tester.pump();
     await tester.enterText(find.widgetWithText(TextField, '4840'), '0');
     await tester.pump();
@@ -282,7 +310,7 @@ void main() {
 
     await tester.pumpWidget(_app(project, host));
     await tester.pumpAndSettle();
-    await tester.tap(find.byType(Switch));
+    await tester.tap(find.byKey(const Key('opcua_enable_switch')));
     await tester.pump();
 
     final portField = find.widgetWithText(TextField, '4840');
@@ -301,7 +329,7 @@ void main() {
 
     await tester.pumpWidget(_app(project, host));
     await tester.pumpAndSettle();
-    await tester.tap(find.byType(Switch));
+    await tester.tap(find.byKey(const Key('opcua_enable_switch')));
     await tester.pump();
 
     final portField = find.widgetWithText(TextField, '4840');
@@ -320,7 +348,7 @@ void main() {
     await tester.pumpWidget(_app(project, host));
     await tester.pumpAndSettle();
     // Also exercise the enabled/expanded state, the more overflow-prone one.
-    await tester.tap(find.byType(Switch));
+    await tester.tap(find.byKey(const Key('opcua_enable_switch')));
     await tester.pump();
     expect(tester.takeException(), isNull);
   });
@@ -354,7 +382,7 @@ void main() {
     await setSurface(tester, desktopSize);
     await tester.pumpWidget(_app(project, host));
     await tester.pumpAndSettle();
-    await tester.tap(find.byType(Switch));
+    await tester.tap(find.byKey(const Key('opcua_enable_switch')));
     await tester.pump();
     expect(tester.takeException(), isNull);
   });
@@ -367,7 +395,7 @@ void main() {
 
       await tester.pumpWidget(_app(project, host));
       await tester.pumpAndSettle();
-      await tester.tap(find.byType(Switch));
+      await tester.tap(find.byKey(const Key('opcua_enable_switch')));
       await tester.pump();
 
       host.setRunning(subscriptions: 2, monitoredItems: 5);
@@ -384,7 +412,7 @@ void main() {
 
       await tester.pumpWidget(_app(project, host));
       await tester.pumpAndSettle();
-      await tester.tap(find.byType(Switch));
+      await tester.tap(find.byKey(const Key('opcua_enable_switch')));
       await tester.pump();
 
       expect(host.status, OpcUaHostStatus.stopped);
@@ -409,7 +437,7 @@ void main() {
 
       await tester.pumpWidget(_app(project, host));
       await tester.pumpAndSettle();
-      await tester.tap(find.byType(Switch));
+      await tester.tap(find.byKey(const Key('opcua_enable_switch')));
       await tester.pump();
       host.setRunning(subscriptions: 12, monitoredItems: 345);
       await tester.pump();
@@ -425,9 +453,241 @@ void main() {
 
       await tester.pumpWidget(_app(project, host));
       await tester.pumpAndSettle();
-      await tester.tap(find.byType(Switch));
+      await tester.tap(find.byKey(const Key('opcua_enable_switch')));
       await tester.pump();
       host.setRunning(subscriptions: 12, monitoredItems: 345);
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('Modbus TCP card (WS24 Task 3)', () {
+    testWidgets('renders the Modbus TCP card, starts disabled with config hidden', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Modbus TCP'), findsOneWidget);
+      expect(find.byKey(const Key('modbus_enable_switch')), findsOneWidget);
+      final sw = tester.widget<Switch>(find.byKey(const Key('modbus_enable_switch')));
+      expect(sw.value, false);
+      expect(find.text('Modbus Register Map'), findsNothing);
+      expect(find.widgetWithText(ElevatedButton, 'Start hosting'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('toggling the Modbus switch ON reveals port, hosting controls, and map editor', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+
+      expect(project.protocols?.modbus?.enabled, true);
+      expect(find.text('Modbus Register Map'), findsOneWidget);
+      expect(find.widgetWithText(TextField, '502'), findsOneWidget);
+      expect(find.widgetWithText(ElevatedButton, 'Start hosting'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, 'Stop hosting'), findsOneWidget);
+      // The OPC UA card is still disabled/collapsed (only Modbus was
+      // toggled), so only the Modbus card's status pill shows "Stopped".
+      expect(find.text('Stopped'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('toggling the Modbus switch OFF hides the config again', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+      expect(project.protocols?.modbus?.enabled, true);
+
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+
+      expect(project.protocols?.modbus?.enabled, false);
+      expect(find.text('Modbus Register Map'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Regenerate populates entries from the project tags', (tester) async {
+      final project = _project();
+      // Pre-configure Modbus enabled with an EMPTY map (rather than clearing
+      // after first build) so the "No entries yet" prompt is part of the
+      // widget's initial build, not a mutation the running State never
+      // learns about.
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.modbus!.enabled = true;
+      project.protocols!.modbus!.map.entries.clear();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+      expect(find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
+          findsOneWidget);
+
+      await tester.tap(find.widgetWithText(TextButton, 'Regenerate'));
+      await tester.pump();
+
+      expect(project.protocols?.modbus?.map.entries, isNotEmpty);
+      expect(find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
+          findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Start hosting calls the injected Modbus host and shows Running + endpoint', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+      // Port 0 -> the OS picks an ephemeral free port, never colliding with a
+      // real port or leaking a fixed one across test runs.
+      await tester.enterText(find.widgetWithText(TextField, '502'), '0');
+      await tester.pump();
+
+      await tester.runAsync(() async {
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Start hosting'));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await tester.pumpAndSettle();
+
+      expect(modbusHost.startCalls, 1);
+      expect(find.text('Running'), findsOneWidget);
+      expect(find.textContaining('modbus-tcp://'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Stop hosting calls the injected Modbus host and returns to Stopped', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+      await tester.enterText(find.widgetWithText(TextField, '502'), '0');
+      await tester.pump();
+      await tester.runAsync(() async {
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Start hosting'));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await tester.pumpAndSettle();
+
+      await tester.runAsync(() async {
+        await tester.tap(find.widgetWithText(OutlinedButton, 'Stop hosting'));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await tester.pumpAndSettle();
+
+      expect(modbusHost.stopCalls, 1);
+      expect(find.text('Stopped'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('hosting unsupported (web): Modbus Start hosting disabled + native-only note shown', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost, hostingSupported: false));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+
+      final startBtn = tester.widget<ElevatedButton>(
+        find.widgetWithText(ElevatedButton, 'Start hosting'),
+      );
+      expect(startBtn.onPressed, isNull);
+      expect(find.textContaining('web browsers do not allow'), findsOneWidget);
+      expect(modbusHost.startCalls, 0);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('hosting supported (native): Modbus Start hosting enabled + no note', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost, hostingSupported: true));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+
+      final startBtn = tester.widget<ElevatedButton>(
+        find.widgetWithText(ElevatedButton, 'Start hosting'),
+      );
+      expect(startBtn.onPressed, isNotNull);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 320 width with both cards expanded', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+      await setSurface(tester, smallPhoneSize);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+      // Toggle Modbus first, while both switches are still on-screen — once
+      // OPC UA expands (node map + hosting controls) it pushes the Modbus
+      // switch below the small-phone viewport.
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('opcua_enable_switch')));
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 1400 width with both cards expanded', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+      await setSurface(tester, desktopSize);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('opcua_enable_switch')));
       await tester.pump();
 
       expect(tester.takeException(), isNull);
