@@ -9,6 +9,7 @@
 // from services and widgets alike without pulling Flutter into model code.
 
 import 'modbus_map.dart';
+import 'mqtt_map.dart';
 import 'opcua_map.dart';
 import 'project_model.dart';
 
@@ -106,6 +107,95 @@ class ModbusProtocolConfig {
       );
 }
 
+/// Per-project MQTT / Sparkplug B outbound-protocol configuration: whether
+/// the publisher is enabled, the broker connection details, the Sparkplug B
+/// identity fields, and the tag<->metric map that decides which tags are
+/// published and under what name.
+///
+/// The broker password is deliberately NOT a field here: it must never be
+/// persisted to the project file. It is supplied by the user in memory at
+/// connect time (see the MQTT connection UI in a later task) and is never
+/// part of `toJson`/`fromJson`.
+class MqttProtocolConfig {
+  bool enabled;
+  String host;
+  int port;
+  bool tls;
+
+  /// Payload format: `'json'` (flat JSON per topic) or `'sparkplug'`
+  /// (Sparkplug B protobuf payloads).
+  String format;
+  String baseTopic;
+  String groupId;
+  String edgeNodeId;
+  int qos;
+  int heartbeatSeconds;
+  bool allowRemoteWrites;
+  String username;
+  MqttMap map;
+
+  MqttProtocolConfig({
+    this.enabled = false,
+    this.host = '',
+    this.port = 1883,
+    this.tls = false,
+    this.format = 'json',
+    this.baseTopic = 'softplc',
+    this.groupId = 'SoftPLC',
+    this.edgeNodeId = '',
+    this.qos = 0,
+    this.heartbeatSeconds = 5,
+    this.allowRemoteWrites = false,
+    this.username = '',
+    required this.map,
+  });
+
+  factory MqttProtocolConfig.fromJson(Map<String, dynamic> j) => MqttProtocolConfig(
+        enabled: j['enabled'] == true,
+        host: (j['host'] ?? '').toString(),
+        port: (j['port'] as num?)?.toInt() ?? 1883,
+        tls: j['tls'] == true,
+        format: (j['format'] ?? 'json').toString(),
+        baseTopic: (j['base_topic'] ?? 'softplc').toString(),
+        groupId: (j['group_id'] ?? 'SoftPLC').toString(),
+        edgeNodeId: (j['edge_node_id'] ?? '').toString(),
+        qos: (j['qos'] as num?)?.toInt() ?? 0,
+        heartbeatSeconds: (j['heartbeat_seconds'] as num?)?.toInt() ?? 5,
+        allowRemoteWrites: j['allow_remote_writes'] == true,
+        username: (j['username'] ?? '').toString(),
+        map: j['map'] != null
+            ? MqttMap.fromJson(j['map'] as Map<String, dynamic>)
+            : MqttMap(entries: []),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'enabled': enabled,
+        'host': host,
+        'port': port,
+        'tls': tls,
+        'format': format,
+        'base_topic': baseTopic,
+        'group_id': groupId,
+        'edge_node_id': edgeNodeId,
+        'qos': qos,
+        'heartbeat_seconds': heartbeatSeconds,
+        'allow_remote_writes': allowRemoteWrites,
+        'username': username,
+        'map': map.toJson(),
+      };
+
+  /// Sane defaults for a project that has never configured MQTT: disabled,
+  /// the standard (non-TLS) MQTT port, an empty edge node id (the host
+  /// resolves the fallback to the project name at connect time), and an
+  /// auto-generated map from the project's current scalar tags.
+  static MqttProtocolConfig defaults(PlcProject p) => MqttProtocolConfig(
+        enabled: false,
+        port: 1883,
+        edgeNodeId: '',
+        map: MqttMap.autoGenerate(p),
+      );
+}
+
 /// Per-project outbound-protocol settings: the shared gateway endpoint plus
 /// one config slot per protocol.
 ///
@@ -116,28 +206,33 @@ class ProtocolSettings {
   String gatewayUrl;
   OpcUaProtocolConfig? opcua;
   ModbusProtocolConfig? modbus;
+  MqttProtocolConfig? mqtt;
 
   ProtocolSettings({
     this.gatewayUrl = kDefaultGatewayUrl,
     this.opcua,
     this.modbus,
+    this.mqtt,
   });
 
   Map<String, dynamic> toJson() => {
         'gateway_url': gatewayUrl,
         if (opcua != null) 'opcua': opcua!.toJson(),
         if (modbus != null) 'modbus': modbus!.toJson(),
+        if (mqtt != null) 'mqtt': mqtt!.toJson(),
       };
 
   factory ProtocolSettings.fromJson(Map<String, dynamic> j) => ProtocolSettings(
         gatewayUrl: (j['gateway_url'] ?? kDefaultGatewayUrl).toString(),
         opcua: j['opcua'] != null ? OpcUaProtocolConfig.fromJson(j['opcua'] as Map<String, dynamic>) : null,
         modbus: j['modbus'] != null ? ModbusProtocolConfig.fromJson(j['modbus'] as Map<String, dynamic>) : null,
+        mqtt: j['mqtt'] != null ? MqttProtocolConfig.fromJson(j['mqtt'] as Map<String, dynamic>) : null,
       );
 
   static ProtocolSettings defaults(PlcProject p) => ProtocolSettings(
         gatewayUrl: kDefaultGatewayUrl,
         opcua: OpcUaProtocolConfig.defaults(p),
         modbus: ModbusProtocolConfig.defaults(p),
+        mqtt: MqttProtocolConfig.defaults(p),
       );
 }

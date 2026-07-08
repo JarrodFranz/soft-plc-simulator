@@ -8,6 +8,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:soft_plc_mobile/models/mqtt_map.dart';
 import 'package:soft_plc_mobile/models/opcua_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
@@ -299,6 +300,107 @@ void main() {
       expect(settings.opcua!.namespaceUri, 'urn:softplc:def_proj');
       expect(settings.opcua!.map.nodes, isNotEmpty);
       expect(settings.opcua!.port, 4840);
+    });
+  });
+
+  group('MqttProtocolConfig / ProtocolSettings.mqtt', () {
+    test('MqttProtocolConfig round-trips through toJson/fromJson', () {
+      final cfg = MqttProtocolConfig(
+        enabled: true,
+        host: 'broker.example.com',
+        port: 8883,
+        tls: true,
+        format: 'sparkplug',
+        baseTopic: 'plant1',
+        groupId: 'GroupA',
+        edgeNodeId: 'Line1',
+        qos: 1,
+        heartbeatSeconds: 30,
+        allowRemoteWrites: true,
+        username: 'plc_user',
+        map: MqttMap(entries: [MqttMapEntry(tag: 'Run', metric: 'Run', writable: true)]),
+      );
+
+      final rt = MqttProtocolConfig.fromJson(cfg.toJson());
+
+      expect(rt.enabled, isTrue);
+      expect(rt.host, 'broker.example.com');
+      expect(rt.port, 8883);
+      expect(rt.tls, isTrue);
+      expect(rt.format, 'sparkplug');
+      expect(rt.baseTopic, 'plant1');
+      expect(rt.groupId, 'GroupA');
+      expect(rt.edgeNodeId, 'Line1');
+      expect(rt.qos, 1);
+      expect(rt.heartbeatSeconds, 30);
+      expect(rt.allowRemoteWrites, isTrue);
+      expect(rt.username, 'plc_user');
+      expect(rt.map.entries.single.tag, 'Run');
+    });
+
+    test('MqttProtocolConfig.fromJson tolerates missing keys with sane defaults', () {
+      final cfg = MqttProtocolConfig.fromJson({});
+      expect(cfg.enabled, isFalse);
+      expect(cfg.host, '');
+      expect(cfg.port, 1883);
+      expect(cfg.tls, isFalse);
+      expect(cfg.format, 'json');
+      expect(cfg.baseTopic, 'softplc');
+      expect(cfg.groupId, 'SoftPLC');
+      expect(cfg.qos, 0);
+      expect(cfg.heartbeatSeconds, 5);
+      expect(cfg.allowRemoteWrites, isFalse);
+      expect(cfg.map.entries, isEmpty);
+    });
+
+    test('ProtocolSettings carrying an MqttProtocolConfig round-trips losslessly', () {
+      final settings = ProtocolSettings(
+        gatewayUrl: kDefaultGatewayUrl,
+        mqtt: MqttProtocolConfig(
+          enabled: true,
+          host: 'localhost',
+          port: 1883,
+          map: MqttMap(entries: [MqttMapEntry(tag: 'A', metric: 'A', writable: true)]),
+        ),
+      );
+
+      final rt = ProtocolSettings.fromJson(settings.toJson());
+
+      expect(rt.mqtt, isNotNull);
+      expect(rt.mqtt!.enabled, isTrue);
+      expect(rt.mqtt!.host, 'localhost');
+      expect(rt.mqtt!.map.entries.length, 1);
+    });
+
+    test('ProtocolSettings with mqtt == null omits the mqtt key entirely', () {
+      final settings = ProtocolSettings(); // no mqtt
+      expect(settings.mqtt, isNull);
+      expect(settings.toJson().containsKey('mqtt'), isFalse);
+    });
+
+    test('serialized MqttProtocolConfig / ProtocolSettings JSON never contains a password key', () {
+      final cfg = MqttProtocolConfig(
+        enabled: true,
+        host: 'localhost',
+        username: 'plc_user',
+        map: MqttMap.autoGenerate(PlcProject(
+          id: 'pw_proj',
+          name: 'Password Project',
+          controllerName: 'PLC_PW',
+          tags: const [],
+          structDefs: const [],
+          programs: const [],
+          tasks: const [],
+          hmis: const [],
+        )),
+      );
+      final cfgJson = cfg.toJson();
+      expect(cfgJson.containsKey('password'), isFalse);
+
+      final settings = ProtocolSettings(mqtt: cfg);
+      final settingsJson = settings.toJson();
+      expect(settingsJson.containsKey('password'), isFalse);
+      expect(jsonEncode(settingsJson).contains('password'), isFalse);
     });
   });
 }
