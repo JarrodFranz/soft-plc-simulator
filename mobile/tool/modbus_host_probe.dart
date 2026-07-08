@@ -1,10 +1,15 @@
 // A tiny `dart run` CLI that builds a small fixture project in code (a RW
-// coil, a RW holding INT16, and a RO input INT16), hosts it over a real
+// coil, a forced RW coil, a RW holding INT16, a struct-member INT32 mapped
+// across two holding registers, and a RO input INT16), hosts it over a real
 // `ServerSocket` (MBAP-length-prefixed frame reassembly, same rules as
 // `mobile/lib/services/modbus_host.dart`), prints `READY` on listening, then
-// serves until killed. Used ONLY by `tool/modbus_e2e.sh` as the Dart half of
-// the WS24 Task 4 E2E machine-proof (a real Rust `tokio-modbus`-crate
-// client, `gateway/examples/modbus_probe.rs`, connects here).
+// serves until killed. Used by `tool/modbus_e2e.sh` as the Dart half of the
+// WS24 Task 4 E2E machine-proof (a real Rust `tokio-modbus`-crate client,
+// `gateway/examples/modbus_probe.rs`, connects here) and by the
+// "Protocol Interop Fixes" workstream's Task 4 as the falsifiable proof that
+// (a) a forced tag's value reads through to Modbus and (b) a dotted
+// struct-member map entry (`Motor.Speed`) decodes at the correct register
+// width/value.
 //
 // IMPORTANT: this does NOT import `services/modbus_host.dart`. `ModbusHost
 // extends ChangeNotifier` (`package:flutter/foundation.dart`), which
@@ -44,10 +49,29 @@ const int _maxFrameBytes = 260;
 /// observable over the wire (not merely an echo of a client-issued write).
 const int _mutatedSpeedValue = 4242;
 
+/// Value the `Forced_Bool` tag is force-read as, over the map's coil
+/// address 1 -- the falsifiable proof (Task 4) that a tag's `isForced`
+/// state reaches Modbus reads: the tag's live `value` is `false`, so a
+/// non-force-aware read would report `0`/`false`, but `forcedValue` is
+/// `true` and `readPath` (the same force-aware resolver the scan engine,
+/// OPC UA server, and Modbus register handler all read through) always
+/// prefers `forcedValue` for a forced scalar tag.
+const bool _forcedCoilValue = true;
+
+/// Value the `Motor.Speed` struct-member field is initialized to, read back
+/// over the map's holding registers 1-2 as an INT32 (high-word-first) --
+/// the Task 4 proof that a dotted struct-member map entry decodes at the
+/// correct register width/value, not just a top-level scalar tag.
+const int _structMemberSpeedValue = 9001;
+
 /// Builds the fixture project the E2E probe expects:
-///   - `Start_PB` : BOOL,  ReadWrite -> coil address 0
-///   - `Speed`    : INT16, ReadWrite -> holding address 0 (mutated to 4242 at T+3s)
-///   - `Temp`     : INT16, ReadOnly  -> input address 0
+///   - `Start_PB`   : BOOL,  ReadWrite -> coil address 0
+///   - `Forced_Bool` : BOOL, ReadWrite -> coil address 1, isForced=true/
+///     forcedValue=true (Task 4 forced-coil proof)
+///   - `Speed`      : INT16, ReadWrite -> holding address 0 (mutated to 4242 at T+3s)
+///   - `Motor`      : struct (`MotorType { Speed: INT32 }`) -> `Motor.Speed`
+///     mapped to holding addresses 1-2 (Task 4 struct-member proof)
+///   - `Temp`       : INT16, ReadOnly  -> input address 0
 PlcProject _fixtureProject() {
   final project = PlcProject(
     id: 'proj_modbus_e2e_fixture',
@@ -62,10 +86,26 @@ PlcProject _fixtureProject() {
         ioType: 'SimulatedInput',
       ),
       PlcTag(
+        name: 'Forced_Bool',
+        path: 'Internal.Forced_Bool',
+        dataType: 'BOOL',
+        value: false,
+        ioType: 'Internal',
+        isForced: true,
+        forcedValue: _forcedCoilValue,
+      ),
+      PlcTag(
         name: 'Speed',
         path: 'Internal.Speed',
         dataType: 'INT16',
         value: 100,
+        ioType: 'Internal',
+      ),
+      PlcTag(
+        name: 'Motor',
+        path: 'Internal.Motor',
+        dataType: 'MotorType',
+        value: {'Speed': _structMemberSpeedValue},
         ioType: 'Internal',
       ),
       PlcTag(
@@ -76,7 +116,11 @@ PlcProject _fixtureProject() {
         ioType: 'SimulatedOutput',
       ),
     ],
-    structDefs: [],
+    structDefs: [
+      PlcStructDef(name: 'MotorType', fields: [
+        StructFieldDef(name: 'Speed', dataType: 'INT32', defaultValue: 0),
+      ]),
+    ],
     programs: [],
     tasks: [],
     hmis: [],
@@ -88,7 +132,9 @@ PlcProject _fixtureProject() {
     port: 502, // overwritten in main() with the real bound port before use
     map: ModbusMap(entries: [
       ModbusMapEntry(tag: 'Start_PB', table: 'coil', address: 0, access: 'ReadWrite'),
+      ModbusMapEntry(tag: 'Forced_Bool', table: 'coil', address: 1, access: 'ReadWrite'),
       ModbusMapEntry(tag: 'Speed', table: 'holding', address: 0, access: 'ReadWrite'),
+      ModbusMapEntry(tag: 'Motor.Speed', table: 'holding', address: 1, access: 'ReadOnly'),
       ModbusMapEntry(tag: 'Temp', table: 'input', address: 0, access: 'ReadOnly'),
     ]),
   );

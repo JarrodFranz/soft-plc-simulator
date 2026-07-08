@@ -37,7 +37,19 @@ retired the previous companion-gateway approach).
 6. Browse the address space: every mapped tag appears as a `Variable` node
    directly under the standard **Objects** folder, named by its tag's short
    name, with a node id of the form `ns=1;s=<tag_name>` (or `ns=1;i=<n>` for
-   numeric ids) — whichever the node map assigns.
+   numeric ids) — whichever the node map assigns. A strict client (not just
+   this repo's own probe) can discover the whole space top-down: browsing
+   `RootFolder` (`i=84`) surfaces the standard `Objects` (`i=85`) and
+   `Server` (`i=2253`) children, and browsing `Objects` from there reaches
+   every mapped tag — no client needs to hardcode `i=85` to find anything.
+   The standard `Server_NamespaceArray` variable (`ns=0;i=2255`) is also
+   readable, with index 0 the fixed OPC Foundation namespace URI and index 1
+   this project's namespace URI, so a client can resolve what a `ns=1;...`
+   node id actually means instead of assuming it. `GetEndpoints` also echoes
+   back whatever host the client dialed (from its request's `endpointUrl`)
+   in the returned `EndpointDescription`, so a client connecting through a
+   different hostname/NAT than the server's own self-reported address still
+   gets an endpoint URL it can actually reach.
 7. **Read** any node — the value comes live from the running soft PLC at the
    moment of the read (there is no mirror/cache to go stale).
 8. **Write** a `ReadWrite` node — it applies through the same force-aware
@@ -61,11 +73,15 @@ and `namespaceUri`.
 **v1 delivers:** `opc.tcp` transport (Hello/Acknowledge/Error framing),
 `OpenSecureChannel` with Security Policy **None** (including token renewal),
 `CreateSession`/`ActivateSession` (anonymous) + `CloseSession`,
-`GetEndpoints`, `Browse` (the exposed-tag address space, flat under
-Objects), `Read` (Value + core attributes, server timestamps), `Write`
-(force-aware, `ReadWrite` nodes only). Unsupported/unknown services answer a
-proper `ServiceFault` (`Bad_ServiceUnsupported`) rather than dropping the
-connection.
+`GetEndpoints` (echoing the client's own dialed host back in the returned
+endpoint, so it's reachable behind NAT/alternate hostnames), `Browse` (the
+exposed-tag address space under Objects, reachable **top-down from
+`RootFolder`** — not only by addressing Objects directly — plus the
+standard `Server` object), the standard `Server_NamespaceArray` variable
+(`ns=0;i=2255`, index 1 = this project's namespace URI), `Read` (Value +
+core attributes, server timestamps), `Write` (force-aware, `ReadWrite` nodes
+only). Unsupported/unknown services answer a proper `ServiceFault`
+(`Bad_ServiceUnsupported`) rather than dropping the connection.
 
 **Deferred (v2+):**
 - **Subscriptions/MonitoredItems** — v1 clients poll via `Read`; there is no
@@ -201,8 +217,12 @@ genuine Rust `opcua` crate **client** (`gateway/examples/opcua_probe.rs`,
 kept as a dev-time verification harness per ADR-010) connects over the real
 `opc.tcp` binary protocol to the Dart server hosted by a small fixture
 runner (`mobile/tool/opcua_host_probe.dart`), and exercises
-`GetEndpoints` → `Browse` (Objects) → `Read` → `Write` → `Read`-back-verify
-→ **`CreateSubscription` + `CreateMonitoredItems`, then waits for a real
+`GetEndpoints` → **`Read` `NamespaceArray` (`ns=0;i=2255`) and assert index 1
+equals the project's namespace URI** → **`Browse` top-down from `RootFolder`
+(`i=84`), discover `Objects` as a reference off Root (not by hardcoding its
+node id), and assert every fixture tag is reachable that way** → `Browse`
+(Objects, addressed directly) → `Read` → `Write` → `Read`-back-verify →
+**`CreateSubscription` + `CreateMonitoredItems`, then waits for a real
 pushed `DataChangeNotification`**. The fixture host mutates a tag
 server-side on its own timer (T+4s after `READY`, entirely independent of
 the probing client) so the notification the probe observes can only have

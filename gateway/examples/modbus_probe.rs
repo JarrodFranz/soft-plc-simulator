@@ -11,10 +11,15 @@
 //! Talks to a server hosting a small fixture project with three mapped tags
 //! (see `mobile/tool/modbus_host_probe.dart`, which this probe is designed
 //! to run against via `tool/modbus_e2e.sh`):
-//!   - `Start_PB` : BOOL,  ReadWrite -> coil address 0
-//!   - `Speed`    : INT16, ReadWrite -> holding register address 0
-//!   - `Temp`     : INT16, ReadOnly  -> input register address 0 (unused by
-//!     this probe; present so the fixture map exercises all four Modbus
+//!   - `Start_PB`    : BOOL,  ReadWrite -> coil address 0
+//!   - `Forced_Bool` : BOOL,  ReadWrite -> coil address 1, `isForced: true`,
+//!     `forcedValue: true` (Task 4 forced-coil-reads-through proof; the
+//!     tag's live `value` is `false`)
+//!   - `Speed`       : INT16, ReadWrite -> holding register address 0
+//!   - `Motor.Speed` : INT32 struct member -> holding registers 1-2 (Task 4
+//!     struct-member-decodes-correctly proof)
+//!   - `Temp`        : INT16, ReadOnly  -> input register address 0 (unused
+//!     by this probe; present so the fixture map exercises all four Modbus
 //!     data tables, per the docs' 4-table mapping)
 //!
 //! Steps:
@@ -33,6 +38,17 @@
 //!      write's own echo response).
 //!   4. `write_single_coil(0, true)` then `read_coils(0, 1)` and assert
 //!      `[true]` — same proof, for the bit-table side of the map.
+//!   5. `read_coils(1, 1)` and assert `[true]` — the falsifiable proof that
+//!      `Forced_Bool`'s `isForced`/`forcedValue` state reaches Modbus reads:
+//!      the tag's live `value` is `false`, so this only reads `true` if the
+//!      force-aware `readPath` resolver (shared with the scan engine and the
+//!      OPC UA server) is actually being consulted by the Modbus register
+//!      handler.
+//!   6. `read_holding_registers(1, 2)` and decode as a big-endian,
+//!      high-word-first INT32, asserting it equals the `Motor.Speed`
+//!      struct-member field's value — proof a dotted struct-member map entry
+//!      resolves its type/value through the full path, not just a top-level
+//!      tag name.
 //! Prints `MODBUS PROBE PASS` and exits 0 on success; on any failure prints
 //! `MODBUS PROBE FAIL: <reason>` and exits 1 — never panics past the top
 //! level.
@@ -65,6 +81,22 @@ const SERVER_MUTATION_WAIT: Duration = Duration::from_secs(10);
 /// Per-call bound so a hung server can never make this probe (or the CI
 /// job wrapping it) block forever.
 const CALL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Coil address of `Forced_Bool` in the Dart fixture host's map (see
+/// `mobile/tool/modbus_host_probe.dart`), a tag whose live `value` is
+/// `false` but whose `isForced`/`forcedValue` mark it force-read as `true`
+/// — reading `true` here is only possible if the force-aware resolver is
+/// actually consulted by the Modbus register handler.
+const FORCED_COIL_ADDR: u16 = 1;
+
+/// Holding-register address of the `Motor.Speed` INT32 struct-member map
+/// entry (occupies 2 registers: `STRUCT_MEMBER_HOLDING_ADDR` and
+/// `STRUCT_MEMBER_HOLDING_ADDR + 1`, high-word-first).
+const STRUCT_MEMBER_HOLDING_ADDR: u16 = 1;
+
+/// Expected decoded value of `Motor.Speed`, matching the Dart fixture
+/// host's `_structMemberSpeedValue`.
+const STRUCT_MEMBER_EXPECTED_VALUE: i32 = 9001;
 
 async fn read_holding(ctx: &mut Context, addr: u16, cnt: u16) -> Result<Vec<u16>, String> {
     timeout(CALL_TIMEOUT, ctx.read_holding_registers(addr, cnt))
@@ -164,6 +196,56 @@ async fn run(host: &str, port: u16) -> Result<(), String> {
             return Err(format!("expected coil[0] == Some(true) after the write, got {other:?}"))
         }
     }
+
+    // --- Step 4: read the forced coil and assert it reads back forced -----
+    //
+    // `Forced_Bool`'s live tag `value` is `false` -- a read that returns
+    // `true` here can only mean the Modbus register-file handler resolved
+    // the read through the same force-aware `readPath` the scan engine and
+    // OPC UA server use, not the tag's raw underlying value. This is the
+    // falsifiable machine-proof (Task 4 of "Protocol Interop Fixes") that a
+    // force set in the app is actually visible over Modbus.
+    println!("[probe] read_coils({FORCED_COIL_ADDR}, 1) -- expect the forced value true...");
+    let forced_coils = read_coils(&mut ctx, FORCED_COIL_ADDR, 1).await?;
+    match forced_coils.first().copied() {
+        Some(true) => println!(
+            "[probe] forced-coil read OK: coil[{FORCED_COIL_ADDR}] = true (force reached Modbus)"
+        ),
+        other => {
+            return Err(format!(
+                "expected coil[{FORCED_COIL_ADDR}] == Some(true) (Forced_Bool's forced value read through to Modbus), got {other:?}"
+            ))
+        }
+    }
+
+    // --- Step 5: read the struct-member holding registers and decode -------
+    //
+    // `Motor.Speed` is a dotted struct-member map entry (an INT32 field of
+    // the `Motor` tag's `MotorType` struct), occupying 2 holding registers.
+    // Decoding the correct value at the correct width proves the register
+    // handler resolves a struct-member path's type/value through the full
+    // dotted path, not just by matching the map entry's `tag` string against
+    // top-level tag names (which would silently fall back to a wrong width
+    // or wrong value).
+    println!(
+        "[probe] read_holding_registers({STRUCT_MEMBER_HOLDING_ADDR}, 2) -- struct member Motor.Speed (INT32)..."
+    );
+    let motor_regs = read_holding(&mut ctx, STRUCT_MEMBER_HOLDING_ADDR, 2).await?;
+    if motor_regs.len() != 2 {
+        return Err(format!(
+            "expected 2 registers reading Motor.Speed, got {} ({:?})",
+            motor_regs.len(),
+            motor_regs
+        ));
+    }
+    // Big-endian, high-word-first per the docs' encoding rules.
+    let motor_speed = ((motor_regs[0] as u32) << 16 | motor_regs[1] as u32) as i32;
+    if motor_speed != STRUCT_MEMBER_EXPECTED_VALUE {
+        return Err(format!(
+            "expected Motor.Speed == {STRUCT_MEMBER_EXPECTED_VALUE}, decoded {motor_speed} from registers {motor_regs:?}"
+        ));
+    }
+    println!("[probe] struct-member read OK: Motor.Speed = {motor_speed}");
 
     if let Err(e) = ctx.disconnect().await {
         // Non-fatal: every assertion above already passed, and a clean

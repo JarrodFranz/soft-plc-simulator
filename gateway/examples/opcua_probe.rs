@@ -15,8 +15,12 @@
 //!   - `Counter`  : INT32, ReadWrite  -> ns=1;s=Counter
 //!
 //! Steps: connect (SecurityPolicy::None, anonymous) -> GetEndpoints ->
-//! Browse the Objects folder (i=85) -> Read `Temp`'s Value -> Write
-//! `Counter`'s Value -> Read `Counter` back and verify the write landed.
+//! Read `NamespaceArray` (ns=0;i=2255) and verify index 1 is the project
+//! namespace URI -> Browse top-down from `RootFolder` (i=84) through the
+//! discovered `Objects` node and verify the fixture's tags are reachable
+//! that way (not by addressing Objects directly) -> Browse the Objects
+//! folder (i=85) -> Read `Temp`'s Value -> Write `Counter`'s Value -> Read
+//! `Counter` back and verify the write landed.
 //! Prints `PROBE PASS` and exits 0 on success; on any failure prints
 //! `PROBE FAIL: <reason>` and exits 1 — never panics past the top level.
 
@@ -38,6 +42,13 @@ use opcua::types::{
 
 const NODE_TEMP: &str = "ns=1;s=Temp";
 const NODE_COUNTER: &str = "ns=1;s=Counter";
+
+/// The fixture project's OPC UA namespace URI (see
+/// `mobile/tool/opcua_host_probe.dart`'s `_fixtureProject`), which must
+/// appear at index 1 of the standard `Server_NamespaceArray` (ns=0;i=2255) —
+/// index 0 is always the fixed OPC Foundation namespace
+/// (`http://opcfoundation.org/UA/`).
+const PROJECT_NAMESPACE_URI: &str = "urn:softplc:e2e-fixture";
 
 /// Value the Dart fixture host (`mobile/tool/opcua_host_probe.dart`) writes
 /// to `NODE_COUNTER` at T+4s after printing READY, purely as a server-side
@@ -103,6 +114,133 @@ fn run(endpoint_url: &str) -> Result<(), String> {
     println!("[probe] session connected.");
 
     let session = session_arc.read();
+
+    // --- Step 1b: Read NamespaceArray (ns=0;i=2255) and verify index 1 ----
+    //
+    // Machine-proof for the WS19/Task 2 discovery fix: a strict OPC UA
+    // client resolves what a `ns=1;...` NodeId actually means by reading the
+    // standard `Server_NamespaceArray` variable and looking up index 1 (index
+    // 0 is always the fixed OPC Foundation namespace URI). If this array is
+    // missing or wrong, a real client cannot reliably address any of this
+    // server's nodes even though ad hoc `ns=1;s=...` literals (as used
+    // elsewhere in this probe) happen to still work.
+    println!("[probe] Read NamespaceArray (ns=0;i=2255)...");
+    let namespace_array_node = NodeId::new(0u16, 2255u32);
+    let read_namespace_array = ReadValueId {
+        node_id: namespace_array_node,
+        attribute_id: AttributeId::Value as u32,
+        index_range: opcua::types::UAString::null(),
+        data_encoding: opcua::types::QualifiedName::null(),
+    };
+    let namespace_array_results = session
+        .read(&[read_namespace_array], TimestampsToReturn::Neither, 0.0)
+        .map_err(|e| format!("Read(NamespaceArray) failed: {e}"))?;
+    let namespace_array_value = namespace_array_results
+        .first()
+        .ok_or_else(|| "Read(NamespaceArray) returned zero results".to_string())?
+        .value
+        .clone();
+    let namespace_array_values = match namespace_array_value {
+        Some(Variant::Array(arr)) => arr.values,
+        other => {
+            return Err(format!(
+                "expected an Array Variant reading NamespaceArray, got {other:?}"
+            ))
+        }
+    };
+    if namespace_array_values.len() < 2 {
+        return Err(format!(
+            "NamespaceArray has fewer than 2 entries (expected index 1 = project namespace URI): {namespace_array_values:?}"
+        ));
+    }
+    let namespace_1_uri = match &namespace_array_values[1] {
+        Variant::String(s) => s.as_ref().to_string(),
+        other => {
+            return Err(format!(
+                "NamespaceArray[1] is not a String Variant: {other:?}"
+            ))
+        }
+    };
+    if namespace_1_uri != PROJECT_NAMESPACE_URI {
+        return Err(format!(
+            "NamespaceArray[1] = {namespace_1_uri:?}, expected the project namespace URI {PROJECT_NAMESPACE_URI:?}"
+        ));
+    }
+    println!("[probe] NamespaceArray[1] OK: {namespace_1_uri}");
+
+    // --- Step 1c: Browse top-down: Root -> Objects -> variables -----------
+    //
+    // Machine-proof that the fixture's tags are reachable by walking the
+    // address space from `RootFolder` (i=84), the way any generic/strict OPC
+    // UA client browses (as opposed to jumping straight to a well-known
+    // `ObjectsFolder` NodeId, which the *next* step below still does for its
+    // own purposes). Deliberately does NOT reuse the `ObjectId::ObjectsFolder`
+    // constant to reach Objects -- the NodeId used to browse for variables
+    // here is the one this walk itself discovers as a reference off Root.
+    println!("[probe] Browse RootFolder (i=84) top-down...");
+    let root_node_id: NodeId = ObjectId::RootFolder.into();
+    let root_browse_description = BrowseDescription {
+        node_id: root_node_id,
+        browse_direction: BrowseDirection::Forward,
+        reference_type_id: ReferenceTypeId::Organizes.into(),
+        include_subtypes: true,
+        node_class_mask: 0,
+        result_mask: 0x3F,
+    };
+    let root_browse_results = session
+        .browse(&[root_browse_description])
+        .map_err(|e| format!("Browse(RootFolder) failed: {e}"))?
+        .ok_or_else(|| "Browse(RootFolder) returned no results at all".to_string())?;
+    let root_references = root_browse_results
+        .first()
+        .and_then(|r| r.references.clone())
+        .unwrap_or_default();
+    let objects_reference = root_references
+        .iter()
+        .find(|r| r.browse_name.name.as_ref() == "Objects")
+        .ok_or_else(|| {
+            format!(
+                "Browse(RootFolder) did not surface an 'Objects' child (top-down discovery broken); found {:?}",
+                root_references
+                    .iter()
+                    .map(|r| r.browse_name.name.as_ref().to_string())
+                    .collect::<Vec<_>>()
+            )
+        })?;
+    let discovered_objects_node_id = objects_reference.node_id.node_id.clone();
+    println!("[probe] Browse(RootFolder) OK: discovered Objects at {discovered_objects_node_id}");
+
+    println!("[probe] Browse the discovered Objects node for the fixture's tags...");
+    let objects_browse_description = BrowseDescription {
+        node_id: discovered_objects_node_id,
+        browse_direction: BrowseDirection::Forward,
+        reference_type_id: ReferenceTypeId::Organizes.into(),
+        include_subtypes: true,
+        node_class_mask: 0,
+        result_mask: 0x3F,
+    };
+    let discovered_browse_results = session
+        .browse(&[objects_browse_description])
+        .map_err(|e| format!("Browse(discovered Objects) failed: {e}"))?
+        .ok_or_else(|| "Browse(discovered Objects) returned no results at all".to_string())?;
+    let discovered_references = discovered_browse_results
+        .first()
+        .and_then(|r| r.references.clone())
+        .unwrap_or_default();
+    let discovered_names: std::collections::HashSet<String> = discovered_references
+        .iter()
+        .map(|r| r.browse_name.name.as_ref().to_string())
+        .collect();
+    for expected_tag in ["Start_PB", "Temp", "Counter"] {
+        if !discovered_names.contains(expected_tag) {
+            return Err(format!(
+                "top-down browse (Root -> Objects -> variables) did not reach tag {expected_tag:?}; found {discovered_names:?}"
+            ));
+        }
+    }
+    println!(
+        "[probe] top-down browse OK: reached {discovered_names:?} via Root -> Objects (not by addressing Objects directly)"
+    );
 
     // --- Step 2: Browse the Objects folder ---------------------------
     println!("[probe] Browse Objects (i=85)...");

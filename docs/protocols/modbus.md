@@ -50,12 +50,26 @@ Full design rationale: `docs/superpowers/specs/2026-07-08-in-app-modbus-tcp-serv
    byte-identical to a build with Modbus TCP never enabled.
 
 The register map (which tags are exposed, their table/address, and
-`ReadOnly`/`ReadWrite` access) is edited from the Modbus TCP card's map
-editor, or auto-generated from the project's tags (**Regenerate** —
+`ReadOnly`/`ReadWrite` access) is fully **hand-editable** from the Modbus TCP
+card's map editor — add, remove, or retarget a row's tag/table/address/access
+directly — or auto-generated from the project's tags (**Regenerate** —
 `Simulated Inputs`/`Internal` tags default to `ReadWrite`; `Simulated
 Outputs` default to `ReadOnly`). It is stored per-project under the
 additive `protocols` field (`protocols.modbus`), alongside the `port`
 (additive, default `502`).
+
+A map row's `tag` isn't limited to a top-level tag name: it may be a
+**dotted struct-member path** (e.g. `Motor.Speed` for the `Speed` field of a
+`Motor` tag typed as a struct), resolved through the same field-def walk the
+Memory Manager and other editors use (`tag_resolver.dart`). This lets you
+expose an individual struct field at its own Modbus address without mapping
+the whole composite tag — composite tags themselves still can't be mapped as
+a single unit (see "v1 scope" below). The register width/type at that path
+is resolved from the full path, not by matching the map entry's `tag` string
+against top-level tag names, so a struct member gets the correct register
+width (e.g. 2 registers for an `INT32` field) and decodes to the correct
+value. **Regenerate** only ever emits top-level scalar entries; dotted
+struct-member entries are a manual-map-only feature today.
 
 ## The 4-table tag mapping
 
@@ -149,6 +163,15 @@ compatibility with masters that don't expect an exception on an
 otherwise-valid write. Forcing always wins over an external master's write
 either way — the difference is only in what the master's response tells it
 happened.
+
+Forcing is **scalar-only**: the Force toggle (Tag Inspector) is only ever
+offered for scalar leaf tags, never for a struct/array-typed root tag. A
+dotted-path map entry's force check walks to that path's **root** tag and
+looks at its `isForced` flag — so forcing `Motor` (if it were somehow forced
+as a whole, which the UI never allows) would gate writes to `Motor.Speed`
+too, but forcing a scalar sibling has no effect on `Motor.Speed`. This is the
+same scalar-only force model the OPC UA server and the scan engine share
+(see `docs/protocols/opcua.md`).
 
 ## Reads never fail
 
@@ -253,6 +276,10 @@ above.
   never fail on unmapped gaps, force-aware silent-skip writes, atomic
   multi-register write rules, and every exception path (`01`/`02`/`03`
   on illegal function/address/value) — `mobile/test/modbus_registers_test.dart`.
+- Dotted struct-member map entries (e.g. `Motor.Speed`): correct register
+  width/type resolution through the full path (not a top-level-name-only
+  match) and correct force-gating against the path's root tag —
+  `mobile/test/modbus_dotted_path_test.dart`.
 - The `dart:io` socket host (start/stop lifecycle, real-socket FC03
   request/response over an ephemeral loopback port, hostile-frame-size and
   malformed-frame connection isolation) — `mobile/test/modbus_host_test.dart`.
@@ -273,7 +300,17 @@ mutates **server-side** on its own timer (T+3s after `READY`, entirely
 independent of the probing client) — proof the client is reading the live
 register file, not a value frozen at connect time — then
 `write_single_register(0, 7777)` + independent read-back, then
-`write_single_coil(0, true)` + independent read-back (`read_coils`).
+`write_single_coil(0, true)` + independent read-back (`read_coils`), then
+**`read_coils` on a second, pre-forced coil and assert it reads `1`** — the
+fixture's `Forced_Bool` tag has a live `value` of `false` but
+`isForced: true`/`forcedValue: true`, so reading `true` back is only
+possible if the register handler is actually consulting the force-aware
+resolver, not the tag's raw value — and finally **`read_holding_registers`
+across the two registers a dotted struct-member entry (`Motor.Speed`, an
+`INT32` field) occupies, decoded big-endian high-word-first and asserted
+against the fixture's known value** — proof a struct-member map entry
+resolves its type and value through the full path at the correct register
+width.
 
 Run it from the repo root (bash/Git Bash):
 

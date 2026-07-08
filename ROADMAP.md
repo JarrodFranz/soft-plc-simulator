@@ -95,6 +95,8 @@
   - Configurable address mapping, persisted per-project (additive `protocols.modbus.map`). ✅
 - **Status**: ✅ **SHIPPED — in-app pure-Dart Modbus TCP server v1, machine-verified by a real Rust `tokio-modbus` client (see `docs/protocols/modbus.md`)**
 
+**Interop hardening (post-ship)** ✅ — a live third-party SCADA client and a live Modbus master both surfaced real interoperability bugs the automated probes hadn't caught: the OPC UA server's forced-write refusal didn't cover the general read path (fixed: forcing now flows through the shared `readPath` resolver everywhere, including reads), the address space didn't answer the standard `NamespaceArray`/browse-from-Root discovery sequence strict clients use before addressing anything (fixed — see `docs/protocols/opcua.md`), and the Modbus register map only supported top-level scalar tags with no way to hand-edit entries or address struct members (fixed — the map editor is now user-editable and a map entry's `tag` may be a dotted struct-member path, force-gated to scalar roots only). All three fixes are machine-proven end-to-end: the extended `tool/opcua_e2e.sh` asserts `NamespaceArray[1]` equals the project namespace and that a top-down Root→Objects browse reaches every tag, and the extended `tool/modbus_e2e.sh` asserts a forced coil reads back forced and a dotted struct-member holding-register entry decodes correctly.
+
 ---
 
 ## Phase 6: MQTT Client & Sparkplug B Publisher
