@@ -85,12 +85,15 @@
 
 ---
 
-## Phase 5: Modbus TCP Server Adapter
-- **Objective**: Modbus TCP server mapping tags to Coils, Discrete Inputs, Holding Registers, and Input Registers.
+## Phase 5: Modbus TCP Server Adapter ✅
+- **Objective**: The **single app itself hosts** a Modbus TCP server mapping tags to Coils, Discrete Inputs, Holding Registers, and Input Registers (same "one app hosts everything" model as Phase 4's OPC UA server, ADR-010).
 - **Deliverables**:
-  - FC01/02/03/04/05/06/15/16 Modbus function code handler.
-  - Configurable address mapping JSON.
-- **Status**: ⏳ Planned
+  - **`ModbusMap`/`ModbusProtocolConfig`** ✅ — a per-project, additive `protocols.modbus` config (enable flag, port, default `502`) with a tag<->address map across the four classic Modbus data tables, editable in the Outbound Protocols section's Modbus TCP card or auto-generated from the project's scalar tags (**Regenerate** — read/write `ioType`s default `ReadWrite`, `SimulatedOutput` defaults `ReadOnly`).
+  - **Pure-Dart MBAP/PDU codec + register-file handler** ✅ (`mobile/lib/protocols/modbus/modbus_pdu.dart`, zero Flutter dependency, dart2js-safe): all 8 classic function codes (`01`/`02`/`03`/`04`/`05`/`06`/`0F`/`10`), big-endian wire encoding with high-word-first `INT32`/`FLOAT64` packing, LSB-first coil bit packing, reads that never fail on unmapped gaps (0-fill), force-aware writes (a write to a forced tag is silently discarded but still answers success — deliberately different from OPC UA's visible `Bad_UserAccessDenied` refusal, since the classic Modbus wire has no equivalent rich status), and proper exception responses (`01`/`02`/`03`) on illegal function/address/value.
+  - **In-app `dart:io` socket host** ✅ (`mobile/lib/services/modbus_host.dart`, the only file in the project allowed to import `dart:io` for Modbus) — MBAP-length-prefixed frame reassembly over a real `ServerSocket`, hostile/malformed-frame connection isolation (never takes the whole host down), opt-in Start/Stop lifecycle wired into the Outbound Protocols Modbus TCP card (status, mapped-tag count, connected-client count, endpoint display).
+  - **Machine-verified end-to-end** by `tool/modbus_e2e.sh`: a real Rust `tokio-modbus` crate client connects to the in-app Dart server and completes a poll-for-server-side-mutation (`read_holding_registers`, proving live reads not a frozen snapshot) → `write_single_register` + independent read-back → `write_single_coil` + independent read-back (`read_coils`). Runs on Android / desktop / iOS (iOS serves while the app is foreground; web compiles but cannot host inbound sockets).
+  - Configurable address mapping, persisted per-project (additive `protocols.modbus.map`). ✅
+- **Status**: ✅ **SHIPPED — in-app pure-Dart Modbus TCP server v1, machine-verified by a real Rust `tokio-modbus` client (see `docs/protocols/modbus.md`)**
 
 ---
 

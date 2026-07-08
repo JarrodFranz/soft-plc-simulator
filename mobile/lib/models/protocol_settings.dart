@@ -8,6 +8,7 @@
 // No Flutter dependency — this file must stay pure Dart so it can be used
 // from services and widgets alike without pulling Flutter into model code.
 
+import 'modbus_map.dart';
 import 'opcua_map.dart';
 import 'project_model.dart';
 
@@ -67,6 +68,44 @@ class OpcUaProtocolConfig {
       );
 }
 
+/// Per-project Modbus TCP outbound-protocol configuration: whether the
+/// in-app Modbus TCP server is enabled, the TCP port it binds to, and the
+/// tag<->register map that decides which tags are exposed and where.
+class ModbusProtocolConfig {
+  bool enabled;
+  int port;
+  ModbusMap map;
+
+  ModbusProtocolConfig({
+    this.enabled = false,
+    this.port = 502,
+    required this.map,
+  });
+
+  factory ModbusProtocolConfig.fromJson(Map<String, dynamic> j) => ModbusProtocolConfig(
+        enabled: j['enabled'] == true,
+        port: (j['port'] as num?)?.toInt() ?? 502,
+        map: j['map'] != null
+            ? ModbusMap.fromJson(j['map'] as Map<String, dynamic>)
+            : ModbusMap(entries: []),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'enabled': enabled,
+        'port': port,
+        'map': map.toJson(),
+      };
+
+  /// Sane defaults for a project that has never configured Modbus: disabled,
+  /// the standard Modbus TCP port, and an auto-generated map from the
+  /// project's current scalar tags.
+  static ModbusProtocolConfig defaults(PlcProject p) => ModbusProtocolConfig(
+        enabled: false,
+        port: 502,
+        map: ModbusMap.autoGenerate(p),
+      );
+}
+
 /// Per-project outbound-protocol settings: the shared gateway endpoint plus
 /// one config slot per protocol.
 ///
@@ -76,24 +115,29 @@ class OpcUaProtocolConfig {
 class ProtocolSettings {
   String gatewayUrl;
   OpcUaProtocolConfig? opcua;
+  ModbusProtocolConfig? modbus;
 
   ProtocolSettings({
     this.gatewayUrl = kDefaultGatewayUrl,
     this.opcua,
+    this.modbus,
   });
 
   Map<String, dynamic> toJson() => {
         'gateway_url': gatewayUrl,
         if (opcua != null) 'opcua': opcua!.toJson(),
+        if (modbus != null) 'modbus': modbus!.toJson(),
       };
 
   factory ProtocolSettings.fromJson(Map<String, dynamic> j) => ProtocolSettings(
         gatewayUrl: (j['gateway_url'] ?? kDefaultGatewayUrl).toString(),
         opcua: j['opcua'] != null ? OpcUaProtocolConfig.fromJson(j['opcua'] as Map<String, dynamic>) : null,
+        modbus: j['modbus'] != null ? ModbusProtocolConfig.fromJson(j['modbus'] as Map<String, dynamic>) : null,
       );
 
   static ProtocolSettings defaults(PlcProject p) => ProtocolSettings(
         gatewayUrl: kDefaultGatewayUrl,
         opcua: OpcUaProtocolConfig.defaults(p),
+        modbus: ModbusProtocolConfig.defaults(p),
       );
 }

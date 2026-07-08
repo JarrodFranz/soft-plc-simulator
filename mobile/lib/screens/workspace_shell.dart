@@ -16,6 +16,7 @@ import '../models/st_exec.dart';
 import '../data/default_projects.dart';
 import '../data/project_repository.dart';
 import '../data/project_transfer.dart';
+import '../services/modbus_host.dart';
 import '../services/opcua_host.dart';
 import '../ui/responsive.dart';
 import '../widgets/tag_inspector_dock.dart';
@@ -67,6 +68,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   final SfcRuntime _sfcRuntime = SfcRuntime();
   final StRuntime _stRuntime = StRuntime();
   final OpcUaHost _opcuaHost = OpcUaHost();
+  final ModbusHost _modbusHost = ModbusHost();
 
   // Side Dock Inspector State
   bool isTagDockVisible = true;
@@ -99,6 +101,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     _scanTimer?.cancel();
     _autosaveTimer?.cancel();
     _opcuaHost.dispose();
+    _modbusHost.dispose();
     super.dispose();
   }
 
@@ -211,9 +214,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     // Flush any pending edit on the project we're leaving before switching
     // away from it, so a rapid switch right after an edit can't drop it.
     _flushPendingAutosave();
-    // OPC UA hosting config is per-project — stop the server before
-    // switching so a previous project's port/map doesn't keep serving.
+    // OPC UA / Modbus hosting config is per-project — stop the servers
+    // before switching so a previous project's port/map doesn't keep serving.
     unawaited(_opcuaHost.stop());
+    unawaited(_modbusHost.stop());
     setState(() {
       _activeProject = proj;
       if (proj.hmis.isNotEmpty) {
@@ -432,6 +436,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     // Protocol config (incl. hosting) is per-project — stop before switching
     // `_activeProject` to the newly created blank project.
     await _opcuaHost.stop();
+    await _modbusHost.stop();
 
     final blank = PlcProject(
       id: 'proj_new_${DateTime.now().millisecondsSinceEpoch}',
@@ -468,6 +473,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     // Protocol config (incl. hosting) is per-project — stop before switching
     // `_activeProject` to the duplicate.
     await _opcuaHost.stop();
+    await _modbusHost.stop();
     final newId = await repo.duplicateProject(_activeProject.id, newName: '${_activeProject.name} Copy');
     final copy = await repo.loadProject(newId);
     if (copy == null) return;
@@ -530,6 +536,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     _autosaveTimer?.cancel();
     // Protocol config (incl. hosting) is per-project — stop before deleting.
     await _opcuaHost.stop();
+    await _modbusHost.stop();
     final deletedId = _activeProject.id;
     await repo.deleteProject(deletedId);
 
@@ -589,6 +596,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     _autosaveTimer?.cancel();
     // Protocol config (incl. hosting) is per-project — stop before reset.
     await _opcuaHost.stop();
+    await _modbusHost.stop();
     await repo.resetToDefaults();
     final catalog = await repo.listProjects();
     var loaded = <PlcProject>[];
@@ -715,6 +723,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     // Protocol config (incl. hosting) is per-project — stop before import
     // switches `_activeProject` out from under a running host.
     await _opcuaHost.stop();
+    await _modbusHost.stop();
     final repo = _repo;
     if (repo != null) {
       await repo.saveProject(imported);
@@ -1683,6 +1692,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       return GatewayScreen(
         currentProject: _activeProject,
         host: _opcuaHost,
+        modbusHost: _modbusHost,
         onProjectUpdated: _markDirtyAndAutosave,
       );
     }

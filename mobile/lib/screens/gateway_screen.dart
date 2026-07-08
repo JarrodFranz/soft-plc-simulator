@@ -13,10 +13,12 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
+import '../models/modbus_map.dart';
 import '../models/opcua_map.dart';
 import '../models/project_model.dart';
 import '../models/protocol_settings.dart';
 import '../models/tag_resolver.dart';
+import '../services/modbus_host.dart';
 import '../services/opcua_host.dart';
 import '../ui/responsive.dart';
 import '../widgets/tag_autocomplete_field.dart';
@@ -24,19 +26,21 @@ import '../widgets/tag_autocomplete_field.dart';
 class GatewayScreen extends StatefulWidget {
   final PlcProject currentProject;
   final OpcUaHost host;
+  final ModbusHost modbusHost;
   final VoidCallback onProjectUpdated;
 
-  /// Whether this platform can host the in-app OPC UA server. Hosting binds a
-  /// real TCP `ServerSocket`, which web browsers do not allow (a start attempt
-  /// throws `Unsupported operation: InternetAddress.anyIPv4`), so hosting is
-  /// native-only (Android/iOS/desktop). Defaults to `!kIsWeb`; overridable for
-  /// tests.
+  /// Whether this platform can host the in-app OPC UA/Modbus TCP servers.
+  /// Hosting binds a real TCP `ServerSocket`, which web browsers do not
+  /// allow (a start attempt throws `Unsupported operation:
+  /// InternetAddress.anyIPv4`), so hosting is native-only
+  /// (Android/iOS/desktop). Defaults to `!kIsWeb`; overridable for tests.
   final bool hostingSupported;
 
   const GatewayScreen({
     super.key,
     required this.currentProject,
     required this.host,
+    required this.modbusHost,
     required this.onProjectUpdated,
     this.hostingSupported = !kIsWeb,
   });
@@ -47,6 +51,7 @@ class GatewayScreen extends StatefulWidget {
 
 class _GatewayScreenState extends State<GatewayScreen> {
   late final TextEditingController _portController;
+  late final TextEditingController _modbusPortController;
 
   @override
   void initState() {
@@ -54,6 +59,9 @@ class _GatewayScreenState extends State<GatewayScreen> {
     _ensureProtocols();
     _portController = TextEditingController(
       text: widget.currentProject.protocols!.opcua!.port.toString(),
+    );
+    _modbusPortController = TextEditingController(
+      text: widget.currentProject.protocols!.modbus!.port.toString(),
     );
   }
 
@@ -73,12 +81,20 @@ class _GatewayScreenState extends State<GatewayScreen> {
           selection: TextSelection.collapsed(offset: newPort.length),
         );
       }
+      final newModbusPort = widget.currentProject.protocols!.modbus!.port.toString();
+      if (_modbusPortController.text != newModbusPort) {
+        _modbusPortController.value = TextEditingValue(
+          text: newModbusPort,
+          selection: TextSelection.collapsed(offset: newModbusPort.length),
+        );
+      }
     }
   }
 
   @override
   void dispose() {
     _portController.dispose();
+    _modbusPortController.dispose();
     super.dispose();
   }
 
@@ -104,6 +120,28 @@ class _GatewayScreenState extends State<GatewayScreen> {
     }
   }
 
+  String _modbusStatusLabel(ModbusHostStatus s) {
+    switch (s) {
+      case ModbusHostStatus.stopped:
+        return 'Stopped';
+      case ModbusHostStatus.running:
+        return 'Running';
+      case ModbusHostStatus.error:
+        return 'Error';
+    }
+  }
+
+  Color _modbusStatusColor(ModbusHostStatus s) {
+    switch (s) {
+      case ModbusHostStatus.stopped:
+        return Colors.grey;
+      case ModbusHostStatus.running:
+        return Colors.greenAccent;
+      case ModbusHostStatus.error:
+        return Colors.redAccent;
+    }
+  }
+
   Future<void> _startHosting() async {
     await widget.host.start(() => widget.currentProject);
   }
@@ -112,10 +150,26 @@ class _GatewayScreenState extends State<GatewayScreen> {
     await widget.host.stop();
   }
 
+  Future<void> _startModbusHosting() async {
+    await widget.modbusHost.start(() => widget.currentProject);
+  }
+
+  Future<void> _stopModbusHosting() async {
+    await widget.modbusHost.stop();
+  }
+
   void _autoGenerateMap() {
     setState(() {
       _ensureProtocols();
       widget.currentProject.protocols!.opcua!.map = OpcuaMap.autoGenerate(widget.currentProject);
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _autoGenerateModbusMap() {
+    setState(() {
+      _ensureModbus();
+      widget.currentProject.protocols!.modbus!.map = ModbusMap.autoGenerate(widget.currentProject);
     });
     widget.onProjectUpdated();
   }
@@ -128,12 +182,29 @@ class _GatewayScreenState extends State<GatewayScreen> {
   void _ensureProtocols() {
     widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
     widget.currentProject.protocols!.opcua ??= OpcUaProtocolConfig.defaults(widget.currentProject);
+    _ensureModbus();
+  }
+
+  /// Creates a default `ModbusProtocolConfig` in place when the project has
+  /// none yet — mirrors `_ensureProtocols`: mutate in memory only, no
+  /// `onProjectUpdated` call here.
+  void _ensureModbus() {
+    widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
+    widget.currentProject.protocols!.modbus ??= ModbusProtocolConfig.defaults(widget.currentProject);
   }
 
   void _setOpcuaEnabled(bool enabled) {
     setState(() {
       _ensureProtocols();
       widget.currentProject.protocols!.opcua!.enabled = enabled;
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _setModbusEnabled(bool enabled) {
+    setState(() {
+      _ensureModbus();
+      widget.currentProject.protocols!.modbus!.enabled = enabled;
     });
     widget.onProjectUpdated();
   }
@@ -151,6 +222,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
       return; // ignore invalid input; keep the last-valid persisted port
     }
     widget.currentProject.protocols!.opcua!.port = parsed;
+    widget.onProjectUpdated();
+  }
+
+  void _setModbusPort(String value) {
+    final parsed = int.tryParse(value.trim());
+    if (parsed == null || parsed < 0 || parsed > 65535) {
+      return; // ignore invalid input; keep the last-valid persisted port
+    }
+    widget.currentProject.protocols!.modbus!.port = parsed;
     widget.onProjectUpdated();
   }
 
@@ -176,7 +256,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
         backgroundColor: const Color(0xFF1E293B),
       ),
       body: ListenableBuilder(
-        listenable: widget.host,
+        listenable: Listenable.merge([widget.host, widget.modbusHost]),
         builder: (context, _) {
           return SingleChildScrollView(
             padding: const EdgeInsets.all(12),
@@ -189,6 +269,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 ),
                 const SizedBox(height: 8),
                 _buildOpcUaCard(context, tagOptions),
+                const SizedBox(height: 12),
+                _buildModbusCard(context, tagOptions),
               ],
             ),
           );
@@ -223,6 +305,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
                   ),
                 ),
                 Switch(
+                  key: const Key('opcua_enable_switch'),
                   value: opcua.enabled,
                   onChanged: _setOpcuaEnabled,
                 ),
@@ -463,6 +546,287 @@ class _GatewayScreenState extends State<GatewayScreen> {
               Expanded(flex: 3, child: nodeIdText),
               const SizedBox(width: 8),
               Expanded(flex: 3, child: tagField),
+              const SizedBox(width: 8),
+              SizedBox(width: 160, child: accessDropdown),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  /// The Modbus TCP protocol card: header + enable switch, hosting controls
+  /// (Start/Stop, port, status, endpoint), and (when enabled) the register
+  /// map editor. Mirrors `_buildOpcUaCard`.
+  Widget _buildModbusCard(BuildContext context, List<String> tagOptions) {
+    final modbus = widget.currentProject.protocols!.modbus!;
+    final status = widget.modbusHost.status;
+    final running = status == ModbusHostStatus.running;
+    final isCompact = context.isCompact;
+
+    return Card(
+      color: const Color(0xFF1E293B),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Modbus TCP',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                  ),
+                ),
+                Switch(
+                  key: const Key('modbus_enable_switch'),
+                  value: modbus.enabled,
+                  onChanged: _setModbusEnabled,
+                ),
+              ],
+            ),
+            if (!modbus.enabled)
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text(
+                  'Disabled — no tags are exposed to this protocol.',
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+              )
+            else ...[
+              const SizedBox(height: 12),
+              // ── Hosting controls ────────────────────────────────────
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 10,
+                        height: 10,
+                        decoration: BoxDecoration(color: _modbusStatusColor(status), shape: BoxShape.circle),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _modbusStatusLabel(status),
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                      ),
+                    ],
+                  ),
+                  Text(
+                    'Mapped tags: ${modbus.map.entries.length}',
+                    style: const TextStyle(color: Colors.grey, fontSize: 12),
+                  ),
+                  if (widget.modbusHost.clientCount > 0)
+                    Text(
+                      'Clients: ${widget.modbusHost.clientCount}',
+                      style: const TextStyle(color: Colors.grey, fontSize: 12),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _modbusPortController,
+                enabled: !running,
+                keyboardType: TextInputType.number,
+                style: const TextStyle(fontSize: 12, color: Colors.white),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  labelText: 'Port',
+                  helperText: 'Default: 502',
+                  filled: true,
+                  fillColor: Color(0xFF0F172A),
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: _setModbusPort,
+              ),
+              const SizedBox(height: 12),
+              Flex(
+                direction: isCompact ? Axis.vertical : Axis.horizontal,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: isCompact ? double.infinity : null,
+                    child: ElevatedButton(
+                      onPressed: (running || !widget.hostingSupported) ? null : _startModbusHosting,
+                      child: const Text('Start hosting'),
+                    ),
+                  ),
+                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                  SizedBox(
+                    width: isCompact ? double.infinity : null,
+                    child: OutlinedButton(
+                      onPressed: running ? _stopModbusHosting : null,
+                      child: const Text('Stop hosting'),
+                    ),
+                  ),
+                ],
+              ),
+              if (!widget.hostingSupported) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Hosting runs the Modbus TCP server inside the app on a TCP '
+                  'socket, which web browsers do not allow. Run the desktop '
+                  '(Windows/macOS/Linux) or mobile (Android/iOS) app to host — '
+                  'you can still design the register map here.',
+                  style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                ),
+              ],
+              if (running && widget.modbusHost.endpointUrl != null) ...[
+                const SizedBox(height: 8),
+                SelectableText(
+                  widget.modbusHost.endpointUrl!,
+                  style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                ),
+              ],
+              if (widget.modbusHost.lastError != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Last error: ${widget.modbusHost.lastError}',
+                  style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                ),
+              ],
+              const SizedBox(height: 12),
+              _modbusMapEditorCard(context, modbus.map, tagOptions),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _modbusMapEditorCard(BuildContext context, ModbusMap map, List<String> tagOptions) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Modbus Register Map',
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                ),
+              ),
+              TextButton.icon(
+                icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
+                label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
+                onPressed: _autoGenerateModbusMap,
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (map.entries.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                'No entries yet. Tap Regenerate to build a default map from the project tags.',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            )
+          else
+            ListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: map.entries.length,
+              itemBuilder: (context, i) => _modbusRow(map.entries[i], tagOptions),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _modbusRow(ModbusMapEntry entry, List<String> tagOptions) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isCompact = context.isCompact;
+          final tagField = TagAutocompleteField(
+            options: tagOptions,
+            initialValue: entry.tag,
+            label: 'Tag',
+            onChanged: (v) {
+              entry.tag = v;
+              widget.onProjectUpdated();
+            },
+          );
+          final tableDropdown = DropdownButtonFormField<String>(
+            initialValue: entry.table,
+            decoration: const InputDecoration(isDense: true, labelText: 'Table'),
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            dropdownColor: const Color(0xFF1E293B),
+            items: const [
+              DropdownMenuItem(value: 'coil', child: Text('coil')),
+              DropdownMenuItem(value: 'discrete', child: Text('discrete')),
+              DropdownMenuItem(value: 'holding', child: Text('holding')),
+              DropdownMenuItem(value: 'input', child: Text('input')),
+            ],
+            onChanged: (v) {
+              if (v == null) return;
+              setState(() => entry.table = v);
+              widget.onProjectUpdated();
+            },
+          );
+          final addressField = TextFormField(
+            initialValue: entry.address.toString(),
+            keyboardType: TextInputType.number,
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            decoration: const InputDecoration(isDense: true, labelText: 'Address'),
+            onChanged: (v) {
+              final parsed = int.tryParse(v.trim());
+              if (parsed == null || parsed < 0) return;
+              entry.address = parsed;
+              widget.onProjectUpdated();
+            },
+          );
+          final accessDropdown = DropdownButtonFormField<String>(
+            initialValue: entry.access,
+            decoration: const InputDecoration(isDense: true, labelText: 'Access'),
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            dropdownColor: const Color(0xFF1E293B),
+            items: const [
+              DropdownMenuItem(value: 'ReadOnly', child: Text('ReadOnly')),
+              DropdownMenuItem(value: 'ReadWrite', child: Text('ReadWrite')),
+            ],
+            onChanged: (v) {
+              if (v == null) return;
+              setState(() => entry.access = v);
+              widget.onProjectUpdated();
+            },
+          );
+
+          if (isCompact) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                tagField,
+                const SizedBox(height: 4),
+                tableDropdown,
+                const SizedBox(height: 4),
+                addressField,
+                const SizedBox(height: 4),
+                accessDropdown,
+              ],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(flex: 3, child: tagField),
+              const SizedBox(width: 8),
+              SizedBox(width: 140, child: tableDropdown),
+              const SizedBox(width: 8),
+              SizedBox(width: 100, child: addressField),
               const SizedBox(width: 8),
               SizedBox(width: 160, child: accessDropdown),
             ],
