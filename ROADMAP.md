@@ -99,12 +99,12 @@
 
 ---
 
-## Phase 6: MQTT Client & Sparkplug B Publisher
+## Phase 6: MQTT Client & Sparkplug B Publisher ✅
 - **Objective**: Telemetry publisher broadcasting tag updates to MQTT brokers.
 - **Deliverables**:
-  - JSON and Sparkplug B Protobuf payload support.
-  - Command topic (`/set`) handling for remote writes.
-- **Status**: ⏳ Planned
+  - JSON and Sparkplug B Protobuf payload support. ✅
+  - Command topic (`/set`)/NCMD handling for remote writes (opt-in, default **off**). ✅
+- **Status**: ✅ **SHIPPED — in-app pure-Dart MQTT 3.1.1 + Sparkplug B publisher CLIENT v1 (`MqttHost`, `mobile/lib/services/mqtt_host.dart`), machine-verified end-to-end against a real embedded `rumqttd` broker + a real `rumqttc` subscriber, in BOTH payload formats (`tool/mqtt_e2e.sh`; see `docs/protocols/MQTT.md`)**
 
 ---
 

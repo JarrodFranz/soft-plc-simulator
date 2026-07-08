@@ -19,3 +19,6 @@ opcua = { version = "0.12.0", features = ["server"] }
 [dev-dependencies]
 pretty_assertions = "1"
 tokio-modbus = "0.17"
+rumqttc = "0.25"
+rumqttd = "0.20"
+prost = "0.14"

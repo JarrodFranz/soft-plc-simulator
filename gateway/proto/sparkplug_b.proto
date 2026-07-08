@@ -1,0 +1,70 @@
+// Vendored reference copy of the Eclipse Tahu Sparkplug B `Payload` schema
+// (Eclipse Public License 2.0, Cirrus Link Solutions / Eclipse Tahu project:
+// https://github.com/eclipse-tahu/tahu, sparkplug_b/sparkplug_b.proto).
+//
+// TRIMMED: this file exists purely as a human-readable, checked-in reference
+// for the wire subset this repo's MQTT/Sparkplug B feature actually speaks
+// (see `mobile/lib/protocols/mqtt/mqtt_sparkplug.dart`) — the `Payload` and
+// `Metric` messages' top-level scalar fields. It intentionally omits the
+// full spec's `Template`, `DataSet`, `PropertySet`/`PropertySetList`, and
+// `MetaData` submessages (fields 8/9/12/13/15+ of `Metric`, and `Payload`'s
+// `uuid`/`body` fields) because this app never populates or reads them: it
+// only ever sends NBIRTH/NDEATH/NDATA carrying `timestamp`, `seq`, and a
+// flat list of `Metric`s using `name`/`alias`/`datatype` plus exactly one of
+// `int_value`/`long_value`/`double_value`/`boolean_value`/`string_value`.
+// This trimming is wire-COMPATIBLE, not a divergent schema: a real
+// Sparkplug B decoder given bytes produced by this app's encoder
+// (`mqtt_sparkplug.dart`) simply never populates the fields left out below,
+// and this trimmed schema never claims field numbers those omitted fields
+// would occupy — so both directions decode correctly against a strict,
+// full-spec Sparkplug B implementation.
+//
+// NOT compiled via prost-build/protoc in this repo (see
+// `gateway/examples/support/sparkplug_pb.rs`, which hand-derives
+// `prost::Message` on the equivalent Rust structs directly — avoiding a
+// protoc build-time dependency for what is, for this app's purposes, a small
+// fixed wire shape). This .proto file is kept only for documentation and
+// field-number traceability against the upstream spec.
+syntax = "proto3";
+
+package org.eclipse.tahu.protobuf;
+
+message Payload {
+  message Metric {
+    optional string name = 1;
+    optional uint64 alias = 2;
+    optional uint64 timestamp = 3; // not emitted by this app's encoder
+    optional uint32 datatype = 4;
+    // exactly one of the following is set, chosen by `datatype`:
+    optional uint32 int_value = 5;     // Int8 / Int16 / Int32 (reinterpreted unsigned)
+    optional uint64 long_value = 6;    // Int64 / UInt64 (e.g. `bdSeq`)
+    // field 7 (`float_value`, Float) is part of the full spec; unused here.
+    optional double double_value = 8;  // Double (also used for this app's FLOAT64 tags)
+    optional bool boolean_value = 9;   // Boolean
+    optional string string_value = 10; // String
+    // fields 11+ (bytes_value/dataset_value/template_value/is_historical/
+    // is_transient/is_null/metadata/properties/...) are part of the full
+    // spec; unused by this app and omitted here.
+  }
+
+  optional uint64 timestamp = 1;
+  repeated Metric metrics = 2;
+  optional uint64 seq = 3;
+  // fields 4 (`uuid`) and 5 (`body`) are part of the full spec; unused here.
+}
+
+// Sparkplug B `Metric.datatype` values this app's encoder ever emits
+// (subset of the full ~30-value Tahu `DataType` enum) — mirrors
+// `SparkplugDatatype` in mqtt_sparkplug.dart.
+enum DataType {
+  UNKNOWN = 0;
+  INT8 = 1;
+  INT16 = 2;
+  INT32 = 3;
+  INT64 = 4;
+  UINT64 = 8;
+  FLOAT = 9;
+  DOUBLE = 10;
+  BOOLEAN = 11;
+  STRING = 12;
+}
