@@ -241,7 +241,7 @@ PlcTag? _findRootTag(PlcProject project, String path) {
 /// visibly with Bad_UserAccessDenied.
 bool _isForcedSkip(PlcProject project, String path) {
   final root = _findRootTag(project, path);
-  return root != null && root.isForced;
+  return root != null && root.isForced && root.value is! Map && root.value is! List;
 }
 
 ModbusMap _mapFor(PlcProject project) {

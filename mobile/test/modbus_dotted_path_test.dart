@@ -99,8 +99,19 @@ void main() {
   });
 
   group('root-force resolution for a dotted path (FC10 write)', () {
-    test('forcing the root struct tag skips a write to one of its members and still echoes success', () {
+    // Scalar-guard regression: a forced COMPOSITE root (`Motor.value` is a
+    // Map) is only reachable via a project persisted by an OLD build, before
+    // forcing was gated to scalar tags. `readPath`'s force overlay in
+    // `tag_resolver.dart` already ignores non-scalar forces, so Modbus must
+    // match — otherwise a stale `isForced: true` on a struct tag would
+    // silently block writes to its members here while reads sail through
+    // unforced, an asymmetry between the read and write paths.
+    test('forcing a COMPOSITE root tag does NOT skip a write to one of its members (scalar guard)', () {
       final project = _motorProject(forced: true);
+      // Simulate legacy data: a composite (Map-valued) root tag persisted
+      // with isForced true from before forcing was gated to scalars.
+      expect(project.tags.first.value, isA<Map>());
+      expect(project.tags.first.isForced, isTrue);
       final server = ModbusServer(projectProvider: () => project);
 
       final newRegs = encodeInt32(99999);
@@ -115,10 +126,10 @@ void main() {
       expect(resp.length, 5);
       expect(resp[0] & 0x80, 0);
 
-      // The write must have been silently skipped — the tag's live value is
-      // unchanged.
+      // The write must have been APPLIED — a forced composite root must not
+      // block writes to its scalar members.
       final motor = project.tags.first;
-      expect((motor.value as Map)['Speed'], 12345);
+      expect((motor.value as Map)['Speed'], 99999);
     });
 
     test('sanity: the SAME write applies normally when the root tag is NOT forced', () {

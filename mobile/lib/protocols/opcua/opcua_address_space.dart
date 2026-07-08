@@ -37,15 +37,6 @@ class OpcUaStandardNodeIds {
 
   /// `ObjectTypeId::ServerType`. node_ids.rs:979.
   static const serverType = OpcNodeId.numeric(0, 2004);
-
-  /// `ReferenceTypeId::HasComponent`. node_ids.rs:859.
-  static const hasComponentReferenceType = OpcNodeId.numeric(0, 47);
-
-  /// `ReferenceTypeId::HasProperty`. node_ids.rs:858.
-  static const hasPropertyReferenceType = OpcNodeId.numeric(0, 46);
-
-  /// `VariableTypeId::PropertyType`. node_ids.rs:1451.
-  static const propertyType = OpcNodeId.numeric(0, 68);
 }
 
 /// The standard "OPC Foundation" namespace URI — always index 0 of every OPC
