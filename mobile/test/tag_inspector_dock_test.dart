@@ -68,6 +68,55 @@ void main() {
     expect(find.text('false'), findsWidgets);
   });
 
+  testWidgets('scalar tag row shows the Force control', (tester) async {
+    final project = _buildProject();
+    await tester.pumpWidget(_harness(project));
+    await tester.pumpAndSettle();
+
+    // 'Flag' is a scalar BOOL tag; its row should offer a Force toggle.
+    expect(
+      find.descendant(
+        of: find.ancestor(
+          of: find.text('Flag'),
+          matching: find.byType(Card),
+        ),
+        matching: find.text('Force'),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('composite tag row does not show the Force control', (tester) async {
+    final project = _buildProject();
+    await tester.pumpWidget(_harness(project));
+    await tester.pumpAndSettle();
+
+    // 'T1' is a TIMER (struct) tag whose value is a Map; forcing a composite
+    // is ill-defined (readPath's force overlay ignores composites), so the
+    // Force control must not be offerable for it.
+    expect(project.tags.firstWhere((t) => t.name == 'T1').value, isA<Map>());
+    expect(
+      find.descendant(
+        of: find.ancestor(
+          of: find.text('T1'),
+          matching: find.byType(Card),
+        ),
+        matching: find.text('Force'),
+      ),
+      findsNothing,
+    );
+    expect(
+      find.descendant(
+        of: find.ancestor(
+          of: find.text('T1'),
+          matching: find.byType(Card),
+        ),
+        matching: find.text('Unforce'),
+      ),
+      findsNothing,
+    );
+  });
+
   for (final size in const [smallPhoneSize, phoneSize, desktopSize]) {
     testWidgets('no overflow at ${size.width.toInt()}px with an expanded composite tag',
         (tester) async {

@@ -242,29 +242,34 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
 
                                   const SizedBox(width: 8),
 
-                                  // Force Toggle Lock
-                                  touchable(
-                                    ElevatedButton.icon(
-                                      icon: Icon(tag.isForced ? Icons.lock : Icons.lock_open, size: 14),
-                                      label: Text(tag.isForced ? 'Unforce' : 'Force', style: const TextStyle(fontSize: 11)),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: tag.isForced ? Colors.amber.shade800 : const Color(0xFF334155),
-                                        foregroundColor: Colors.white,
-                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                        minimumSize: Size.zero,
-                                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  // Force Toggle Lock. Forcing is scalar-only:
+                                  // a composite (struct/array) tag's value is
+                                  // ill-defined to force (readPath's force
+                                  // overlay only ever applies to scalars), so
+                                  // the control is not offered for those rows.
+                                  if (tag.value is! Map && tag.value is! List)
+                                    touchable(
+                                      ElevatedButton.icon(
+                                        icon: Icon(tag.isForced ? Icons.lock : Icons.lock_open, size: 14),
+                                        label: Text(tag.isForced ? 'Unforce' : 'Force', style: const TextStyle(fontSize: 11)),
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: tag.isForced ? Colors.amber.shade800 : const Color(0xFF334155),
+                                          foregroundColor: Colors.white,
+                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                          minimumSize: Size.zero,
+                                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                        ),
+                                        onPressed: () {
+                                          setState(() {
+                                            tag.isForced = !tag.isForced;
+                                            if (tag.isForced) {
+                                              tag.forcedValue = isBool ? !(tag.value == true) : tag.value;
+                                            }
+                                          });
+                                          widget.onTagStateChanged();
+                                        },
                                       ),
-                                      onPressed: () {
-                                        setState(() {
-                                          tag.isForced = !tag.isForced;
-                                          if (tag.isForced) {
-                                            tag.forcedValue = isBool ? !(tag.value == true) : tag.value;
-                                          }
-                                        });
-                                        widget.onTagStateChanged();
-                                      },
                                     ),
-                                  ),
                                 ],
                               ),
 

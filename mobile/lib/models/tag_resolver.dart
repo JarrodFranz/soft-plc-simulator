@@ -250,10 +250,12 @@ dynamic readPath(PlcProject p, String path) {
   }
   // Forcing is authoritative for reads: a forced SCALAR root tag resolves to
   // its forcedValue everywhere (logic engines + OPC UA + Modbus all read
-  // through here). Composite (struct/array) tags are never forceable in the
-  // UI, so they keep their live Map/List value. Seeding the walk from the
-  // forced value also makes a bit-read of a forced integer (e.g. `Word.2`)
-  // reflect the force.
+  // through here). The Force UI (tag_inspector_dock) only ever offers the
+  // toggle for scalar tags, so a composite (struct/array) tag's isForced is
+  // always false in practice; the Map/List check here is a defensive
+  // belt-and-suspenders guard, not the primary gate. Seeding the walk from
+  // the forced value also makes a bit-read of a forced integer (e.g.
+  // `Word.2`) reflect the force.
   dynamic cur = (root.isForced && root.value is! Map && root.value is! List)
       ? root.forcedValue
       : root.value;
