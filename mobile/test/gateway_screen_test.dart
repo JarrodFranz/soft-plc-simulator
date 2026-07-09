@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/screens/gateway_screen.dart';
+import 'package:soft_plc_mobile/services/dnp3_host.dart';
 import 'package:soft_plc_mobile/services/modbus_host.dart';
 import 'package:soft_plc_mobile/services/mqtt_host.dart';
 import 'package:soft_plc_mobile/services/opcua_host.dart';
@@ -171,12 +172,44 @@ class _ConnectedMqttHost extends MqttHost {
   }
 }
 
+/// A thin instrumented subclass of the REAL [DnpHost] — mirrors
+/// [_CountingModbusHost]: still binds a real (loopback, ephemeral-port)
+/// socket via the base class, but records call counts so tests can assert
+/// the UI actually invoked start/stop.
+class _CountingDnpHost extends DnpHost {
+  int startCalls = 0;
+  int stopCalls = 0;
+
+  @override
+  Future<void> start(PlcProject Function() projectProvider) async {
+    startCalls++;
+    await super.start(projectProvider);
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCalls++;
+    await super.stop();
+  }
+}
+
+class _RunningDnpHost extends DnpHost {
+  int stopCalls = 0;
+  @override
+  DnpHostStatus get status => DnpHostStatus.running;
+  @override
+  Future<void> stop() async {
+    stopCalls++;
+  }
+}
+
 Widget _app(
   PlcProject project,
   OpcUaHost host, {
   bool hostingSupported = true,
   ModbusHost? modbusHost,
   MqttHost? mqttHost,
+  DnpHost? dnpHost,
 }) {
   return MaterialApp(
     home: GatewayScreen(
@@ -184,6 +217,7 @@ Widget _app(
       host: host,
       modbusHost: modbusHost ?? _CountingModbusHost(),
       mqttHost: mqttHost ?? MqttHost(),
+      dnpHost: dnpHost ?? _CountingDnpHost(),
       onProjectUpdated: () {},
       hostingSupported: hostingSupported,
     ),
@@ -805,6 +839,8 @@ void main() {
       await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
       await tester.pump();
 
+      await tester.ensureVisible(find.byKey(const Key('mqtt_format_dropdown')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('mqtt_format_dropdown')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('sparkplug').last);
@@ -885,6 +921,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
       await tester.pump();
+      await tester.ensureVisible(find.byKey(const Key('mqtt_format_dropdown')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('mqtt_format_dropdown')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('sparkplug').last);
@@ -977,7 +1015,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('no overflow at 320 width with all three cards expanded', (tester) async {
+    testWidgets('no overflow at 320 width with all four cards expanded', (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -985,21 +1023,33 @@ void main() {
       addTearDown(modbusHost.dispose);
       final mqttHost = MqttHost();
       addTearDown(mqttHost.dispose);
+      final dnpHost = _CountingDnpHost();
+      addTearDown(dnpHost.dispose);
       await setSurface(tester, smallPhoneSize);
 
-      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost, mqttHost: mqttHost));
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('mqtt_enable_switch')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
       await tester.pump();
+      await tester.ensureVisible(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('modbus_enable_switch')));
       await tester.pump();
+      await tester.ensureVisible(find.byKey(const Key('dnp_enable_switch')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('dnp_enable_switch')));
+      await tester.pump();
+      await tester.ensureVisible(find.byKey(const Key('opcua_enable_switch')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('opcua_enable_switch')));
       await tester.pump();
 
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('no overflow at 1400 width with all three cards expanded', (tester) async {
+    testWidgets('no overflow at 1400 width with all four cards expanded', (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -1007,17 +1057,202 @@ void main() {
       addTearDown(modbusHost.dispose);
       final mqttHost = MqttHost();
       addTearDown(mqttHost.dispose);
+      final dnpHost = _CountingDnpHost();
+      addTearDown(dnpHost.dispose);
       await setSurface(tester, desktopSize);
 
-      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost, mqttHost: mqttHost));
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byKey(const Key('mqtt_enable_switch')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
       await tester.pump();
+      await tester.ensureVisible(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('modbus_enable_switch')));
       await tester.pump();
+      await tester.ensureVisible(find.byKey(const Key('dnp_enable_switch')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('dnp_enable_switch')));
+      await tester.pump();
+      await tester.ensureVisible(find.byKey(const Key('opcua_enable_switch')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('opcua_enable_switch')));
       await tester.pump();
 
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('DNP3 outstation card (WS26 Task 5)', () {
+    testWidgets('renders the DNP3 card, starts disabled with config hidden', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final dnpHost = _CountingDnpHost();
+      addTearDown(dnpHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, dnpHost: dnpHost));
+      await tester.pumpAndSettle();
+
+      expect(find.text('DNP3'), findsOneWidget);
+      expect(find.byKey(const Key('dnp_enable_switch')), findsOneWidget);
+      final sw = tester.widget<Switch>(find.byKey(const Key('dnp_enable_switch')));
+      expect(sw.value, false);
+      expect(find.text('DNP3 Point Map'), findsNothing);
+      expect(find.widgetWithText(ElevatedButton, 'Start hosting'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('toggling the DNP3 switch ON reveals port, addresses, hosting controls, and map editor',
+        (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final dnpHost = _CountingDnpHost();
+      addTearDown(dnpHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, dnpHost: dnpHost));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('dnp_enable_switch')));
+      await tester.pump();
+
+      expect(project.protocols?.dnp3?.enabled, true);
+      expect(find.text('DNP3 Point Map'), findsOneWidget);
+      expect(find.widgetWithText(TextField, '20000'), findsOneWidget);
+      expect(find.widgetWithText(TextField, '1024'), findsOneWidget);
+      expect(find.widgetWithText(TextField, '1'), findsOneWidget);
+      expect(find.widgetWithText(ElevatedButton, 'Start hosting'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, 'Stop hosting'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('toggling the DNP3 switch OFF hides the config again', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final dnpHost = _CountingDnpHost();
+      addTearDown(dnpHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, dnpHost: dnpHost));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('dnp_enable_switch')));
+      await tester.pump();
+      expect(project.protocols?.dnp3?.enabled, true);
+
+      await tester.tap(find.byKey(const Key('dnp_enable_switch')));
+      await tester.pump();
+
+      expect(project.protocols?.dnp3?.enabled, false);
+      expect(find.text('DNP3 Point Map'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Regenerate populates entries from the project tags', (tester) async {
+      final project = _project();
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.dnp3!.enabled = true;
+      project.protocols!.dnp3!.map.entries.clear();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final dnpHost = _CountingDnpHost();
+      addTearDown(dnpHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, dnpHost: dnpHost));
+      await tester.pumpAndSettle();
+      expect(find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
+          findsOneWidget);
+
+      final regenerateButton = find.widgetWithText(TextButton, 'Regenerate').last;
+      await tester.ensureVisible(regenerateButton);
+      await tester.pumpAndSettle();
+      await tester.tap(regenerateButton);
+      await tester.pump();
+
+      expect(project.protocols?.dnp3?.map.entries, isNotEmpty);
+      expect(find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
+          findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Start hosting calls the injected DNP3 host and shows Running + endpoint', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final dnpHost = _CountingDnpHost();
+      addTearDown(dnpHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, dnpHost: dnpHost));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('dnp_enable_switch')));
+      await tester.pump();
+      // Port 0 -> the OS picks an ephemeral free port, never colliding with a
+      // real port or leaking a fixed one across test runs.
+      await tester.enterText(find.widgetWithText(TextField, '20000'), '0');
+      await tester.pump();
+
+      await tester.runAsync(() async {
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Start hosting'));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await tester.pumpAndSettle();
+
+      expect(dnpHost.startCalls, 1);
+      expect(find.text('Running'), findsOneWidget);
+      expect(find.textContaining('dnp3://'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Stop hosting calls the injected DNP3 host and returns to Stopped', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final dnpHost = _CountingDnpHost();
+      addTearDown(dnpHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, dnpHost: dnpHost));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('dnp_enable_switch')));
+      await tester.pump();
+      await tester.enterText(find.widgetWithText(TextField, '20000'), '0');
+      await tester.pump();
+      await tester.runAsync(() async {
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Start hosting'));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await tester.pumpAndSettle();
+
+      await tester.runAsync(() async {
+        await tester.tap(find.widgetWithText(OutlinedButton, 'Stop hosting'));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await tester.pumpAndSettle();
+
+      expect(dnpHost.stopCalls, 1);
+      expect(find.text('Stopped'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('hosting unsupported (web): DNP3 Start hosting disabled + native-only note shown', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final dnpHost = _CountingDnpHost();
+      addTearDown(dnpHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, dnpHost: dnpHost, hostingSupported: false));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('dnp_enable_switch')));
+      await tester.pump();
+
+      final startBtn = tester.widget<ElevatedButton>(
+        find.widgetWithText(ElevatedButton, 'Start hosting'),
+      );
+      expect(startBtn.onPressed, isNull);
+      expect(find.textContaining('web browsers do not allow'), findsOneWidget);
+      expect(dnpHost.startCalls, 0);
       expect(tester.takeException(), isNull);
     });
   });
@@ -1057,6 +1292,26 @@ void main() {
 
       expect(modbusHost.stopCalls, 1);
       expect(project.protocols!.modbus!.enabled, isFalse);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('toggling DNP3 enable OFF while running stops the host', (tester) async {
+      final project = _project();
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.dnp3!.enabled = true;
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final dnpHost = _RunningDnpHost();
+      addTearDown(dnpHost.dispose);
+      await setSurface(tester, desktopSize);
+
+      await tester.pumpWidget(_app(project, host, dnpHost: dnpHost));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('dnp_enable_switch')));
+      await tester.pump();
+
+      expect(dnpHost.stopCalls, 1);
+      expect(project.protocols!.dnp3!.enabled, isFalse);
       expect(tester.takeException(), isNull);
     });
 

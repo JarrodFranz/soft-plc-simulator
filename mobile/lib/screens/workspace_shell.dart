@@ -16,6 +16,7 @@ import '../models/st_exec.dart';
 import '../data/default_projects.dart';
 import '../data/project_repository.dart';
 import '../data/project_transfer.dart';
+import '../services/dnp3_host.dart';
 import '../services/modbus_host.dart';
 import '../services/mqtt_host.dart';
 import '../services/opcua_host.dart';
@@ -71,6 +72,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   final OpcUaHost _opcuaHost = OpcUaHost();
   final ModbusHost _modbusHost = ModbusHost();
   final MqttHost _mqttHost = MqttHost();
+  final DnpHost _dnpHost = DnpHost();
 
   // Side Dock Inspector State
   bool isTagDockVisible = true;
@@ -105,6 +107,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     _opcuaHost.dispose();
     _modbusHost.dispose();
     _mqttHost.dispose();
+    _dnpHost.dispose();
     super.dispose();
   }
 
@@ -222,6 +225,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     unawaited(_opcuaHost.stop());
     unawaited(_modbusHost.stop());
     unawaited(_mqttHost.disconnect());
+    unawaited(_dnpHost.stop());
     setState(() {
       _activeProject = proj;
       if (proj.hmis.isNotEmpty) {
@@ -442,6 +446,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     await _opcuaHost.stop();
     await _modbusHost.stop();
     await _mqttHost.disconnect();
+    await _dnpHost.stop();
 
     final blank = PlcProject(
       id: 'proj_new_${DateTime.now().millisecondsSinceEpoch}',
@@ -480,6 +485,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     await _opcuaHost.stop();
     await _modbusHost.stop();
     await _mqttHost.disconnect();
+    await _dnpHost.stop();
     final newId = await repo.duplicateProject(_activeProject.id, newName: '${_activeProject.name} Copy');
     final copy = await repo.loadProject(newId);
     if (copy == null) return;
@@ -544,6 +550,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     await _opcuaHost.stop();
     await _modbusHost.stop();
     await _mqttHost.disconnect();
+    await _dnpHost.stop();
     final deletedId = _activeProject.id;
     await repo.deleteProject(deletedId);
 
@@ -605,6 +612,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     await _opcuaHost.stop();
     await _modbusHost.stop();
     await _mqttHost.disconnect();
+    await _dnpHost.stop();
     await repo.resetToDefaults();
     final catalog = await repo.listProjects();
     var loaded = <PlcProject>[];
@@ -733,6 +741,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     await _opcuaHost.stop();
     await _modbusHost.stop();
     await _mqttHost.disconnect();
+    await _dnpHost.stop();
     final repo = _repo;
     if (repo != null) {
       await repo.saveProject(imported);
@@ -1703,6 +1712,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         host: _opcuaHost,
         modbusHost: _modbusHost,
         mqttHost: _mqttHost,
+        dnpHost: _dnpHost,
         onProjectUpdated: _markDirtyAndAutosave,
       );
     }

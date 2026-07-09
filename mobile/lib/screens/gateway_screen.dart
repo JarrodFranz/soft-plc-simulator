@@ -15,12 +15,14 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
+import '../models/dnp3_map.dart';
 import '../models/modbus_map.dart';
 import '../models/mqtt_map.dart';
 import '../models/opcua_map.dart';
 import '../models/project_model.dart';
 import '../models/protocol_settings.dart';
 import '../models/tag_resolver.dart';
+import '../services/dnp3_host.dart';
 import '../services/modbus_host.dart';
 import '../services/mqtt_host.dart';
 import '../services/opcua_host.dart';
@@ -32,14 +34,16 @@ class GatewayScreen extends StatefulWidget {
   final OpcUaHost host;
   final ModbusHost modbusHost;
   final MqttHost mqttHost;
+  final DnpHost dnpHost;
   final VoidCallback onProjectUpdated;
 
-  /// Whether this platform can host the in-app OPC UA/Modbus TCP servers (or
-  /// dial out an MQTT connection). Hosting/dialing uses a real TCP socket,
-  /// which web browsers do not allow (a start attempt throws `Unsupported
-  /// operation: InternetAddress.anyIPv4` for the listen-only servers, and
-  /// `Socket.connect` is similarly unavailable), so it's native-only
-  /// (Android/iOS/desktop). Defaults to `!kIsWeb`; overridable for tests.
+  /// Whether this platform can host the in-app OPC UA/Modbus/DNP3 TCP
+  /// servers (or dial out an MQTT connection). Hosting/dialing uses a real
+  /// TCP socket, which web browsers do not allow (a start attempt throws
+  /// `Unsupported operation: InternetAddress.anyIPv4` for the listen-only
+  /// servers, and `Socket.connect` is similarly unavailable), so it's
+  /// native-only (Android/iOS/desktop). Defaults to `!kIsWeb`; overridable
+  /// for tests.
   final bool hostingSupported;
 
   const GatewayScreen({
@@ -48,6 +52,7 @@ class GatewayScreen extends StatefulWidget {
     required this.host,
     required this.modbusHost,
     required this.mqttHost,
+    required this.dnpHost,
     required this.onProjectUpdated,
     this.hostingSupported = !kIsWeb,
   });
@@ -60,6 +65,9 @@ class _GatewayScreenState extends State<GatewayScreen> {
   late final TextEditingController _portController;
   late final TextEditingController _modbusPortController;
   late final TextEditingController _mqttPortController;
+  late final TextEditingController _dnpPortController;
+  late final TextEditingController _dnpOutstationAddressController;
+  late final TextEditingController _dnpMasterAddressController;
 
   /// The MQTT broker password: held ONLY here, in ephemeral widget State —
   /// never written to `currentProject`/`MqttProtocolConfig` (see that
@@ -80,6 +88,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
     _mqttPortController = TextEditingController(
       text: widget.currentProject.protocols!.mqtt!.port.toString(),
+    );
+    _dnpPortController = TextEditingController(
+      text: widget.currentProject.protocols!.dnp3!.port.toString(),
+    );
+    _dnpOutstationAddressController = TextEditingController(
+      text: widget.currentProject.protocols!.dnp3!.outstationAddress.toString(),
+    );
+    _dnpMasterAddressController = TextEditingController(
+      text: widget.currentProject.protocols!.dnp3!.masterAddress.toString(),
     );
   }
 
@@ -113,6 +130,27 @@ class _GatewayScreenState extends State<GatewayScreen> {
           selection: TextSelection.collapsed(offset: newMqttPort.length),
         );
       }
+      final newDnpPort = widget.currentProject.protocols!.dnp3!.port.toString();
+      if (_dnpPortController.text != newDnpPort) {
+        _dnpPortController.value = TextEditingValue(
+          text: newDnpPort,
+          selection: TextSelection.collapsed(offset: newDnpPort.length),
+        );
+      }
+      final newDnpOutstationAddress = widget.currentProject.protocols!.dnp3!.outstationAddress.toString();
+      if (_dnpOutstationAddressController.text != newDnpOutstationAddress) {
+        _dnpOutstationAddressController.value = TextEditingValue(
+          text: newDnpOutstationAddress,
+          selection: TextSelection.collapsed(offset: newDnpOutstationAddress.length),
+        );
+      }
+      final newDnpMasterAddress = widget.currentProject.protocols!.dnp3!.masterAddress.toString();
+      if (_dnpMasterAddressController.text != newDnpMasterAddress) {
+        _dnpMasterAddressController.value = TextEditingValue(
+          text: newDnpMasterAddress,
+          selection: TextSelection.collapsed(offset: newDnpMasterAddress.length),
+        );
+      }
       _mqttPassword = '';
     }
   }
@@ -122,6 +160,9 @@ class _GatewayScreenState extends State<GatewayScreen> {
     _portController.dispose();
     _modbusPortController.dispose();
     _mqttPortController.dispose();
+    _dnpPortController.dispose();
+    _dnpOutstationAddressController.dispose();
+    _dnpMasterAddressController.dispose();
     super.dispose();
   }
 
@@ -169,6 +210,28 @@ class _GatewayScreenState extends State<GatewayScreen> {
     }
   }
 
+  String _dnpStatusLabel(DnpHostStatus s) {
+    switch (s) {
+      case DnpHostStatus.stopped:
+        return 'Stopped';
+      case DnpHostStatus.running:
+        return 'Running';
+      case DnpHostStatus.error:
+        return 'Error';
+    }
+  }
+
+  Color _dnpStatusColor(DnpHostStatus s) {
+    switch (s) {
+      case DnpHostStatus.stopped:
+        return Colors.grey;
+      case DnpHostStatus.running:
+        return Colors.greenAccent;
+      case DnpHostStatus.error:
+        return Colors.redAccent;
+    }
+  }
+
   String _mqttStatusLabel(MqttHostStatus s) {
     switch (s) {
       case MqttHostStatus.stopped:
@@ -209,6 +272,14 @@ class _GatewayScreenState extends State<GatewayScreen> {
 
   Future<void> _stopModbusHosting() async {
     await widget.modbusHost.stop();
+  }
+
+  Future<void> _startDnpHosting() async {
+    await widget.dnpHost.start(() => widget.currentProject);
+  }
+
+  Future<void> _stopDnpHosting() async {
+    await widget.dnpHost.stop();
   }
 
   Future<void> _connectMqtt() async {
@@ -258,6 +329,35 @@ class _GatewayScreenState extends State<GatewayScreen> {
     widget.onProjectUpdated();
   }
 
+  void _autoGenerateDnpMap() {
+    setState(() {
+      _ensureDnp();
+      widget.currentProject.protocols!.dnp3!.map = DnpMap.autoGenerate(widget.currentProject);
+    });
+    widget.onProjectUpdated();
+  }
+
+  /// Appends a default entry (first available tag option, `binaryInput`
+  /// point type, index 0) to the DNP3 map — mirrors `_addModbusEntry`.
+  void _addDnpEntry(List<String> tagOptions) {
+    setState(() {
+      _ensureDnp();
+      widget.currentProject.protocols!.dnp3!.map.entries.add(DnpMapEntry(
+        tag: tagOptions.isNotEmpty ? tagOptions.first : '',
+        pointType: 'binaryInput',
+        index: 0,
+      ));
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _deleteDnpEntry(DnpMapEntry entry) {
+    setState(() {
+      widget.currentProject.protocols!.dnp3!.map.entries.remove(entry);
+    });
+    widget.onProjectUpdated();
+  }
+
   void _autoGenerateMqttMap() {
     setState(() {
       _ensureMqtt();
@@ -297,6 +397,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
     widget.currentProject.protocols!.opcua ??= OpcUaProtocolConfig.defaults(widget.currentProject);
     _ensureModbus();
     _ensureMqtt();
+    _ensureDnp();
+  }
+
+  /// Creates a default `DnpProtocolConfig` in place when the project has
+  /// none yet — mirrors `_ensureModbus`: mutate in memory only, no
+  /// `onProjectUpdated` call here.
+  void _ensureDnp() {
+    widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
+    widget.currentProject.protocols!.dnp3 ??= DnpProtocolConfig.defaults(widget.currentProject);
   }
 
   /// Creates a default `ModbusProtocolConfig` in place when the project has
@@ -337,6 +446,44 @@ class _GatewayScreenState extends State<GatewayScreen> {
     if (!enabled && widget.modbusHost.status != ModbusHostStatus.stopped) {
       unawaited(widget.modbusHost.stop());
     }
+    widget.onProjectUpdated();
+  }
+
+  void _setDnpEnabled(bool enabled) {
+    setState(() {
+      _ensureDnp();
+      widget.currentProject.protocols!.dnp3!.enabled = enabled;
+    });
+    if (!enabled && widget.dnpHost.status != DnpHostStatus.stopped) {
+      unawaited(widget.dnpHost.stop());
+    }
+    widget.onProjectUpdated();
+  }
+
+  void _setDnpPort(String value) {
+    final parsed = int.tryParse(value.trim());
+    if (parsed == null || parsed < 0 || parsed > 65535) {
+      return; // ignore invalid input; keep the last-valid persisted port
+    }
+    widget.currentProject.protocols!.dnp3!.port = parsed;
+    widget.onProjectUpdated();
+  }
+
+  void _setDnpOutstationAddress(String value) {
+    final parsed = int.tryParse(value.trim());
+    if (parsed == null || parsed < 0 || parsed > 65535) {
+      return; // ignore invalid input; keep the last-valid persisted address
+    }
+    widget.currentProject.protocols!.dnp3!.outstationAddress = parsed;
+    widget.onProjectUpdated();
+  }
+
+  void _setDnpMasterAddress(String value) {
+    final parsed = int.tryParse(value.trim());
+    if (parsed == null || parsed < 0 || parsed > 65535) {
+      return; // ignore invalid input; keep the last-valid persisted address
+    }
+    widget.currentProject.protocols!.dnp3!.masterAddress = parsed;
     widget.onProjectUpdated();
   }
 
@@ -471,7 +618,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
         backgroundColor: const Color(0xFF1E293B),
       ),
       body: ListenableBuilder(
-        listenable: Listenable.merge([widget.host, widget.modbusHost, widget.mqttHost]),
+        listenable: Listenable.merge([widget.host, widget.modbusHost, widget.mqttHost, widget.dnpHost]),
         builder: (context, _) {
           return SingleChildScrollView(
             padding: const EdgeInsets.all(12),
@@ -486,6 +633,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 _buildOpcUaCard(context, tagOptions),
                 const SizedBox(height: 12),
                 _buildModbusCard(context, tagOptions),
+                const SizedBox(height: 12),
+                _buildDnpCard(context, tagOptions),
                 const SizedBox(height: 12),
                 _buildMqttCard(context, tagOptions),
               ],
@@ -1063,6 +1212,334 @@ class _GatewayScreenState extends State<GatewayScreen> {
               SizedBox(width: 100, child: addressField),
               const SizedBox(width: 8),
               SizedBox(width: 160, child: accessDropdown),
+              SizedBox(width: 40, child: deleteButton),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  /// The DNP3 outstation protocol card: header + enable switch, hosting
+  /// controls (Start/Stop, port, outstation/master link addresses, status,
+  /// endpoint), and (when enabled) the point map editor. Mirrors
+  /// `_buildModbusCard`.
+  Widget _buildDnpCard(BuildContext context, List<String> tagOptions) {
+    final dnp3 = widget.currentProject.protocols!.dnp3!;
+    final status = widget.dnpHost.status;
+    final running = status == DnpHostStatus.running;
+    final isCompact = context.isCompact;
+
+    return Card(
+      color: const Color(0xFF1E293B),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'DNP3',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                  ),
+                ),
+                Switch(
+                  key: const Key('dnp_enable_switch'),
+                  value: dnp3.enabled,
+                  onChanged: _setDnpEnabled,
+                ),
+              ],
+            ),
+            if (!dnp3.enabled)
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text(
+                  'Disabled — no tags are exposed to this protocol.',
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+              )
+            else ...[
+              const SizedBox(height: 12),
+              // ── Hosting controls ────────────────────────────────────
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 10,
+                        height: 10,
+                        decoration: BoxDecoration(color: _dnpStatusColor(status), shape: BoxShape.circle),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _dnpStatusLabel(status),
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                      ),
+                    ],
+                  ),
+                  Text(
+                    'Mapped tags: ${dnp3.map.entries.length}',
+                    style: const TextStyle(color: Colors.grey, fontSize: 12),
+                  ),
+                  if (widget.dnpHost.clientCount > 0)
+                    Text(
+                      'Clients: ${widget.dnpHost.clientCount}',
+                      style: const TextStyle(color: Colors.grey, fontSize: 12),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Flex(
+                direction: isCompact ? Axis.vertical : Axis.horizontal,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _mqttFlexField(
+                    isCompact: isCompact,
+                    child: TextField(
+                      controller: _dnpPortController,
+                      enabled: !running,
+                      keyboardType: TextInputType.number,
+                      style: const TextStyle(fontSize: 12, color: Colors.white),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        labelText: 'Port',
+                        helperText: 'Default: 20000',
+                        filled: true,
+                        fillColor: Color(0xFF0F172A),
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: _setDnpPort,
+                    ),
+                  ),
+                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                  _mqttFlexField(
+                    isCompact: isCompact,
+                    child: TextField(
+                      controller: _dnpOutstationAddressController,
+                      enabled: !running,
+                      keyboardType: TextInputType.number,
+                      style: const TextStyle(fontSize: 12, color: Colors.white),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        labelText: 'Outstation address',
+                        helperText: 'Default: 1024',
+                        filled: true,
+                        fillColor: Color(0xFF0F172A),
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: _setDnpOutstationAddress,
+                    ),
+                  ),
+                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                  _mqttFlexField(
+                    isCompact: isCompact,
+                    child: TextField(
+                      controller: _dnpMasterAddressController,
+                      enabled: !running,
+                      keyboardType: TextInputType.number,
+                      style: const TextStyle(fontSize: 12, color: Colors.white),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        labelText: 'Master address',
+                        helperText: 'Default: 1',
+                        filled: true,
+                        fillColor: Color(0xFF0F172A),
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: _setDnpMasterAddress,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Flex(
+                direction: isCompact ? Axis.vertical : Axis.horizontal,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: isCompact ? double.infinity : null,
+                    child: ElevatedButton(
+                      onPressed: (running || !widget.hostingSupported) ? null : _startDnpHosting,
+                      child: const Text('Start hosting'),
+                    ),
+                  ),
+                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                  SizedBox(
+                    width: isCompact ? double.infinity : null,
+                    child: OutlinedButton(
+                      onPressed: running ? _stopDnpHosting : null,
+                      child: const Text('Stop hosting'),
+                    ),
+                  ),
+                ],
+              ),
+              if (!widget.hostingSupported) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Hosting runs the DNP3 outstation inside the app on a TCP '
+                  'socket, which web browsers do not allow. Run the desktop '
+                  '(Windows/macOS/Linux) or mobile (Android/iOS) app to host — '
+                  'you can still design the point map here.',
+                  style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                ),
+              ],
+              if (running && widget.dnpHost.endpointUrl != null) ...[
+                const SizedBox(height: 8),
+                SelectableText(
+                  widget.dnpHost.endpointUrl!,
+                  style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                ),
+              ],
+              if (widget.dnpHost.lastError != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Last error: ${widget.dnpHost.lastError}',
+                  style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                ),
+              ],
+              const SizedBox(height: 12),
+              _dnpMapEditorCard(context, dnp3.map, tagOptions),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _dnpMapEditorCard(BuildContext context, DnpMap map, List<String> tagOptions) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            runSpacing: 4,
+            children: [
+              const Text(
+                'DNP3 Point Map',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+              Wrap(
+                spacing: 4,
+                children: [
+                  TextButton.icon(
+                    icon: const Icon(Icons.add, size: 16, color: Colors.cyanAccent),
+                    label: const Text('Add entry', style: TextStyle(color: Colors.cyanAccent)),
+                    onPressed: () => _addDnpEntry(tagOptions),
+                  ),
+                  TextButton.icon(
+                    icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
+                    label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
+                    onPressed: _autoGenerateDnpMap,
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (map.entries.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                'No entries yet. Tap Regenerate to build a default map from the project tags.',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            )
+          else
+            ListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: map.entries.length,
+              itemBuilder: (context, i) => _dnpRow(map.entries[i], tagOptions),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _dnpRow(DnpMapEntry entry, List<String> tagOptions) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isCompact = context.isCompact;
+          final tagField = TagAutocompleteField(
+            options: tagOptions,
+            initialValue: entry.tag,
+            label: 'Tag',
+            onChanged: (v) {
+              entry.tag = v;
+              widget.onProjectUpdated();
+            },
+          );
+          final pointTypeDropdown = DropdownButtonFormField<String>(
+            initialValue: entry.pointType,
+            decoration: const InputDecoration(isDense: true, labelText: 'Point type'),
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            dropdownColor: const Color(0xFF1E293B),
+            items: const [
+              DropdownMenuItem(value: 'binaryInput', child: Text('binaryInput')),
+              DropdownMenuItem(value: 'binaryOutput', child: Text('binaryOutput')),
+              DropdownMenuItem(value: 'analogInput', child: Text('analogInput')),
+              DropdownMenuItem(value: 'analogOutput', child: Text('analogOutput')),
+            ],
+            onChanged: (v) {
+              if (v == null) return;
+              setState(() => entry.pointType = v);
+              widget.onProjectUpdated();
+            },
+          );
+          final indexField = TextFormField(
+            initialValue: entry.index.toString(),
+            keyboardType: TextInputType.number,
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            decoration: const InputDecoration(isDense: true, labelText: 'Index'),
+            onChanged: (v) {
+              final parsed = int.tryParse(v.trim());
+              if (parsed == null || parsed < 0) return;
+              entry.index = parsed;
+              widget.onProjectUpdated();
+            },
+          );
+          final deleteButton = IconButton(
+            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+            tooltip: 'Delete entry',
+            onPressed: () => _deleteDnpEntry(entry),
+          );
+
+          if (isCompact) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                tagField,
+                const SizedBox(height: 4),
+                pointTypeDropdown,
+                const SizedBox(height: 4),
+                indexField,
+                Align(alignment: Alignment.centerRight, child: deleteButton),
+              ],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(flex: 3, child: tagField),
+              const SizedBox(width: 8),
+              SizedBox(width: 190, child: pointTypeDropdown),
+              const SizedBox(width: 8),
+              SizedBox(width: 100, child: indexField),
               SizedBox(width: 40, child: deleteButton),
             ],
           );
