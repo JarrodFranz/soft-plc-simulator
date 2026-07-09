@@ -120,9 +120,13 @@
 
 ---
 
-## Phase 8: DNP3 Outstation Protocol Adapter
+## Phase 8: DNP3 Outstation Protocol Adapter ✅
 - **Objective**: DNP3 outstation exposing Binary Inputs, Binary Outputs, Analog Inputs, and Analog Outputs to DNP3 masters.
-- **Status**: ⏳ Planned
+- **Deliverables**:
+  - Pure-Dart IEEE 1815 data-link (CRC-16/DNP, `0x0564` framing) + transport (segment reassembly) + application (object headers, static/control object codecs) layers. ✅
+  - Outstation handler: Class 0 grouped-read (4 point types, force-aware), SELECT/OPERATE/DIRECT_OPERATE control (CROB + Analog Output Block), force-aware control rejection, g80v1 restart-clear. ✅
+  - `dart:io` TCP host (`DnpHost`) + Outbound Protocols card (hosting controls, link-address config, point map editor). ✅
+- **Status**: ✅ **SHIPPED — in-app pure-Dart DNP3 outstation v1 (`DnpHost`, `mobile/lib/services/dnp3_host.dart`), machine-verified end-to-end against a REAL third-party DNP3 master (Step Function I/O's `dnp3` crate, `tool/dnp3_e2e.sh`) — Class 0 poll, forced-value read, forced-tag control rejection, DIRECT_OPERATE, and SELECT/OPERATE all confirmed over the real wire (see `docs/protocols/DNP3.md`)**
 
 ---
 
