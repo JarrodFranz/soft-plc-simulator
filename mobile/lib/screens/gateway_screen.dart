@@ -10,6 +10,8 @@
 // ADR-010: the app now hosts the OPC UA server in-process instead of
 // syncing tags out to a companion process.
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
@@ -318,6 +320,12 @@ class _GatewayScreenState extends State<GatewayScreen> {
       _ensureProtocols();
       widget.currentProject.protocols!.opcua!.enabled = enabled;
     });
+    // Disabling a protocol while it is hosting must also tear the host down —
+    // otherwise the server keeps serving on its socket even though the toggle
+    // reads "off" (WS24 review M2).
+    if (!enabled && widget.host.status != OpcUaHostStatus.stopped) {
+      unawaited(widget.host.stop());
+    }
     widget.onProjectUpdated();
   }
 
@@ -326,6 +334,9 @@ class _GatewayScreenState extends State<GatewayScreen> {
       _ensureModbus();
       widget.currentProject.protocols!.modbus!.enabled = enabled;
     });
+    if (!enabled && widget.modbusHost.status != ModbusHostStatus.stopped) {
+      unawaited(widget.modbusHost.stop());
+    }
     widget.onProjectUpdated();
   }
 
@@ -359,6 +370,11 @@ class _GatewayScreenState extends State<GatewayScreen> {
       _ensureMqtt();
       widget.currentProject.protocols!.mqtt!.enabled = enabled;
     });
+    // Disabling MQTT while connected/connecting must disconnect the client —
+    // otherwise the publisher keeps its broker session open (WS24 review M2).
+    if (!enabled && widget.mqttHost.status != MqttHostStatus.stopped) {
+      unawaited(widget.mqttHost.disconnect());
+    }
     widget.onProjectUpdated();
   }
 

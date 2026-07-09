@@ -138,6 +138,39 @@ class _CountingModbusHost extends ModbusHost {
   }
 }
 
+/// Fakes that report a live `status` (no real socket) and count teardown
+/// calls — used to prove that flipping a protocol's enable toggle OFF while
+/// it is hosting tears the host down (auto-stop-on-disable).
+class _RunningOpcUaHost extends OpcUaHost {
+  int stopCalls = 0;
+  @override
+  OpcUaHostStatus get status => OpcUaHostStatus.running;
+  @override
+  Future<void> stop() async {
+    stopCalls++;
+  }
+}
+
+class _RunningModbusHost extends ModbusHost {
+  int stopCalls = 0;
+  @override
+  ModbusHostStatus get status => ModbusHostStatus.running;
+  @override
+  Future<void> stop() async {
+    stopCalls++;
+  }
+}
+
+class _ConnectedMqttHost extends MqttHost {
+  int disconnectCalls = 0;
+  @override
+  MqttHostStatus get status => MqttHostStatus.running;
+  @override
+  Future<void> disconnect() async {
+    disconnectCalls++;
+  }
+}
+
 Widget _app(
   PlcProject project,
   OpcUaHost host, {
@@ -985,6 +1018,65 @@ void main() {
       await tester.tap(find.byKey(const Key('opcua_enable_switch')));
       await tester.pump();
 
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('auto-stop hosting when a protocol is disabled', () {
+    testWidgets('toggling OPC UA enable OFF while running stops the host', (tester) async {
+      final project = _project(port: 0); // opcua enabled=true + config present
+      final host = _RunningOpcUaHost();
+      addTearDown(host.dispose);
+      await setSurface(tester, desktopSize);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      // Switch starts ON (enabled); tap to turn it OFF.
+      await tester.tap(find.byKey(const Key('opcua_enable_switch')));
+      await tester.pump();
+
+      expect(host.stopCalls, 1);
+      expect(project.protocols!.opcua!.enabled, isFalse);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('toggling Modbus enable OFF while running stops the host', (tester) async {
+      final project = _project();
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.modbus!.enabled = true;
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _RunningModbusHost();
+      addTearDown(modbusHost.dispose);
+      await setSurface(tester, desktopSize);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+
+      expect(modbusHost.stopCalls, 1);
+      expect(project.protocols!.modbus!.enabled, isFalse);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('toggling MQTT enable OFF while connected disconnects the client', (tester) async {
+      final project = _project();
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.mqtt!.enabled = true;
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final mqttHost = _ConnectedMqttHost();
+      addTearDown(mqttHost.dispose);
+      await setSurface(tester, desktopSize);
+
+      await tester.pumpWidget(_app(project, host, mqttHost: mqttHost));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
+      await tester.pump();
+
+      expect(mqttHost.disconnectCalls, 1);
+      expect(project.protocols!.mqtt!.enabled, isFalse);
       expect(tester.takeException(), isNull);
     });
   });
