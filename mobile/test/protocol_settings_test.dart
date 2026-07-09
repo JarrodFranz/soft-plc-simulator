@@ -8,6 +8,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:soft_plc_mobile/models/dnp3_map.dart';
 import 'package:soft_plc_mobile/models/mqtt_map.dart';
 import 'package:soft_plc_mobile/models/opcua_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
@@ -401,6 +402,91 @@ void main() {
       final settingsJson = settings.toJson();
       expect(settingsJson.containsKey('password'), isFalse);
       expect(jsonEncode(settingsJson).contains('password'), isFalse);
+    });
+  });
+
+  group('DnpProtocolConfig / ProtocolSettings.dnp3', () {
+    test('DnpProtocolConfig.fromJson tolerates missing keys with sane defaults', () {
+      final cfg = DnpProtocolConfig.fromJson({});
+      expect(cfg.enabled, isFalse);
+      expect(cfg.port, 20000);
+      expect(cfg.outstationAddress, 1024);
+      expect(cfg.masterAddress, 1);
+      expect(cfg.map.entries, isEmpty);
+    });
+
+    test('DnpProtocolConfig round-trips through toJson/fromJson', () {
+      final cfg = DnpProtocolConfig(
+        enabled: true,
+        port: 20001,
+        outstationAddress: 5,
+        masterAddress: 2,
+        map: DnpMap(entries: [DnpMapEntry(tag: 'Run', pointType: 'binaryInput', index: 0)]),
+      );
+
+      final rt = DnpProtocolConfig.fromJson(cfg.toJson());
+
+      expect(rt.enabled, isTrue);
+      expect(rt.port, 20001);
+      expect(rt.outstationAddress, 5);
+      expect(rt.masterAddress, 2);
+      expect(rt.map.entries.single.tag, 'Run');
+    });
+
+    test('ProtocolSettings carrying a DnpProtocolConfig round-trips losslessly', () {
+      final settings = ProtocolSettings(
+        gatewayUrl: kDefaultGatewayUrl,
+        dnp3: DnpProtocolConfig(
+          enabled: true,
+          port: 20000,
+          outstationAddress: 1024,
+          masterAddress: 1,
+          map: DnpMap(entries: [DnpMapEntry(tag: 'A', pointType: 'analogOutput', index: 0)]),
+        ),
+      );
+
+      final rt = ProtocolSettings.fromJson(settings.toJson());
+
+      expect(rt.dnp3, isNotNull);
+      expect(rt.dnp3!.enabled, isTrue);
+      expect(rt.dnp3!.port, 20000);
+      expect(rt.dnp3!.outstationAddress, 1024);
+      expect(rt.dnp3!.masterAddress, 1);
+      expect(rt.dnp3!.map.entries.length, 1);
+    });
+
+    test('ProtocolSettings with dnp3 == null omits the dnp3 key entirely', () {
+      final settings = ProtocolSettings(); // no dnp3
+      expect(settings.dnp3, isNull);
+      expect(settings.toJson().containsKey('dnp3'), isFalse);
+    });
+
+    test('existing opcua/modbus/mqtt keys are untouched when dnp3 is present', () {
+      final settings = ProtocolSettings(
+        opcua: OpcUaProtocolConfig.defaults(PlcProject(
+          id: 'dnp_mix_proj',
+          name: 'DNP Mix Project',
+          controllerName: 'PLC_DNP_MIX',
+          tags: const [],
+          structDefs: const [],
+          programs: const [],
+          tasks: const [],
+          hmis: const [],
+        )),
+        dnp3: DnpProtocolConfig(map: DnpMap(entries: [])),
+      );
+
+      final json = settings.toJson();
+      expect(json.containsKey('opcua'), isTrue);
+      expect(json.containsKey('modbus'), isFalse);
+      expect(json.containsKey('mqtt'), isFalse);
+      expect(json.containsKey('dnp3'), isTrue);
+
+      final rt = ProtocolSettings.fromJson(json);
+      expect(rt.opcua, isNotNull);
+      expect(rt.modbus, isNull);
+      expect(rt.mqtt, isNull);
+      expect(rt.dnp3, isNotNull);
     });
   });
 }

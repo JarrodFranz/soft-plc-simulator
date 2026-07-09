@@ -8,6 +8,7 @@
 // No Flutter dependency — this file must stay pure Dart so it can be used
 // from services and widgets alike without pulling Flutter into model code.
 
+import 'dnp3_map.dart';
 import 'modbus_map.dart';
 import 'mqtt_map.dart';
 import 'opcua_map.dart';
@@ -196,6 +197,56 @@ class MqttProtocolConfig {
       );
 }
 
+/// Per-project DNP3 outstation outbound-protocol configuration: whether the
+/// in-app DNP3 outstation is enabled, the TCP port it listens on, the DNP3
+/// link-layer outstation/master addresses, and the tag<->point map that
+/// decides which tags are exposed and where.
+class DnpProtocolConfig {
+  bool enabled;
+  int port;
+  int outstationAddress;
+  int masterAddress;
+  DnpMap map;
+
+  DnpProtocolConfig({
+    this.enabled = false,
+    this.port = 20000,
+    this.outstationAddress = 1024,
+    this.masterAddress = 1,
+    required this.map,
+  });
+
+  factory DnpProtocolConfig.fromJson(Map<String, dynamic> j) => DnpProtocolConfig(
+        enabled: j['enabled'] == true,
+        port: (j['port'] as num?)?.toInt() ?? 20000,
+        outstationAddress: (j['outstation_address'] as num?)?.toInt() ?? 1024,
+        masterAddress: (j['master_address'] as num?)?.toInt() ?? 1,
+        map: j['map'] != null
+            ? DnpMap.fromJson(j['map'] as Map<String, dynamic>)
+            : DnpMap(entries: []),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'enabled': enabled,
+        'port': port,
+        'outstation_address': outstationAddress,
+        'master_address': masterAddress,
+        'map': map.toJson(),
+      };
+
+  /// Sane defaults for a project that has never configured DNP3: disabled,
+  /// the standard DNP3 TCP port, the conventional default outstation/master
+  /// addresses, and an auto-generated map from the project's current scalar
+  /// tags.
+  static DnpProtocolConfig defaults(PlcProject p) => DnpProtocolConfig(
+        enabled: false,
+        port: 20000,
+        outstationAddress: 1024,
+        masterAddress: 1,
+        map: DnpMap.autoGenerate(p),
+      );
+}
+
 /// Per-project outbound-protocol settings: the shared gateway endpoint plus
 /// one config slot per protocol.
 ///
@@ -207,12 +258,14 @@ class ProtocolSettings {
   OpcUaProtocolConfig? opcua;
   ModbusProtocolConfig? modbus;
   MqttProtocolConfig? mqtt;
+  DnpProtocolConfig? dnp3;
 
   ProtocolSettings({
     this.gatewayUrl = kDefaultGatewayUrl,
     this.opcua,
     this.modbus,
     this.mqtt,
+    this.dnp3,
   });
 
   Map<String, dynamic> toJson() => {
@@ -220,6 +273,7 @@ class ProtocolSettings {
         if (opcua != null) 'opcua': opcua!.toJson(),
         if (modbus != null) 'modbus': modbus!.toJson(),
         if (mqtt != null) 'mqtt': mqtt!.toJson(),
+        if (dnp3 != null) 'dnp3': dnp3!.toJson(),
       };
 
   factory ProtocolSettings.fromJson(Map<String, dynamic> j) => ProtocolSettings(
@@ -227,6 +281,7 @@ class ProtocolSettings {
         opcua: j['opcua'] != null ? OpcUaProtocolConfig.fromJson(j['opcua'] as Map<String, dynamic>) : null,
         modbus: j['modbus'] != null ? ModbusProtocolConfig.fromJson(j['modbus'] as Map<String, dynamic>) : null,
         mqtt: j['mqtt'] != null ? MqttProtocolConfig.fromJson(j['mqtt'] as Map<String, dynamic>) : null,
+        dnp3: j['dnp3'] != null ? DnpProtocolConfig.fromJson(j['dnp3'] as Map<String, dynamic>) : null,
       );
 
   static ProtocolSettings defaults(PlcProject p) => ProtocolSettings(
@@ -234,5 +289,6 @@ class ProtocolSettings {
         opcua: OpcUaProtocolConfig.defaults(p),
         modbus: ModbusProtocolConfig.defaults(p),
         mqtt: MqttProtocolConfig.defaults(p),
+        dnp3: DnpProtocolConfig.defaults(p),
       );
 }
