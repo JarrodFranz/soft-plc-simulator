@@ -18,6 +18,8 @@ import 'package:soft_plc_mobile/models/mqtt_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/protocols/mqtt/mqtt_publisher.dart';
+import 'package:soft_plc_mobile/protocols/mqtt/mqtt_sparkplug.dart'
+    show SparkplugDatatype, SparkplugMetric, SparkplugPayload, encodePayload;
 
 PlcProject _fixtureProject({required String format, bool allowRemoteWrites = true}) {
   final tags = [
@@ -320,6 +322,86 @@ void main() {
         p,
       );
       expect(cmds, isEmpty);
+    });
+  });
+
+  group('ncmdSubscriptionTopic', () {
+    test('Sparkplug returns the NCMD topic', () {
+      final p = _fixtureProject(format: 'sparkplug');
+      final publisher = MqttPublisher();
+      expect(publisher.ncmdSubscriptionTopic(p), 'spBv1.0/SoftPLC/NCMD/Node1');
+    });
+
+    test('JSON returns null', () {
+      final p = _fixtureProject(format: 'json');
+      final publisher = MqttPublisher();
+      expect(publisher.ncmdSubscriptionTopic(p), isNull);
+    });
+  });
+
+  group('isRebirthRequest', () {
+    Uint8List rebirthPayload({bool value = true, String name = 'Node Control/Rebirth'}) {
+      return encodePayload(SparkplugPayload(
+        timestampMs: 0,
+        seq: 0,
+        metrics: [
+          SparkplugMetric(name: name, datatype: SparkplugDatatype.boolean, value: value),
+        ],
+      ));
+    }
+
+    test('true for a Sparkplug NCMD payload with Node Control/Rebirth=true on the correct topic', () {
+      final p = _fixtureProject(format: 'sparkplug');
+      final publisher = MqttPublisher();
+      final payload = rebirthPayload();
+      expect(publisher.isRebirthRequest('spBv1.0/SoftPLC/NCMD/Node1', payload, p), isTrue);
+    });
+
+    test('false for the wrong topic', () {
+      final p = _fixtureProject(format: 'sparkplug');
+      final publisher = MqttPublisher();
+      final payload = rebirthPayload();
+      expect(publisher.isRebirthRequest('spBv1.0/SoftPLC/NCMD/OtherNode', payload, p), isFalse);
+    });
+
+    test('false for JSON format (no rebirth concept)', () {
+      final p = _fixtureProject(format: 'json');
+      final publisher = MqttPublisher();
+      final payload = rebirthPayload();
+      expect(publisher.isRebirthRequest('spBv1.0/SoftPLC/NCMD/Node1', payload, p), isFalse);
+    });
+
+    test('false for a payload without the Rebirth metric', () {
+      final p = _fixtureProject(format: 'sparkplug');
+      final publisher = MqttPublisher();
+      final payload = encodePayload(SparkplugPayload(
+        timestampMs: 0,
+        seq: 0,
+        metrics: [
+          SparkplugMetric(name: 'Some/Other/Metric', datatype: SparkplugDatatype.boolean, value: true),
+        ],
+      ));
+      expect(publisher.isRebirthRequest('spBv1.0/SoftPLC/NCMD/Node1', payload, p), isFalse);
+    });
+
+    test('false when the Rebirth metric value is false', () {
+      final p = _fixtureProject(format: 'sparkplug');
+      final publisher = MqttPublisher();
+      final payload = rebirthPayload(value: false);
+      expect(publisher.isRebirthRequest('spBv1.0/SoftPLC/NCMD/Node1', payload, p), isFalse);
+    });
+
+    test('false for garbage bytes, never throws', () {
+      final p = _fixtureProject(format: 'sparkplug');
+      final publisher = MqttPublisher();
+      expect(
+        publisher.isRebirthRequest(
+          'spBv1.0/SoftPLC/NCMD/Node1',
+          Uint8List.fromList([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
+          p,
+        ),
+        isFalse,
+      );
     });
   });
 

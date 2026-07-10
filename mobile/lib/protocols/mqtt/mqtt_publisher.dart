@@ -54,6 +54,11 @@ import 'mqtt_sparkplug.dart';
 /// The Sparkplug B topic namespace prefix (`spBv1.0/<group>/<msgType>/<node>`).
 const String _sparkplugNamespace = 'spBv1.0';
 
+/// The well-known Sparkplug B "Node Control" metric name a subscriber (e.g.
+/// Ignition's MQTT Engine) publishes as a boolean-true NCMD metric to request
+/// a rebirth (a fresh NBIRTH) — see [MqttPublisher.isRebirthRequest].
+const String _rebirthMetricName = 'Node Control/Rebirth';
+
 /// One publish the host must send: wrap into an MQTT PUBLISH packet (or, for
 /// [willMessage]'s result, register as the CONNECT packet's Will) — this
 /// pure unit never touches sockets itself.
@@ -441,6 +446,46 @@ class MqttPublisher {
       return const [];
     }
     return [_isJson(cfg) ? _tagSetFilter(cfg, project) : _ncmdTopic(cfg, project)];
+  }
+
+  /// The Sparkplug B NCMD topic the host must subscribe to in order to
+  /// receive rebirth requests (see [isRebirthRequest]) — independent of
+  /// `allowRemoteWrites` (unlike [commandTopicFilters], which gates ordinary
+  /// tag-write commands on that setting). Null for the JSON format (which has
+  /// no Sparkplug rebirth concept) or when MQTT isn't configured.
+  String? ncmdSubscriptionTopic(PlcProject project) {
+    final cfg = project.protocols?.mqtt;
+    if (cfg == null || _isJson(cfg)) {
+      return null;
+    }
+    return _ncmdTopic(cfg, project);
+  }
+
+  /// True iff `topic`/`payload` is a Sparkplug B NCMD PUBLISH carrying a
+  /// `Node Control/Rebirth` metric with a boolean value of `true` — the
+  /// standard Sparkplug B convention a subscriber (e.g. Ignition's MQTT
+  /// Engine) uses to request a fresh NBIRTH. Always false for the JSON
+  /// format, the wrong topic, or a payload without that metric/value. Never
+  /// throws (mirrors [decodeCommand]'s exception-free contract).
+  bool isRebirthRequest(String topic, Uint8List payload, PlcProject project) {
+    final cfg = project.protocols?.mqtt;
+    if (cfg == null || _isJson(cfg)) {
+      return false;
+    }
+    if (topic != _ncmdTopic(cfg, project)) {
+      return false;
+    }
+    try {
+      final metrics = _decodeSparkplugPayload(payload);
+      for (final metric in metrics) {
+        if (metric.name == _rebirthMetricName && metric.value == true) {
+          return true;
+        }
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Decodes an inbound PUBLISH (`topic`/`payload`) into zero or more

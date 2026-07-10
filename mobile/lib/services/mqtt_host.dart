@@ -63,6 +63,39 @@
 // guarded so a malformed/hostile broker byte stream drops the connection and
 // schedules a backoff reconnect — it never throws uncaught.
 //
+// --- Wall-clock message timestamps vs. the monotonic `_clock` --------------
+// This host owns TWO separate notions of "now", and they must never be
+// confused:
+//   - `_clock` (a `Stopwatch`) is monotonic time since [connect] was first
+//     called. It exists ONLY to drive the heartbeat interval gate in
+//     [_onTick] (`intervalMs - _lastHeartbeatMs >= heartbeatSeconds * 1000`)
+//     and the `_lastHeartbeatMs` baseline it's compared against — pure
+//     elapsed-time arithmetic, for which a Stopwatch is exactly right.
+//   - [_wallNowMs] is real wall-clock time
+//     (`DateTime.now().toUtc().millisecondsSinceEpoch`, overridable via
+//     [nowMsOverride] for tests) — what gets stamped on every OUTBOUND
+//     message (`birthMessages`/`changedPublishes`/`heartbeatPublishes`'s
+//     `nowMs` parameter), because Sparkplug B (and the JSON payload's
+//     `timestamp` field) require the current UTC epoch, not an
+//     arbitrary monotonic counter. A subscriber (e.g. Ignition's MQTT
+//     Engine) treats a message whose timestamp is decades stale as bad data
+//     and never applies it — passing `_clock.elapsedMilliseconds` here was
+//     exactly that bug.
+// Never pass `_clock.elapsedMilliseconds` to a publisher method that stamps a
+// message timestamp, and never pass [_wallNowMs]'s value into the heartbeat
+// interval gate.
+//
+// --- Sparkplug rebirth (Node Control/Rebirth NCMD) -------------------------
+// A Sparkplug B subscriber requests a rebirth by publishing a boolean-true
+// `Node Control/Rebirth` metric to the NCMD topic. This host subscribes to
+// that topic on every (re)connect via `_publisher.ncmdSubscriptionTopic`
+// (independent of `allowRemoteWrites`, which only gates ordinary tag-write
+// commands — a rebirth request is not a tag write) and, in [_handlePublish],
+// checks `_publisher.isRebirthRequest` BEFORE the `allowRemoteWrites` gate.
+// Answering re-sends NBIRTH (same bdSeq — no `willMessage` call, since a
+// rebirth isn't a new connection attempt) via the same `birthMessages` +
+// `_sendPublish` path the initial birth uses.
+//
 // --- Password handling ---------------------------------------------------
 // `password` is a constructor-style argument to [connect] held ONLY in the
 // `_password` field of this in-memory object — see `MqttProtocolConfig`'s
@@ -202,7 +235,24 @@ class MqttHost extends ChangeNotifier {
   @visibleForTesting
   final Duration? pingIntervalOverride;
 
-  MqttHost({this.pingIntervalOverride});
+  /// Overrides the wall-clock source used to stamp every outbound message
+  /// timestamp (NBIRTH/NDATA/NDEATH `timestampMs`, and the JSON payload's
+  /// `timestamp` field). Production code never passes this — it always uses
+  /// the real `DateTime.now().toUtc().millisecondsSinceEpoch` (see
+  /// [_wallNowMs]); it exists solely so tests can inject a fixed, easily
+  /// asserted epoch value instead of a moving real-world clock. The
+  /// monotonic `_clock` (Stopwatch) below is a SEPARATE thing — it's kept
+  /// only for the heartbeat interval gate, which needs elapsed-time math, not
+  /// wall-clock time.
+  @visibleForTesting
+  final int Function()? nowMsOverride;
+
+  MqttHost({this.pingIntervalOverride, this.nowMsOverride});
+
+  /// The current wall-clock time in UTC epoch milliseconds — what Sparkplug B
+  /// (and the JSON payload) require for a message timestamp. Defers to
+  /// [nowMsOverride] when a test has supplied one.
+  int _wallNowMs() => nowMsOverride?.call() ?? DateTime.now().toUtc().millisecondsSinceEpoch;
 
   PlcProject Function()? _projectProvider;
   String _password = '';
@@ -446,13 +496,27 @@ class MqttHost extends ChangeNotifier {
     _reconnectAttempt = 0;
 
     // ONLY after CONNACK-accepted — see "bdSeq ordering" in the file doc.
-    final nowMs = _clock.elapsedMilliseconds;
-    _lastHeartbeatMs = nowMs;
-    for (final d in _publisher.birthMessages(project, nowMs)) {
+    // `_lastHeartbeatMs` stays on the monotonic clock (it's only ever
+    // compared against another `_clock.elapsedMilliseconds` reading in
+    // `_onTick`'s heartbeat gate) — see the file doc comment, "wall-clock
+    // message timestamps". The message itself carries the WALL-CLOCK time.
+    _lastHeartbeatMs = _clock.elapsedMilliseconds;
+    final wallMs = _wallNowMs();
+    for (final d in _publisher.birthMessages(project, wallMs)) {
       _sendPublish(d);
     }
 
-    final filters = _publisher.commandTopicFilters(project);
+    // Sparkplug rebirth requests (NCMD carrying `Node Control/Rebirth`) must
+    // be serviced regardless of `allowRemoteWrites` — that setting only
+    // gates ordinary tag-write commands — so the NCMD topic is subscribed
+    // here independently of `commandTopicFilters`. A `Set` naturally avoids a
+    // duplicate SUBSCRIBE entry when `allowRemoteWrites` is already on and
+    // `commandTopicFilters` returned that same NCMD topic.
+    final ncmdTopic = _publisher.ncmdSubscriptionTopic(project);
+    final filters = <String>{
+      ..._publisher.commandTopicFilters(project),
+      if (ncmdTopic != null) ncmdTopic,
+    };
     if (filters.isNotEmpty) {
       final qos = project.protocols?.mqtt?.qos ?? 0;
       final subscribePacket = encodeSubscribe(
@@ -487,6 +551,25 @@ class MqttHost extends ChangeNotifier {
     } catch (_) {
       return;
     }
+
+    // A Sparkplug rebirth request must be answered regardless of
+    // `allowRemoteWrites` — see the file doc comment. Re-issuing NBIRTH here
+    // mirrors the initial birth send in `_handleConnack`: same bdSeq (no
+    // `willMessage` call — a rebirth is not a new connection), seq reset to
+    // 0, and the alias table/report-by-exception baseline rebuilt, all of
+    // which `birthMessages` already does.
+    if (_publisher.isRebirthRequest(pub.topic, pub.payload, project)) {
+      final wallMs = _wallNowMs();
+      for (final d in _publisher.birthMessages(project, wallMs)) {
+        _sendPublish(d);
+      }
+      _lastHeartbeatMs = _clock.elapsedMilliseconds;
+      if (!_disposed) {
+        notifyListeners();
+      }
+      return;
+    }
+
     if (project.protocols?.mqtt?.allowRemoteWrites != true) {
       return;
     }
@@ -519,15 +602,20 @@ class MqttHost extends ChangeNotifier {
       if (cfg == null) {
         return;
       }
-      final nowMs = _clock.elapsedMilliseconds;
+      // `intervalMs` (monotonic) drives ONLY the heartbeat interval gate
+      // below; `wallMs` (wall-clock, overridable in tests) is what actually
+      // gets stamped on the outbound messages — see the file doc comment,
+      // "wall-clock message timestamps".
+      final intervalMs = _clock.elapsedMilliseconds;
+      final wallMs = _wallNowMs();
       var sentAny = false;
-      for (final d in _publisher.changedPublishes(project, nowMs)) {
+      for (final d in _publisher.changedPublishes(project, wallMs)) {
         _sendPublish(d);
         sentAny = true;
       }
-      if (cfg.heartbeatSeconds > 0 && (nowMs - _lastHeartbeatMs) >= cfg.heartbeatSeconds * 1000) {
-        _lastHeartbeatMs = nowMs;
-        for (final d in _publisher.heartbeatPublishes(project, nowMs)) {
+      if (cfg.heartbeatSeconds > 0 && (intervalMs - _lastHeartbeatMs) >= cfg.heartbeatSeconds * 1000) {
+        _lastHeartbeatMs = intervalMs;
+        for (final d in _publisher.heartbeatPublishes(project, wallMs)) {
           _sendPublish(d);
           sentAny = true;
         }

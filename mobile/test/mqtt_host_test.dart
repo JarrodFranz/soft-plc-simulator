@@ -17,6 +17,8 @@ import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 import 'package:soft_plc_mobile/protocols/mqtt/mqtt_codec.dart';
+import 'package:soft_plc_mobile/protocols/mqtt/mqtt_sparkplug.dart'
+    show SparkplugDatatype, SparkplugMetric, SparkplugPayload, encodePayload;
 import 'package:soft_plc_mobile/services/mqtt_host.dart';
 
 // Reuses the test-only Sparkplug B `decodePayload`/`decodeMetric` decoder
@@ -531,6 +533,82 @@ void main() {
       // all) and the host recovered to a non-running state via the normal
       // onDone/onError path.
       expect(host.status, isNot(MqttHostStatus.running));
+    });
+  });
+
+  group('MqttHost — wall-clock message timestamps (Bug 1)', () {
+    test('NBIRTH and NDATA carry the injected wall-clock epoch, not a stopwatch value', () async {
+      final server = await ServerSocket.bind('127.0.0.1', 0);
+      final broker = _BrokerServer(server);
+      addTearDown(server.close);
+      final project = _sparkplugProject(port: server.port);
+      // A real-world UTC epoch ms value — unmistakably NOT a small
+      // Stopwatch.elapsedMilliseconds reading (which would start near 0).
+      const fixedEpochMs = 1750000000000;
+      final host = MqttHost(nowMsOverride: () => fixedEpochMs);
+      addTearDown(host.dispose);
+
+      final connFuture = broker.acceptOne();
+      await host.connect(() => project, password: '');
+      final conn = await connFuture;
+      await _waitForPacketType(conn, MqttPacketType.connect, 1);
+      conn.sendConnackAccepted();
+
+      final birth = await _waitForPacketType(conn, MqttPacketType.publish, 1);
+      final birthPayload = sparkplug_decode.decodePayload(parsePublish(birth)!.payload);
+      expect(birthPayload.timestampMs, fixedEpochMs);
+
+      writePath(project, 'Speed', 42.5);
+      final change = await _waitForPacketType(conn, MqttPacketType.publish, 2);
+      final changePayload = sparkplug_decode.decodePayload(parsePublish(change)!.payload);
+      expect(changePayload.timestampMs, fixedEpochMs);
+
+      await host.disconnect();
+    });
+  });
+
+  group('MqttHost — Sparkplug rebirth (Bug 2)', () {
+    test('an inbound Node Control/Rebirth NCMD re-sends NBIRTH even when allowRemoteWrites is false', () async {
+      final server = await ServerSocket.bind('127.0.0.1', 0);
+      final broker = _BrokerServer(server);
+      addTearDown(server.close);
+      final project = _sparkplugProject(port: server.port); // allowRemoteWrites: false by default
+      final host = MqttHost();
+      addTearDown(host.dispose);
+
+      final connFuture = broker.acceptOne();
+      await host.connect(() => project, password: '');
+      final conn = await connFuture;
+      await _waitForPacketType(conn, MqttPacketType.connect, 1);
+      conn.sendConnackAccepted();
+
+      // Initial NBIRTH (publish #1).
+      await _waitForPacketType(conn, MqttPacketType.publish, 1);
+
+      // Even with allowRemoteWrites false, the host must still subscribe to
+      // the Sparkplug NCMD topic so it can service rebirth requests.
+      await _waitForPacketType(conn, MqttPacketType.subscribe, 1);
+
+      final rebirthPayload = encodePayload(SparkplugPayload(
+        timestampMs: 0,
+        seq: 0,
+        metrics: [
+          SparkplugMetric(name: 'Node Control/Rebirth', datatype: SparkplugDatatype.boolean, value: true),
+        ],
+      ));
+      final ncmdPacket = encodePublish(
+        topic: 'spBv1.0/SoftPLC/NCMD/Node1',
+        payload: rebirthPayload,
+      );
+      conn.sendRaw(ncmdPacket);
+
+      // The next PUBLISH (occurrence 2) must be a fresh NBIRTH.
+      final secondPublish = await _waitForPacketType(conn, MqttPacketType.publish, 2);
+      final secondPub = parsePublish(secondPublish)!;
+      expect(secondPub.topic, 'spBv1.0/SoftPLC/NBIRTH/Node1');
+      expect(secondPub.retain, isTrue);
+
+      await host.disconnect();
     });
   });
 
