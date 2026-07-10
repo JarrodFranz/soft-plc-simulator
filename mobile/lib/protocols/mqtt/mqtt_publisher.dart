@@ -667,6 +667,32 @@ _Varint? _readVarint(Uint8List data, int pos) {
   return null; // 10 continuation bytes without a terminator: malformed
 }
 
+/// Skips one protobuf field's value given its [wireType], returning the
+/// position after it, or null if malformed/unsupported. This lets the inbound
+/// decoder TOLERATE fields it doesn't model — `is_null`, `metadata`,
+/// `properties`, quality, `uuid`, `body`, etc. that a full Sparkplug host
+/// (e.g. Ignition's MQTT Engine) includes in NCMD metrics/payloads — by
+/// stepping over them instead of dropping the metric/payload entirely.
+int? _skipField(Uint8List data, int pos, int wireType) {
+  switch (wireType) {
+    case 0: // varint
+      final v = _readVarint(data, pos);
+      return v?.nextPos;
+    case 1: // 64-bit fixed
+      return pos + 8 <= data.length ? pos + 8 : null;
+    case 2: // length-delimited
+      final len = _readVarint(data, pos);
+      if (len == null || len.nextPos + len.value > data.length) {
+        return null;
+      }
+      return len.nextPos + len.value;
+    case 5: // 32-bit fixed
+      return pos + 4 <= data.length ? pos + 4 : null;
+    default: // groups (3/4) — deprecated/unsupported
+      return null;
+  }
+}
+
 int _fromUnsignedWireInt(int datatype, int raw) {
   switch (datatype) {
     case SparkplugDatatype.int8:
@@ -775,7 +801,15 @@ _SparkplugMetricIn? _decodeSparkplugMetric(Uint8List data) {
         pos = len.nextPos + len.value;
         break;
       default:
-        return null; // unknown field number — treat as garbage, bail safely
+        // A metric field this app doesn't model (is_null/metadata/properties/
+        // quality/...). A real host like Ignition includes these — skip by
+        // wire type rather than dropping the whole metric (which would make
+        // an inbound NCMD write silently decode to nothing).
+        final skipTo = _skipField(data, pos, tagV.value & 0x7);
+        if (skipTo == null) {
+          return null;
+        }
+        pos = skipTo;
     }
   }
   return _SparkplugMetricIn(name: name, alias: alias, value: value);
@@ -822,7 +856,13 @@ List<_SparkplugMetricIn> _decodeSparkplugPayload(Uint8List data) {
         pos = v.nextPos;
         break;
       default:
-        return metrics; // unknown/garbage field — stop, keep what decoded so far
+        // Unknown top-level Payload field (uuid/body/...) — skip by wire type
+        // instead of stopping, so a metric that follows it is still decoded.
+        final skipTo = _skipField(data, pos, tagV.value & 0x7);
+        if (skipTo == null) {
+          return metrics;
+        }
+        pos = skipTo;
     }
   }
   return metrics;

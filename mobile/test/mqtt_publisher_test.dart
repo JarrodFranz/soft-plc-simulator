@@ -289,6 +289,65 @@ void main() {
       expect(cmds, [(tagPath: 'Motor', value: true)]);
     });
 
+    // Regression: a real Sparkplug host (Ignition MQTT Engine) includes metric
+    // fields this app doesn't emit — is_null (7), properties (9) — plus a
+    // top-level Payload uuid (4). The decoder must SKIP unknown fields by wire
+    // type, not drop the metric. Before this fix these NCMDs decoded to zero
+    // commands, so writes from Ignition silently did nothing.
+    test('NCMD metric with extra unknown fields (Ignition-style) still resolves', () {
+      final p = _fixtureProject(format: 'sparkplug');
+      final publisher = MqttPublisher();
+      publisher.birthMessages(p, 1000); // Motor -> alias 1, metric name "Motor"
+
+      Uint8List ignitionMetric({String? name, int? alias}) {
+        final m = BytesBuilder();
+        if (name != null) {
+          _writeTag(m, 1, 2); // name (string)
+          _writeVarint(m, name.length);
+          m.add(name.codeUnits);
+        }
+        if (alias != null) {
+          _writeTag(m, 2, 0); // alias (varint)
+          _writeVarint(m, alias);
+        }
+        _writeTag(m, 4, 0); // datatype (varint)
+        _writeVarint(m, _SparkplugDatatype.boolean);
+        _writeTag(m, 7, 0); // is_null (varint) — UNKNOWN to our decoder
+        _writeVarint(m, 0);
+        _writeTag(m, 9, 2); // properties (empty submessage) — UNKNOWN, length-delimited
+        _writeVarint(m, 0);
+        _writeTag(m, 14, 0); // boolean_value (varint)
+        _writeVarint(m, 1);
+        return m.toBytes();
+      }
+
+      Uint8List payload(Uint8List metric) {
+        final out = BytesBuilder();
+        _writeTag(out, 1, 0);
+        _writeVarint(out, 0); // timestamp
+        _writeTag(out, 2, 2);
+        _writeVarint(out, metric.length);
+        out.add(metric); // metric
+        _writeTag(out, 3, 0);
+        _writeVarint(out, 0); // seq
+        _writeTag(out, 4, 2); // uuid (string) — UNKNOWN top-level Payload field
+        _writeVarint(out, 3);
+        out.add('abc'.codeUnits);
+        return out.toBytes();
+      }
+
+      // By name (how Ignition addresses NCMD writes), with the extra fields:
+      expect(
+        publisher.decodeCommand('spBv1.0/SoftPLC/NCMD/Node1', payload(ignitionMetric(name: 'Motor')), p),
+        [(tagPath: 'Motor', value: true)],
+      );
+      // And by alias, also with the extra fields:
+      expect(
+        publisher.decodeCommand('spBv1.0/SoftPLC/NCMD/Node1', payload(ignitionMetric(alias: 1)), p),
+        [(tagPath: 'Motor', value: true)],
+      );
+    });
+
     test('non-writable metric alias (Alarm) -> empty', () {
       final p = _fixtureProject(format: 'sparkplug');
       final publisher = MqttPublisher();
@@ -374,7 +433,7 @@ void main() {
     test('false for a payload without the Rebirth metric', () {
       final p = _fixtureProject(format: 'sparkplug');
       final publisher = MqttPublisher();
-      final payload = encodePayload(SparkplugPayload(
+      final payload = encodePayload(const SparkplugPayload(
         timestampMs: 0,
         seq: 0,
         metrics: [
