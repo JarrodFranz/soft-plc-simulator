@@ -1817,9 +1817,14 @@ class _GatewayScreenState extends State<GatewayScreen> {
                     child: Text('Allow remote writes', style: TextStyle(color: Colors.white70, fontSize: 12)),
                   ),
                   Switch(
+                    // Safe to toggle live (unlike format/topic/group/node,
+                    // which would break the Sparkplug stream): the host is
+                    // always subscribed to the command/NCMD topic and re-reads
+                    // this flag on every inbound message, so flipping it while
+                    // connected takes effect immediately without a reconnect.
                     key: const Key('mqtt_allow_remote_writes_switch'),
                     value: mqtt.allowRemoteWrites,
-                    onChanged: (connected || connecting) ? null : _setMqttAllowRemoteWrites,
+                    onChanged: _setMqttAllowRemoteWrites,
                   ),
                 ],
               ),

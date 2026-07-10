@@ -900,7 +900,10 @@ void main() {
 
       final allowRemoteWrites =
           tester.widget<Switch>(find.byKey(const Key('mqtt_allow_remote_writes_switch')));
-      expect(allowRemoteWrites.onChanged, isNull, reason: 'allow remote writes must be locked while connected');
+      expect(allowRemoteWrites.onChanged, isNotNull,
+          reason: 'allow remote writes must stay toggleable while connected — it is safe to '
+              'flip live (the host is always subscribed to the NCMD topic and re-reads the '
+              'flag per message), unlike the format/topic/group/node fields which are locked');
 
       final heartbeatField = tester.widget<TextFormField>(
         find.ancestor(of: find.text('Heartbeat (s)'), matching: find.byType(TextFormField)).first,
