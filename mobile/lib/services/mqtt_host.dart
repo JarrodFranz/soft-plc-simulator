@@ -525,9 +525,6 @@ class MqttHost extends ChangeNotifier {
       );
       _socket?.add(subscribePacket);
     }
-    if (kDebugMode) {
-      debugPrint('[MQTT] connected; subscribed to command topics: $filters');
-    }
 
     _startKeepAliveTimer();
     _startTickTimer();
@@ -561,14 +558,7 @@ class MqttHost extends ChangeNotifier {
     // `willMessage` call — a rebirth is not a new connection), seq reset to
     // 0, and the alias table/report-by-exception baseline rebuilt, all of
     // which `birthMessages` already does.
-    if (kDebugMode) {
-      debugPrint('[MQTT] inbound PUBLISH topic="${pub.topic}" bytes=${pub.payload.length}');
-    }
-
     if (_publisher.isRebirthRequest(pub.topic, pub.payload, project)) {
-      if (kDebugMode) {
-        debugPrint('[MQTT]   -> rebirth request; re-sending NBIRTH');
-      }
       final wallMs = _wallNowMs();
       for (final d in _publisher.birthMessages(project, wallMs)) {
         _sendPublish(d);
@@ -581,28 +571,15 @@ class MqttHost extends ChangeNotifier {
     }
 
     if (project.protocols?.mqtt?.allowRemoteWrites != true) {
-      if (kDebugMode) {
-        debugPrint('[MQTT]   -> dropped: allow-remote-writes is OFF');
-      }
       return;
     }
 
     final commands = _publisher.decodeCommand(pub.topic, pub.payload, project);
-    if (kDebugMode) {
-      debugPrint('[MQTT]   -> decodeCommand returned ${commands.length} command(s): '
-          '${commands.map((c) => '${c.tagPath}=${c.value}').join(', ')}');
-    }
     for (final cmd in commands) {
       if (_isForcedSkip(project, cmd.tagPath)) {
-        if (kDebugMode) {
-          debugPrint('[MQTT]   -> skipped ${cmd.tagPath}: tag is FORCED');
-        }
         continue;
       }
       writePath(project, cmd.tagPath, cmd.value);
-      if (kDebugMode) {
-        debugPrint('[MQTT]   -> applied writePath(${cmd.tagPath}) = ${cmd.value}');
-      }
     }
   }
 

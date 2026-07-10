@@ -61,6 +61,15 @@ Widget _app(PlcProject project, {required VoidCallback onProjectUpdated}) {
   );
 }
 
+/// The Modbus card now lives on its own tab (WS-tabs: the Outbound Protocols
+/// screen moved from one long vertical list of four cards into a scrollable
+/// `TabBar` + `TabBarView`) — select it before finding any Modbus-specific
+/// widget below.
+Future<void> _selectModbusTab(WidgetTester tester) async {
+  await tester.tap(find.byKey(const Key('protocol_tab_modbus')));
+  await tester.pumpAndSettle();
+}
+
 void main() {
   testWidgets('Add entry appends a default ModbusMapEntry to the project map', (tester) async {
     final project = _project();
@@ -68,6 +77,7 @@ void main() {
 
     await tester.pumpWidget(_app(project, onProjectUpdated: () => updates++));
     await tester.pumpAndSettle();
+    await _selectModbusTab(tester);
 
     expect(project.protocols!.modbus!.map.entries, isEmpty);
 
@@ -86,6 +96,7 @@ void main() {
     final project = _project();
     await tester.pumpWidget(_app(project, onProjectUpdated: () {}));
     await tester.pumpAndSettle();
+    await _selectModbusTab(tester);
 
     await tester.tap(find.widgetWithText(TextButton, 'Add entry'));
     await tester.pump();
@@ -133,6 +144,7 @@ void main() {
     final project = _project();
     await tester.pumpWidget(_app(project, onProjectUpdated: () {}));
     await tester.pumpAndSettle();
+    await _selectModbusTab(tester);
 
     await tester.tap(find.widgetWithText(TextButton, 'Add entry'));
     await tester.pump();
@@ -162,6 +174,7 @@ void main() {
 
     await tester.pumpWidget(_app(project, onProjectUpdated: () {}));
     await tester.pumpAndSettle();
+    await _selectModbusTab(tester);
 
     await tester.tap(find.widgetWithText(TextButton, 'Add entry'));
     await tester.pump();
@@ -184,6 +197,7 @@ void main() {
     await setSurface(tester, smallPhoneSize);
     await tester.pumpWidget(_app(project, onProjectUpdated: () {}));
     await tester.pumpAndSettle();
+    await _selectModbusTab(tester);
 
     final addEntryFinder = find.widgetWithText(TextButton, 'Add entry');
     await tester.ensureVisible(addEntryFinder);
@@ -199,6 +213,7 @@ void main() {
     await setSurface(tester, const Size(360, 800));
     await tester.pumpWidget(_app(project, onProjectUpdated: () {}));
     await tester.pumpAndSettle();
+    await _selectModbusTab(tester);
 
     final addEntryFinder = find.widgetWithText(TextButton, 'Add entry');
     await tester.ensureVisible(addEntryFinder);
@@ -214,6 +229,7 @@ void main() {
     await setSurface(tester, desktopSize);
     await tester.pumpWidget(_app(project, onProjectUpdated: () {}));
     await tester.pumpAndSettle();
+    await _selectModbusTab(tester);
 
     final addEntryFinder = find.widgetWithText(TextButton, 'Add entry');
     await tester.ensureVisible(addEntryFinder);

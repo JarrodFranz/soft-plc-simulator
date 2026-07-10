@@ -606,41 +606,76 @@ class _GatewayScreenState extends State<GatewayScreen> {
     return opcua.map.nodes.length;
   }
 
+  /// Per-protocol tabs (mobile-first — see the design spec referenced at the
+  /// top of this file): a scrollable `TabBar` (so four short labels always
+  /// fit, even at 320px) plus a `TabBarView` showing the selected protocol's
+  /// existing card. Each card builder is reused UNCHANGED — only its
+  /// placement moved, from one long vertical list to its own tab — so every
+  /// field/toggle/host-wiring/native-only note below is identical to before
+  /// this restructuring.
+  static const List<Tab> _protocolTabs = [
+    Tab(key: Key('protocol_tab_opcua'), text: 'OPC UA'),
+    Tab(key: Key('protocol_tab_modbus'), text: 'Modbus'),
+    Tab(key: Key('protocol_tab_mqtt'), text: 'MQTT'),
+    Tab(key: Key('protocol_tab_dnp3'), text: 'DNP3'),
+  ];
+
   @override
   Widget build(BuildContext context) {
     _ensureProtocols();
     final tagOptions = leafAndNodePaths(widget.currentProject);
 
-    return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
-      appBar: AppBar(
-        title: const Text('Outbound Protocols'),
-        backgroundColor: const Color(0xFF1E293B),
-      ),
-      body: ListenableBuilder(
-        listenable: Listenable.merge([widget.host, widget.modbusHost, widget.mqttHost, widget.dnpHost]),
-        builder: (context, _) {
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    return DefaultTabController(
+      length: _protocolTabs.length,
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0F172A),
+        appBar: AppBar(
+          title: const Text('Outbound Protocols'),
+          backgroundColor: const Color(0xFF1E293B),
+          bottom: const TabBar(
+            isScrollable: true,
+            tabs: _protocolTabs,
+          ),
+        ),
+        body: ListenableBuilder(
+          listenable: Listenable.merge([widget.host, widget.modbusHost, widget.mqttHost, widget.dnpHost]),
+          builder: (context, _) {
+            // Each tab body scrolls independently (a card can be tall — e.g.
+            // MQTT with its map editor) and is wrapped in
+            // `_KeepAliveTabBody` so switching tabs never disposes/rebuilds
+            // the host-status/notifier wiring those cards depend on — the
+            // hosts themselves stay owned by whoever passed them in (the
+            // workspace shell), never created/disposed here.
+            return TabBarView(
               children: [
-                const Text(
-                  'Protocols',
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                _KeepAliveTabBody(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(12),
+                    child: _buildOpcUaCard(context, tagOptions),
+                  ),
                 ),
-                const SizedBox(height: 8),
-                _buildOpcUaCard(context, tagOptions),
-                const SizedBox(height: 12),
-                _buildModbusCard(context, tagOptions),
-                const SizedBox(height: 12),
-                _buildDnpCard(context, tagOptions),
-                const SizedBox(height: 12),
-                _buildMqttCard(context, tagOptions),
+                _KeepAliveTabBody(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(12),
+                    child: _buildModbusCard(context, tagOptions),
+                  ),
+                ),
+                _KeepAliveTabBody(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(12),
+                    child: _buildMqttCard(context, tagOptions),
+                  ),
+                ),
+                _KeepAliveTabBody(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(12),
+                    child: _buildDnpCard(context, tagOptions),
+                  ),
+                ),
               ],
-            ),
-          );
-        },
+            );
+          },
+        ),
       ),
     );
   }
@@ -2040,5 +2075,35 @@ class _GatewayScreenState extends State<GatewayScreen> {
         },
       ),
     );
+  }
+}
+
+/// Keeps a `TabBarView` page's subtree alive when it scrolls out of view
+/// (rather than disposing/rebuilding it on every tab switch), via the
+/// standard [AutomaticKeepAliveClientMixin] pattern — `TabBarView`'s
+/// underlying `PageView` honors keep-alive requests from its children's
+/// slivers, so wrapping each protocol card's tab body in this is enough to
+/// preserve its subtree without this screen creating/disposing anything
+/// itself. The hosts (`host`/`modbusHost`/`mqttHost`/`dnpHost`) are already
+/// owned by the parent regardless — this only protects the tab body's own
+/// widget subtree/scroll position from being torn down on every switch.
+class _KeepAliveTabBody extends StatefulWidget {
+  const _KeepAliveTabBody({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_KeepAliveTabBody> createState() => _KeepAliveTabBodyState();
+}
+
+class _KeepAliveTabBodyState extends State<_KeepAliveTabBody>
+    with AutomaticKeepAliveClientMixin<_KeepAliveTabBody> {
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context); // required by AutomaticKeepAliveClientMixin
+    return widget.child;
   }
 }
