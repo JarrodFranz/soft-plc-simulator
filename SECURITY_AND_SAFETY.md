@@ -14,14 +14,13 @@
 
 ## 🔒 Protocol Security Architecture
 
-When exposing simulated controllers to network interfaces via the Companion Gateway or local protocol adapters, security controls must be maintained:
+When exposing simulated controllers to network interfaces via the app's in-app protocol hosts (OPC UA, Modbus TCP, MQTT, DNP3 — see ADR-010 in `DECISIONS.md`), security controls must be maintained:
 
 ### 1. OPC UA Security
 - **Endpoints**:
-  - `None`: Development and offline virtual commissioning only.
-  - `Basic256Sha256` / `Aes128_Sha256_RsaOaep`: Enabled for secure SCADA testing.
-- **Authentication**: User token policies (Username/Password, X.509 Certificates). Anonymous access disabled by default in production-testing profiles.
-- **Certificates**: Self-signed development certificates auto-generated in sandbox folder (`/gateway/certs`); trust lists managed in configurable PKI directories.
+  - `None`: what v1 implements today — anonymous auth, no encryption. Appropriate for LAN commissioning/training only (see `docs/protocols/opcua.md`).
+  - `Basic256Sha256` / `Aes128_Sha256_RsaOaep` and user-token authentication (Username/Password, X.509 Certificates): **not yet implemented** — deferred to a later version if warranted (see ADR-010 in `DECISIONS.md`).
+- **Certificates**: None are generated or required in v1 (Security Policy `None` only); a PKI/trust-list story is deferred alongside encryption support above.
 
 ### 2. Modbus TCP Security
 - **Raw Modbus Warning**: Modbus TCP lacks inherent encryption or authentication.
@@ -40,5 +39,6 @@ When exposing simulated controllers to network interfaces via the Companion Gate
 
 ## 📱 Mobile Networking & OS Limits
 
-- **Inbound Port Restrictions**: Mobile operating systems prohibit binding privileged ports (<1024) without root access. Modbus TCP (port 502) and OPC UA (port 4840) should be mapped to non-privileged ports (>1024) on mobile or hosted via the Companion Gateway.
-- **Background Execution Limits**: Mobile operating systems terminate idle TCP servers when the app moves to the background. Use Companion Gateway mode for persistent protocol server deployments.
+- **Inbound Port Restrictions**: Mobile operating systems prohibit binding privileged ports (<1024) without root access. Modbus TCP (port 502) and OPC UA (port 4840) should be reconfigured to non-privileged ports (>1024, e.g. `5020`/`14840`) when hosting directly from an Android/iOS device — the port fields in the Outbound Protocols screen are user-editable for this reason.
+- **Background Execution Limits**: iOS accepts new inbound connections only while the app is foregrounded; backgrounding pauses hosting until the app is foregrounded again. Android continues hosting while the app process is alive but requires the client on the same LAN (no NAT traversal/port-forwarding). These are OS constraints on the in-app protocol hosts (ADR-010), not gaps to be worked around with a companion process.
+- **On-device network permissions**: the app declares its cosmetic identity (icons, bundle id) but has **not yet** added the platform network permissions the protocol hosts need at the OS level (iOS `NSLocalNetworkUsageDescription`, Android `INTERNET`) — see `SHIPPING.md`.

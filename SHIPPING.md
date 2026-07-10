@@ -114,6 +114,12 @@ that the scaffolded runners already register. No extra runtime storage
 permissions are required for the SAF/document-picker flows used here.
 
 ## Not in scope of this readiness pass (do before/at launch)
+- **On-device network permissions**: the app hosts four in-app protocol
+  servers (OPC UA/Modbus TCP/MQTT/DNP3, see ADR-010) and needs the
+  platform's network permissions declared to actually bind/reach sockets on
+  a real device — iOS `NSLocalNetworkUsageDescription` (Info.plist) and the
+  Android `INTERNET` permission (AndroidManifest.xml) — neither is added
+  yet.
 - Developer accounts, signing certificates/keystores, provisioning, store
   uploads and listings (screenshots, description, privacy policy).
 - Installing local toolchain gaps (Android cmdline-tools/licenses, Windows 10

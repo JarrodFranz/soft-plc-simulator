@@ -2,7 +2,7 @@
 name = "soft-plc-gateway"
 version = "0.1.0"
 edition = "2024"
-description = "Companion Gateway process exposing industrial protocols (OPC UA, Modbus TCP, MQTT, DNP3)"
+description = "Dev-time harness of third-party reference protocol clients (OPC UA, Modbus, MQTT, DNP3) that machine-verify the app's in-app servers (ADR-010)"
 license = "MIT OR Apache-2.0"
 
 [dependencies]

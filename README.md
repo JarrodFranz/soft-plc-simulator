@@ -12,7 +12,7 @@ The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators
 
 ---
 
-## ✨ Features & Progress (Phase 3 Active — ALL IEC 61131-3 Languages)
+## ✨ Features & Progress (Full Protocol Suite Shipped — OPC UA, Modbus TCP, MQTT+Sparkplug B, DNP3)
 
 - **ALL IEC 61131-3 Programming Languages Supported**:
   - **Structured Text (ST)**: Textual IDE with live autocomplete suggestions (`IF`, `WHILE`, `FOR`, `TON`), code templates, AST compilation, and real-time AST interpreter.
@@ -53,21 +53,22 @@ The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators
   │       In-App Simulation Stack (pure Dart models)       │
   │  - Path Resolver (structs/bits/arrays)                 │
   │  - Simulated I/O Rules Engine (pulse/ramp/integrate)   │
-  │  - Ladder Execution Engine (power flow + TON/TOF)      │
-  │  - Scan pipeline: sim inputs → LD programs → outputs   │
-  └───────────────────────────┬────────────────────────────┘
-                              │ Native FFI (Local) / WebSocket (Gateway)
-  ┌───────────────────────────┴────────────────────────────┐
-  │        Soft PLC Runtime Core (Rust — native modes)     │
+  │  - LD/FBD/SFC/ST Execution Engines (scan-tick clock)   │
+  │  - Scan pipeline: sim inputs → programs → outputs      │
   ├────────────────────────────────────────────────────────┤
-  │        Tag Database, Structs (DUT) & I/O Image         │
-  ├────────────────────────────────────────────────────────┤
-  │                 Protocol Adapter Layer                 │
+  │   In-App Protocol Servers (pure Dart, dart:io sockets) │
+  │   — hosted directly by this same app, no companion —  │
   ├──────────────┬──────────────┬──────────────┬───────────┤
-  │    OPC UA    │  Modbus TCP  │     MQTT     │   DNP3    │
-  │   Server     │   Server     │ Client/Bridge│ Outstation│
+  │    OPC UA    │  Modbus TCP  │  MQTT + SpB  │   DNP3    │
+  │   Server     │   Server     │  Publisher   │ Outstation│
   └──────────────┴──────────────┴──────────────┴───────────┘
 ```
+
+Per **ADR-010** (`DECISIONS.md`), all four protocol servers run **in-process**
+inside this one app — there is no companion/gateway process at runtime. The
+`gateway/` Rust crate still exists in the repo, but only as a set of
+third-party reference clients used to machine-verify the in-app servers (see
+`docs/protocols/`).
 
 ---
 
@@ -136,23 +137,29 @@ flutter run -d linux
 
 ---
 
-### Mode B: Running the Companion Gateway (Rust Process)
+### Retired: Companion Gateway (Rust Process)
 
-The Companion Gateway hosts high-performance protocol adapters on a desktop, server, or edge device (e.g. Raspberry Pi) while synchronizing with mobile apps.
+> **Superseded by ADR-010.** The app hosts all four industrial protocols
+> (OPC UA, Modbus TCP, MQTT + Sparkplug B, DNP3) **in-process** — there is no
+> companion process to run to expose protocols. The `gateway/` crate below is
+> kept only as a dev-time harness of third-party reference clients
+> (`opcua`, `tokio-modbus`, `rumqttd`/`rumqttc`, `dnp3`) that machine-verify
+> the in-app Dart servers end-to-end (see `docs/protocols/` and the
+> `tool/*_e2e.sh` scripts). You do not need to run it to use any protocol
+> feature — enable protocols from the app's **Outbound Protocols** screen
+> instead.
 
 Navigate to the `gateway` directory:
 ```bash
 cd gateway
 ```
 
-#### 1. Run the Gateway Console Process
+#### Run the E2E reference-client examples
 ```bash
-cargo run
-```
-
-#### 2. Run Gateway in Release Mode (Optimized Performance)
-```bash
-cargo run --release
+cargo run --example opcua_probe
+cargo run --example modbus_probe
+cargo run --example mqtt_probe
+cargo run --example dnp3_probe
 ```
 
 ---
@@ -188,14 +195,14 @@ flutter analyze
 | **Phase 1** | Tag Database, Scan Engine & Ladder Logic ISA | ✅ Completed |
 | **Phase 2** | Structured Text (ST) Engine, ST Autocomplete IDE, Memory Manager & Custom HMI Builder | ✅ Completed |
 | **Phase 3** | IEC 61131-3 language editors (ST, LD, FBD, SFC) — LD rebuilt on a node-and-wire graph (right-pinned terminal coils, movable OR branches, continuous power rails) | ✅ Completed |
-| **Phase 3.5** | Structured tag system (DUT-typed tags, arrays, bit/member path resolver), Simulated I/O rules engine, and in-app **ladder execution** (power-flow interpreter + live TON/TOF timers). SFC/FBD/ST execution engines | 🔄 **ACTIVE — LD execution shipped; SFC next** |
-| **Phase 4** | Industrial OPC UA Server Adapter | ⏳ Planned |
-| **Phase 5** | Modbus TCP Server Adapter | ⏳ Planned |
-| **Phase 6** | MQTT Client / Sparkplug B Publisher | ⏳ Planned |
-| **Phase 7** | Touch HMI Controls & Mobile UI Polish | ⏳ Planned |
-| **Phase 8** | DNP3 Outstation Protocol Adapter | ⏳ Planned |
-| **Phase 9** | Advanced Process Simulation Engine | ⏳ Planned |
-| **Phase 10** | Release Packaging, Installers & Examples | ⏳ Planned |
+| **Phase 3.5** | Structured tag system (DUT-typed tags, arrays, bit/member path resolver), Simulated I/O rules engine, and in-app execution engines for LD, SFC, FBD, and ST | ✅ Completed |
+| **Phase 4** | Industrial OPC UA Server Adapter — in-app pure-Dart server, real-client E2E-verified (ADR-010) | ✅ Shipped |
+| **Phase 5** | Modbus TCP Server Adapter — in-app pure-Dart server, real-client E2E-verified | ✅ Shipped |
+| **Phase 6** | MQTT Client / Sparkplug B Publisher — in-app pure-Dart publisher, real-broker E2E-verified | ✅ Shipped |
+| **Phase 7** | Touch HMI Controls & Mobile UI Polish | 🔄 Active — responsive layout, editor polish, undo/redo shipped; haptics & native packaging ⏳ |
+| **Phase 8** | DNP3 Outstation Protocol Adapter — in-app pure-Dart outstation, real-master E2E-verified | ✅ Shipped |
+| **Phase 9** | Advanced Process Simulation Engine | ✅ Completed |
+| **Phase 10** | Release Packaging, Installers & Examples | 🔄 Active — identity/icons/splash done; signed store builds remain |
 
 ---
 

@@ -43,18 +43,17 @@ The **Mobile Soft PLC Simulator** empowers automation engineers, SCADA developer
 - **Mobile UI Scaffold**: Basic Flutter app with status dashboard, tag browser, and manual I/O forcing controls.
 
 ### Future Scope (Phases 4–10)
-- **Full IEC Languages**: Complete Structured Text (ST) and Ladder Logic (LD) compilers, Function Block Diagram (FBD), and Sequential Function Chart (SFC).
-- **Industrial Protocols**: Native OPC UA Server, Modbus TCP Server, MQTT client (with Sparkplug B), and DNP3 Outstation.
-- **Companion Gateway Mode**: High-performance Rust desktop/server process exposing protocol servers while synchronizing with mobile devices via WebSockets.
-- **Process Simulation Engine**: Built-in process models (tank level, PID thermal loop, conveyor motor).
-- **PLCopen XML**: Import/Export compatibility with standard IEC 61131-3 tools.
+- **Full IEC Languages** ✅ Shipped: Structured Text (ST) and Ladder Logic (LD), Function Block Diagram (FBD), and Sequential Function Chart (SFC) all execute.
+- **Industrial Protocols** ✅ Shipped: in-app OPC UA Server, Modbus TCP Server, MQTT client (with Sparkplug B), and DNP3 Outstation — all hosted **in-process by the single app** (ADR-010), not a separate gateway.
+- **Process Simulation Engine** ✅ Shipped: Built-in process models (tank level, PID thermal loop, conveyor motor).
+- **PLCopen XML**: Import/Export compatibility with standard IEC 61131-3 tools. ⏳ Not yet implemented.
 
 ---
 
 ## ⚠️ Risks and Constraints
 
 1. **Mobile OS Networking Restrictions**: Mobile operating systems (iOS and Android) heavily restrict inbound socket servers, custom port binding (<1024), and background thread execution.
-   - *Mitigation*: Dual-mode architecture utilizing a Companion Gateway for heavy protocol hosting.
+   - *Mitigation*: Per ADR-010, the app hosts protocol servers **in-process** on a normal (non-privileged) port; iOS accepts connections only while foregrounded and Android requires the client on the same LAN — documented OS constraints, not gaps.
 2. **Deterministic Scan Timing**: Mobile background task schedulers do not guarantee microsecond deterministic execution.
    - *Mitigation*: Clear UI indicators for scan jitter and overrun warnings.
 3. **Cross-Platform FFI Overhead**: Passing tag updates between Rust core and Flutter UI across native boundary.

@@ -29,6 +29,10 @@ The Mobile Soft PLC Simulator is architected as a modular, decoupled system sepa
   └────────────────────────────────────────────────────────┘
 ```
 
+> This is the generic layer stack; see **"Operating Modes"** below for how
+> these layers are actually deployed today — a single app hosts every layer
+> in-process (ADR-010), with no separate companion process required.
+
 ---
 
 ## 🏛️ Layer Descriptions
@@ -77,13 +81,14 @@ The Mobile Soft PLC Simulator is architected as a modular, decoupled system sepa
   }
   ```
 
-### 4. Protocol Adapter Layer (`/gateway` & `/docs/protocols`)
-- **Responsibility**: Exposes tag database state over standard industrial protocols.
-- **Adapters**:
-  - **OPC UA**: Maps tags to OPC UA Variable Nodes under custom namespaces.
-  - **Modbus TCP**: Maps tags to standard coil and register tables.
-  - **MQTT**: Publishes tag state changes to broker topics and handles command subscriptions.
-  - **DNP3**: Exposes outstation point types (Binary Inputs, Analog Inputs, Counters, CROB).
+### 4. Protocol Adapter Layer (`mobile/lib/protocols/` & `/docs/protocols`) — shipped in-app, per ADR-010
+- **Responsibility**: Exposes tag database state over standard industrial protocols. All four adapters are pure Dart, run **in-process inside the app** (no companion service — see "Operating Modes" below), and are opt-in per project from the Outbound Protocols screen.
+- **Adapters** (all shipped):
+  - **OPC UA**: Maps tags to OPC UA Variable Nodes under a project namespace; Browse/Read/Write + Subscriptions.
+  - **Modbus TCP**: Maps tags to standard coil and register tables (8 function codes).
+  - **MQTT + Sparkplug B**: Publishes tag state changes (JSON or Sparkplug B) to a broker the app dials out to; opt-in remote writes.
+  - **DNP3**: Exposes outstation point types (Binary/Analog Inputs & Outputs) with Class 0 polling and SELECT/OPERATE/DIRECT_OPERATE control.
+- The `/gateway` Rust crate is **not** part of this runtime layer — it is a dev-time harness of third-party reference clients used to machine-verify the in-app servers (see ADR-010 below).
 
 ---
 

@@ -1,5 +1,13 @@
 # Protocol Specification: Modbus TCP Server
 
+> **Superseded by `docs/protocols/modbus.md`.** This file is the original
+> pre-implementation design sketch. The shipped in-app pure-Dart Modbus TCP
+> server (Phase 5, ADR-010) implements 0-based addressing per table (not the
+> 5-digit Modicon `4xxxx` convention below) and has **no configurable word
+> swap** — 32-bit types are always big-endian, high-word-first. Treat
+> `docs/protocols/modbus.md` as authoritative for anything the two disagree
+> on; this page is kept as historical context, not a current spec.
+
 ## 📌 Overview
 
 The Modbus TCP Server adapter enables legacy SCADA systems, PLCs, and Modbus masters (e.g., Modscan, QModMaster) to interface with the Soft PLC simulator.

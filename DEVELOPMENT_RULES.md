@@ -12,7 +12,7 @@ These rules are mandatory for all human developers and LLM AI agents contributin
 2. **Strict Decoupling of Architecture**:
    - **UI Layer (`/mobile` widgets/screens)**: Must NOT contain protocol handling or simulation/execution logic. The standalone simulator's engines live in **`/mobile/lib/models`** as **pure Dart modules** (tag path resolver, simulated-I/O rules engine, ladder execution engine — see ADR-009): they must stay free of Flutter imports, be unit-testable in isolation, and preserve the same observable scan semantics as the Rust core so they remain replaceable by it.
    - **Runtime Core (`/runtime`)**: Must remain independent of Flutter/Dart UI imports. Communication must happen strictly through clean APIs or FFI boundaries.
-   - **Protocol Adapters (`/gateway` & `/docs/protocols`)**: Must read and write tag values ONLY through the `TagDatabase` API. Never inject protocol-specific logic into the scan engine.
+   - **Protocol Adapters (`mobile/lib/protocols/` & `/docs/protocols`)**: Shipped in-app per ADR-010 (pure Dart, no companion process). Must read and write tag values ONLY through the tag database's force-aware path resolver. Never inject protocol-specific logic into the scan engine. The `/gateway` crate is no longer a runtime protocol adapter — it is a dev-time harness of third-party reference clients used to E2E-verify the in-app servers.
 
 3. **No Safety Certification Claims**:
    - NEVER present or describe this application as a production safety-certified PLC (SIL/IEC 61508). Always maintain simulator warnings in UI, logs, and documentation.

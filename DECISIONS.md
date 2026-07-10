@@ -34,7 +34,7 @@
 
 ## ADR-003: Dual Operating Modes (Local Mobile vs. Companion Gateway)
 
-- **Status**: Accepted
+- **Status**: Accepted historically; **Mode B (Companion Gateway) superseded by ADR-010** — the app now hosts all protocols in-process. Mode A is unaffected.
 - **Context**: Mobile OS platforms (iOS & Android) enforce strict networking policies (blocking inbound server ports <1024, terminating background TCP servers, aggressive battery sleep).
 - **Decision**: Architect the system to support two distinct operating modes:
   - **Mode A (Local Mobile Simulator)**: Runtime embedded directly in the mobile app via FFI for self-contained simulation.
