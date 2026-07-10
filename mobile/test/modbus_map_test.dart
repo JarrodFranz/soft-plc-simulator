@@ -29,6 +29,24 @@ void main() {
     expect([e('Level').table, e('Level').address, e('Level').access], ['input', 0, 'ReadOnly']);
   });
 
+  test('autoGenerate skips array/struct tags (value shape, not just dataType)', () {
+    final p = PlcProject(id: 'x', name: 'X', controllerName: 'C', structDefs: const [],
+      programs: const [], tasks: const [], hmis: const [], tags: [
+        PlcTag(name: 'Speed', path: 'Speed', dataType: 'INT16', value: 0, ioType: 'Internal'), // scalar -> mapped
+        // Array of a scalar: dataType stays 'INT32' (passes the scalar-type
+        // filter) but value is a List — must be skipped, not mapped as one reg.
+        PlcTag(name: 'Trend', path: 'Trend', dataType: 'INT32', value: <int>[0, 0, 0],
+          arrayLength: 3, ioType: 'Internal'),
+        // Struct: value is a Map (dataType would be a custom type name anyway).
+        PlcTag(name: 'Motor', path: 'Motor', dataType: 'MotorType', value: <String, dynamic>{'run': false},
+          ioType: 'Internal'),
+      ]);
+    final m = ModbusMap.autoGenerate(p);
+    expect(m.entries.map((e) => e.tag), ['Speed']);
+    expect(m.entries.any((e) => e.tag == 'Trend'), isFalse);
+    expect(m.entries.any((e) => e.tag == 'Motor'), isFalse);
+  });
+
   test('ModbusProtocolConfig round-trips and ProtocolSettings omits modbus when null', () {
     final cfg = ModbusProtocolConfig(enabled: true, port: 5020,
       map: ModbusMap(entries: [ModbusMapEntry(tag: 'Run', table: 'coil', address: 3, access: 'ReadWrite')]));

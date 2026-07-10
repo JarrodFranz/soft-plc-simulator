@@ -101,6 +101,14 @@ class ModbusMap {
     final entries = <ModbusMapEntry>[];
     for (final tag in p.tags) {
       final dataType = tag.dataType;
+      // Skip composite tags by VALUE SHAPE, not just dataType. A struct's
+      // dataType already fails `scalarTypes`, but an ARRAY of a scalar (e.g.
+      // `INT32[10]`) keeps its scalar `dataType` while carrying a List value —
+      // without this guard it would be mapped as a single register. Matches
+      // OpcuaMap.autoGenerate / DnpMap.autoGenerate.
+      if (tag.value is Map || tag.value is List) {
+        continue;
+      }
       if (skipTypes.contains(dataType) || !scalarTypes.contains(dataType)) {
         continue;
       }
