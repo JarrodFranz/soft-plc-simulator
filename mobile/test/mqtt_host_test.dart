@@ -589,7 +589,7 @@ void main() {
       // the Sparkplug NCMD topic so it can service rebirth requests.
       await _waitForPacketType(conn, MqttPacketType.subscribe, 1);
 
-      final rebirthPayload = encodePayload(SparkplugPayload(
+      final rebirthPayload = encodePayload(const SparkplugPayload(
         timestampMs: 0,
         seq: 0,
         metrics: [
