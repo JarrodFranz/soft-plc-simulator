@@ -94,10 +94,21 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
   bool _dragTapEnd = false; // true = dragging the tap (start) handle; false = merge (end)
   double _dragX = 0;
 
+  // Unified horizontal scroll for the non-compact (desktop) rung list, used
+  // only when the widest rung exceeds the available pane width. Persistent
+  // so the Scrollbar's drag-thumb and scroll position survive rebuilds.
+  final ScrollController _hScrollCtrl = ScrollController();
+
   @override
   void initState() {
     super.initState();
     _ensureDefaultRungs();
+  }
+
+  @override
+  void dispose() {
+    _hScrollCtrl.dispose();
+    super.dispose();
   }
 
   void _ensureDefaultRungs() {
@@ -212,19 +223,73 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
   Widget _buildRungList({required bool compact}) {
     if (!compact) {
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Container(width: _kRailW, color: Colors.greenAccent), // continuous L1
-          Expanded(
-            child: ListView.separated(
-              itemCount: widget.program.rungs.length,
-              separatorBuilder: (_, __) => const SizedBox(height: _kRungGap),
-              itemBuilder: (context, i) => _buildRungCanvas(widget.program.rungs[i], i),
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          double maxContentW = 0;
+          for (final r in widget.program.rungs) {
+            final w = ldMinContentWidth(r, colAssignment(r));
+            if (w > maxContentW) {
+              maxContentW = w;
+            }
+          }
+          final innerW = constraints.maxWidth - 2 * _kRailW;
+
+          if (maxContentW <= innerW) {
+            // Ladder fits the pane — no horizontal scroll needed; keep the
+            // existing natural-width layout unchanged.
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(width: _kRailW, color: Colors.greenAccent), // continuous L1
+                Expanded(
+                  child: ListView.separated(
+                    itemCount: widget.program.rungs.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: _kRungGap),
+                    itemBuilder: (context, i) => _buildRungCanvas(widget.program.rungs[i], i),
+                  ),
+                ),
+                Container(width: _kRailW, color: Colors.blueAccent), // continuous L2
+              ],
+            );
+          }
+
+          // Ladder is wider than the pane: scroll the whole rail+rungs
+          // assembly horizontally as one unit, with a visible, mouse-draggable
+          // scrollbar (a desktop mouse wheel drives the vertical ListView, so
+          // per-rung scrolling with no scrollbar left no way to reach the
+          // right-hand side — see fix/ld-horizontal-scroll).
+          final contentW = maxContentW;
+          final rails = Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(width: _kRailW, color: Colors.greenAccent), // continuous L1
+              SizedBox(
+                width: contentW,
+                child: ListView.separated(
+                  itemCount: widget.program.rungs.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: _kRungGap),
+                  itemBuilder: (context, i) =>
+                      _buildRungCanvas(widget.program.rungs[i], i, fixedWidth: contentW),
+                ),
+              ),
+              Container(width: _kRailW, color: Colors.blueAccent), // continuous L2
+            ],
+          );
+
+          return Scrollbar(
+            controller: _hScrollCtrl,
+            thumbVisibility: true,
+            child: SingleChildScrollView(
+              controller: _hScrollCtrl,
+              scrollDirection: Axis.horizontal,
+              child: SizedBox(
+                width: contentW + 2 * _kRailW,
+                height: constraints.maxHeight,
+                child: rails,
+              ),
             ),
-          ),
-          Container(width: _kRailW, color: Colors.blueAccent), // continuous L2
-        ],
+          );
+        },
       );
     }
 
@@ -462,7 +527,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     widget.onProgramUpdated();
   }
 
-  Widget _buildRungCanvas(LdRung rung, int index, {bool compact = false}) {
+  Widget _buildRungCanvas(LdRung rung, int index, {bool compact = false, double? fixedWidth}) {
     final col = colAssignment(rung);
     final height = _rungHeight(rung);
 
@@ -515,8 +580,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           LayoutBuilder(
             builder: (context, constraints) {
               final minW = ldMinContentWidth(rung, col);
-              final width = constraints.maxWidth > minW ? constraints.maxWidth : minW;
-              final needsScroll = minW > constraints.maxWidth;
+              final width = fixedWidth ?? (constraints.maxWidth > minW ? constraints.maxWidth : minW);
+              final needsScroll = fixedWidth == null && minW > constraints.maxWidth;
               final canvas = SizedBox(
                 height: height,
                 width: width,
