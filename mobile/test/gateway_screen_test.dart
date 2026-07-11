@@ -634,6 +634,116 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets('renders the word-swap switch and unit-id field with their defaults', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, modbusTabKey);
+
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+
+      expect(find.byKey(const Key('modbus_word_swap_switch')), findsOneWidget);
+      final wordSwapSwitch = tester.widget<Switch>(find.byKey(const Key('modbus_word_swap_switch')));
+      expect(wordSwapSwitch.value, false);
+
+      expect(find.byKey(const Key('modbus_unit_id_field')), findsOneWidget);
+      expect(find.widgetWithText(TextField, '255'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('toggling the word-swap switch updates ModbusProtocolConfig.wordSwap', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, modbusTabKey);
+
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+      expect(project.protocols?.modbus?.wordSwap, false);
+
+      await tester.tap(find.byKey(const Key('modbus_word_swap_switch')));
+      await tester.pump();
+
+      expect(project.protocols?.modbus?.wordSwap, true);
+      final wordSwapSwitch = tester.widget<Switch>(find.byKey(const Key('modbus_word_swap_switch')));
+      expect(wordSwapSwitch.value, true);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('editing the unit-id field updates ModbusProtocolConfig.unitId', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, modbusTabKey);
+
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+
+      await tester.enterText(find.byKey(const Key('modbus_unit_id_field')), '12');
+      await tester.pump();
+
+      expect(project.protocols?.modbus?.unitId, 12);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('an out-of-range unit id (>255) is ignored, keeping the last-valid value', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, modbusTabKey);
+
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+
+      await tester.enterText(find.byKey(const Key('modbus_unit_id_field')), '9999');
+      await tester.pump();
+
+      expect(project.protocols?.modbus?.unitId, 255); // unchanged — 9999 rejected
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('word-swap switch and unit-id field are locked while hosting is running', (tester) async {
+      final project = _project();
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.modbus!.enabled = true;
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _RunningModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, modbusTabKey);
+
+      final wordSwapSwitch = tester.widget<Switch>(find.byKey(const Key('modbus_word_swap_switch')));
+      expect(wordSwapSwitch.onChanged, isNull);
+
+      final unitIdField = tester.widget<TextField>(find.byKey(const Key('modbus_unit_id_field')));
+      expect(unitIdField.enabled, false);
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('toggling the Modbus switch OFF hides the config again', (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();

@@ -9,6 +9,7 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/dnp3_map.dart';
+import 'package:soft_plc_mobile/models/modbus_map.dart';
 import 'package:soft_plc_mobile/models/mqtt_map.dart';
 import 'package:soft_plc_mobile/models/opcua_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
@@ -402,6 +403,80 @@ void main() {
       final settingsJson = settings.toJson();
       expect(settingsJson.containsKey('password'), isFalse);
       expect(jsonEncode(settingsJson).contains('password'), isFalse);
+    });
+  });
+
+  group('ModbusProtocolConfig / ProtocolSettings.modbus', () {
+    test('ModbusProtocolConfig.fromJson tolerates missing keys with sane defaults', () {
+      final cfg = ModbusProtocolConfig.fromJson({});
+      expect(cfg.enabled, isFalse);
+      expect(cfg.port, 502);
+      expect(cfg.map.entries, isEmpty);
+      // Additive fields (server word-order + unit-id options): older saved
+      // projects have neither key, and must fall back to the defaults that
+      // preserve the ORIGINAL wire behavior (no swap, accept any unit id).
+      expect(cfg.wordSwap, isFalse);
+      expect(cfg.unitId, 255);
+    });
+
+    test('ModbusProtocolConfig round-trips wordSwap and unitId through toJson/fromJson', () {
+      final cfg = ModbusProtocolConfig(
+        enabled: true,
+        port: 5020,
+        map: ModbusMap(entries: [ModbusMapEntry(tag: 'Run', table: 'holding', address: 0, access: 'ReadWrite')]),
+        wordSwap: true,
+        unitId: 12,
+      );
+
+      final rt = ModbusProtocolConfig.fromJson(cfg.toJson());
+
+      expect(rt.enabled, isTrue);
+      expect(rt.port, 5020);
+      expect(rt.map.entries.single.tag, 'Run');
+      expect(rt.wordSwap, isTrue);
+      expect(rt.unitId, 12);
+      expect(cfg.toJson()['word_swap'], isTrue);
+      expect(cfg.toJson()['unit_id'], 12);
+    });
+
+    test('ModbusProtocolConfig.defaults sets wordSwap=false and unitId=255', () {
+      final project = PlcProject(
+        id: 'modbus_def_proj',
+        name: 'Modbus Defaults Project',
+        controllerName: 'PLC_MODBUS_DEF',
+        tags: const [],
+        structDefs: const [],
+        programs: const [],
+        tasks: const [],
+        hmis: const [],
+      );
+      final cfg = ModbusProtocolConfig.defaults(project);
+      expect(cfg.wordSwap, isFalse);
+      expect(cfg.unitId, 255);
+    });
+
+    test('ProtocolSettings carrying a ModbusProtocolConfig round-trips wordSwap/unitId losslessly', () {
+      final settings = ProtocolSettings(
+        modbus: ModbusProtocolConfig(
+          enabled: true,
+          port: 502,
+          map: ModbusMap(entries: []),
+          wordSwap: true,
+          unitId: 7,
+        ),
+      );
+
+      final rt = ProtocolSettings.fromJson(settings.toJson());
+
+      expect(rt.modbus, isNotNull);
+      expect(rt.modbus!.wordSwap, isTrue);
+      expect(rt.modbus!.unitId, 7);
+    });
+
+    test('ProtocolSettings with modbus == null omits the modbus key entirely', () {
+      final settings = ProtocolSettings(); // no modbus
+      expect(settings.modbus, isNull);
+      expect(settings.toJson().containsKey('modbus'), isFalse);
     });
   });
 

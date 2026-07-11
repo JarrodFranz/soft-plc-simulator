@@ -150,7 +150,7 @@ PlcProject _fixtureProject() {
 /// `buildMbap`-wrapped response back.
 class _Connection {
   final Socket socket;
-  final Uint8List Function(ModbusFrame) handle;
+  final Uint8List? Function(ModbusFrame) handle;
   final List<int> _buffer = [];
   bool _closed = false;
 
@@ -182,8 +182,10 @@ class _Connection {
           return;
         }
         final responsePdu = handle(parsed);
-        final responseFrame = buildMbap(parsed.transactionId, parsed.unitId, responsePdu);
-        socket.add(responseFrame);
+        if (responsePdu != null) {
+          final responseFrame = buildMbap(parsed.transactionId, parsed.unitId, responsePdu);
+          socket.add(responseFrame);
+        }
       }
     } catch (_) {
       close();

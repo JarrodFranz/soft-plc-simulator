@@ -188,4 +188,72 @@ void main() {
     final resp = server.handle(_req(_bytes([0x03, 0x00])));
     expect(resp, encodeExceptionResponse(0x03, ModbusEx.serverFailure));
   });
+
+  group('wordSwap register order (server-level)', () {
+    test('wordSwap=true: FC03 read of the INT32 tag returns low-word-first registers', () {
+      project.protocols!.modbus!.wordSwap = true;
+      writePath(project, 'Hold32', 123456);
+      final resp = server.handle(_req(_bytes([0x03, 0x00, 0x01, 0x00, 0x02])))!;
+      final expected = encodeReadRegistersResponse(0x03, encodeInt32(123456, wordSwap: true));
+      expect(resp, expected);
+      // Sanity: differs from the default (non-swapped) encoding.
+      expect(resp, isNot(encodeReadRegistersResponse(0x03, encodeInt32(123456))));
+    });
+
+    test('wordSwap=true: FC16 write of word-swapped registers decodes back to the correct INT32', () {
+      project.protocols!.modbus!.wordSwap = true;
+      final regs = encodeInt32(-42, wordSwap: true); // [lo, hi]
+      final req = _bytes([
+        0x10, 0x00, 0x01, 0x00, 0x02, 0x04, //
+        (regs[0] >> 8) & 0xFF, regs[0] & 0xFF,
+        (regs[1] >> 8) & 0xFF, regs[1] & 0xFF,
+      ]);
+      final resp = server.handle(_req(req));
+      expect(resp, _bytes([0x10, 0x00, 0x01, 0x00, 0x02]));
+      expect(readPath(project, 'Hold32'), -42);
+    });
+
+    test('wordSwap=true: FC04 read of the FLOAT64 tag returns reversed registers', () {
+      project.protocols!.modbus!.wordSwap = true;
+      writePath(project, 'InFloat', 2.5);
+      final resp = server.handle(_req(_bytes([0x04, 0x00, 0x00, 0x00, 0x04])));
+      final expected = encodeReadRegistersResponse(0x04, encodeFloat64(2.5, wordSwap: true));
+      expect(resp, expected);
+    });
+
+    test('wordSwap=false (default): behavior is byte-identical to before this feature', () {
+      writePath(project, 'Hold32', 123456);
+      final resp = server.handle(_req(_bytes([0x03, 0x00, 0x01, 0x00, 0x02])));
+      final expected = encodeReadRegistersResponse(0x03, encodeInt32(123456));
+      expect(resp, expected);
+    });
+  });
+
+  group('unitId filtering (server-level)', () {
+    test('unitId=255 (default, "any"): serves requests regardless of the request unit id', () {
+      final resp1 = server.handle(_req(_bytes([0x03, 0x00, 0x00, 0x00, 0x01]), unitId: 1));
+      final resp42 = server.handle(_req(_bytes([0x03, 0x00, 0x00, 0x00, 0x01]), unitId: 42));
+      expect(resp1, isNotNull);
+      expect(resp42, isNotNull);
+      expect(resp1, resp42);
+    });
+
+    test('unitId configured to 5: a matching request unit id is served', () {
+      project.protocols!.modbus!.unitId = 5;
+      final resp = server.handle(_req(_bytes([0x03, 0x00, 0x00, 0x00, 0x01]), unitId: 5));
+      expect(resp, isNotNull);
+    });
+
+    test('unitId configured to 5: a mismatched, non-broadcast request unit id gets no response', () {
+      project.protocols!.modbus!.unitId = 5;
+      final resp = server.handle(_req(_bytes([0x03, 0x00, 0x00, 0x00, 0x01]), unitId: 7));
+      expect(resp, isNull);
+    });
+
+    test('unitId configured to 5: broadcast (unit id 0) is still answered', () {
+      project.protocols!.modbus!.unitId = 5;
+      final resp = server.handle(_req(_bytes([0x03, 0x00, 0x00, 0x00, 0x01]), unitId: 0));
+      expect(resp, isNotNull);
+    });
+  });
 }

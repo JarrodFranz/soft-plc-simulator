@@ -7,7 +7,14 @@
 // 0) length(u16, = unitId + PDU byte count) unitId(u8) — followed by the PDU.
 // All multi-byte fields are big-endian. Coil/discrete-input bit packing is
 // LSB-first within each byte. INT32 register-file values occupy 2 registers,
-// hi word first; FLOAT64 occupies 4 registers, in big-endian byte order.
+// FLOAT64 occupies 4 registers, each register's bytes always big-endian.
+// Register ORDER defaults to hi-word-first ("ABCD") but is configurable per
+// `ModbusProtocolConfig.wordSwap` — when true, registers are reversed
+// (low-word-first, "CDAB") to match masters that expect the swapped
+// convention (the most common Modbus interop mismatch). The server also
+// only answers requests addressed to its configured `unitId` (default 255
+// = "any", matching the original permissive behavior) — see
+// `ModbusServer.handle`.
 //
 // dart2js-safety note: every multi-byte numeric conversion here goes through
 // `ByteData`'s built-in 16/32/64-bit accessors (`setInt32`/`getUint16`/etc.)
@@ -124,17 +131,28 @@ Uint8List encodeExceptionResponse(int fc, int exceptionCode) {
   return Uint8List.fromList([(fc | 0x80) & 0xFF, exceptionCode & 0xFF]);
 }
 
-/// Encodes a signed INT32 as 2 big-endian registers, hi word first.
-List<int> encodeInt32(int value) {
+/// Encodes a signed INT32 as 2 big-endian registers. By default hi word
+/// first ("ABCD" — the original/default wire behavior); when [wordSwap] is
+/// true the register ORDER is reversed to low-word-first ("CDAB" — the
+/// standard Modbus "word swap"/"reverse word order" convention some masters
+/// require). The bytes WITHIN each 16-bit register stay big-endian either
+/// way.
+List<int> encodeInt32(int value, {bool wordSwap = false}) {
   final bd = ByteData(4)..setInt32(0, value, Endian.big);
-  return [bd.getUint16(0, Endian.big), bd.getUint16(2, Endian.big)];
+  final hi = bd.getUint16(0, Endian.big);
+  final lo = bd.getUint16(2, Endian.big);
+  return wordSwap ? [lo, hi] : [hi, lo];
 }
 
-/// Decodes 2 big-endian registers (hi word first) back to a signed INT32.
-int decodeInt32(List<int> regs) {
+/// Decodes 2 big-endian registers back to a signed INT32. Set [wordSwap] to
+/// match how [encodeInt32] produced [regs] (low-word-first / "CDAB") —
+/// otherwise assumes the default hi-word-first ("ABCD") order.
+int decodeInt32(List<int> regs, {bool wordSwap = false}) {
+  final hi = wordSwap ? regs[1] : regs[0];
+  final lo = wordSwap ? regs[0] : regs[1];
   final bd = ByteData(4)
-    ..setUint16(0, regs[0] & 0xFFFF, Endian.big)
-    ..setUint16(2, regs[1] & 0xFFFF, Endian.big);
+    ..setUint16(0, hi & 0xFFFF, Endian.big)
+    ..setUint16(2, lo & 0xFFFF, Endian.big);
   return bd.getInt32(0, Endian.big);
 }
 
@@ -153,24 +171,29 @@ int decodeInt16(List<int> regs) {
 /// Encodes a FLOAT64 as 4 big-endian registers (the IEEE-754 double's 8 bytes
 /// in big-endian order, 2 bytes per register). Uses `setFloat64` — allowed
 /// per the dart2js-safety note (only the 64-bit *integer* accessors are
-/// unsupported on web, not the float ones).
-List<int> encodeFloat64(double value) {
+/// unsupported on web, not the float ones). When [wordSwap] is true the 4
+/// registers are emitted in reverse order (standard Modbus "word swap") —
+/// the bytes within each register stay big-endian either way.
+List<int> encodeFloat64(double value, {bool wordSwap = false}) {
   final bd = ByteData(8)..setFloat64(0, value, Endian.big);
-  return [
+  final regs = [
     bd.getUint16(0, Endian.big),
     bd.getUint16(2, Endian.big),
     bd.getUint16(4, Endian.big),
     bd.getUint16(6, Endian.big),
   ];
+  return wordSwap ? regs.reversed.toList() : regs;
 }
 
-/// Decodes 4 big-endian registers back to a FLOAT64.
-double decodeFloat64(List<int> regs) {
+/// Decodes 4 big-endian registers back to a FLOAT64. Set [wordSwap] to match
+/// how [encodeFloat64] produced [regs] (reversed register order).
+double decodeFloat64(List<int> regs, {bool wordSwap = false}) {
+  final ordered = wordSwap ? regs.reversed.toList() : regs;
   final bd = ByteData(8)
-    ..setUint16(0, regs[0] & 0xFFFF, Endian.big)
-    ..setUint16(2, regs[1] & 0xFFFF, Endian.big)
-    ..setUint16(4, regs[2] & 0xFFFF, Endian.big)
-    ..setUint16(6, regs[3] & 0xFFFF, Endian.big);
+    ..setUint16(0, ordered[0] & 0xFFFF, Endian.big)
+    ..setUint16(2, ordered[1] & 0xFFFF, Endian.big)
+    ..setUint16(4, ordered[2] & 0xFFFF, Endian.big)
+    ..setUint16(6, ordered[3] & 0xFFFF, Endian.big);
   return bd.getFloat64(0, Endian.big);
 }
 
@@ -248,6 +271,16 @@ ModbusMap _mapFor(PlcProject project) {
   return project.protocols?.modbus?.map ?? ModbusMap(entries: []);
 }
 
+/// The configured word-order for multi-register values (see
+/// `ModbusProtocolConfig.wordSwap`'s doc comment) — defaults to `false`
+/// (hi-word-first) when Modbus isn't configured at all.
+bool _wordSwapFor(PlcProject project) => project.protocols?.modbus?.wordSwap ?? false;
+
+/// The configured unit id this server responds as (see
+/// `ModbusProtocolConfig.unitId`'s doc comment) — defaults to `255` ("any")
+/// when Modbus isn't configured at all.
+int _unitIdFor(PlcProject project) => project.protocols?.modbus?.unitId ?? 255;
+
 /// The map entry (if any) covering register/bit [address] in [table],
 /// accounting for multi-register entries' full span.
 ModbusMapEntry? _findEntry(PlcProject project, ModbusMap map, String table, int address) {
@@ -263,23 +296,23 @@ ModbusMapEntry? _findEntry(PlcProject project, ModbusMap map, String table, int 
   return null;
 }
 
-List<int> _encodeRegsForType(String dataType, dynamic value) {
+List<int> _encodeRegsForType(String dataType, dynamic value, {bool wordSwap = false}) {
   switch (dataType) {
     case 'INT32':
-      return encodeInt32(value is num ? value.toInt() : 0);
+      return encodeInt32(value is num ? value.toInt() : 0, wordSwap: wordSwap);
     case 'FLOAT64':
-      return encodeFloat64(value is num ? value.toDouble() : 0.0);
+      return encodeFloat64(value is num ? value.toDouble() : 0.0, wordSwap: wordSwap);
     default: // INT16 and any other scalar fallback.
       return encodeInt16(value is num ? value.toInt() : 0);
   }
 }
 
-dynamic _decodeRegsForType(String dataType, List<int> regs) {
+dynamic _decodeRegsForType(String dataType, List<int> regs, {bool wordSwap = false}) {
   switch (dataType) {
     case 'INT32':
-      return decodeInt32(regs);
+      return decodeInt32(regs, wordSwap: wordSwap);
     case 'FLOAT64':
-      return decodeFloat64(regs);
+      return decodeFloat64(regs, wordSwap: wordSwap);
     default:
       return decodeInt16(regs);
   }
@@ -300,10 +333,19 @@ class ModbusServer {
 
   /// Handles one decoded request PDU (function code + data, no MBAP) and
   /// returns the response PDU (also no MBAP — the host wraps it via
-  /// [buildMbap]).
-  Uint8List handle(ModbusFrame req) {
+  /// [buildMbap]), or `null` if this server must stay silent (a configured
+  /// unit id in 1-247 that doesn't match [req.unitId] — see `_unitIdFor`'s
+  /// doc comment; mirrors how a real outstation ignores a request addressed
+  /// to someone else on a shared TCP endpoint).
+  Uint8List? handle(ModbusFrame req) {
     try {
-      return _dispatch(projectProvider(), req.pdu);
+      final project = projectProvider();
+      final configuredUnitId = _unitIdFor(project);
+      final filtering = configuredUnitId >= 1 && configuredUnitId <= 247;
+      if (filtering && req.unitId != configuredUnitId && req.unitId != 0) {
+        return null; // mismatched unit id, not broadcast -> stay silent
+      }
+      return _dispatch(project, req.pdu);
     } catch (_) {
       final fc = req.pdu.isNotEmpty ? req.pdu[0] : 0;
       return encodeExceptionResponse(fc, ModbusEx.serverFailure);
@@ -374,6 +416,7 @@ class ModbusServer {
       return encodeExceptionResponse(fc, ModbusEx.illegalDataValue);
     }
     final map = _mapFor(project);
+    final wordSwap = _wordSwapFor(project);
     final cache = <ModbusMapEntry, List<int>>{};
     final regs = <int>[];
     for (var a = start; a < start + qty; a++) {
@@ -385,7 +428,7 @@ class ModbusServer {
       final words = cache.putIfAbsent(entry, () {
         final dt = _tagDataType(project, entry.tag) ?? 'INT16';
         final value = readPath(project, entry.tag);
-        return _encodeRegsForType(dt, value);
+        return _encodeRegsForType(dt, value, wordSwap: wordSwap);
       });
       final offset = a - entry.address;
       regs.add(offset >= 0 && offset < words.length ? words[offset] : 0);
@@ -500,6 +543,7 @@ class ModbusServer {
     }
 
     final map = _mapFor(project);
+    final wordSwap = _wordSwapFor(project);
     final touched = <ModbusMapEntry>{};
     for (var i = 0; i < qty; i++) {
       final addr = start + i;
@@ -527,7 +571,7 @@ class ModbusServer {
       final offset = entry.address - start;
       final words = regs.sublist(offset, offset + width);
       final dt = _tagDataType(project, entry.tag) ?? 'INT16';
-      writePath(project, entry.tag, _decodeRegsForType(dt, words));
+      writePath(project, entry.tag, _decodeRegsForType(dt, words, wordSwap: wordSwap));
     }
     return _echoStartQty(fc, start, qty);
   }

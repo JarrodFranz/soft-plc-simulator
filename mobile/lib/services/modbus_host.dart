@@ -34,7 +34,7 @@ const int _maxFrameBytes = 260;
 /// chunking.
 class _Connection {
   final Socket socket;
-  final Uint8List Function(ModbusFrame) handle;
+  final Uint8List? Function(ModbusFrame) handle;
   final List<int> _buffer = [];
   bool _closed = false;
 
@@ -73,8 +73,13 @@ class _Connection {
           return;
         }
         final responsePdu = handle(parsed);
-        final responseFrame = buildMbap(parsed.transactionId, parsed.unitId, responsePdu);
-        socket.add(responseFrame);
+        if (responsePdu != null) {
+          // A `null` response means the configured unit id didn't match this
+          // request's unit id — a real outstation stays silent rather than
+          // answering on someone else's behalf, so no bytes go back at all.
+          final responseFrame = buildMbap(parsed.transactionId, parsed.unitId, responsePdu);
+          socket.add(responseFrame);
+        }
       }
     } catch (_) {
       // A crash while reassembling/dispatching must never take down the

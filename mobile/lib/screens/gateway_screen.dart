@@ -64,6 +64,7 @@ class GatewayScreen extends StatefulWidget {
 class _GatewayScreenState extends State<GatewayScreen> {
   late final TextEditingController _portController;
   late final TextEditingController _modbusPortController;
+  late final TextEditingController _modbusUnitIdController;
   late final TextEditingController _mqttPortController;
   late final TextEditingController _dnpPortController;
   late final TextEditingController _dnpOutstationAddressController;
@@ -85,6 +86,9 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
     _modbusPortController = TextEditingController(
       text: widget.currentProject.protocols!.modbus!.port.toString(),
+    );
+    _modbusUnitIdController = TextEditingController(
+      text: widget.currentProject.protocols!.modbus!.unitId.toString(),
     );
     _mqttPortController = TextEditingController(
       text: widget.currentProject.protocols!.mqtt!.port.toString(),
@@ -123,6 +127,13 @@ class _GatewayScreenState extends State<GatewayScreen> {
           selection: TextSelection.collapsed(offset: newModbusPort.length),
         );
       }
+      final newModbusUnitId = widget.currentProject.protocols!.modbus!.unitId.toString();
+      if (_modbusUnitIdController.text != newModbusUnitId) {
+        _modbusUnitIdController.value = TextEditingValue(
+          text: newModbusUnitId,
+          selection: TextSelection.collapsed(offset: newModbusUnitId.length),
+        );
+      }
       final newMqttPort = widget.currentProject.protocols!.mqtt!.port.toString();
       if (_mqttPortController.text != newMqttPort) {
         _mqttPortController.value = TextEditingValue(
@@ -159,6 +170,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
   void dispose() {
     _portController.dispose();
     _modbusPortController.dispose();
+    _modbusUnitIdController.dispose();
     _mqttPortController.dispose();
     _dnpPortController.dispose();
     _dnpOutstationAddressController.dispose();
@@ -517,6 +529,22 @@ class _GatewayScreenState extends State<GatewayScreen> {
       return; // ignore invalid input; keep the last-valid persisted port
     }
     widget.currentProject.protocols!.modbus!.port = parsed;
+    widget.onProjectUpdated();
+  }
+
+  void _setModbusWordSwap(bool value) {
+    setState(() {
+      widget.currentProject.protocols!.modbus!.wordSwap = value;
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _setModbusUnitId(String value) {
+    final parsed = int.tryParse(value.trim());
+    if (parsed == null || parsed < 0 || parsed > 255) {
+      return; // ignore invalid input; keep the last-valid persisted unit id
+    }
+    widget.currentProject.protocols!.modbus!.unitId = parsed;
     widget.onProjectUpdated();
   }
 
@@ -1038,20 +1066,65 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 ],
               ),
               const SizedBox(height: 12),
-              TextField(
-                controller: _modbusPortController,
-                enabled: !running,
-                keyboardType: TextInputType.number,
-                style: const TextStyle(fontSize: 12, color: Colors.white),
-                decoration: const InputDecoration(
-                  isDense: true,
-                  labelText: 'Port',
-                  helperText: 'Default: 502',
-                  filled: true,
-                  fillColor: Color(0xFF0F172A),
-                  border: OutlineInputBorder(),
-                ),
-                onChanged: _setModbusPort,
+              Flex(
+                direction: isCompact ? Axis.vertical : Axis.horizontal,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _mqttFlexField(
+                    isCompact: isCompact,
+                    child: TextField(
+                      controller: _modbusPortController,
+                      enabled: !running,
+                      keyboardType: TextInputType.number,
+                      style: const TextStyle(fontSize: 12, color: Colors.white),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        labelText: 'Port',
+                        helperText: 'Default: 502',
+                        filled: true,
+                        fillColor: Color(0xFF0F172A),
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: _setModbusPort,
+                    ),
+                  ),
+                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                  _mqttFlexField(
+                    isCompact: isCompact,
+                    child: TextField(
+                      key: const Key('modbus_unit_id_field'),
+                      controller: _modbusUnitIdController,
+                      enabled: !running,
+                      keyboardType: TextInputType.number,
+                      style: const TextStyle(fontSize: 12, color: Colors.white),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        labelText: 'Unit ID',
+                        helperText: '0-255. Default: 255 (any)',
+                        filled: true,
+                        fillColor: Color(0xFF0F172A),
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: _setModbusUnitId,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Reverse word order (word swap) for INT32/FLOAT64 registers',
+                      style: TextStyle(color: Colors.white70, fontSize: 12),
+                    ),
+                  ),
+                  Switch(
+                    key: const Key('modbus_word_swap_switch'),
+                    value: modbus.wordSwap,
+                    onChanged: running ? null : _setModbusWordSwap,
+                  ),
+                ],
               ),
               const SizedBox(height: 12),
               Flex(

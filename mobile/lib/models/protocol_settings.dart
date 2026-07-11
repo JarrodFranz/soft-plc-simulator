@@ -78,10 +78,31 @@ class ModbusProtocolConfig {
   int port;
   ModbusMap map;
 
+  /// Word order for multi-register values (INT32 = 2 registers, FLOAT64 = 4
+  /// registers). `false` (the default) is the current/original behavior:
+  /// big-endian, HIGH word first ("ABCD"). `true` reverses the register
+  /// ORDER — low word first ("CDAB") — the #1 Modbus interop mismatch
+  /// between masters/outstations; the bytes WITHIN each 16-bit register stay
+  /// big-endian either way. Additive field (server word-order option) —
+  /// older saved projects simply don't have `word_swap` in their JSON and
+  /// fall back to `false` (unchanged wire behavior) on read.
+  bool wordSwap;
+
+  /// Unit id this server responds as. `255` (the default) means "any" — the
+  /// server ignores the requested unit id entirely, matching the original
+  /// permissive behavior. Set to 1-247 to make the server only answer
+  /// requests addressed to that unit id (unit 0 broadcast is still
+  /// answered). Additive field — older saved projects simply don't have
+  /// `unit_id` in their JSON and fall back to `255` (unchanged behavior) on
+  /// read.
+  int unitId;
+
   ModbusProtocolConfig({
     this.enabled = false,
     this.port = 502,
     required this.map,
+    this.wordSwap = false,
+    this.unitId = 255,
   });
 
   factory ModbusProtocolConfig.fromJson(Map<String, dynamic> j) => ModbusProtocolConfig(
@@ -90,21 +111,27 @@ class ModbusProtocolConfig {
         map: j['map'] != null
             ? ModbusMap.fromJson(j['map'] as Map<String, dynamic>)
             : ModbusMap(entries: []),
+        wordSwap: j['word_swap'] == true,
+        unitId: (j['unit_id'] as num?)?.toInt() ?? 255,
       );
 
   Map<String, dynamic> toJson() => {
         'enabled': enabled,
         'port': port,
         'map': map.toJson(),
+        'word_swap': wordSwap,
+        'unit_id': unitId,
       };
 
   /// Sane defaults for a project that has never configured Modbus: disabled,
-  /// the standard Modbus TCP port, and an auto-generated map from the
-  /// project's current scalar tags.
+  /// the standard Modbus TCP port, an auto-generated map from the project's
+  /// current scalar tags, high-word-first register order, and "any" unit id.
   static ModbusProtocolConfig defaults(PlcProject p) => ModbusProtocolConfig(
         enabled: false,
         port: 502,
         map: ModbusMap.autoGenerate(p),
+        wordSwap: false,
+        unitId: 255,
       );
 }
 

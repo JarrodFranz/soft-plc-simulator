@@ -94,4 +94,50 @@ void main() {
       expect(decodeFloat64(encodeFloat64(-2.5)), -2.5);
     });
   });
+
+  group('word-order (wordSwap) register codecs', () {
+    test('wordSwap=false (default) leaves the byte-exact hi-word-first fixtures unchanged', () {
+      expect(encodeInt32(0x0001E240), [0x0001, 0xE240]);
+      expect(encodeInt32(0x0001E240, wordSwap: false), [0x0001, 0xE240]);
+      const value = 3.14159265358979;
+      expect(encodeFloat64(value), encodeFloat64(value, wordSwap: false));
+    });
+
+    test('wordSwap=true reverses INT32 register order (low word first, "CDAB")', () {
+      // 0x12345678 -> hi-word-first regs [0x1234, 0x5678]; word-swapped -> [0x5678, 0x1234].
+      final normal = encodeInt32(0x12345678);
+      expect(normal, [0x1234, 0x5678]);
+      final swapped = encodeInt32(0x12345678, wordSwap: true);
+      expect(swapped, [0x5678, 0x1234]);
+    });
+
+    test('wordSwap=true INT32 round-trips through encode/decode', () {
+      for (final value in [0x12345678, -1, -123456, 0]) {
+        final regs = encodeInt32(value, wordSwap: true);
+        expect(decodeInt32(regs, wordSwap: true), value);
+      }
+    });
+
+    test('decoding word-swapped registers WITHOUT wordSwap set produces the wrong value', () {
+      // Sanity check that the flag actually matters — decoding swapped
+      // registers as if they were normal-order must NOT silently agree.
+      final swapped = encodeInt32(0x12345678, wordSwap: true);
+      expect(decodeInt32(swapped), isNot(0x12345678));
+      expect(decodeInt32(swapped, wordSwap: true), 0x12345678);
+    });
+
+    test('wordSwap=true reverses all 4 FLOAT64 registers', () {
+      const value = 3.14159265358979;
+      final normal = encodeFloat64(value);
+      final swapped = encodeFloat64(value, wordSwap: true);
+      expect(swapped, normal.reversed.toList());
+    });
+
+    test('wordSwap=true FLOAT64 round-trips through encode/decode', () {
+      for (final value in [3.14159265358979, 0.0, -2.5]) {
+        final regs = encodeFloat64(value, wordSwap: true);
+        expect(decodeFloat64(regs, wordSwap: true), value);
+      }
+    });
+  });
 }

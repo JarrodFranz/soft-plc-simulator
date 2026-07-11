@@ -83,7 +83,7 @@ void main() {
         transactionId: 1,
         unitId: 1,
         pdu: _readHoldingRequest(0, 2),
-      ));
+      ))!;
 
       // fc(1) + byteCount(1) + 2 registers(4 bytes) = 6 bytes total.
       expect(resp[0], 0x03);
@@ -119,7 +119,7 @@ void main() {
         transactionId: 2,
         unitId: 1,
         pdu: _writeMultipleRegistersRequest(0, newRegs),
-      ));
+      ))!;
 
       // Success echo: fc (no exception bit) + start + qty, no exception code.
       expect(resp[0], 0x10);
@@ -141,7 +141,7 @@ void main() {
         transactionId: 3,
         unitId: 1,
         pdu: _writeMultipleRegistersRequest(0, newRegs),
-      ));
+      ))!;
 
       expect(resp[0], 0x10);
       final motor = project.tags.first;
