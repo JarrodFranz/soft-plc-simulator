@@ -177,5 +177,14 @@ void main() {
       final m = DnpMap.fromJson({});
       expect(m.entries, isEmpty);
     });
+
+    test('DnpMapEntry carries eventClass and round-trips; older JSON defaults to 0', () {
+      final e = DnpMapEntry(tag: 'Level', pointType: 'analogInput', index: 3, eventClass: 2);
+      final round = DnpMapEntry.fromJson(e.toJson());
+      expect(round.eventClass, 2);
+      // Back-compat: JSON without event_class defaults to 0 (static-only).
+      final legacy = DnpMapEntry.fromJson({'tag': 'X', 'point_type': 'binaryInput', 'index': 0});
+      expect(legacy.eventClass, 0);
+    });
   });
 }

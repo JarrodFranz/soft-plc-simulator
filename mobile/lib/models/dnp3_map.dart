@@ -21,22 +21,31 @@ class DnpMapEntry {
   String pointType;
   int index;
 
+  /// DNP3 event class assignment for INPUT points: 0 = static-only (no
+  /// events, the default and back-compat behavior), 1/2/3 = this point's
+  /// changes are captured into event Class 1/2/3. Meaningful only for
+  /// `binaryInput`/`analogInput`; ignored for output point types.
+  int eventClass;
+
   DnpMapEntry({
     required this.tag,
     required this.pointType,
     required this.index,
+    this.eventClass = 0,
   });
 
   factory DnpMapEntry.fromJson(Map<String, dynamic> json) => DnpMapEntry(
         tag: json['tag']?.toString() ?? '',
         pointType: json['point_type']?.toString() ?? 'binaryInput',
         index: (json['index'] as num?)?.toInt() ?? 0,
+        eventClass: (json['event_class'] as num?)?.toInt() ?? 0,
       );
 
   Map<String, dynamic> toJson() => {
         'tag': tag,
         'point_type': pointType,
         'index': index,
+        'event_class': eventClass,
       };
 }
 
@@ -106,6 +115,7 @@ class DnpMap {
         tag: tag.name,
         pointType: pointType,
         index: index,
+        eventClass: 0,
       ));
     }
     return DnpMap(entries: entries);
