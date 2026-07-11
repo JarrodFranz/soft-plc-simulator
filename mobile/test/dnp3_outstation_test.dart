@@ -89,6 +89,13 @@ Uint8List _clearRestartReq(int seq) {
   return out.toBytes();
 }
 
+/// Builds one raw application fragment: APP_CONTROL, FUNCTION_CODE, then
+/// whatever raw object-header bytes the caller supplies (matching the
+/// brief's `frag` helper — callers pass e.g. `[60, 2, 0x06]` for a bare
+/// g60v2 all-points object header).
+Uint8List frag(int appControl, int func, [List<int> objs = const []]) =>
+    Uint8List.fromList([appControl, func, ...objs]);
+
 // --- Response decoders (test-side only; an outstation never decodes its own
 // static-object responses in real life, so there's nothing to reuse here) --
 
@@ -262,5 +269,113 @@ void main() {
 
   test('handleAppRequest never throws on an empty fragment', () {
     expect(() => outstation.handleAppRequest(Uint8List(0), nowMs: 0), returnsNormally);
+  });
+
+  // --- Task 4: solicited Class reads, unsolicited state, CONFIRM routing ---
+
+  test('solicited Class 1 read returns events with CON set; flush only on CONFIRM', () {
+    project.protocols!.dnp3!.map = DnpMap(entries: [
+      DnpMapEntry(tag: 'BiTag', pointType: 'binaryInput', index: 0, eventClass: 1),
+    ]);
+    outstation.detectChanges(0); // baseline (BiTag starts true)
+    writePath(project, 'BiTag', false);
+    outstation.detectChanges(1000); // one class-1 event buffered
+
+    // Class 1 read: g60v2 all-points. app control FIR|FIN|seq=3 = 0xC3.
+    final readClass1 = frag(0xC3, DnpFunc.read, [60, 2, 0x06]);
+    final resp = outstation.handleAppRequest(readClass1, nowMs: 1000);
+    expect(resp[1], DnpFunc.response);
+    expect((resp[0] & 0x20) != 0, isTrue, reason: 'CON bit set (awaiting CONFIRM)');
+    // Response carries a g2v2 object (group 2, variation 2) — IIN is 2 bytes then objects.
+    expect(resp.sublist(4).contains(2), isTrue);
+
+    // Without a CONFIRM, a re-read still returns the event (not flushed).
+    final resp2 = outstation.handleAppRequest(frag(0xC4, DnpFunc.read, [60, 2, 0x06]), nowMs: 1000);
+    expect((resp2[0] & 0x20) != 0, isTrue);
+
+    // CONFIRM (fc0) with the sequence matching the most recent solicited
+    // response (4, from resp2 — `_pendingSolicitedSeq` tracks the latest
+    // Class read that reported these events) flushes it.
+    outstation.handleAppRequest(frag(0xC4, DnpFunc.confirm), nowMs: 1000);
+    final resp3 = outstation.handleAppRequest(frag(0xC5, DnpFunc.read, [60, 2, 0x06]), nowMs: 1000);
+    expect((resp3[0] & 0x20) != 0, isFalse, reason: 'no events left, no CON');
+  });
+
+  test('CONFIRM yields no reply (empty fragment)', () {
+    final resp = outstation.handleAppRequest(frag(0xC0, DnpFunc.confirm), nowMs: 0);
+    expect(resp, isEmpty);
+  });
+
+  test('combined g60v1..v4 read returns static AND events', () {
+    project.protocols!.dnp3!.map = DnpMap(entries: [
+      DnpMapEntry(tag: 'BiTag', pointType: 'binaryInput', index: 0, eventClass: 1),
+    ]);
+    outstation.detectChanges(0);
+    writePath(project, 'BiTag', false);
+    outstation.detectChanges(1);
+    final resp = outstation.handleAppRequest(
+        frag(0xC0, DnpFunc.read, [60, 1, 0x06, 60, 2, 0x06, 60, 3, 0x06, 60, 4, 0x06]),
+        nowMs: 1);
+    final objs = resp.sublist(4);
+    expect(objs.contains(1), isTrue, reason: 'g1v2 static binary input present');
+    expect(objs.contains(2), isTrue, reason: 'g2v2 binary event present');
+  });
+
+  test('ENABLE_UNSOLICITED sets the class flag and queues a null unsolicited', () {
+    outstation.handleAppRequest(frag(0xC0, DnpFunc.enableUnsolicited, [60, 2, 0x06]), nowMs: 0);
+    expect(outstation.unsolicitedEnabledClasses.contains(1), isTrue);
+    final nullUnsol = outstation.takeNullUnsolicited();
+    expect(nullUnsol, isNotNull);
+    expect(nullUnsol![1], DnpFunc.unsolicitedResponse);
+    expect(nullUnsol.length, 4); // no objects
+    expect(outstation.takeNullUnsolicited(), isNull, reason: 'only sent once');
+  });
+
+  test('unsolicited push carries events; CONFIRM flushes; failUnsolicited keeps them', () {
+    project.protocols!.dnp3!.map = DnpMap(entries: [
+      DnpMapEntry(tag: 'BiTag', pointType: 'binaryInput', index: 0, eventClass: 1),
+    ]);
+    outstation.handleAppRequest(frag(0xC0, DnpFunc.enableUnsolicited, [60, 2, 0x06]), nowMs: 0);
+    // Consume the null announcement AND confirm it — only one unsolicited
+    // fragment may be in flight at a time, so a compliant master confirms
+    // the null before the outstation can push the next (event) fragment.
+    final nullResp = outstation.takeNullUnsolicited()!;
+    final nullSeq = nullResp[0] & 0x0F;
+    outstation.handleAppRequest(frag(0x10 | nullSeq, DnpFunc.confirm), nowMs: 0);
+    outstation.detectChanges(0);
+    writePath(project, 'BiTag', false);
+    outstation.detectChanges(100);
+    final push = outstation.takeEventUnsolicited(100);
+    expect(push, isNotNull);
+    expect(push![1], DnpFunc.unsolicitedResponse);
+    expect((push[0] & 0x10) != 0, isTrue, reason: 'UNS bit');
+    expect(outstation.hasUnsolicitedInFlight, isTrue);
+    // No second push while one is in flight.
+    expect(outstation.takeEventUnsolicited(200), isNull);
+    // A matching unsolicited CONFIRM flushes it.
+    final seq = push[0] & 0x0F;
+    outstation.handleAppRequest(frag(0x10 | seq, DnpFunc.confirm), nowMs: 300); // UNS bit set
+    expect(outstation.hasUnsolicitedInFlight, isFalse);
+    // Next detect with no change -> nothing to send.
+    outstation.detectChanges(400);
+    expect(outstation.takeEventUnsolicited(400), isNull);
+  });
+
+  test('IIN class-available + overflow bits reflect the engine', () {
+    project.protocols!.dnp3!.map = DnpMap(entries: [
+      DnpMapEntry(tag: 'AiInt', pointType: 'analogInput', index: 0, eventClass: 2),
+    ]);
+    final os = DnpOutstation(projectProvider: () => project, eventBufferPerClass: 2);
+    os.detectChanges(0);
+    for (var v = 1; v <= 4; v++) {
+      writePath(project, 'AiInt', v);
+      os.detectChanges(v);
+    }
+    // A static (Class 0) read still returns and now carries IIN1 class-2 + IIN2 overflow.
+    final resp = os.handleAppRequest(frag(0xC0, DnpFunc.read, [60, 1, 0x06]), nowMs: 5);
+    final iin1 = resp[2];
+    final iin2 = resp[3];
+    expect(iin1 & DnpIin1.class2Events, DnpIin1.class2Events);
+    expect(iin2 & DnpIin2.eventBufferOverflow, DnpIin2.eventBufferOverflow);
   });
 }
