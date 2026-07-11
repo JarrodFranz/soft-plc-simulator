@@ -140,4 +140,88 @@ void main() {
       }
     });
   });
+
+  group('byte-order (byteSwap) register codecs — four Modbus orderings', () {
+    // 0x12345678 -> hi-word-first regs [0x1234, 0x5678] (registers "AB" "CD").
+    const value = 0x12345678;
+
+    test('ABCD: both wordSwap and byteSwap false (existing default fixture unchanged)', () {
+      final regs = encodeInt32(value);
+      expect(regs, [0x1234, 0x5678]);
+      expect(encodeInt32(value, wordSwap: false, byteSwap: false), [0x1234, 0x5678]);
+      expect(decodeInt32(regs), value);
+    });
+
+    test('CDAB: wordSwap=true, byteSwap=false (existing wordSwap-only fixture unchanged)', () {
+      final regs = encodeInt32(value, wordSwap: true);
+      expect(regs, [0x5678, 0x1234]);
+      expect(encodeInt32(value, wordSwap: true, byteSwap: false), [0x5678, 0x1234]);
+      expect(decodeInt32(regs, wordSwap: true), value);
+    });
+
+    test('BADC: wordSwap=false, byteSwap=true', () {
+      final regs = encodeInt32(value, byteSwap: true);
+      expect(regs, [0x3412, 0x7856]);
+      expect(decodeInt32(regs, byteSwap: true), value);
+    });
+
+    test('DCBA: wordSwap=true, byteSwap=true', () {
+      final regs = encodeInt32(value, wordSwap: true, byteSwap: true);
+      expect(regs, [0x7856, 0x3412]);
+      expect(decodeInt32(regs, wordSwap: true, byteSwap: true), value);
+    });
+
+    test('byteSwap=true round-trips INT32 through encode/decode for several values', () {
+      for (final v in [0x12345678, -1, -123456, 0]) {
+        for (final ws in [false, true]) {
+          final regs = encodeInt32(v, wordSwap: ws, byteSwap: true);
+          expect(decodeInt32(regs, wordSwap: ws, byteSwap: true), v);
+        }
+      }
+    });
+
+    test('byteSwap=true swaps the bytes of a single INT16 register', () {
+      // 1234 = 0x04D2 -> big-endian register 0x04D2; byte-swapped -> 0xD204.
+      final normal = encodeInt16(1234);
+      expect(normal, [0x04D2]);
+      final swapped = encodeInt16(1234, byteSwap: true);
+      expect(swapped, [0xD204]);
+      expect(decodeInt16(swapped, byteSwap: true), 1234);
+    });
+
+    test('byteSwap=true INT16 round-trips positive and negative values', () {
+      for (final v in [1234, -1, 0, 32767, -32768]) {
+        final regs = encodeInt16(v, byteSwap: true);
+        expect(decodeInt16(regs, byteSwap: true), v);
+      }
+    });
+
+    test('byteSwap=true swaps the bytes of every FLOAT64 register (word order unchanged)', () {
+      const v = 3.14159265358979;
+      final normal = encodeFloat64(v);
+      final swapped = encodeFloat64(v, byteSwap: true);
+      expect(swapped.length, 4);
+      for (var i = 0; i < 4; i++) {
+        final n = normal[i];
+        final expectedSwapped = ((n & 0xFF) << 8) | ((n >> 8) & 0xFF);
+        expect(swapped[i], expectedSwapped);
+      }
+      expect(decodeFloat64(swapped, byteSwap: true), v);
+    });
+
+    test('byteSwap=true combined with wordSwap FLOAT64 round-trips through encode/decode', () {
+      for (final v in [3.14159265358979, 0.0, -2.5]) {
+        for (final ws in [false, true]) {
+          final regs = encodeFloat64(v, wordSwap: ws, byteSwap: true);
+          expect(decodeFloat64(regs, wordSwap: ws, byteSwap: true), v);
+        }
+      }
+    });
+
+    test('decoding byte-swapped registers WITHOUT byteSwap set produces the wrong value', () {
+      final swapped = encodeInt32(value, byteSwap: true);
+      expect(decodeInt32(swapped), isNot(value));
+      expect(decodeInt32(swapped, byteSwap: true), value);
+    });
+  });
 }

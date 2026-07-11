@@ -115,6 +115,8 @@ void main() {
     // Table dropdown -> 'input'.
     final tableDropdown = find.widgetWithText(DropdownButtonFormField<String>, 'holding');
     expect(tableDropdown, findsOneWidget);
+    await tester.ensureVisible(tableDropdown);
+    await tester.pumpAndSettle();
     await tester.tap(tableDropdown);
     await tester.pumpAndSettle();
     await tester.tap(find.text('input').last);
@@ -124,6 +126,8 @@ void main() {
     // Address field (initial value '0', from the freshly-added default entry).
     final addressFieldFinder = find.widgetWithText(TextFormField, '0');
     expect(addressFieldFinder, findsOneWidget);
+    await tester.ensureVisible(addressFieldFinder);
+    await tester.pumpAndSettle();
     await tester.enterText(addressFieldFinder, '42');
     await tester.pumpAndSettle();
     expect(entry.address, 42);
@@ -131,6 +135,8 @@ void main() {
     // Access dropdown -> 'ReadOnly'.
     final accessDropdown = find.widgetWithText(DropdownButtonFormField<String>, 'ReadWrite');
     expect(accessDropdown, findsOneWidget);
+    await tester.ensureVisible(accessDropdown);
+    await tester.pumpAndSettle();
     await tester.tap(accessDropdown);
     await tester.pumpAndSettle();
     await tester.tap(find.text('ReadOnly').last);
