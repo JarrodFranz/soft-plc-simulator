@@ -539,6 +539,13 @@ class _GatewayScreenState extends State<GatewayScreen> {
     widget.onProjectUpdated();
   }
 
+  void _setModbusByteSwap(bool value) {
+    setState(() {
+      widget.currentProject.protocols!.modbus!.byteSwap = value;
+    });
+    widget.onProjectUpdated();
+  }
+
   void _setModbusUnitId(String value) {
     final parsed = int.tryParse(value.trim());
     if (parsed == null || parsed < 0 || parsed > 255) {
@@ -1123,6 +1130,22 @@ class _GatewayScreenState extends State<GatewayScreen> {
                     key: const Key('modbus_word_swap_switch'),
                     value: modbus.wordSwap,
                     onChanged: running ? null : _setModbusWordSwap,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Reverse byte order (byte swap) within registers',
+                      style: TextStyle(color: Colors.white70, fontSize: 12),
+                    ),
+                  ),
+                  Switch(
+                    key: const Key('modbus_byte_swap_switch'),
+                    value: modbus.byteSwap,
+                    onChanged: running ? null : _setModbusByteSwap,
                   ),
                 ],
               ),

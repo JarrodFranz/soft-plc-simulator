@@ -229,6 +229,65 @@ void main() {
     });
   });
 
+  group('byteSwap register order (server-level)', () {
+    test('byteSwap=true: FC03 read of the INT32 tag returns byte-swapped registers ("BADC")', () {
+      project.protocols!.modbus!.byteSwap = true;
+      writePath(project, 'Hold32', 123456);
+      final resp = server.handle(_req(_bytes([0x03, 0x00, 0x01, 0x00, 0x02])))!;
+      final expected = encodeReadRegistersResponse(0x03, encodeInt32(123456, byteSwap: true));
+      expect(resp, expected);
+      // Sanity: differs from the default (unswapped) encoding.
+      expect(resp, isNot(encodeReadRegistersResponse(0x03, encodeInt32(123456))));
+    });
+
+    test('byteSwap=true + wordSwap=true: FC03 read of the INT32 tag returns "DCBA" registers', () {
+      project.protocols!.modbus!.wordSwap = true;
+      project.protocols!.modbus!.byteSwap = true;
+      writePath(project, 'Hold32', 123456);
+      final resp = server.handle(_req(_bytes([0x03, 0x00, 0x01, 0x00, 0x02])))!;
+      final expected =
+          encodeReadRegistersResponse(0x03, encodeInt32(123456, wordSwap: true, byteSwap: true));
+      expect(resp, expected);
+    });
+
+    test('byteSwap=true: FC16 write of byte-swapped registers decodes back to the correct INT32', () {
+      project.protocols!.modbus!.byteSwap = true;
+      final regs = encodeInt32(-42, byteSwap: true); // [swap(hi), swap(lo)]
+      final req = _bytes([
+        0x10, 0x00, 0x01, 0x00, 0x02, 0x04, //
+        (regs[0] >> 8) & 0xFF, regs[0] & 0xFF,
+        (regs[1] >> 8) & 0xFF, regs[1] & 0xFF,
+      ]);
+      final resp = server.handle(_req(req));
+      expect(resp, _bytes([0x10, 0x00, 0x01, 0x00, 0x02]));
+      expect(readPath(project, 'Hold32'), -42);
+    });
+
+    test('byteSwap=true: FC04 read of the FLOAT64 tag returns byte-swapped registers', () {
+      project.protocols!.modbus!.byteSwap = true;
+      writePath(project, 'InFloat', 2.5);
+      final resp = server.handle(_req(_bytes([0x04, 0x00, 0x00, 0x00, 0x04])));
+      final expected = encodeReadRegistersResponse(0x04, encodeFloat64(2.5, byteSwap: true));
+      expect(resp, expected);
+    });
+
+    test('byteSwap=true: FC06 single-register write decodes byte-swapped INT16', () {
+      project.protocols!.modbus!.byteSwap = true;
+      final reg = encodeInt16(55, byteSwap: true)[0]; // byte-swapped register for value 55
+      final req = _bytes([0x06, 0x00, 0x00, (reg >> 8) & 0xFF, reg & 0xFF]);
+      final resp = server.handle(_req(req));
+      expect(resp, req); // normal echo
+      expect(readPath(project, 'Hold16'), 55);
+    });
+
+    test('byteSwap=false (default): behavior is byte-identical to before this feature', () {
+      writePath(project, 'Hold32', 123456);
+      final resp = server.handle(_req(_bytes([0x03, 0x00, 0x01, 0x00, 0x02])));
+      final expected = encodeReadRegistersResponse(0x03, encodeInt32(123456));
+      expect(resp, expected);
+    });
+  });
+
   group('unitId filtering (server-level)', () {
     test('unitId=255 (default, "any"): serves requests regardless of the request unit id', () {
       final resp1 = server.handle(_req(_bytes([0x03, 0x00, 0x00, 0x00, 0x01]), unitId: 1));

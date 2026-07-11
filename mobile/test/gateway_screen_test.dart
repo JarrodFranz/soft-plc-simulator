@@ -652,6 +652,10 @@ void main() {
       final wordSwapSwitch = tester.widget<Switch>(find.byKey(const Key('modbus_word_swap_switch')));
       expect(wordSwapSwitch.value, false);
 
+      expect(find.byKey(const Key('modbus_byte_swap_switch')), findsOneWidget);
+      final byteSwapSwitch = tester.widget<Switch>(find.byKey(const Key('modbus_byte_swap_switch')));
+      expect(byteSwapSwitch.value, false);
+
       expect(find.byKey(const Key('modbus_unit_id_field')), findsOneWidget);
       expect(find.widgetWithText(TextField, '255'), findsOneWidget);
       expect(tester.takeException(), isNull);
@@ -678,6 +682,30 @@ void main() {
       expect(project.protocols?.modbus?.wordSwap, true);
       final wordSwapSwitch = tester.widget<Switch>(find.byKey(const Key('modbus_word_swap_switch')));
       expect(wordSwapSwitch.value, true);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('toggling the byte-swap switch updates ModbusProtocolConfig.byteSwap', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, modbusTabKey);
+
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+      expect(project.protocols?.modbus?.byteSwap, false);
+
+      await tester.tap(find.byKey(const Key('modbus_byte_swap_switch')));
+      await tester.pump();
+
+      expect(project.protocols?.modbus?.byteSwap, true);
+      final byteSwapSwitch = tester.widget<Switch>(find.byKey(const Key('modbus_byte_swap_switch')));
+      expect(byteSwapSwitch.value, true);
       expect(tester.takeException(), isNull);
     });
 
@@ -738,6 +766,9 @@ void main() {
 
       final wordSwapSwitch = tester.widget<Switch>(find.byKey(const Key('modbus_word_swap_switch')));
       expect(wordSwapSwitch.onChanged, isNull);
+
+      final byteSwapSwitch = tester.widget<Switch>(find.byKey(const Key('modbus_byte_swap_switch')));
+      expect(byteSwapSwitch.onChanged, isNull);
 
       final unitIdField = tester.widget<TextField>(find.byKey(const Key('modbus_unit_id_field')));
       expect(unitIdField.enabled, false);

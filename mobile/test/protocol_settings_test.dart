@@ -412,19 +412,22 @@ void main() {
       expect(cfg.enabled, isFalse);
       expect(cfg.port, 502);
       expect(cfg.map.entries, isEmpty);
-      // Additive fields (server word-order + unit-id options): older saved
-      // projects have neither key, and must fall back to the defaults that
-      // preserve the ORIGINAL wire behavior (no swap, accept any unit id).
+      // Additive fields (server word-order + byte-order + unit-id options):
+      // older saved projects have none of these keys, and must fall back to
+      // the defaults that preserve the ORIGINAL wire behavior (no swap,
+      // accept any unit id).
       expect(cfg.wordSwap, isFalse);
+      expect(cfg.byteSwap, isFalse);
       expect(cfg.unitId, 255);
     });
 
-    test('ModbusProtocolConfig round-trips wordSwap and unitId through toJson/fromJson', () {
+    test('ModbusProtocolConfig round-trips wordSwap, byteSwap and unitId through toJson/fromJson', () {
       final cfg = ModbusProtocolConfig(
         enabled: true,
         port: 5020,
         map: ModbusMap(entries: [ModbusMapEntry(tag: 'Run', table: 'holding', address: 0, access: 'ReadWrite')]),
         wordSwap: true,
+        byteSwap: true,
         unitId: 12,
       );
 
@@ -434,12 +437,20 @@ void main() {
       expect(rt.port, 5020);
       expect(rt.map.entries.single.tag, 'Run');
       expect(rt.wordSwap, isTrue);
+      expect(rt.byteSwap, isTrue);
       expect(rt.unitId, 12);
       expect(cfg.toJson()['word_swap'], isTrue);
+      expect(cfg.toJson()['byte_swap'], isTrue);
       expect(cfg.toJson()['unit_id'], 12);
     });
 
-    test('ModbusProtocolConfig.defaults sets wordSwap=false and unitId=255', () {
+    test('ModbusProtocolConfig.fromJson with byteSwap true but no word_swap key defaults wordSwap false', () {
+      final cfg = ModbusProtocolConfig.fromJson({'byte_swap': true});
+      expect(cfg.byteSwap, isTrue);
+      expect(cfg.wordSwap, isFalse);
+    });
+
+    test('ModbusProtocolConfig.defaults sets wordSwap=false, byteSwap=false and unitId=255', () {
       final project = PlcProject(
         id: 'modbus_def_proj',
         name: 'Modbus Defaults Project',
@@ -452,16 +463,18 @@ void main() {
       );
       final cfg = ModbusProtocolConfig.defaults(project);
       expect(cfg.wordSwap, isFalse);
+      expect(cfg.byteSwap, isFalse);
       expect(cfg.unitId, 255);
     });
 
-    test('ProtocolSettings carrying a ModbusProtocolConfig round-trips wordSwap/unitId losslessly', () {
+    test('ProtocolSettings carrying a ModbusProtocolConfig round-trips wordSwap/byteSwap/unitId losslessly', () {
       final settings = ProtocolSettings(
         modbus: ModbusProtocolConfig(
           enabled: true,
           port: 502,
           map: ModbusMap(entries: []),
           wordSwap: true,
+          byteSwap: true,
           unitId: 7,
         ),
       );
@@ -470,6 +483,7 @@ void main() {
 
       expect(rt.modbus, isNotNull);
       expect(rt.modbus!.wordSwap, isTrue);
+      expect(rt.modbus!.byteSwap, isTrue);
       expect(rt.modbus!.unitId, 7);
     });
 

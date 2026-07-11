@@ -88,6 +88,16 @@ class ModbusProtocolConfig {
   /// fall back to `false` (unchanged wire behavior) on read.
   bool wordSwap;
 
+  /// Byte order WITHIN each 16-bit register. `false` (the default) is the
+  /// current/original behavior: big-endian bytes within each register. `true`
+  /// swaps the two bytes of every register (e.g. register 0xABCD becomes
+  /// 0xCDAB). Combined with `wordSwap` this gives all four common Modbus
+  /// multi-register orderings: ABCD (both false), CDAB (wordSwap only), BADC
+  /// (byteSwap only), DCBA (both true). Additive field — older saved
+  /// projects simply don't have `byte_swap` in their JSON and fall back to
+  /// `false` (unchanged wire behavior) on read.
+  bool byteSwap;
+
   /// Unit id this server responds as. `255` (the default) means "any" — the
   /// server ignores the requested unit id entirely, matching the original
   /// permissive behavior. Set to 1-247 to make the server only answer
@@ -102,6 +112,7 @@ class ModbusProtocolConfig {
     this.port = 502,
     required this.map,
     this.wordSwap = false,
+    this.byteSwap = false,
     this.unitId = 255,
   });
 
@@ -112,6 +123,7 @@ class ModbusProtocolConfig {
             ? ModbusMap.fromJson(j['map'] as Map<String, dynamic>)
             : ModbusMap(entries: []),
         wordSwap: j['word_swap'] == true,
+        byteSwap: j['byte_swap'] == true,
         unitId: (j['unit_id'] as num?)?.toInt() ?? 255,
       );
 
@@ -120,17 +132,20 @@ class ModbusProtocolConfig {
         'port': port,
         'map': map.toJson(),
         'word_swap': wordSwap,
+        'byte_swap': byteSwap,
         'unit_id': unitId,
       };
 
   /// Sane defaults for a project that has never configured Modbus: disabled,
   /// the standard Modbus TCP port, an auto-generated map from the project's
-  /// current scalar tags, high-word-first register order, and "any" unit id.
+  /// current scalar tags, high-word-first register order, big-endian byte
+  /// order within registers, and "any" unit id.
   static ModbusProtocolConfig defaults(PlcProject p) => ModbusProtocolConfig(
         enabled: false,
         port: 502,
         map: ModbusMap.autoGenerate(p),
         wordSwap: false,
+        byteSwap: false,
         unitId: 255,
       );
 }
