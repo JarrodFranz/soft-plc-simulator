@@ -94,7 +94,11 @@
 // checks `_publisher.isRebirthRequest` BEFORE the `allowRemoteWrites` gate.
 // Answering re-sends NBIRTH (same bdSeq — no `willMessage` call, since a
 // rebirth isn't a new connection attempt) via the same `birthMessages` +
-// `_sendPublish` path the initial birth uses.
+// `_sendPublish` path the initial birth uses. [requestRebirth] exposes the
+// exact same re-publish for the UI's manual "Rebirth" button — e.g. after
+// the operator edits the tag map (Gateway screen) while already connected,
+// so a remote Sparkplug B subscriber sees the new metric set without a
+// disconnect/reconnect round trip.
 //
 // --- Password handling ---------------------------------------------------
 // `password` is a constructor-style argument to [connect] held ONLY in the
@@ -720,6 +724,54 @@ class MqttHost extends ChangeNotifier {
     _reconnectTimer = Timer(Duration(milliseconds: delayMs), () {
       unawaited(_attemptConnect());
     });
+  }
+
+  /// Manually re-publishes NBIRTH (a Sparkplug B "rebirth") for the current
+  /// project's tag map WITHOUT disconnecting/reconnecting — e.g. after the
+  /// user adds/edits/removes an entry in the MQTT tag map editor while
+  /// already connected, so an external Sparkplug B subscriber (Ignition MQTT
+  /// Engine, etc.) picks up the new metric set without this host ever
+  /// dropping the socket. Mirrors EXACTLY the inbound-rebirth branch in
+  /// [_handlePublish]: same `bdSeq` (no [MqttPublisher.willMessage] call —
+  /// this isn't a new connection attempt), `seq` reset to 0, and the alias
+  /// table/report-by-exception baseline rebuilt — all of which
+  /// [MqttPublisher.birthMessages] already does — then resets
+  /// `_lastHeartbeatMs` exactly like that branch does.
+  ///
+  /// A no-op (and never throws) unless [status] is
+  /// [MqttHostStatus.running] with a resolvable project — safe to call from
+  /// the UI in any state. For the JSON payload format, `birthMessages`
+  /// merely re-publishes the retained "ONLINE" status message (harmless);
+  /// the UI is expected to only surface this action for Sparkplug format,
+  /// since JSON has no rebirth concept, but this method itself doesn't
+  /// enforce that.
+  void requestRebirth() {
+    if (_status != MqttHostStatus.running || _disposed) {
+      return;
+    }
+    final projectProvider = _projectProvider;
+    if (projectProvider == null) {
+      return;
+    }
+    try {
+      final PlcProject project;
+      try {
+        project = projectProvider();
+      } catch (_) {
+        return;
+      }
+      final wallMs = _wallNowMs();
+      for (final d in _publisher.birthMessages(project, wallMs)) {
+        _sendPublish(d);
+      }
+      _lastHeartbeatMs = _clock.elapsedMilliseconds;
+      if (!_disposed) {
+        notifyListeners();
+      }
+    } catch (_) {
+      // A manual rebirth request must never throw — it's a best-effort UI
+      // action, not part of the connect/reconnect lifecycle.
+    }
   }
 
   /// Stops the publisher session: sends a graceful MQTT DISCONNECT (which

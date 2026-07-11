@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:soft_plc_mobile/models/mqtt_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/screens/gateway_screen.dart';
@@ -73,6 +74,7 @@ class _FakeCountsOpcUaHost extends OpcUaHost {
 /// `status == running`, without exercising the real networking stack.
 class _FakeConnectedMqttHost extends MqttHost {
   MqttHostStatus _fakeStatus = MqttHostStatus.stopped;
+  int rebirthCalls = 0;
 
   @override
   MqttHostStatus get status => _fakeStatus;
@@ -80,6 +82,11 @@ class _FakeConnectedMqttHost extends MqttHost {
   void setConnected() {
     _fakeStatus = MqttHostStatus.running;
     notifyListeners();
+  }
+
+  @override
+  void requestRebirth() {
+    rebirthCalls++;
   }
 }
 
@@ -164,11 +171,17 @@ class _RunningModbusHost extends ModbusHost {
 
 class _ConnectedMqttHost extends MqttHost {
   int disconnectCalls = 0;
+  int rebirthCalls = 0;
   @override
   MqttHostStatus get status => MqttHostStatus.running;
   @override
   Future<void> disconnect() async {
     disconnectCalls++;
+  }
+
+  @override
+  void requestRebirth() {
+    rebirthCalls++;
   }
 }
 
@@ -1142,6 +1155,132 @@ void main() {
       await _selectTab(tester, opcuaTabKey);
       await tester.tap(find.byKey(const Key('opcua_enable_switch')));
       await tester.pump();
+
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('MQTT manual Rebirth button + live map editing (mqtt-rebirth-live-tags)', () {
+    testWidgets('Rebirth button exists and is disabled while disconnected', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final mqttHost = MqttHost();
+      addTearDown(mqttHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, mqttHost: mqttHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, mqttTabKey);
+      await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
+      await tester.pump();
+
+      expect(find.byKey(const Key('mqtt_rebirth_button')), findsOneWidget);
+      final button = tester.widget<OutlinedButton>(find.byKey(const Key('mqtt_rebirth_button')));
+      expect(button.onPressed, isNull, reason: 'Rebirth must be disabled while disconnected');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Rebirth button is disabled when connected with JSON format (default)', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final mqttHost = _FakeConnectedMqttHost();
+      addTearDown(mqttHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, mqttHost: mqttHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, mqttTabKey);
+      await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
+      await tester.pump();
+      // Default format is 'json'.
+      mqttHost.setConnected();
+      await tester.pump();
+
+      final button = tester.widget<OutlinedButton>(find.byKey(const Key('mqtt_rebirth_button')));
+      expect(button.onPressed, isNull, reason: 'Rebirth is meaningless for JSON format (no rebirth concept)');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Rebirth button is enabled when connected with Sparkplug format, and tapping it calls the host',
+        (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final mqttHost = _FakeConnectedMqttHost();
+      addTearDown(mqttHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, mqttHost: mqttHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, mqttTabKey);
+      await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
+      await tester.pump();
+
+      await tester.ensureVisible(find.byKey(const Key('mqtt_format_dropdown')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('mqtt_format_dropdown')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('sparkplug').last);
+      await tester.pumpAndSettle();
+
+      mqttHost.setConnected();
+      await tester.pump();
+
+      final buttonFinder = find.byKey(const Key('mqtt_rebirth_button'));
+      await tester.ensureVisible(buttonFinder);
+      await tester.pumpAndSettle();
+      final button = tester.widget<OutlinedButton>(buttonFinder);
+      expect(button.onPressed, isNotNull,
+          reason: 'Rebirth must be enabled once connected with Sparkplug format');
+
+      await tester.tap(buttonFinder);
+      await tester.pump();
+
+      expect(mqttHost.rebirthCalls, 1);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('the map editor (Add entry, per-row tag/metric/writable/delete) stays enabled while connected',
+        (tester) async {
+      final project = _project();
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.mqtt!.enabled = true;
+      project.protocols!.mqtt!.format = 'sparkplug';
+      project.protocols!.mqtt!.map.entries.clear();
+      project.protocols!.mqtt!.map.entries.add(
+        MqttMapEntry(tag: 'Inputs.Start_PB', metric: 'Start_PB', writable: false),
+      );
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final mqttHost = _ConnectedMqttHost();
+      addTearDown(mqttHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, mqttHost: mqttHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, mqttTabKey);
+
+      // "Add entry" must still be tappable while connected — adding a mapped
+      // tag live is safe (unlike editing format/topic/group/node), the user
+      // just needs to press Rebirth afterwards.
+      final addEntryButton = find.widgetWithText(TextButton, 'Add entry');
+      await tester.ensureVisible(addEntryButton);
+      await tester.pumpAndSettle();
+      final entryCountBefore = project.protocols!.mqtt!.map.entries.length;
+      await tester.tap(addEntryButton);
+      await tester.pump();
+      expect(project.protocols!.mqtt!.map.entries.length, entryCountBefore + 1,
+          reason: 'Add entry must work while connected');
+
+      // A per-row control (the writable Switch on the first row) must also
+      // remain enabled/tappable while connected.
+      final rowSwitch = find.byType(Switch).last;
+      await tester.ensureVisible(rowSwitch);
+      await tester.pumpAndSettle();
+      final switchWidget = tester.widget<Switch>(rowSwitch);
+      expect(switchWidget.onChanged, isNotNull, reason: 'per-row writable switch must stay enabled while connected');
+
+      // The connected hint nudging the user toward Rebirth should be visible
+      // (Sparkplug format + connected).
+      expect(find.textContaining('tap Rebirth above'), findsOneWidget);
 
       expect(tester.takeException(), isNull);
     });

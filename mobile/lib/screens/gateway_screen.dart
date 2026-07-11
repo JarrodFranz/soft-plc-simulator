@@ -290,6 +290,14 @@ class _GatewayScreenState extends State<GatewayScreen> {
     await widget.mqttHost.disconnect();
   }
 
+  /// Manual "Rebirth" button handler: re-publishes NBIRTH for the current
+  /// tag map without disconnecting — see `MqttHost.requestRebirth`'s doc
+  /// comment. Only meaningful (and only enabled in the UI) for Sparkplug B;
+  /// the host itself is safe to call in any state.
+  void _rebirthMqtt() {
+    widget.mqttHost.requestRebirth();
+  }
+
   void _autoGenerateMap() {
     setState(() {
       _ensureProtocols();
@@ -1911,6 +1919,23 @@ class _GatewayScreenState extends State<GatewayScreen> {
                       child: const Text('Disconnect'),
                     ),
                   ),
+                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                  SizedBox(
+                    width: isCompact ? double.infinity : null,
+                    child: Tooltip(
+                      message: (connected && !isJson)
+                          ? 'Re-publish NBIRTH with the current tag map — other Sparkplug B '
+                              'subscribers (e.g. Ignition MQTT Engine) will see any tags added '
+                              'or changed while connected.'
+                          : 'Connect with Sparkplug B to re-publish births.',
+                      child: OutlinedButton.icon(
+                        key: const Key('mqtt_rebirth_button'),
+                        icon: const Icon(Icons.campaign_outlined, size: 16),
+                        label: const Text('Rebirth'),
+                        onPressed: (connected && !isJson) ? _rebirthMqtt : null,
+                      ),
+                    ),
+                  ),
                 ],
               ),
               if (!widget.hostingSupported) ...[
@@ -1938,7 +1963,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 ),
               ],
               const SizedBox(height: 12),
-              _mqttMapEditorCard(context, mqtt.map, tagOptions),
+              _mqttMapEditorCard(context, mqtt.map, tagOptions, showRebirthHint: connected && !isJson),
             ],
           ],
         ),
@@ -1946,7 +1971,19 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
   }
 
-  Widget _mqttMapEditorCard(BuildContext context, MqttMap map, List<String> tagOptions) {
+  /// The tag<->metric map editor. Editable (Add entry / edit tag, metric,
+  /// writable / delete) at all times, INCLUDING while connected — unlike the
+  /// identity fields above (format/base topic/group ID/edge node ID), adding
+  /// or removing a mapped tag doesn't itself break the live Sparkplug B
+  /// stream; it just means the currently-connected subscriber won't see the
+  /// new metric set until a Rebirth is published. [showRebirthHint] (true
+  /// only once connected with Sparkplug format) surfaces that reminder.
+  Widget _mqttMapEditorCard(
+    BuildContext context,
+    MqttMap map,
+    List<String> tagOptions, {
+    required bool showRebirthHint,
+  }) {
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF0F172A),
@@ -1982,6 +2019,13 @@ class _GatewayScreenState extends State<GatewayScreen> {
               ),
             ],
           ),
+          if (showRebirthHint) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Connected — tap Rebirth above after adding/editing entries so subscribers see them.',
+              style: TextStyle(color: Colors.amber.shade200, fontSize: 11),
+            ),
+          ],
           const SizedBox(height: 8),
           if (map.entries.isEmpty)
             const Padding(

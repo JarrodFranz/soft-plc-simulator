@@ -612,6 +612,82 @@ void main() {
     });
   });
 
+  group('MqttHost — manual requestRebirth() (mqtt-rebirth-live-tags)', () {
+    test('requestRebirth() after connect+birth sends a fresh NBIRTH publish', () async {
+      final server = await ServerSocket.bind('127.0.0.1', 0);
+      final broker = _BrokerServer(server);
+      addTearDown(server.close);
+      final project = _sparkplugProject(port: server.port);
+      final host = MqttHost();
+      addTearDown(host.dispose);
+
+      final connFuture = broker.acceptOne();
+      await host.connect(() => project, password: '');
+      final conn = await connFuture;
+      await _waitForPacketType(conn, MqttPacketType.connect, 1);
+      conn.sendConnackAccepted();
+
+      // Initial NBIRTH (publish #1).
+      final firstBirth = await _waitForPacketType(conn, MqttPacketType.publish, 1);
+      final firstPub = parsePublish(firstBirth)!;
+      expect(firstPub.topic, 'spBv1.0/SoftPLC/NBIRTH/Node1');
+      final countBeforeRebirth = host.publishCount;
+
+      // Simulate a live tag-map edit (mirrors what the Gateway screen's map
+      // editor does directly on the project object while connected), then
+      // request a manual rebirth — a fresh NBIRTH must be re-sent (a second
+      // occurrence of the NBIRTH topic) without ever disconnecting.
+      project.protocols!.mqtt!.map.entries.add(
+        MqttMapEntry(tag: 'Alarm', metric: 'AlarmRenamed', writable: false),
+      );
+      host.requestRebirth();
+
+      final secondPublish = await _waitForPacketType(conn, MqttPacketType.publish, 2);
+      final secondPub = parsePublish(secondPublish)!;
+      expect(secondPub.topic, 'spBv1.0/SoftPLC/NBIRTH/Node1');
+      expect(secondPub.retain, isTrue);
+      expect(host.status, MqttHostStatus.running, reason: 'a manual rebirth must not disconnect the host');
+      expect(host.publishCount, greaterThan(countBeforeRebirth));
+
+      // bdSeq must be UNCHANGED by a manual rebirth (same pairing rule as an
+      // inbound NCMD rebirth — see the group above): re-decode both NBIRTHs'
+      // bdSeq metric and compare.
+      expect(_bdSeqOf(secondPub.payload), _bdSeqOf(firstPub.payload));
+
+      await host.disconnect();
+    });
+
+    test('requestRebirth() on a never-connected host is a safe no-op', () async {
+      final host = MqttHost();
+      addTearDown(host.dispose);
+
+      expect(() => host.requestRebirth(), returnsNormally);
+      expect(host.status, MqttHostStatus.stopped);
+    });
+
+    test('requestRebirth() on a stopped (previously connected, now disconnected) host is a safe no-op',
+        () async {
+      final server = await ServerSocket.bind('127.0.0.1', 0);
+      final broker = _BrokerServer(server);
+      addTearDown(server.close);
+      final project = _sparkplugProject(port: server.port);
+      final host = MqttHost();
+      addTearDown(host.dispose);
+
+      final connFuture = broker.acceptOne();
+      await host.connect(() => project, password: '');
+      final conn = await connFuture;
+      await _waitForPacketType(conn, MqttPacketType.connect, 1);
+      conn.sendConnackAccepted();
+      await _waitForPacketType(conn, MqttPacketType.publish, 1);
+
+      await host.disconnect();
+
+      expect(() => host.requestRebirth(), returnsNormally);
+      expect(host.status, MqttHostStatus.stopped);
+    });
+  });
+
   group('MqttHost — hostile broker input never crashes', () {
     test('garbage bytes from the broker drop the connection without throwing', () async {
       final server = await ServerSocket.bind('127.0.0.1', 0);
