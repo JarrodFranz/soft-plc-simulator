@@ -1431,6 +1431,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
                       'Clients: ${widget.dnpHost.clientCount}',
                       style: const TextStyle(color: Colors.grey, fontSize: 12),
                     ),
+                  Text(
+                    // Which classes are enabled for unsolicited reporting is
+                    // a runtime, master-driven state (ENABLE/DISABLE_UNSOLICITED)
+                    // living inside the shared outstation, not project config —
+                    // a static "master-controlled" label avoids wiring a live
+                    // per-class readout through the host just for display.
+                    running ? 'Unsolicited: master-controlled' : 'Unsolicited: off',
+                    style: TextStyle(color: Colors.cyanAccent.withValues(alpha: 0.85), fontSize: 12),
+                  ),
                 ],
               ),
               const SizedBox(height: 12),
@@ -1652,6 +1661,30 @@ class _GatewayScreenState extends State<GatewayScreen> {
               widget.onProjectUpdated();
             },
           );
+          // Event Class assignment only applies to INPUT points (their
+          // changes can be captured into a Class 1/2/3 event buffer);
+          // output points are write targets with no event semantics.
+          final isInputPoint = entry.pointType == 'binaryInput' || entry.pointType == 'analogInput';
+          final Widget eventClassField = isInputPoint
+              ? DropdownButtonFormField<int>(
+                  key: const Key('dnp_event_class_dropdown'),
+                  initialValue: entry.eventClass,
+                  decoration: const InputDecoration(isDense: true, labelText: 'Event class'),
+                  style: const TextStyle(fontSize: 12, color: Colors.white),
+                  dropdownColor: const Color(0xFF1E293B),
+                  items: const [
+                    DropdownMenuItem(value: 0, child: Text('Static')),
+                    DropdownMenuItem(value: 1, child: Text('Class 1')),
+                    DropdownMenuItem(value: 2, child: Text('Class 2')),
+                    DropdownMenuItem(value: 3, child: Text('Class 3')),
+                  ],
+                  onChanged: (v) {
+                    if (v == null) return;
+                    setState(() => entry.eventClass = v);
+                    widget.onProjectUpdated();
+                  },
+                )
+              : const Center(child: Text('—', style: TextStyle(color: Colors.grey, fontSize: 12)));
           final deleteButton = IconButton(
             icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
             tooltip: 'Delete entry',
@@ -1667,6 +1700,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 pointTypeDropdown,
                 const SizedBox(height: 4),
                 indexField,
+                const SizedBox(height: 4),
+                eventClassField,
                 Align(alignment: Alignment.centerRight, child: deleteButton),
               ],
             );
@@ -1679,6 +1714,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
               SizedBox(width: 190, child: pointTypeDropdown),
               const SizedBox(width: 8),
               SizedBox(width: 100, child: indexField),
+              const SizedBox(width: 8),
+              SizedBox(width: 140, child: eventClassField),
               SizedBox(width: 40, child: deleteButton),
             ],
           );

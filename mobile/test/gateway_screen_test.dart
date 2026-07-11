@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:soft_plc_mobile/models/dnp3_map.dart';
 import 'package:soft_plc_mobile/models/mqtt_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
@@ -1524,6 +1525,39 @@ void main() {
       expect(project.protocols?.dnp3?.map.entries, isNotEmpty);
       expect(find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
           findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('DNP3 card exposes an event-Class dropdown on input rows, and editing it sets eventClass',
+        (tester) async {
+      final project = _project();
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.dnp3!.enabled = true;
+      final inputEntry = DnpMapEntry(tag: 'Start_PB', pointType: 'binaryInput', index: 0);
+      final outputEntry = DnpMapEntry(tag: 'Motor_Run', pointType: 'binaryOutput', index: 0);
+      project.protocols!.dnp3!.map = DnpMap(entries: [inputEntry, outputEntry]);
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final dnpHost = _CountingDnpHost();
+      addTearDown(dnpHost.dispose);
+      await setSurface(tester, desktopSize);
+
+      await tester.pumpWidget(_app(project, host, dnpHost: dnpHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, dnpTabKey);
+
+      // The input row shows the event-Class dropdown, defaulting to Static.
+      final dropdownFinder = find.byKey(const Key('dnp_event_class_dropdown'));
+      expect(dropdownFinder, findsOneWidget, reason: 'only the input row gets an event-Class dropdown');
+      expect(inputEntry.eventClass, 0);
+
+      await tester.tap(dropdownFinder);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Class 2').last);
+      await tester.pumpAndSettle();
+
+      expect(inputEntry.eventClass, 2);
+      expect(outputEntry.eventClass, 0, reason: 'the output row is untouched (no dropdown of its own)');
       expect(tester.takeException(), isNull);
     });
 
