@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -221,6 +222,280 @@ void main() {
       throwsA(isA<OpcSecurityException>()),
     );
   });
+
+  // --- Task 5: symmetric MSG security ---------------------------------------
+
+  test('symmetric MSG round-trips (sign+encrypt) and a tampered MAC is rejected',
+      () {
+    final channel = OpcSecureChannel(
+      keyPair: serverKp,
+      certificateDer: serverCertDer,
+    );
+    const tokenId = 7;
+    channel.deriveSymmetricKeys(
+      tokenId: tokenId,
+      clientNonce: clientNonce,
+      serverNonce: serverNonce,
+    );
+    final clientKeys = channel.clientKeys!;
+    final serverKeys = channel.serverKeys!;
+
+    // Body length chosen so it is NOT already block-aligned, forcing >1 padding
+    // byte (exercises the padding path).
+    final body =
+        Uint8List.fromList(List<int>.generate(53, (i) => (i * 9 + 4) & 0xff));
+
+    // Inbound: the CLIENT signs+encrypts with the client key set; the server's
+    // channel.openSymmetric (which uses the client keys) must recover it.
+    final inFrame = _symBuild(
+      keys: clientKeys,
+      secureChannelId: 11,
+      tokenId: tokenId,
+      sequenceNumber: 2,
+      requestId: 3,
+      body: body,
+    );
+    final inHdr = parseChunkHeader(inFrame);
+    final opened = channel.openSymmetric(
+      tokenId: tokenId,
+      rawHeader: Uint8List.sublistView(inFrame, 0, inHdr.securityHeaderEnd),
+      rawAfterSecurityHeader:
+          Uint8List.sublistView(inFrame, inHdr.securityHeaderEnd, inHdr.size),
+    );
+    // opened == sequenceHeader(8) ++ body
+    expect(opened.length, 8 + body.length);
+    expect(Uint8List.sublistView(opened, 8), equals(body));
+    final openedSeq = ByteData.sublistView(opened, 0, 8);
+    expect(openedSeq.getUint32(0, Endian.little), 2); // sequenceNumber
+    expect(openedSeq.getUint32(4, Endian.little), 3); // requestId
+
+    // Outbound: the SERVER builds with the server key set; a client mirror
+    // (server keys) must recover it.
+    final outFrame = channel.buildSecuredMsg(
+      secureChannelId: 11,
+      tokenId: tokenId,
+      sequenceNumber: 5,
+      requestId: 6,
+      body: body,
+    );
+    expect(_symOpenBody(keys: serverKeys, frame: outFrame), equals(body));
+
+    // Tamper: flip a byte inside the encrypted region -> HMAC fails -> throws.
+    final tampered = Uint8List.fromList(inFrame);
+    tampered[inHdr.securityHeaderEnd + 4] ^= 0xFF;
+    expect(
+      () => channel.openSymmetric(
+        tokenId: tokenId,
+        rawHeader: Uint8List.sublistView(tampered, 0, inHdr.securityHeaderEnd),
+        rawAfterSecurityHeader: Uint8List.sublistView(
+            tampered, inHdr.securityHeaderEnd, inHdr.size),
+      ),
+      throwsA(isA<OpcSecurityException>()),
+    );
+  });
+
+  test('Renew derives fresh keys while the old token still validates within '
+      'lifetime', () {
+    final channel = OpcSecureChannel(
+      keyPair: serverKp,
+      certificateDer: serverCertDer,
+    );
+
+    // Issue: token 1 keyed on nonce set A.
+    channel.deriveSymmetricKeys(
+      tokenId: 1,
+      clientNonce: clientNonce,
+      serverNonce: serverNonce,
+    );
+    final clientKeysA = channel.clientKeys!;
+
+    // A message secured under token 1 (before the renew).
+    final body =
+        Uint8List.fromList(List<int>.generate(20, (i) => (i * 3) & 0xff));
+    final frameA = _symBuild(
+      keys: clientKeysA,
+      secureChannelId: 22,
+      tokenId: 1,
+      sequenceNumber: 1,
+      requestId: 1,
+      body: body,
+    );
+
+    // Renew: token 2 keyed on a DIFFERENT nonce set B -> fresh keys.
+    final clientNonceB = Uint8List.fromList(
+        List<int>.generate(kSecureChannelNonceLength, (i) => i + 50));
+    final serverNonceB = Uint8List.fromList(
+        List<int>.generate(kSecureChannelNonceLength, (i) => 100 + i));
+    channel.deriveSymmetricKeys(
+      tokenId: 2,
+      clientNonce: clientNonceB,
+      serverNonce: serverNonceB,
+    );
+    final clientKeysB = channel.clientKeys!;
+    expect(clientKeysB.encryptingKey, isNot(equals(clientKeysA.encryptingKey)));
+
+    // The OLD token (1) still validates after the renew.
+    final hdrA = parseChunkHeader(frameA);
+    final openedA = channel.openSymmetric(
+      tokenId: 1,
+      rawHeader: Uint8List.sublistView(frameA, 0, hdrA.securityHeaderEnd),
+      rawAfterSecurityHeader:
+          Uint8List.sublistView(frameA, hdrA.securityHeaderEnd, hdrA.size),
+    );
+    expect(Uint8List.sublistView(openedA, 8), equals(body));
+
+    // The NEW token (2) validates with the fresh key set.
+    final frameB = _symBuild(
+      keys: clientKeysB,
+      secureChannelId: 22,
+      tokenId: 2,
+      sequenceNumber: 2,
+      requestId: 2,
+      body: body,
+    );
+    final hdrB = parseChunkHeader(frameB);
+    final openedB = channel.openSymmetric(
+      tokenId: 2,
+      rawHeader: Uint8List.sublistView(frameB, 0, hdrB.securityHeaderEnd),
+      rawAfterSecurityHeader:
+          Uint8List.sublistView(frameB, hdrB.securityHeaderEnd, hdrB.size),
+    );
+    expect(Uint8List.sublistView(openedB, 8), equals(body));
+  });
+
+  // --- Task 5: UserNameIdentityToken password decrypt -----------------------
+
+  test('decryptUserPassword recovers the password and rejects a wrong nonce',
+      () {
+    final channel = OpcSecureChannel(
+      keyPair: serverKp,
+      certificateDer: serverCertDer,
+    );
+    // Establish a serverNonce on the channel (as a real OPN would).
+    channel.deriveSymmetricKeys(
+      tokenId: 1,
+      clientNonce: clientNonce,
+      serverNonce: serverNonce,
+    );
+
+    const password = 'sup3r-s3cret-päss'; // includes a non-ASCII char
+    final encrypted = _legacyPasswordEncrypt(
+      serverPub: serverKp.publicKey,
+      password: password,
+      serverNonce: serverNonce,
+    );
+    expect(channel.decryptUserPassword(encrypted), password);
+
+    // A token encrypted against a DIFFERENT nonce is rejected (null), because
+    // the trailing nonce won't match the channel's lastServerNonce.
+    final wrongNonce = Uint8List.fromList(
+        List<int>.generate(kSecureChannelNonceLength, (i) => i));
+    final encryptedWrong = _legacyPasswordEncrypt(
+      serverPub: serverKp.publicKey,
+      password: password,
+      serverNonce: wrongNonce,
+    );
+    expect(channel.decryptUserPassword(encryptedWrong), isNull);
+
+    // Garbage that won't OAEP-decrypt is rejected (null), never throws.
+    expect(
+      channel.decryptUserPassword(
+          Uint8List.fromList(List<int>.filled(256, 0x5A))),
+      isNull,
+    );
+    expect(channel.lastServerNonce, equals(serverNonce));
+  }, timeout: const Timeout(Duration(minutes: 2)));
+}
+
+/// Client-side mirror of the server's symmetric sign+encrypt (SignAndEncrypt),
+/// written independently from `secure_channel.rs symmetric_sign_and_encrypt`:
+/// pad to the AES block, HMAC-SHA256 over the whole chunk except the signature,
+/// then AES-256-CBC encrypt the sequence-header..signature region.
+Uint8List _symBuild({
+  required OpcChannelKeys keys,
+  required int secureChannelId,
+  required int tokenId,
+  required int sequenceNumber,
+  required int requestId,
+  required Uint8List body,
+}) {
+  const headerSize = 16; // chunk header(12) + tokenId(4)
+  const sig = 32;
+  const block = 16;
+  final plainFrame = buildMsgChunk(
+    secureChannelId: secureChannelId,
+    tokenId: tokenId,
+    sequenceNumber: sequenceNumber,
+    requestId: requestId,
+    body: body,
+  );
+  final encryptSize = 8 + body.length + sig + 1;
+  final rem = encryptSize % block;
+  final inner = rem == 0 ? 0 : block - rem;
+  final padTotal = 1 + inner;
+  final pad = Uint8List(padTotal)..fillRange(0, padTotal, inner & 0xff);
+
+  final tmp = Uint8List(headerSize + 8 + body.length + padTotal + sig);
+  tmp.setRange(0, plainFrame.length, plainFrame);
+  tmp.setRange(plainFrame.length, plainFrame.length + padTotal, pad);
+  ByteData.sublistView(tmp, 4, 8).setUint32(0, tmp.length, Endian.little);
+
+  final signedEnd = tmp.length - sig;
+  final signature =
+      hmacSha256(keys.signingKey, Uint8List.sublistView(tmp, 0, signedEnd));
+  tmp.setRange(signedEnd, tmp.length, signature);
+
+  final cipher = aes256CbcEncrypt(
+    keys.encryptingKey,
+    keys.iv,
+    Uint8List.sublistView(tmp, headerSize, tmp.length),
+  );
+  final out = Uint8List(tmp.length);
+  out.setRange(0, headerSize, tmp);
+  out.setRange(headerSize, out.length, cipher);
+  return out;
+}
+
+/// Client-side mirror of the receive path: AES-decrypt, verify HMAC, strip
+/// padding, return the body (dropping the 8-byte sequence header).
+Uint8List _symOpenBody({
+  required OpcChannelKeys keys,
+  required Uint8List frame,
+}) {
+  const sig = 32;
+  final hdr = parseChunkHeader(frame);
+  final rawHeader = Uint8List.sublistView(frame, 0, hdr.securityHeaderEnd);
+  final rawAfter =
+      Uint8List.sublistView(frame, hdr.securityHeaderEnd, hdr.size);
+  final dec = aes256CbcDecrypt(keys.encryptingKey, keys.iv, rawAfter);
+  final signedEnd = dec.length - sig;
+  final signed = Uint8List(rawHeader.length + signedEnd);
+  signed.setRange(0, rawHeader.length, rawHeader);
+  signed.setRange(rawHeader.length, signed.length,
+      Uint8List.sublistView(dec, 0, signedEnd));
+  final expected = hmacSha256(keys.signingKey, signed);
+  expect(Uint8List.sublistView(dec, signedEnd), equals(expected));
+  final padByte = dec[signedEnd - 1];
+  final bodyEnd = signedEnd - (padByte + 1);
+  return Uint8List.fromList(Uint8List.sublistView(dec, 8, bodyEnd));
+}
+
+/// Client-side mirror of `user_identity.rs legacy_password_encrypt`: build the
+/// plaintext `UInt32-LE (len) ++ password ++ serverNonce` and RSA-OAEP-SHA1
+/// encrypt it under the server public key (one 256-byte block for <=214 bytes).
+Uint8List _legacyPasswordEncrypt({
+  required RSAPublicKey serverPub,
+  required String password,
+  required Uint8List serverNonce,
+}) {
+  final passBytes = Uint8List.fromList(utf8.encode(password));
+  final plaintextLen = 4 + passBytes.length + serverNonce.length;
+  final src = Uint8List(plaintextLen);
+  ByteData.sublistView(src, 0, 4)
+      .setUint32(0, plaintextLen - 4, Endian.little);
+  src.setRange(4, 4 + passBytes.length, passBytes);
+  src.setRange(4 + passBytes.length, plaintextLen, serverNonce);
+  return rsaOaepSha1Encrypt(serverPub, src);
 }
 
 /// Independent client-side mirror of the server's asymmetric sign+encrypt.

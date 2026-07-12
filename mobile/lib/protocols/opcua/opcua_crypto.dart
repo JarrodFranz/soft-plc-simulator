@@ -140,7 +140,12 @@ SecureRandom fortunaRandom([List<int>? seed]) {
   return FortunaRandom()..seed(KeyParameter(seedBytes));
 }
 
-Uint8List _secureSeed(int length) {
+Uint8List _secureSeed(int length) => secureRandomBytes(length);
+
+/// Returns [length] cryptographically-strong random bytes from
+/// `Random.secure()` — used for OPC UA server nonces (Part 6 requires a fresh
+/// 32-byte nonce per OpenSecureChannel for Basic256Sha256 key derivation).
+Uint8List secureRandomBytes(int length) {
   final rng = Random.secure();
   final out = Uint8List(length);
   for (var i = 0; i < length; i++) {

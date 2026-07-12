@@ -24,6 +24,7 @@
 //   - encryption : RSA-OAEP with MGF1-SHA1  (plaintext block 214, cipher 256)
 //   - signature  : RSA PKCS#1 v1.5 with SHA-256 (256-byte signature)
 
+import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
 import 'opcua_certificate.dart';
@@ -47,6 +48,14 @@ const int kAsymSignatureSize = 256;
 
 /// OPC UA secure-channel nonce length for Basic256Sha256 (bytes).
 const int kSecureChannelNonceLength = 32;
+
+/// Symmetric HMAC-SHA256 signature size (bytes) for Basic256Sha256
+/// (security_policy.rs `symmetric_signature_size` -> `SHA256_SIZE`).
+const int kSymSignatureSize = 32;
+
+/// Symmetric AES-256-CBC block/plaintext block size (bytes)
+/// (security_policy.rs `plain_block_size` -> 16).
+const int kSymBlockSize = 16;
 
 /// The security mode negotiated for a secure channel. For an asymmetric OPN the
 /// message is always signed AND encrypted when the policy is not None (Part 6),
@@ -99,11 +108,28 @@ class OpcSecureChannel {
   final Uint8List _certificateDer;
 
   OpcSecurityMode _mode = OpcSecurityMode.none;
+
+  /// The MESSAGE security mode negotiated for subsequent symmetric MSG/CLO
+  /// chunks (Sign vs SignAndEncrypt), read from the OpenSecureChannelRequest's
+  /// `securityMode` field by the session. The asymmetric OPN itself is always
+  /// signed+encrypted when the policy is not None, so [_mode] (None vs secured)
+  /// is a separate concern from this. Defaults to SignAndEncrypt — the mode a
+  /// Basic256Sha256 client uses by default and the only symmetric mode Task 7's
+  /// live E2E exercises.
+  OpcSecurityMode messageSecurityMode = OpcSecurityMode.signAndEncrypt;
+
   OpcCertificate? _clientCertificate;
   Uint8List? _clientNonce;
   Uint8List? _serverNonce;
   OpcChannelKeys? _clientKeys;
   OpcChannelKeys? _serverKeys;
+
+  // Per-token key sets so a Renew can install a fresh key set while the OLD
+  // token's keys stay valid within its lifetime (a message secured under the
+  // previous token must still verify until the client migrates). Keyed by the
+  // ChannelSecurityToken.tokenId.
+  final Map<int, OpcChannelKeys> _clientKeysByToken = <int, OpcChannelKeys>{};
+  final Map<int, OpcChannelKeys> _serverKeysByToken = <int, OpcChannelKeys>{};
 
   /// The negotiated security mode (None until an OPN is processed).
   OpcSecurityMode get mode => _mode;
@@ -148,6 +174,13 @@ class OpcSecureChannel {
   ///
   /// For `SecurityPolicy#None` the remainder is returned unchanged. Throws
   /// [OpcSecurityException] on any failure.
+  /// When [deriveKeys] is true (the default) this derives+stores the symmetric
+  /// key sets from ([serverNonce], [clientNonce]) as part of the call — used by
+  /// the standalone loopback test which already knows both nonces. The SESSION
+  /// passes `deriveKeys: false` (the real `clientNonce` is INSIDE the encrypted
+  /// OPN body and is not known until this call returns the plaintext), then
+  /// parses the real nonce and calls [deriveSymmetricKeys] itself. In that case
+  /// the [clientNonce] argument is unused.
   Uint8List openFromClient({
     required String policyUri,
     required Uint8List? senderCertificate,
@@ -156,6 +189,7 @@ class OpcSecureChannel {
     required Uint8List serverNonce,
     required Uint8List clientNonce,
     Uint8List? receiverCertificateThumbprint,
+    bool deriveKeys = true,
   }) {
     if (policyUri == kSecurityPolicyNoneUri) {
       _mode = OpcSecurityMode.none;
@@ -230,7 +264,15 @@ class OpcSecureChannel {
         }
       }
 
-      _deriveKeys(clientNonce: clientNonce, serverNonce: serverNonce);
+      if (deriveKeys) {
+        _deriveKeys(clientNonce: clientNonce, serverNonce: serverNonce);
+      } else {
+        // The session will call deriveSymmetricKeys once it has parsed the real
+        // clientNonce from the decrypted body; still record the serverNonce now
+        // so lastServerNonce (needed for the username-token decrypt during the
+        // SAME channel setup) is available immediately.
+        _serverNonce = serverNonce;
+      }
       return Uint8List.fromList(Uint8List.sublistView(plain, 0, bodyEnd));
     } on OpcSecurityException {
       rethrow;
@@ -302,6 +344,318 @@ class OpcSecureChannel {
     _clientKeys = _makeChannelKeys(serverNonce, clientNonce);
     _serverKeys = _makeChannelKeys(clientNonce, serverNonce);
   }
+
+  /// Derives and installs the symmetric key sets for [tokenId] from the OPN
+  /// nonce exchange. The Client keys VERIFY/DECRYPT inbound client MSGs; the
+  /// Server keys SIGN/ENCRYPT outbound server MSGs (Table 33). Called by the
+  /// session once it has parsed the real [clientNonce] from the decrypted OPN
+  /// body (Issue) or a fresh nonce pair on Renew. Prior tokens' key sets are
+  /// retained so a message secured under an older-but-unexpired token still
+  /// verifies.
+  void deriveSymmetricKeys({
+    required int tokenId,
+    required Uint8List clientNonce,
+    required Uint8List serverNonce,
+  }) {
+    _deriveKeys(clientNonce: clientNonce, serverNonce: serverNonce);
+    _clientKeysByToken[tokenId] = _clientKeys!;
+    _serverKeysByToken[tokenId] = _serverKeys!;
+  }
+
+  /// The most recent server nonce (used to verify the trailing nonce inside a
+  /// decrypted UserNameIdentityToken password). Throws if no OPN has run yet.
+  Uint8List get lastServerNonce {
+    final nonce = _serverNonce;
+    if (nonce == null) {
+      throw const OpcSecurityException('no server nonce has been established yet');
+    }
+    return nonce;
+  }
+
+  OpcChannelKeys _clientKeysForToken(int tokenId) {
+    final keys = _clientKeysByToken[tokenId] ?? _clientKeys;
+    if (keys == null) {
+      throw const OpcSecurityException('no symmetric keys for this channel/token');
+    }
+    return keys;
+  }
+
+  OpcChannelKeys _serverKeysForToken(int tokenId) {
+    final keys = _serverKeysByToken[tokenId] ?? _serverKeys;
+    if (keys == null) {
+      throw const OpcSecurityException('no symmetric keys for this channel/token');
+    }
+    return keys;
+  }
+
+  /// Verifies (Sign / SignAndEncrypt) and decrypts (SignAndEncrypt) an inbound
+  /// MSG/CLO chunk's secured remainder into its plaintext
+  /// `sequenceHeader ++ body`.
+  ///
+  /// - [rawHeader]: the exact on-wire chunk header + symmetric security header
+  ///   bytes `frame.sublist(0, header.securityHeaderEnd)`. This is part of the
+  ///   HMAC-signed range, so — like [openFromClient]'s `rawHeader` — it MUST be
+  ///   a slice of the original wire bytes, never re-encoded.
+  /// - [rawAfterSecurityHeader]: the secured remainder
+  ///   `frame.sublist(header.securityHeaderEnd, header.size)` — for
+  ///   SignAndEncrypt the AES-encrypted `sequenceHeader ++ body ++ padding ++
+  ///   signature`; for Sign the plaintext `sequenceHeader ++ body ++ signature`.
+  /// - [tokenId]: the symmetric security header's tokenId, selecting the key set
+  ///   (so a Renew's older token still verifies).
+  ///
+  /// For [OpcSecurityMode.none] the remainder is returned unchanged. Throws
+  /// [OpcSecurityException] on any MAC / padding / length failure — never lets
+  /// an uncaught exception escape.
+  Uint8List openSymmetric({
+    required int tokenId,
+    required Uint8List rawHeader,
+    required Uint8List rawAfterSecurityHeader,
+  }) {
+    if (messageSecurityMode == OpcSecurityMode.none) {
+      return rawAfterSecurityHeader;
+    }
+    try {
+      final keys = _clientKeysForToken(tokenId);
+      if (messageSecurityMode == OpcSecurityMode.sign) {
+        // No encryption; layout is plaintext seqHeader++body++signature(32).
+        if (rawAfterSecurityHeader.length < kSymSignatureSize) {
+          throw const OpcSecurityException('symmetric MSG shorter than its signature');
+        }
+        final signedEnd = rawAfterSecurityHeader.length - kSymSignatureSize;
+        _verifySymmetricSignature(
+          signingKey: keys.signingKey,
+          rawHeader: rawHeader,
+          signedRemainder:
+              Uint8List.sublistView(rawAfterSecurityHeader, 0, signedEnd),
+          signature: Uint8List.sublistView(rawAfterSecurityHeader, signedEnd),
+        );
+        return Uint8List.fromList(
+            Uint8List.sublistView(rawAfterSecurityHeader, 0, signedEnd));
+      }
+
+      // SignAndEncrypt: AES-256-CBC decrypt, then verify HMAC, then strip padding.
+      if (rawAfterSecurityHeader.isEmpty ||
+          rawAfterSecurityHeader.length % kSymBlockSize != 0) {
+        throw const OpcSecurityException(
+            'symmetric MSG ciphertext is not a multiple of the AES block size');
+      }
+      final decrypted = aes256CbcDecrypt(
+        keys.encryptingKey,
+        keys.iv,
+        rawAfterSecurityHeader,
+      );
+      if (decrypted.length < kSymSignatureSize + 1) {
+        throw const OpcSecurityException('symmetric MSG plaintext too short');
+      }
+      final signedEnd = decrypted.length - kSymSignatureSize;
+      _verifySymmetricSignature(
+        signingKey: keys.signingKey,
+        rawHeader: rawHeader,
+        signedRemainder: Uint8List.sublistView(decrypted, 0, signedEnd),
+        signature: Uint8List.sublistView(decrypted, signedEnd),
+      );
+
+      // Strip OPC UA symmetric padding: the last byte before the signature is
+      // the padding value; there are (paddingByte + 1) padding bytes, all equal
+      // to it (minimum_padding == 1 for a <=256-byte key; secure_channel.rs
+      // add_space_for_padding_and_signature).
+      final paddingByte = decrypted[signedEnd - 1];
+      final paddingTotal = paddingByte + 1;
+      if (paddingTotal > signedEnd) {
+        throw const OpcSecurityException('symmetric MSG padding exceeds plaintext');
+      }
+      final bodyEnd = signedEnd - paddingTotal;
+      for (var i = bodyEnd; i < signedEnd; i++) {
+        if (decrypted[i] != paddingByte) {
+          throw const OpcSecurityException('symmetric MSG padding byte mismatch');
+        }
+      }
+      return Uint8List.fromList(Uint8List.sublistView(decrypted, 0, bodyEnd));
+    } on OpcSecurityException {
+      rethrow;
+    } catch (e) {
+      throw OpcSecurityException('symmetric MSG verify/decrypt failed: $e');
+    }
+  }
+
+  void _verifySymmetricSignature({
+    required Uint8List signingKey,
+    required Uint8List rawHeader,
+    required Uint8List signedRemainder,
+    required Uint8List signature,
+  }) {
+    // Signed range = rawHeader ++ (decrypted plaintext minus the signature),
+    // i.e. the whole chunk except the trailing HMAC (secure_channel.rs
+    // symmetric_sign: signed_range = 0..end-signature).
+    final signed = Uint8List(rawHeader.length + signedRemainder.length);
+    signed.setRange(0, rawHeader.length, rawHeader);
+    signed.setRange(rawHeader.length, signed.length, signedRemainder);
+    final expected = hmacSha256(signingKey, signed);
+    if (!_bytesEqual(expected, signature)) {
+      throw const OpcSecurityException('symmetric MSG HMAC verification failed');
+    }
+  }
+
+  /// Builds a secured (Sign / SignAndEncrypt) MSG chunk carrying [body] (the
+  /// plaintext service-response body, WITHOUT its sequence header). Signs with
+  /// the server signing key and, for SignAndEncrypt, encrypts to the server
+  /// encrypting key/IV for [tokenId]. For [OpcSecurityMode.none] this is a plain
+  /// [buildMsgChunk]. Mirrors `secure_channel.rs symmetric_sign_and_encrypt`.
+  Uint8List buildSecuredMsg({
+    required int secureChannelId,
+    required int tokenId,
+    required int sequenceNumber,
+    required int requestId,
+    required Uint8List body,
+  }) {
+    if (messageSecurityMode == OpcSecurityMode.none) {
+      return buildMsgChunk(
+        secureChannelId: secureChannelId,
+        tokenId: tokenId,
+        sequenceNumber: sequenceNumber,
+        requestId: requestId,
+        body: body,
+      );
+    }
+    try {
+      final keys = _serverKeysForToken(tokenId);
+
+      // Plaintext frame: chunk header(12) ++ symmetric security header(4:
+      // tokenId) ++ sequence header(8) ++ body. The encrypted region begins at
+      // the sequence header (offset 16).
+      final plainFrame = buildMsgChunk(
+        secureChannelId: secureChannelId,
+        tokenId: tokenId,
+        sequenceNumber: sequenceNumber,
+        requestId: requestId,
+        body: body,
+      );
+      const headerSize = kChunkHeaderLen + 4; // 12 + tokenId(4) = 16
+
+      if (messageSecurityMode == OpcSecurityMode.sign) {
+        // No padding, no encryption; append the HMAC over the whole chunk.
+        final signedLen = plainFrame.length; // seqHeader+body already included
+        final out = Uint8List(signedLen + kSymSignatureSize);
+        out.setRange(0, signedLen, plainFrame);
+        // messageSize includes the signature.
+        ByteData.sublistView(out, 4, 8)
+            .setUint32(0, out.length, Endian.little);
+        final sig = hmacSha256(
+            keys.signingKey, Uint8List.sublistView(out, 0, signedLen));
+        out.setRange(signedLen, out.length, sig);
+        return out;
+      }
+
+      // SignAndEncrypt.
+      final padding = _symPadding(body.length);
+      final encRegionLen =
+          8 + body.length + padding.length + kSymSignatureSize;
+      if (encRegionLen % kSymBlockSize != 0) {
+        throw const OpcSecurityException(
+            'internal error: symmetric encrypted region is not block-aligned');
+      }
+      final tmp = Uint8List(headerSize + encRegionLen);
+      tmp.setRange(0, plainFrame.length, plainFrame);
+      tmp.setRange(plainFrame.length, plainFrame.length + padding.length, padding);
+      // The trailing signature region stays zero until signed below.
+
+      // AES-CBC does not expand length, so the final chunk size equals the
+      // padded plaintext size. Set messageSize BEFORE signing (it is inside the
+      // signed range).
+      final finalSize = tmp.length;
+      ByteData.sublistView(tmp, 4, 8).setUint32(0, finalSize, Endian.little);
+
+      final signedEnd = tmp.length - kSymSignatureSize;
+      final sig =
+          hmacSha256(keys.signingKey, Uint8List.sublistView(tmp, 0, signedEnd));
+      tmp.setRange(signedEnd, tmp.length, sig);
+
+      // Encrypt the region [headerSize .. end] (sequence header + body +
+      // padding + signature) with the server encrypting key/IV.
+      final cipher = aes256CbcEncrypt(
+        keys.encryptingKey,
+        keys.iv,
+        Uint8List.sublistView(tmp, headerSize, tmp.length),
+      );
+      final out = Uint8List(tmp.length);
+      out.setRange(0, headerSize, tmp);
+      out.setRange(headerSize, out.length, cipher);
+      return out;
+    } on OpcSecurityException {
+      rethrow;
+    } catch (e) {
+      throw OpcSecurityException('buildSecuredMsg failed: $e');
+    }
+  }
+
+  /// OAEP-SHA1-decrypts a UserNameIdentityToken password ByteString with the
+  /// server private key, returning the UTF-8 password. Mirrors
+  /// `user_identity.rs legacy_password_decrypt`: the plaintext is
+  /// `UInt32-LE length ++ passwordBytes ++ serverNonce`, where `length ==
+  /// passwordBytes.length + serverNonce.length`; the trailing bytes MUST equal
+  /// [lastServerNonce]. Returns null on any decrypt / length / nonce mismatch
+  /// (never throws).
+  String? decryptUserPassword(Uint8List encryptedPassword) {
+    Uint8List? nonce;
+    try {
+      nonce = _serverNonce;
+      if (nonce == null) {
+        return null;
+      }
+      if (encryptedPassword.isEmpty ||
+          encryptedPassword.length % kAsymCipherTextBlockSize != 0) {
+        return null;
+      }
+      final dec = BytesBuilder(copy: true);
+      for (var i = 0;
+          i < encryptedPassword.length;
+          i += kAsymCipherTextBlockSize) {
+        final block = Uint8List.sublistView(
+            encryptedPassword, i, i + kAsymCipherTextBlockSize);
+        dec.add(rsaOaepSha1Decrypt(_keyPair.privateKey, block));
+      }
+      final plain = dec.takeBytes();
+      if (plain.length < 4) {
+        return null;
+      }
+      final declaredLen =
+          ByteData.sublistView(plain, 0, 4).getUint32(0, Endian.little);
+      // declaredLen counts passwordBytes + serverNonce (everything after the
+      // 4-byte length field).
+      if (declaredLen + 4 != plain.length) {
+        return null;
+      }
+      final nonceLen = nonce.length;
+      if (plain.length < 4 + nonceLen) {
+        return null;
+      }
+      final nonceBegin = plain.length - nonceLen;
+      final gotNonce = Uint8List.sublistView(plain, nonceBegin, plain.length);
+      if (!_bytesEqual(gotNonce, nonce)) {
+        return null;
+      }
+      final passwordBytes = Uint8List.sublistView(plain, 4, nonceBegin);
+      return utf8.decode(passwordBytes);
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+/// Number of OPC UA symmetric padding bytes to append so the encrypted region
+/// `sequenceHeader(8) + body + padding + signature(32)` is a multiple of the
+/// AES block size (16). Mirrors `secure_channel.rs padding_size` for the
+/// symmetric `minimum_padding == 1` case (32-byte HMAC key <= 256): the
+/// returned bytes all equal the inner padding count, and there are
+/// `innerPadding + 1` of them.
+Uint8List _symPadding(int bodySize) {
+  // encrypt_size = 8 (sequence header) + body + signature + minimum_padding(1)
+  final encryptSize = 8 + bodySize + kSymSignatureSize + 1;
+  final rem = encryptSize % kSymBlockSize;
+  final pInner = rem == 0 ? 0 : kSymBlockSize - rem;
+  final total = 1 + pInner;
+  final paddingByte = pInner & 0xff;
+  return Uint8List(total)..fillRange(0, total, paddingByte);
 }
 
 /// Derives one direction's (signingKey, encryptingKey, iv) via P-SHA256, in the

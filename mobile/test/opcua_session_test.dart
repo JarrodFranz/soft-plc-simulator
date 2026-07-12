@@ -13,10 +13,14 @@
 // Encoding ids verified against types/node_ids.rs; StatusCodes against
 // types/status_codes.rs; struct field orders against
 // types/service_types/*.rs (all cited inline below and in the task report).
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/protocols/opcua/opcua_binary.dart';
+import 'package:soft_plc_mobile/protocols/opcua/opcua_certificate.dart';
+import 'package:soft_plc_mobile/protocols/opcua/opcua_crypto.dart';
+import 'package:soft_plc_mobile/protocols/opcua/opcua_secure_channel.dart';
 import 'package:soft_plc_mobile/protocols/opcua/opcua_session.dart';
 import 'package:soft_plc_mobile/protocols/opcua/opcua_transport.dart';
 
@@ -1320,4 +1324,581 @@ void main() {
       expect(session.monitoredItemCount, 1);
     });
   });
+
+  group('Task 5: endpoint advertisement + username/password auth', () {
+    test('EndpointDescription advertises exactly the enabled (policy,mode) set',
+        () {
+      final serverCert = Uint8List.fromList(List<int>.generate(64, (i) => i));
+      final session = OpcUaServerSession(
+        info: _info,
+        services: null,
+        securityModes: const ['None', 'Basic256Sha256/SignAndEncrypt'],
+        serverCertificateDer: serverCert,
+      );
+      session.onBytes(_buildHello(), 0);
+      final opn = session.onBytes(
+        _buildOpenSecureChannelRequestChunk(
+            secureChannelId: 0, sequenceNumber: 1, requestId: 10),
+        0,
+      );
+      final opnReader = OpcUaReader(parseChunk(opn.single).body);
+      opnReader.nodeId();
+      opnReader.responseHeader();
+      opnReader.uint32();
+      final channelId = opnReader.uint32();
+      final tokenId = opnReader.uint32();
+
+      final frames = session.onBytes(
+        _buildGetEndpointsRequestChunk(
+          secureChannelId: channelId,
+          tokenId: tokenId,
+          sequenceNumber: 2,
+          requestId: 11,
+          authToken: const OpcNodeId.numeric(0, 0),
+        ),
+        0,
+      );
+      final decoded = _decodeResponseChunk(frames.single);
+      expect(decoded.encodingId, _getEndpointsResponseId);
+      final endpoints = _readEndpoints(decoded.reader);
+      expect(endpoints, hasLength(2));
+
+      // Endpoint 0: None -> securityMode 1, None URI, null certificate.
+      expect(endpoints[0].securityMode, 1);
+      expect(endpoints[0].policyUri, kSecurityPolicyNoneUri);
+      expect(endpoints[0].serverCertificate, isNull);
+
+      // Endpoint 1: Basic256Sha256/SignAndEncrypt -> securityMode 3, cert present.
+      expect(endpoints[1].securityMode, 3);
+      expect(endpoints[1].policyUri,
+          'http://opcfoundation.org/UA/SecurityPolicy#Basic256Sha256');
+      expect(endpoints[1].serverCertificate, equals(serverCert));
+    });
+
+    test('username/password activate succeeds with correct creds and is '
+        'rejected with a wrong password', () {
+      OpcUaServerSession freshSession() {
+        final s = OpcUaServerSession(
+          info: _info,
+          services: null,
+          credentials: const {'operator': 's3cret'},
+          allowAnonymous: false,
+        );
+        s.onBytes(_buildHello(), 0);
+        return s;
+      }
+
+      ({int channelId, int tokenId, OpcNodeId authToken}) openAndCreate(
+          OpcUaServerSession s) {
+        final opn = s.onBytes(
+          _buildOpenSecureChannelRequestChunk(
+              secureChannelId: 0, sequenceNumber: 1, requestId: 10),
+          0,
+        );
+        final r = OpcUaReader(parseChunk(opn.single).body);
+        r.nodeId();
+        r.responseHeader();
+        r.uint32();
+        final channelId = r.uint32();
+        final tokenId = r.uint32();
+        final create = s.onBytes(
+          _buildCreateSessionRequestChunk(
+            secureChannelId: channelId,
+            tokenId: tokenId,
+            sequenceNumber: 2,
+            requestId: 11,
+          ),
+          0,
+        );
+        final authToken = _decodeResponseChunk(create.single).reader.nodeId();
+        return (channelId: channelId, tokenId: tokenId, authToken: authToken);
+      }
+
+      // Correct credentials -> Good.
+      final good = freshSession();
+      final gc = openAndCreate(good);
+      final okFrames = good.onBytes(
+        _buildActivateSessionUserNameChunk(
+          secureChannelId: gc.channelId,
+          tokenId: gc.tokenId,
+          sequenceNumber: 3,
+          requestId: 12,
+          authToken: gc.authToken,
+          userName: 'operator',
+          password: 's3cret',
+        ),
+        0,
+      );
+      final okDecoded = _decodeResponseChunk(okFrames.single);
+      expect(okDecoded.encodingId, _activateSessionResponseId);
+      expect(okDecoded.header.serviceResult, _statusGood);
+
+      // Wrong password -> Bad_UserAccessDenied (a ServiceFault).
+      final bad = freshSession();
+      final bc = openAndCreate(bad);
+      final badFrames = bad.onBytes(
+        _buildActivateSessionUserNameChunk(
+          secureChannelId: bc.channelId,
+          tokenId: bc.tokenId,
+          sequenceNumber: 3,
+          requestId: 12,
+          authToken: bc.authToken,
+          userName: 'operator',
+          password: 'wrong',
+        ),
+        0,
+      );
+      final badDecoded = _decodeResponseChunk(badFrames.single);
+      expect(badDecoded.encodingId, _serviceFaultId);
+      expect(badDecoded.header.serviceResult, 0x801F0000); // Bad_UserAccessDenied
+    });
+
+    test('anonymous refused when allowAnonymous=false', () {
+      final session = OpcUaServerSession(
+        info: _info,
+        services: null,
+        credentials: const {'operator': 's3cret'},
+        allowAnonymous: false,
+      );
+      session.onBytes(_buildHello(), 0);
+      final opn = session.onBytes(
+        _buildOpenSecureChannelRequestChunk(
+            secureChannelId: 0, sequenceNumber: 1, requestId: 10),
+        0,
+      );
+      final r = OpcUaReader(parseChunk(opn.single).body);
+      r.nodeId();
+      r.responseHeader();
+      r.uint32();
+      final channelId = r.uint32();
+      final tokenId = r.uint32();
+      final create = session.onBytes(
+        _buildCreateSessionRequestChunk(
+          secureChannelId: channelId,
+          tokenId: tokenId,
+          sequenceNumber: 2,
+          requestId: 11,
+        ),
+        0,
+      );
+      final authToken = _decodeResponseChunk(create.single).reader.nodeId();
+
+      final frames = session.onBytes(
+        _buildActivateSessionRequestChunk(
+          secureChannelId: channelId,
+          tokenId: tokenId,
+          sequenceNumber: 3,
+          requestId: 12,
+          authToken: authToken,
+          includeAnonymousToken: true,
+        ),
+        0,
+      );
+      final decoded = _decodeResponseChunk(frames.single);
+      expect(decoded.encodingId, _serviceFaultId);
+      expect(decoded.header.serviceResult, 0x80210000); // Bad_IdentityTokenRejected
+    });
+
+    test('full secured channel: OPN + symmetric CreateSession/ActivateSession '
+        'with an ENCRYPTED username token', () {
+      final serverKp = generateRsa2048(fortunaRandom(List<int>.filled(32, 7)));
+      final clientKp = generateRsa2048(fortunaRandom(List<int>.filled(32, 11)));
+      final serverCertDer = buildSelfSignedCertificate(
+        keyPair: serverKp,
+        applicationUri: 'urn:server',
+        commonName: 'S',
+        notBefore: DateTime.utc(2020),
+        notAfter: DateTime.utc(2040),
+      );
+      final clientCertDer = buildSelfSignedCertificate(
+        keyPair: clientKp,
+        applicationUri: 'urn:client',
+        commonName: 'C',
+        notBefore: DateTime.utc(2020),
+        notAfter: DateTime.utc(2040),
+      );
+      final serverNonce = Uint8List.fromList(
+          List<int>.generate(kSecureChannelNonceLength, (i) => 200 - i));
+      final clientNonce = Uint8List.fromList(
+          List<int>.generate(kSecureChannelNonceLength, (i) => i + 1));
+
+      final channel =
+          OpcSecureChannel(keyPair: serverKp, certificateDer: serverCertDer);
+      final session = OpcUaServerSession(
+        info: _info,
+        services: null,
+        securityModes: const ['Basic256Sha256/SignAndEncrypt'],
+        serverCertificateDer: serverCertDer,
+        credentials: const {'operator': 's3cret'},
+        allowAnonymous: false,
+        secureChannel: channel,
+        serverNonceGenerator: () => serverNonce,
+      );
+
+      session.onBytes(_buildHello(), 0);
+
+      // --- Secured OPN (Issue, SignAndEncrypt) ---
+      final opnBody = OpcUaWriter();
+      opnBody.nodeId(const OpcNodeId.numeric(0, _openSecureChannelRequestId));
+      opnBody.requestHeader(_reqHeader());
+      opnBody.uint32(0); // clientProtocolVersion
+      opnBody.int32(0); // requestType Issue
+      opnBody.int32(3); // securityMode SignAndEncrypt
+      opnBody.byteString(clientNonce);
+      opnBody.uint32(3600000); // requestedLifetime
+      final opnSeqBody = Uint8List.fromList(
+          <int>[..._seqHeader(1, 1), ...opnBody.take()]);
+      final opnFrame = _asymSignEncryptOpn(
+        signKey: clientKp.privateKey,
+        encKey: serverKp.publicKey,
+        senderCertDer: clientCertDer,
+        receiverThumbprint: sha1(serverCertDer),
+        plainSeqBody: opnSeqBody,
+      );
+      final opnOut = session.onBytes(opnFrame, 0);
+      expect(opnOut, hasLength(1));
+      // The response is a secured OPN carrying the fixed serverNonce.
+      final respPlain = _asymDecryptVerifyOpn(
+        decKey: clientKp.privateKey,
+        verifyKey: serverKp.publicKey,
+        frame: opnOut.single,
+      );
+      final respReader = OpcUaReader(Uint8List.sublistView(respPlain, 8));
+      respReader.nodeId();
+      respReader.responseHeader();
+      respReader.uint32(); // serverProtocolVersion
+      final channelId = respReader.uint32();
+      final tokenId = respReader.uint32();
+      respReader.dateTime();
+      respReader.uint32(); // revisedLifetime
+      final gotServerNonce = respReader.byteString();
+      expect(gotServerNonce, equals(serverNonce));
+
+      // The session derived the same symmetric keys we can now mirror with.
+      final clientKeys = channel.clientKeys!;
+      final serverKeys = channel.serverKeys!;
+
+      // --- Secured CreateSession ---
+      final csBody = OpcUaWriter();
+      csBody.nodeId(const OpcNodeId.numeric(0, _createSessionRequestId));
+      csBody.requestHeader(_reqHeader(requestHandle: 3));
+      csBody.string('urn:test:client');
+      csBody.string('urn:test:client:product');
+      csBody.localizedText(const OpcLocalizedText(text: 'C'));
+      csBody.int32(1);
+      csBody.string(null);
+      csBody.string(null);
+      csBody.int32(-1);
+      csBody.string(null); // serverUri
+      csBody.string('opc.tcp://127.0.0.1:4840'); // endpointUrl
+      csBody.string('sess'); // sessionName
+      csBody.byteString(null); // clientNonce
+      csBody.byteString(clientCertDer); // clientCertificate
+      csBody.float64(1200000);
+      csBody.uint32(0);
+      final csFrame = _symBuildSession(
+        keys: clientKeys,
+        secureChannelId: channelId,
+        tokenId: tokenId,
+        sequenceNumber: 2,
+        requestId: 11,
+        body: csBody.take(),
+      );
+      final csOut = session.onBytes(csFrame, 0);
+      final csRespBody = _symOpenSessionBody(keys: serverKeys, frame: csOut.single);
+      final csReader = OpcUaReader(csRespBody);
+      csReader.nodeId();
+      csReader.responseHeader();
+      final authToken = csReader.nodeId();
+
+      // --- Secured ActivateSession with an ENCRYPTED UserNameIdentityToken ---
+      final encPassword = _legacyPasswordEncryptSession(
+        serverPub: serverKp.publicKey,
+        password: 's3cret',
+        serverNonce: serverNonce,
+      );
+      final tokenWriter = OpcUaWriter();
+      tokenWriter.string('username');
+      tokenWriter.string('operator');
+      tokenWriter.byteString(encPassword);
+      tokenWriter.string(
+          'http://www.w3.org/2001/04/xmlenc#rsa-oaep'); // OAEP-SHA1
+      final asBody = OpcUaWriter();
+      asBody.nodeId(const OpcNodeId.numeric(0, _activateSessionRequestId));
+      asBody.requestHeader(_reqHeader(authToken: authToken, requestHandle: 4));
+      asBody.string(null);
+      asBody.byteString(null);
+      asBody.int32(-1);
+      asBody.int32(-1);
+      asBody.extensionObjectHeader(const OpcNodeId.numeric(0, 324),
+          hasBody: true);
+      asBody.byteString(tokenWriter.take());
+      asBody.string(null);
+      asBody.byteString(null);
+      final asFrame = _symBuildSession(
+        keys: clientKeys,
+        secureChannelId: channelId,
+        tokenId: tokenId,
+        sequenceNumber: 3,
+        requestId: 12,
+        body: asBody.take(),
+      );
+      final asOut = session.onBytes(asFrame, 0);
+      final asRespBody =
+          _symOpenSessionBody(keys: serverKeys, frame: asOut.single);
+      final asReader = OpcUaReader(asRespBody);
+      final asTypeId = asReader.nodeId();
+      final asHeader = asReader.responseHeader();
+      expect(asTypeId.numericId, _activateSessionResponseId);
+      expect(asHeader.serviceResult, _statusGood);
+    }, timeout: const Timeout(Duration(minutes: 2)));
+  });
+}
+
+Uint8List _seqHeader(int seq, int req) {
+  final b = ByteData(8)
+    ..setUint32(0, seq, Endian.little)
+    ..setUint32(4, req, Endian.little);
+  return b.buffer.asUint8List();
+}
+
+// --- Client-side asymmetric OPN mirror (Basic256Sha256) --------------------
+Uint8List _asymSignEncryptOpn({
+  required RSAPrivateKey signKey,
+  required RSAPublicKey encKey,
+  required Uint8List senderCertDer,
+  required Uint8List receiverThumbprint,
+  required Uint8List plainSeqBody,
+}) {
+  const plainBlock = 214;
+  const cipherBlock = 256;
+  const sigSize = 256;
+  final body = Uint8List.sublistView(plainSeqBody, 8);
+  final plainFrame = buildOpnChunk(
+    secureChannelId: 0,
+    securityPolicyUri: kSecurityPolicyBasic256Sha256Uri,
+    senderCertificate: senderCertDer,
+    receiverCertificateThumbprint: receiverThumbprint,
+    sequenceNumber: 1,
+    requestId: 1,
+    body: body,
+  );
+  final headerSize = plainFrame.length - plainSeqBody.length;
+  final encryptSize = 8 + body.length + sigSize + 1;
+  final rem = encryptSize % plainBlock;
+  final pInner = rem == 0 ? 0 : plainBlock - rem;
+  final padTotal = 1 + pInner;
+  final pad = Uint8List(padTotal)..fillRange(0, padTotal, pInner & 0xff);
+  final encPlainLen = plainSeqBody.length + padTotal + sigSize;
+  final tmp = Uint8List(headerSize + encPlainLen);
+  tmp.setRange(0, plainFrame.length, plainFrame);
+  tmp.setRange(plainFrame.length, plainFrame.length + padTotal, pad);
+  final cipherTextSize = (encPlainLen ~/ plainBlock) * cipherBlock;
+  ByteData.sublistView(tmp, 4, 8)
+      .setUint32(0, headerSize + cipherTextSize, Endian.little);
+  final signedEnd = tmp.length - sigSize;
+  var sig =
+      rsaPkcs1Sha256Sign(signKey, Uint8List.sublistView(tmp, 0, signedEnd));
+  if (sig.length < sigSize) {
+    final padded = Uint8List(sigSize);
+    padded.setRange(sigSize - sig.length, sigSize, sig);
+    sig = padded;
+  }
+  tmp.setRange(signedEnd, tmp.length, sig);
+  final out = BytesBuilder(copy: true);
+  out.add(Uint8List.sublistView(tmp, 0, headerSize));
+  for (var i = headerSize; i < tmp.length; i += plainBlock) {
+    out.add(rsaOaepSha1Encrypt(
+        encKey, Uint8List.sublistView(tmp, i, i + plainBlock)));
+  }
+  return out.takeBytes();
+}
+
+Uint8List _asymDecryptVerifyOpn({
+  required RSAPrivateKey decKey,
+  required RSAPublicKey verifyKey,
+  required Uint8List frame,
+}) {
+  const cipherBlock = 256;
+  const sigSize = 256;
+  final hdr = parseChunkHeader(frame);
+  final rawHeader = Uint8List.sublistView(frame, 0, hdr.securityHeaderEnd);
+  final enc = Uint8List.sublistView(frame, hdr.securityHeaderEnd, hdr.size);
+  final dec = BytesBuilder(copy: true);
+  for (var i = 0; i < enc.length; i += cipherBlock) {
+    dec.add(rsaOaepSha1Decrypt(
+        decKey, Uint8List.sublistView(enc, i, i + cipherBlock)));
+  }
+  final plain = dec.takeBytes();
+  final signedEnd = plain.length - sigSize;
+  final sig = Uint8List.sublistView(plain, signedEnd);
+  final signed = Uint8List(rawHeader.length + signedEnd);
+  signed.setRange(0, rawHeader.length, rawHeader);
+  signed.setRange(rawHeader.length, signed.length, plain);
+  expect(rsaPkcs1Sha256Verify(verifyKey, signed, sig), isTrue);
+  final padByte = plain[signedEnd - 1];
+  final bodyEnd = signedEnd - (padByte + 1);
+  return Uint8List.fromList(Uint8List.sublistView(plain, 0, bodyEnd));
+}
+
+// --- Client-side symmetric MSG mirror --------------------------------------
+Uint8List _symBuildSession({
+  required OpcChannelKeys keys,
+  required int secureChannelId,
+  required int tokenId,
+  required int sequenceNumber,
+  required int requestId,
+  required Uint8List body,
+}) {
+  const headerSize = 16;
+  const sig = 32;
+  const block = 16;
+  final plainFrame = buildMsgChunk(
+    secureChannelId: secureChannelId,
+    tokenId: tokenId,
+    sequenceNumber: sequenceNumber,
+    requestId: requestId,
+    body: body,
+  );
+  final encryptSize = 8 + body.length + sig + 1;
+  final rem = encryptSize % block;
+  final inner = rem == 0 ? 0 : block - rem;
+  final padTotal = 1 + inner;
+  final pad = Uint8List(padTotal)..fillRange(0, padTotal, inner & 0xff);
+  final tmp = Uint8List(headerSize + 8 + body.length + padTotal + sig);
+  tmp.setRange(0, plainFrame.length, plainFrame);
+  tmp.setRange(plainFrame.length, plainFrame.length + padTotal, pad);
+  ByteData.sublistView(tmp, 4, 8).setUint32(0, tmp.length, Endian.little);
+  final signedEnd = tmp.length - sig;
+  final signature =
+      hmacSha256(keys.signingKey, Uint8List.sublistView(tmp, 0, signedEnd));
+  tmp.setRange(signedEnd, tmp.length, signature);
+  final cipher = aes256CbcEncrypt(
+      keys.encryptingKey, keys.iv, Uint8List.sublistView(tmp, headerSize, tmp.length));
+  final out = Uint8List(tmp.length);
+  out.setRange(0, headerSize, tmp);
+  out.setRange(headerSize, out.length, cipher);
+  return out;
+}
+
+Uint8List _symOpenSessionBody({
+  required OpcChannelKeys keys,
+  required Uint8List frame,
+}) {
+  const sig = 32;
+  final hdr = parseChunkHeader(frame);
+  final rawHeader = Uint8List.sublistView(frame, 0, hdr.securityHeaderEnd);
+  final rawAfter = Uint8List.sublistView(frame, hdr.securityHeaderEnd, hdr.size);
+  final dec = aes256CbcDecrypt(keys.encryptingKey, keys.iv, rawAfter);
+  final signedEnd = dec.length - sig;
+  final signed = Uint8List(rawHeader.length + signedEnd);
+  signed.setRange(0, rawHeader.length, rawHeader);
+  signed.setRange(
+      rawHeader.length, signed.length, Uint8List.sublistView(dec, 0, signedEnd));
+  expect(Uint8List.sublistView(dec, signedEnd),
+      equals(hmacSha256(keys.signingKey, signed)));
+  final padByte = dec[signedEnd - 1];
+  final bodyEnd = signedEnd - (padByte + 1);
+  return Uint8List.fromList(Uint8List.sublistView(dec, 8, bodyEnd));
+}
+
+Uint8List _legacyPasswordEncryptSession({
+  required RSAPublicKey serverPub,
+  required String password,
+  required Uint8List serverNonce,
+}) {
+  final passBytes = Uint8List.fromList(utf8.encode(password));
+  final plaintextLen = 4 + passBytes.length + serverNonce.length;
+  final src = Uint8List(plaintextLen);
+  ByteData.sublistView(src, 0, 4).setUint32(0, plaintextLen - 4, Endian.little);
+  src.setRange(4, 4 + passBytes.length, passBytes);
+  src.setRange(4 + passBytes.length, plaintextLen, serverNonce);
+  return rsaOaepSha1Encrypt(serverPub, src);
+}
+
+/// One decoded EndpointDescription's fields the Task 5 advertisement test asserts.
+class _EndpointView {
+  final int securityMode;
+  final String? policyUri;
+  final List<int>? serverCertificate;
+  _EndpointView(this.securityMode, this.policyUri, this.serverCertificate);
+}
+
+/// Reads the EndpointDescription[] array (Int32 count + each description) from
+/// a reader positioned at the array, per endpoint_description.rs field order.
+List<_EndpointView> _readEndpoints(OpcUaReader r) {
+  final count = r.int32();
+  final out = <_EndpointView>[];
+  for (var i = 0; i < count; i++) {
+    r.string(); // endpointUrl
+    // ApplicationDescription
+    r.string(); // applicationUri
+    r.string(); // productUri
+    r.localizedText(); // applicationName
+    r.int32(); // applicationType
+    r.string(); // gatewayServerUri
+    r.string(); // discoveryProfileUri
+    final discCount = r.int32(); // discoveryUrls
+    if (discCount > 0) {
+      for (var d = 0; d < discCount; d++) {
+        r.string();
+      }
+    }
+    final serverCertificate = r.byteString();
+    final securityMode = r.int32();
+    final policyUri = r.string();
+    // userIdentityTokens
+    final tokenCount = r.int32();
+    for (var t = 0; t < tokenCount; t++) {
+      r.string(); // policyId
+      r.int32(); // tokenType
+      r.string(); // issuedTokenType
+      r.string(); // issuerEndpointUrl
+      r.string(); // securityPolicyUri
+    }
+    r.string(); // transportProfileUri
+    r.uint8(); // securityLevel
+    out.add(_EndpointView(securityMode, policyUri, serverCertificate));
+  }
+  return out;
+}
+
+/// ActivateSessionRequest carrying a UserNameIdentityToken (node id 324) with a
+/// PLAINTEXT password (encryptionAlgorithm null) — used to exercise the
+/// session's credential matching over a None channel.
+Uint8List _buildActivateSessionUserNameChunk({
+  required int secureChannelId,
+  required int tokenId,
+  required int sequenceNumber,
+  required int requestId,
+  required OpcNodeId authToken,
+  required String userName,
+  required String password,
+  int requestHandle = 4,
+}) {
+  final w = OpcUaWriter();
+  w.nodeId(const OpcNodeId.numeric(0, _activateSessionRequestId));
+  w.requestHeader(_reqHeader(authToken: authToken, requestHandle: requestHandle));
+  w.string(null); // clientSignature.algorithm
+  w.byteString(null); // clientSignature.signature
+  w.int32(-1); // clientSoftwareCertificates
+  w.int32(-1); // localeIds
+  // userIdentityToken: ExtensionObject{ UserNameIdentityToken }
+  final tokenWriter = OpcUaWriter();
+  tokenWriter.string('username'); // policyId
+  tokenWriter.string(userName);
+  tokenWriter.byteString(utf8.encode(password)); // plaintext password
+  tokenWriter.string(null); // encryptionAlgorithm (empty -> plaintext)
+  w.extensionObjectHeader(const OpcNodeId.numeric(0, 324), hasBody: true);
+  w.byteString(tokenWriter.take());
+  // userTokenSignature
+  w.string(null);
+  w.byteString(null);
+  return buildMsgChunk(
+    secureChannelId: secureChannelId,
+    tokenId: tokenId,
+    sequenceNumber: sequenceNumber,
+    requestId: requestId,
+    body: w.take(),
+  );
 }
