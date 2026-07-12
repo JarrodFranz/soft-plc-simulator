@@ -77,6 +77,12 @@ class _GatewayScreenState extends State<GatewayScreen> {
   /// Connect attempt against a different one.
   String _mqttPassword = '';
 
+  /// True while an in-flight `host.regenerateCertificate()` call (RSA-2048
+  /// keygen — roughly 1-3s) is running, so the "Regenerate certificate"
+  /// button can show a brief in-progress state and disable itself against a
+  /// double-tap.
+  bool _regeneratingOpcuaCert = false;
+
   @override
   void initState() {
     super.initState();
@@ -523,6 +529,73 @@ class _GatewayScreenState extends State<GatewayScreen> {
     widget.onProjectUpdated();
   }
 
+  /// Recognized `securityModes` tokens (must match exactly what
+  /// `OpcUaServerSession._enabledEndpoints` matches on — see
+  /// opcua_session.dart). `'None'` is always enabled and non-removable; the
+  /// two Basic256Sha256 modes are user-toggleable additions.
+  static const String _kSecuritySign = 'Basic256Sha256/Sign';
+  static const String _kSecuritySignAndEncrypt = 'Basic256Sha256/SignAndEncrypt';
+
+  void _toggleOpcuaSecurityMode(String mode, bool enabled) {
+    setState(() {
+      final modes = widget.currentProject.protocols!.opcua!.securityModes;
+      if (enabled) {
+        if (!modes.contains(mode)) {
+          modes.add(mode);
+        }
+      } else {
+        modes.remove(mode);
+      }
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _setOpcuaAllowAnonymous(bool value) {
+    setState(() {
+      widget.currentProject.protocols!.opcua!.allowAnonymous = value;
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _addOpcuaCredential() {
+    setState(() {
+      widget.currentProject.protocols!.opcua!.credentials
+          .add(OpcUaUserCredential(username: '', password: ''));
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _deleteOpcuaCredential(OpcUaUserCredential credential) {
+    setState(() {
+      widget.currentProject.protocols!.opcua!.credentials.remove(credential);
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _setOpcuaCredentialUsername(OpcUaUserCredential credential, String value) {
+    credential.username = value;
+    widget.onProjectUpdated();
+  }
+
+  void _setOpcuaCredentialPassword(OpcUaUserCredential credential, String value) {
+    // In-memory only: `OpcUaUserCredential.toJson` intentionally omits the
+    // password (see that class's doc comment), so persisting the project
+    // after this edit never writes it to disk.
+    credential.password = value;
+    widget.onProjectUpdated();
+  }
+
+  Future<void> _regenerateOpcuaCertificate() async {
+    setState(() => _regeneratingOpcuaCert = true);
+    try {
+      await widget.host.regenerateCertificate();
+    } finally {
+      if (mounted) {
+        setState(() => _regeneratingOpcuaCert = false);
+      }
+    }
+  }
+
   void _setModbusPort(String value) {
     final parsed = int.tryParse(value.trim());
     if (parsed == null || parsed < 0 || parsed > 65535) {
@@ -878,10 +951,253 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 onChanged: _setOpcuaNamespace,
               ),
               const SizedBox(height: 12),
+              _opcuaSecuritySection(opcua),
+              const SizedBox(height: 12),
+              _opcuaCredentialsSection(opcua),
+              const SizedBox(height: 12),
+              _opcuaCertSection(isCompact),
+              const SizedBox(height: 12),
               _mapEditorCard(context, opcua.map, tagOptions),
             ],
           ],
         ),
+      ),
+    );
+  }
+
+  /// Security-policy toggles (WS19 Task 6): "None" is always enabled and
+  /// shown as a disabled (non-removable) switch; the two Basic256Sha256
+  /// modes are user-toggleable and edit `opcua.securityModes` directly. Each
+  /// enabled mode becomes one advertised EndpointDescription (see
+  /// `OpcUaServerSession._enabledEndpoints`).
+  Widget _opcuaSecuritySection(OpcUaProtocolConfig opcua) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Security policy',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+          ),
+          const SizedBox(height: 4),
+          _opcuaSwitchRow(
+            switchKey: const Key('opcua_security_none_switch'),
+            title: 'None',
+            subtitle: 'Always enabled — unsecured endpoint',
+            value: true,
+            onChanged: null,
+          ),
+          _opcuaSwitchRow(
+            switchKey: const Key('opcua_security_sign_switch'),
+            title: 'Basic256Sha256 — Sign',
+            value: opcua.securityModes.contains(_kSecuritySign),
+            onChanged: (v) => _toggleOpcuaSecurityMode(_kSecuritySign, v),
+          ),
+          _opcuaSwitchRow(
+            switchKey: const Key('opcua_security_sign_encrypt_switch'),
+            title: 'Basic256Sha256 — Sign & Encrypt',
+            value: opcua.securityModes.contains(_kSecuritySignAndEncrypt),
+            onChanged: (v) => _toggleOpcuaSecurityMode(_kSecuritySignAndEncrypt, v),
+          ),
+          const SizedBox(height: 4),
+          _opcuaSwitchRow(
+            switchKey: const Key('opcua_allow_anonymous_switch'),
+            title: 'Allow anonymous',
+            subtitle: 'When off, clients must authenticate with a username/password below',
+            value: opcua.allowAnonymous,
+            onChanged: _setOpcuaAllowAnonymous,
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// A single labeled `Switch` row — deliberately plain `Row`/`Switch`
+  /// (rather than `SwitchListTile`) since `SwitchListTile` paints its
+  /// background/ink on the nearest `Material` ancestor, which conflicts with
+  /// this section's own colored `Container` background (Flutter's "ListTile
+  /// background color or ink splashes may be invisible" assertion).
+  Widget _opcuaSwitchRow({
+    required Key switchKey,
+    required String title,
+    String? subtitle,
+    required bool value,
+    required ValueChanged<bool>? onChanged,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: const TextStyle(color: Colors.white, fontSize: 12)),
+                if (subtitle != null)
+                  Text(
+                    subtitle,
+                    style: const TextStyle(color: Colors.grey, fontSize: 11),
+                  ),
+              ],
+            ),
+          ),
+          Switch(key: switchKey, value: value, onChanged: onChanged),
+        ],
+      ),
+    );
+  }
+
+  /// Username/password credential editor (WS19 Task 6): add/remove rows
+  /// bound to `opcua.credentials`. Passwords live only in the in-memory
+  /// `OpcUaUserCredential` instances — never persisted (see
+  /// `OpcUaUserCredential.toJson`).
+  Widget _opcuaCredentialsSection(OpcUaProtocolConfig opcua) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            runSpacing: 4,
+            children: [
+              const Text(
+                'Credentials',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+              TextButton.icon(
+                key: const Key('opcua_add_credential_button'),
+                icon: const Icon(Icons.add, size: 16, color: Colors.cyanAccent),
+                label: const Text('Add credential', style: TextStyle(color: Colors.cyanAccent)),
+                onPressed: _addOpcuaCredential,
+              ),
+            ],
+          ),
+          if (opcua.credentials.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                'No username/password credentials configured.',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            )
+          else
+            ListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: opcua.credentials.length,
+              itemBuilder: (context, i) => _opcuaCredentialRow(opcua.credentials[i], i),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _opcuaCredentialRow(OpcUaUserCredential credential, int index) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isCompact = context.isCompact;
+          final usernameField = TextFormField(
+            key: Key('opcua_credential_username_$index'),
+            initialValue: credential.username,
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            decoration: const InputDecoration(isDense: true, labelText: 'Username'),
+            onChanged: (v) => _setOpcuaCredentialUsername(credential, v),
+          );
+          final passwordField = TextFormField(
+            key: Key('opcua_credential_password_$index'),
+            initialValue: credential.password,
+            obscureText: true,
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            decoration: const InputDecoration(isDense: true, labelText: 'Password'),
+            onChanged: (v) => _setOpcuaCredentialPassword(credential, v),
+          );
+          final deleteButton = IconButton(
+            key: Key('opcua_credential_delete_$index'),
+            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+            tooltip: 'Delete credential',
+            onPressed: () => _deleteOpcuaCredential(credential),
+          );
+
+          if (isCompact) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                usernameField,
+                const SizedBox(height: 4),
+                passwordField,
+                Align(alignment: Alignment.centerRight, child: deleteButton),
+              ],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: usernameField),
+              const SizedBox(width: 8),
+              Expanded(child: passwordField),
+              deleteButton,
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  /// Read-only app-certificate thumbprint display + Regenerate button (WS19
+  /// Task 6): `host.appCertThumbprint` is null until hosting has started at
+  /// least once (the identity is loaded in `OpcUaHost.start()`).
+  Widget _opcuaCertSection(bool isCompact) {
+    final thumbprint = widget.host.appCertThumbprint;
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Application certificate',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+          ),
+          const SizedBox(height: 8),
+          SelectableText(
+            key: const Key('opcua_cert_thumbprint_text'),
+            thumbprint ?? 'Not yet generated — start hosting to generate the app certificate.',
+            style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: isCompact ? double.infinity : null,
+            child: OutlinedButton.icon(
+              key: const Key('opcua_regenerate_cert_button'),
+              icon: _regeneratingOpcuaCert
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.autorenew, size: 16),
+              label: Text(_regeneratingOpcuaCert ? 'Regenerating…' : 'Regenerate certificate'),
+              onPressed: _regeneratingOpcuaCert ? null : _regenerateOpcuaCertificate,
+            ),
+          ),
+        ],
       ),
     );
   }
