@@ -130,12 +130,20 @@ class OpcSecureChannel {
   ///
   /// - [policyUri] / [senderCertificate]: from the plaintext asymmetric
   ///   security header (see [parseChunkHeader]).
-  /// - [rawHeader]: the plaintext `frame[0..securityHeaderEnd]` (chunk header +
-  ///   security header). This is part of the signed range, so it MUST be the
-  ///   exact on-wire bytes — it is reconstructed from the parsed fields by the
-  ///   session layer via [parseChunkHeader].
+  /// - [rawHeader]: the exact on-wire chunk bytes
+  ///   `frame.sublist(0, header.securityHeaderEnd)` (chunk header + security
+  ///   header). This is part of the SIGNED range, so it MUST be a slice of the
+  ///   original wire bytes — NEVER reconstruct/re-encode it from the parsed
+  ///   header fields, since a re-encode risks a one-byte signed-range mismatch
+  ///   that would make a legitimate client's OPN fail verification.
   /// - [rawAfterSecurityHeader]: the encrypted remainder `frame[
   ///   securityHeaderEnd..size]` (sequence header + body + padding + signature).
+  /// - [receiverCertificateThumbprint]: the OPN security header's
+  ///   `receiverCertificateThumbprint` field (from [parseChunkHeader]), if any.
+  ///   When present it is checked against this server's own certificate
+  ///   thumbprint before decryption (mirrors `asymmetric_decrypt_and_verify`'s
+  ///   `BadNoValidCertificates` check); a null/empty thumbprint is not an error
+  ///   on its own since some clients omit it.
   /// - [serverNonce] / [clientNonce]: the two nonces for key derivation.
   ///
   /// For `SecurityPolicy#None` the remainder is returned unchanged. Throws
@@ -147,6 +155,7 @@ class OpcSecureChannel {
     required Uint8List rawAfterSecurityHeader,
     required Uint8List serverNonce,
     required Uint8List clientNonce,
+    Uint8List? receiverCertificateThumbprint,
   }) {
     if (policyUri == kSecurityPolicyNoneUri) {
       _mode = OpcSecurityMode.none;
@@ -166,6 +175,17 @@ class OpcSecureChannel {
             'OPN sender certificate could not be parsed');
       }
       _clientCertificate = cert;
+
+      // A present receiver-certificate thumbprint must identify THIS server's
+      // certificate; reject before decrypting otherwise (Rust:
+      // `asymmetric_decrypt_and_verify` -> `BadNoValidCertificates`). A
+      // null/empty thumbprint is tolerated since some clients omit it.
+      if (receiverCertificateThumbprint != null &&
+          receiverCertificateThumbprint.isNotEmpty &&
+          !_bytesEqual(receiverCertificateThumbprint, sha1(_certificateDer))) {
+        throw const OpcSecurityException(
+            'OPN receiver certificate thumbprint does not match this server\'s certificate');
+      }
 
       // Decrypt the remainder in 256-byte RSA blocks with the server key.
       if (rawAfterSecurityHeader.isEmpty ||
@@ -234,7 +254,6 @@ class OpcSecureChannel {
       throw const OpcSecurityException(
           'plaintextSequenceAndBody is shorter than the 8-byte sequence header');
     }
-    final body = Uint8List.sublistView(plaintextSequenceAndBody, 8);
 
     if (_mode == OpcSecurityMode.none) {
       return buildOpnChunk(
@@ -244,7 +263,7 @@ class OpcSecureChannel {
         receiverCertificateThumbprint: null,
         sequenceNumber: sequenceNumber,
         requestId: requestId,
-        body: body,
+        body: Uint8List.sublistView(plaintextSequenceAndBody, 8),
       );
     }
 
@@ -316,6 +335,20 @@ Uint8List _asymPadding(int bodySize) {
   final total = 1 + pInner;
   final paddingByte = pInner & 0xff;
   return Uint8List(total)..fillRange(0, total, paddingByte);
+}
+
+/// Constant-length byte-sequence equality (no early-exit on the length check
+/// itself since it is public data; the loop compares every byte so equal-
+/// length mismatches take uniform time).
+bool _bytesEqual(List<int> a, List<int> b) {
+  if (a.length != b.length) {
+    return false;
+  }
+  var diff = 0;
+  for (var i = 0; i < a.length; i++) {
+    diff |= a[i] ^ b[i];
+  }
+  return diff == 0;
 }
 
 /// Left-pads an RSA signature to the full 256-byte block (canonical I2OSP).

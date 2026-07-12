@@ -86,6 +86,9 @@ void main() {
       rawAfterSecurityHeader: rawAfter,
       serverNonce: serverNonce,
       clientNonce: clientNonce,
+      receiverCertificateThumbprint: hdr.receiverCertificateThumbprint == null
+          ? null
+          : Uint8List.fromList(hdr.receiverCertificateThumbprint!),
     );
     expect(recovered, equals(clientSeqBody));
     expect(channel.mode, OpcSecurityMode.signAndEncrypt);
@@ -165,6 +168,55 @@ void main() {
         rawAfterSecurityHeader: garbage,
         serverNonce: serverNonce,
         clientNonce: clientNonce,
+      ),
+      throwsA(isA<OpcSecurityException>()),
+    );
+  });
+
+  test(
+      'OPN with a present-but-wrong receiverCertificateThumbprint is rejected '
+      'before decryption', () {
+    final channel = OpcSecureChannel(
+      keyPair: serverKp,
+      certificateDer: serverCertDer,
+    );
+
+    final requestBody = Uint8List.fromList(
+        List<int>.generate(50, (i) => (i * 5 + 2) & 0xff));
+    final clientSeqBody =
+        Uint8List.fromList(<int>[...seqHeader(1, 1), ...requestBody]);
+
+    // Wrong thumbprint: 20 bytes of 0xFF, guaranteed not to equal
+    // sha1(serverCertDer).
+    final wrongThumbprint = Uint8List.fromList(List<int>.filled(20, 0xFF));
+
+    final clientFrame = _asymSignEncrypt(
+      signKey: clientKp.privateKey,
+      encKey: serverKp.publicKey,
+      senderCertDer: clientCertDer,
+      receiverThumbprint: wrongThumbprint,
+      secureChannelId: 0,
+      sequenceNumber: 1,
+      requestId: 1,
+      plainSeqBody: clientSeqBody,
+    );
+
+    final hdr = parseChunkHeader(clientFrame);
+    final rawHeader =
+        Uint8List.sublistView(clientFrame, 0, hdr.securityHeaderEnd);
+    final rawAfter =
+        Uint8List.sublistView(clientFrame, hdr.securityHeaderEnd, hdr.size);
+
+    expect(
+      () => channel.openFromClient(
+        policyUri: hdr.securityPolicyUri!,
+        senderCertificate: Uint8List.fromList(hdr.senderCertificate!),
+        rawHeader: rawHeader,
+        rawAfterSecurityHeader: rawAfter,
+        serverNonce: serverNonce,
+        clientNonce: clientNonce,
+        receiverCertificateThumbprint:
+            Uint8List.fromList(hdr.receiverCertificateThumbprint!),
       ),
       throwsA(isA<OpcSecurityException>()),
     );
