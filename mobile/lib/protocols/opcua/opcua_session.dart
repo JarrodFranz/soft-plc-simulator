@@ -59,7 +59,7 @@ class OpcUaStatusCodes {
   static const badUserAccessDenied = 0x801F0000; // status_codes.rs:116
   static const badIdentityTokenRejected = 0x80210000; // status_codes.rs:118
   static const badSecurityChecksFailed = 0x80130000; // status_codes.rs:110
-  static const badApplicationSignatureInvalid = 0x80590000; // status_codes.rs:361
+  static const badApplicationSignatureInvalid = 0x80580000; // status_codes.rs:168
 }
 
 /// MessageSecurityMode enum values (enums.rs:856-861, Int32-encoded):

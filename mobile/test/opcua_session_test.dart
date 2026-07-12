@@ -2153,13 +2153,15 @@ void main() {
           algorithm: kRsaSha256SignatureUri,
           signature: tampered));
       expect(badResult.encodingId, _serviceFaultId);
-      expect(badResult.serviceResult, 0x80590000); // Bad_ApplicationSignatureInvalid
+      expect(badResult.serviceResult,
+          OpcUaStatusCodes.badApplicationSignatureInvalid);
 
       // REJECT missing: null signature on a secured channel.
       final missingResult = sendActivate(
           activateFrame(seq: 4, req: 13, algorithm: null, signature: null));
       expect(missingResult.encodingId, _serviceFaultId);
-      expect(missingResult.serviceResult, 0x80590000);
+      expect(missingResult.serviceResult,
+          OpcUaStatusCodes.badApplicationSignatureInvalid);
 
       // ACCEPT: correct signature over serverCertificate ++ serverNonce.
       final goodResult = sendActivate(activateFrame(
