@@ -36,6 +36,27 @@ final List<PlcStructDef> _builtinComposites = [
     StructFieldDef(name: 'CV', dataType: 'INT32', defaultValue: 0),
     StructFieldDef(name: 'PV', dataType: 'INT32', defaultValue: 0),
   ]),
+  PlcStructDef(name: 'SYSTEM', fields: [
+    StructFieldDef(name: 'Fault', dataType: 'BOOL', defaultValue: false),
+    StructFieldDef(name: 'FaultTask', dataType: 'STRING', defaultValue: ''),
+    StructFieldDef(name: 'FaultCode', dataType: 'INT32', defaultValue: 0),
+    StructFieldDef(name: 'Running', dataType: 'BOOL', defaultValue: false),
+    StructFieldDef(name: 'FirstScan', dataType: 'BOOL', defaultValue: false),
+    StructFieldDef(name: 'ScanCount', dataType: 'INT32', defaultValue: 0),
+    StructFieldDef(name: 'ScanTimeMs', dataType: 'FLOAT64', defaultValue: 0.0),
+    StructFieldDef(name: 'MaxScanTimeMs', dataType: 'FLOAT64', defaultValue: 0.0),
+    StructFieldDef(name: 'MinScanTimeMs', dataType: 'FLOAT64', defaultValue: 0.0),
+    StructFieldDef(name: 'FreeRun', dataType: 'BOOL', defaultValue: false),
+    StructFieldDef(name: 'UptimeMs', dataType: 'INT32', defaultValue: 0),
+    StructFieldDef(name: 'Year', dataType: 'INT32', defaultValue: 0),
+    StructFieldDef(name: 'Month', dataType: 'INT32', defaultValue: 0),
+    StructFieldDef(name: 'Day', dataType: 'INT32', defaultValue: 0),
+    StructFieldDef(name: 'Hour', dataType: 'INT32', defaultValue: 0),
+    StructFieldDef(name: 'Minute', dataType: 'INT32', defaultValue: 0),
+    StructFieldDef(name: 'Second', dataType: 'INT32', defaultValue: 0),
+    StructFieldDef(name: 'DateTime', dataType: 'STRING', defaultValue: ''),
+    StructFieldDef(name: 'AlarmReset', dataType: 'BOOL', defaultValue: false),
+  ]),
 ];
 
 List<String> builtinCompositeNames() => _builtinComposites.map((s) => s.name).toList();
