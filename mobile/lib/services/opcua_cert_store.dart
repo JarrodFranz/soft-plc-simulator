@@ -62,9 +62,15 @@ class OpcUaCertStore {
         File('${dir.path}${Platform.pathSeparator}$_certFileName');
 
     if (await keyFile.exists() && await certFile.exists()) {
-      final keyPair = _decodePrivateKeyPair(await keyFile.readAsBytes());
-      final certificateDer = Uint8List.fromList(await certFile.readAsBytes());
-      return OpcAppIdentity(keyPair: keyPair, certificateDer: certificateDer);
+      try {
+        final keyPair = _decodePrivateKeyPair(await keyFile.readAsBytes());
+        final certificateDer =
+            Uint8List.fromList(await certFile.readAsBytes());
+        return OpcAppIdentity(keyPair: keyPair, certificateDer: certificateDer);
+      } catch (_) {
+        // A truncated/corrupt store (e.g. a killed write on a device) must
+        // not permanently break OPC UA hosting — fall through and regenerate.
+      }
     }
 
     return _generateAndPersist(
