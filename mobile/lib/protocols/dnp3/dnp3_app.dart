@@ -591,6 +591,23 @@ Uint8List encodeG32V7({required double value, required int flags, required int t
   return bd.buffer.asUint8List();
 }
 
+/// Encodes a g11v2 (Binary Output Event with time) point. The per-point
+/// payload is byte-identical to g2v2 (Binary Input Event) — flags(1, bit 7 =
+/// state) + 48-bit LE time; only the object-header group number (11 vs 2)
+/// distinguishes them on the wire, which the caller sets.
+Uint8List encodeG11V2({required bool value, required int flags, required int timeMs}) =>
+    encodeG2V2(value: value, flags: flags, timeMs: timeMs);
+
+/// Encodes a g42v3 (Analog Output Event, 32-bit with time) point — payload
+/// byte-identical to g32v3 (Analog Input Event); group 42 vs 32 distinguishes.
+Uint8List encodeG42V3({required int value, required int flags, required int timeMs}) =>
+    encodeG32V3(value: value, flags: flags, timeMs: timeMs);
+
+/// Encodes a g42v7 (Analog Output Event, single-float with time) point —
+/// payload byte-identical to g32v7; group 42 vs 32 distinguishes.
+Uint8List encodeG42V7({required double value, required int flags, required int timeMs}) =>
+    encodeG32V7(value: value, flags: flags, timeMs: timeMs);
+
 /// Maps a g60 (Class Objects) variation to its DNP3 event class: v1 = Class 0
 /// (static), v2 = Class 1, v3 = Class 2, v4 = Class 3. Returns `null` for any
 /// other variation.

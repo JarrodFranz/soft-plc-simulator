@@ -14,11 +14,13 @@ import '../../models/dnp3_map.dart';
 import '../../models/project_model.dart';
 import '../../models/tag_resolver.dart';
 
-/// One captured input-point change. `isBinary` selects g2v2 (binary) vs the
-/// analog g32 family; for analog, `isFloat` selects g32v7 (float, value in
-/// [floatValue]) vs g32v3 (32-bit int, value in [intValue]).
+/// One captured point change (binary/analog, input or output). `isBinary`
+/// selects g2v2 (binary) vs the analog g32 family; for analog, `isFloat`
+/// selects g32v7 (float, value in [floatValue]) vs g32v3 (32-bit int, value
+/// in [intValue]). Output points (`binaryOutput`/`analogOutput`) use the same
+/// payload shape — the outstation maps them to g11/g42 on the wire.
 class DnpEvent {
-  final String pointType; // 'binaryInput' | 'analogInput'
+  final String pointType; // 'binaryInput' | 'binaryOutput' | 'analogInput' | 'analogOutput'
   final int index;
   final int eventClass; // 1 | 2 | 3
   final bool isBinary;
@@ -97,20 +99,22 @@ class DnpEventEngine {
     }
   }
 
-  /// One change-detection pass. Only `binaryInput`/`analogInput` entries with
-  /// `eventClass` in {1,2,3} participate; the first time a point is seen its
-  /// baseline is recorded WITHOUT emitting an event (so startup does not
-  /// flood). Thereafter any value change emits one event into that class.
+  /// One change-detection pass. `binaryInput`/`binaryOutput`/`analogInput`/
+  /// `analogOutput` entries with `eventClass` in {1,2,3} participate; the
+  /// first time a point is seen its baseline is recorded WITHOUT emitting an
+  /// event (so startup does not flood). Thereafter any value change (from a
+  /// master write or a logic write — indistinguishable) emits one event into
+  /// that class.
   void detectChanges(PlcProject project, DnpMap map, int nowMs) {
     for (final e in map.entries) {
       final cls = e.eventClass;
       if (cls < 1 || cls > 3) {
         continue;
       }
-      final isBinary = e.pointType == 'binaryInput';
-      final isAnalog = e.pointType == 'analogInput';
+      final isBinary = e.pointType == 'binaryInput' || e.pointType == 'binaryOutput';
+      final isAnalog = e.pointType == 'analogInput' || e.pointType == 'analogOutput';
       if (!isBinary && !isAnalog) {
-        continue; // outputs don't generate events
+        continue; // only binary/analog input+output points generate events
       }
       final key = '${e.pointType}#${e.index}';
       final raw = readPath(project, e.tag);
