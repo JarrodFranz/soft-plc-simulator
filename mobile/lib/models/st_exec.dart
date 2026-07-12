@@ -281,9 +281,12 @@ void _execBlock(PlcProject p, String src, List<_Stmt> stmts) {
 /// Executes every StructuredText program's `stSource` each scan: IF/ELSIF/ELSE
 /// control flow plus `path := expr;` assignments, with all expressions
 /// evaluated by `st_expr` and writes made force-aware. Never throws.
-void executeStPrograms(PlcProject p, int dtMs, StRuntime rt) {
+void executeStPrograms(PlcProject p, int dtMs, StRuntime rt, {Set<String>? only}) {
   for (final prog in p.programs) {
     if (prog.language != 'StructuredText' || prog.stSource.trim().isEmpty) {
+      continue;
+    }
+    if (only != null && !only.contains(prog.name)) {
       continue;
     }
     final src = stripStComments(prog.stSource);

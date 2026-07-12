@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/system_tags.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 import 'package:soft_plc_mobile/widgets/tag_inspector_dock.dart';
 import 'support/responsive_test_utils.dart';
@@ -131,4 +132,62 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   }
+
+  group('Reserved System tag protection', () {
+    PlcProject buildSystemProject() {
+      final proj = PlcProject(
+        id: 'p',
+        name: 'p',
+        controllerName: 'c',
+        tags: [],
+        structDefs: [],
+        programs: [],
+        tasks: [],
+        hmis: [],
+      );
+      ensureSystemTag(proj);
+      return proj;
+    }
+
+    testWidgets('System root row does not show the Force control', (tester) async {
+      final project = buildSystemProject();
+      await tester.pumpWidget(_harness(project));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.descendant(
+          of: find.ancestor(of: find.text(kSystemTagName), matching: find.byType(Card)),
+          matching: find.text('Force'),
+        ),
+        findsNothing,
+      );
+    });
+
+    testWidgets('AlarmReset has a writable control; other System status fields do not', (tester) async {
+      final project = buildSystemProject();
+      await tester.pumpWidget(_harness(project));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const ValueKey('inspector-expand-$kSystemTagName')));
+      await tester.pumpAndSettle();
+
+      // AlarmReset gets a dedicated writable control...
+      final writeKey = find.byKey(const ValueKey('inspector-write-System.AlarmReset'));
+      expect(writeKey, findsOneWidget);
+
+      // ...tapping it flips the underlying tag value. Scroll it into view
+      // first: the SYSTEM composite has ~19 fields, so AlarmReset's row can
+      // land below the dock's visible viewport once expanded.
+      await tester.ensureVisible(writeKey);
+      await tester.pumpAndSettle();
+      expect(readPath(project, 'System.AlarmReset'), isFalse);
+      await tester.tap(writeKey);
+      await tester.pumpAndSettle();
+      expect(readPath(project, 'System.AlarmReset'), isTrue);
+
+      // A different BOOL status field has no writable control of its own.
+      expect(find.text('.Running'), findsOneWidget);
+      expect(find.byKey(const ValueKey('inspector-write-System.Running')), findsNothing);
+    });
+  });
 }

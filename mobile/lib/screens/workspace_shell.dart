@@ -2,17 +2,15 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/project_model.dart';
 import '../models/project_history.dart';
-import '../models/sim_engine.dart';
-import '../models/ld_exec.dart';
-import '../models/fbd_exec.dart';
-import '../models/sfc_exec.dart';
-import '../models/st_exec.dart';
+import '../models/system_tags.dart';
+import '../models/tag_resolver.dart';
 import '../data/default_projects.dart';
 import '../data/project_repository.dart';
 import '../data/project_transfer.dart';
@@ -21,7 +19,9 @@ import '../services/modbus_host.dart';
 import '../services/mqtt_host.dart';
 import '../services/opcua_host.dart';
 import '../ui/responsive.dart';
+import '../widgets/tag_autocomplete_field.dart';
 import '../widgets/tag_inspector_dock.dart';
+import 'scan_tick.dart';
 import 'st_editor_screen.dart';
 import 'ld_editor_screen.dart';
 import 'fbd_editor_screen.dart';
@@ -34,6 +34,10 @@ import 'gateway_screen.dart';
 /// Debounce window between the last project mutation and the autosave write.
 const Duration _autosaveDebounce = Duration(milliseconds: 800);
 
+/// Sentinel item appended to the Add-Program dialog's task dropdown; picking
+/// it reveals inline task-creation fields instead of an existing task.
+const String _kNewTaskSentinel = '＋ New task…';
+
 class WorkspaceShell extends StatefulWidget {
   /// Optional injection seam so tests (and callers that already own a
   /// [ProjectRepository]) can share one backing store with the shell instead
@@ -43,10 +47,10 @@ class WorkspaceShell extends StatefulWidget {
   const WorkspaceShell({super.key, this.repository});
 
   @override
-  State<WorkspaceShell> createState() => _WorkspaceShellState();
+  State<WorkspaceShell> createState() => WorkspaceShellState();
 }
 
-class _WorkspaceShellState extends State<WorkspaceShell> {
+class WorkspaceShellState extends State<WorkspaceShell> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   // Project Workspace Repository
@@ -64,15 +68,23 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   int scanCount = 0;
   int scanSpeedMs = 500; // Configurable scan speed (50ms to 2000ms)
   Timer? _scanTimer;
-  final SimRuntime _simRuntime = SimRuntime();
-  final LdExecRuntime _ldRuntime = LdExecRuntime();
-  final FbdRuntime _fbdRuntime = FbdRuntime();
-  final SfcRuntime _sfcRuntime = SfcRuntime();
-  final StRuntime _stRuntime = StRuntime();
+  Timer? _supervisorTimer;
+  final ScanTickRuntime _scan = ScanTickRuntime();
   final OpcUaHost _opcuaHost = OpcUaHost();
   final ModbusHost _modbusHost = ModbusHost();
   final MqttHost _mqttHost = MqttHost();
   final DnpHost _dnpHost = DnpHost();
+
+  // Scheduler-driven scan-tick status (fault latch + scan-time stats),
+  // surfaced via the reserved `System` tag each scan (see `system_tags.dart`).
+  bool _freeRun = false;
+  bool _faulted = false;
+  String _faultTaskName = '';
+  int _faultCode = 0;
+  double _lastScanMs = 0, _maxScanMs = 0, _minScanMs = 0;
+  int _sessionScans = 0;
+  final Stopwatch _uptime = Stopwatch();
+  final Stopwatch _sinceLast = Stopwatch();
 
   // Side Dock Inspector State
   bool isTagDockVisible = true;
@@ -92,7 +104,26 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   final ProjectHistory _history = ProjectHistory();
   int _editorRevision = 0;
 
-  String _snapshot() => jsonEncode(_activeProject.toJson());
+  /// Serializes the active project for undo/redo + autosave-dirty
+  /// comparison. The reserved `System` tag's value is neutralized to a fixed
+  /// placeholder first: it carries continuously-changing per-scan telemetry
+  /// (scan count, scan timers, wall clock) written every tick by
+  /// `_executeScan`, which would otherwise make every snapshot compare as
+  /// "changed" even with no user edit — corrupting dirty-detection and the
+  /// undo/redo stacks whenever the scan loop is running. This does not
+  /// affect what's actually persisted to disk (`_runAutosave` saves
+  /// `_activeProject` directly, live values intact); `_applySnapshot` calls
+  /// `ensureSystemTag` right after restoring to backfill sane defaults.
+  String _snapshot() {
+    final json = _activeProject.toJson();
+    final tagsJson = (json['project'] as Map)['tags'] as List;
+    for (final t in tagsJson) {
+      if (t is Map && t['name'] == kSystemTagName) {
+        t['initial_value'] = <String, dynamic>{};
+      }
+    }
+    return jsonEncode(json);
+  }
 
   @override
   void initState() {
@@ -103,6 +134,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   @override
   void dispose() {
     _scanTimer?.cancel();
+    _supervisorTimer?.cancel();
     _autosaveTimer?.cancel();
     _opcuaHost.dispose();
     _modbusHost.dispose();
@@ -177,6 +209,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       active = loadedProjects.first;
     }
 
+    for (final pr in loadedProjects) {
+      ensureSystemTag(pr);
+    }
+
     if (!mounted) return;
     setState(() {
       _repo = repo;
@@ -193,27 +229,226 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _history.reset(_snapshot());
     });
     await repo?.setActiveProjectId(_activeProject.id);
+    _startRunSession();
     _startScanLoop();
   }
 
+  /// (Re)arms the scan loop, mode-aware: fixed mode ticks on a
+  /// `Timer.periodic`; free-run re-arms a zero-delay `Timer` after each tick
+  /// so the event loop (and therefore the UI) still gets a chance to paint
+  /// between scans instead of the loop starving it. A slow supervisor timer
+  /// always runs alongside either mode so an external `System.AlarmReset`
+  /// write (e.g. from HMI/logic, not the Clear Fault button) still clears a
+  /// latched fault even while the scan loop itself is halted.
+  ///
+  /// Free-run only re-arms the next zero-delay timer while `isRunning` is
+  /// true and `_faulted` is false — paused/faulted goes fully idle (no
+  /// scheduled timer at all) instead of spinning an indefinite no-op
+  /// zero-delay chain. `_startScanLoop()` is called again on the
+  /// stopped -> running toggle (see the run/pause `IconButton` below) to
+  /// resume the chain.
   void _startScanLoop() {
     _scanTimer?.cancel();
-    _scanTimer = Timer.periodic(Duration(milliseconds: scanSpeedMs), (timer) {
-      if (isRunning) {
-        _executeScan();
+    if (_freeRun) {
+      void arm() {
+        _scanTimer = Timer(Duration.zero, () {
+          if (!isRunning || _faulted) {
+            // Paused/faulted: go idle, do not re-arm. Resumed by the next
+            // _startScanLoop() call (run toggle or free-run/speed change).
+            return;
+          }
+          _executeScan();
+          arm();
+        });
+      }
+      if (isRunning && !_faulted) {
+        arm();
+      }
+    } else {
+      _scanTimer = Timer.periodic(Duration(milliseconds: scanSpeedMs), (timer) {
+        if (isRunning && !_faulted) {
+          _executeScan();
+        }
+      });
+    }
+    _supervisorTimer?.cancel();
+    _supervisorTimer = Timer.periodic(const Duration(milliseconds: 200), (timer) {
+      if (_faulted && consumeAlarmReset(_activeProject)) {
+        setState(_clearFault);
       }
     });
   }
 
+  /// Test-only hook: forces the shell into a faulted state (as if the
+  /// watchdog had tripped mid-scan) without needing to drive an actual
+  /// scan-tick fault through a program. Used by widget tests to exercise the
+  /// fault banner / Clear Fault flow deterministically.
+  @visibleForTesting
+  void debugForceFault(String task) => setState(() {
+        _faulted = true;
+        _faultTaskName = task;
+        _faultCode = 1;
+        isRunning = false;
+      });
+
+  /// Test-only hook: the currently active project, for asserting on task /
+  /// program state directly without driving dialog UI.
+  @visibleForTesting
+  PlcProject get debugActiveProject => _activeProject;
+
+  /// Test-only hook: whether the shell currently holds a latched watchdog
+  /// fault, for asserting fault state directly without scraping banner text.
+  @visibleForTesting
+  bool get debugFaulted => _faulted;
+
+  /// Test-only hook: adds [proj] to the in-memory project catalog (mirrors
+  /// what `_createNewProject`/`_importProject` do) so it's a valid target
+  /// for `debugSwitchToProject` — the project switcher UI only ever offers
+  /// projects already in `_allProjects`.
+  @visibleForTesting
+  void debugAddProject(PlcProject proj) => setState(() => _allProjects.add(proj));
+
+  /// Test-only hook: drives the same project-replacement path as picking
+  /// [proj] from the project switcher UI. Used by widget tests to exercise
+  /// `_switchActiveProject` (and therefore `_beginProjectSession`) without
+  /// needing to drive the picker dialog.
+  @visibleForTesting
+  void debugSwitchToProject(PlcProject proj) => _switchActiveProject(proj);
+
+  /// Test-only hook: appends [t] to the active project's task list.
+  @visibleForTesting
+  void debugAddTask(PlcTask t) => setState(() => _activeProject.tasks.add(t));
+
+  /// Test-only hook: exercises the [_deleteTask] orphan-guard logic directly.
+  @visibleForTesting
+  bool debugDeleteTask(PlcTask t) => _deleteTask(t);
+
+  /// Test-only hook: exercises the Add-Program dialog's "＋ New task…" save
+  /// path directly — creates [taskName]/[taskType] (with [periodMs] /
+  /// [triggerTag] / [watchdogMs] as applicable), adds it to the active
+  /// project, then creates [programName]/[language] and assigns it to the
+  /// new task. The dialog itself calls the same path so UI and test share
+  /// one implementation.
+  @visibleForTesting
+  void debugAddProgramToNewTask({
+    required String programName,
+    required String language,
+    required String taskName,
+    required String taskType,
+    int periodMs = 100,
+    String triggerTag = '',
+    int watchdogMs = 0,
+  }) =>
+      _addProgramToNewTask(
+        programName: programName,
+        language: language,
+        taskName: taskName,
+        taskType: taskType,
+        periodMs: periodMs,
+        triggerTag: triggerTag,
+        watchdogMs: watchdogMs,
+      );
+
+  /// Reset all per-run-session runtime state when the active project is
+  /// replaced (switch / undo-redo / create / duplicate / delete / reset /
+  /// import): scheduler, watchdog fault, scan-time stats, and timers. A
+  /// replaced project must never inherit another project's fault or telemetry.
+  void _beginProjectSession() {
+    _scan.resetSession();
+    _faulted = false;
+    _faultTaskName = '';
+    _faultCode = 0;
+    _sessionScans = 0;
+    _lastScanMs = 0;
+    _maxScanMs = 0;
+    _minScanMs = 0;
+    _uptime
+      ..reset()
+      ..start();
+    _sinceLast
+      ..reset()
+      ..start();
+  }
+
+  /// (Re)starts a run session: resets the scheduler/engine runtimes and the
+  /// per-session scan-time stats, and (re)starts the uptime/free-run clocks.
+  /// Called on boot and on every stopped -> running transition.
+  void _startRunSession() {
+    _scan.resetSession();
+    _sessionScans = 0;
+    _lastScanMs = _maxScanMs = _minScanMs = 0;
+    _uptime
+      ..reset()
+      ..start();
+    _sinceLast
+      ..reset()
+      ..start();
+  }
+
   void _executeScan() {
+    if (_faulted) {
+      return;
+    }
+    final dtMs = _freeRun
+        ? (_sinceLast.elapsedMilliseconds.clamp(0, 1000))
+        : scanSpeedMs;
+    _sinceLast
+      ..reset()
+      ..start();
+    final tickSw = Stopwatch()..start();
+
+    final result = runScanTick(_activeProject, dtMs, _scan);
+
+    tickSw.stop();
+    final now = DateTime.now();
     setState(() {
       scanCount++;
-      applySimRules(_activeProject, _activeProject.simRules, scanSpeedMs, _simRuntime);
-      executeLdPrograms(_activeProject, scanSpeedMs, _ldRuntime);
-      executeFbdPrograms(_activeProject, scanSpeedMs, _fbdRuntime);
-      executeSfcPrograms(_activeProject, scanSpeedMs, _sfcRuntime);
-      executeStPrograms(_activeProject, scanSpeedMs, _stRuntime);
+      _sessionScans++;
+      _lastScanMs = tickSw.elapsedMicroseconds / 1000.0;
+      if (_sessionScans == 1 || _lastScanMs > _maxScanMs) {
+        _maxScanMs = _lastScanMs;
+      }
+      if (_sessionScans == 1 || _lastScanMs < _minScanMs) {
+        _minScanMs = _lastScanMs;
+      }
+      if (result.faulted) {
+        _faulted = true;
+        _faultTaskName = result.faultTask;
+        _faultCode = result.faultCode;
+        isRunning = false;
+      }
+      updateSystemStatus(_activeProject, SystemSnapshot(
+        fault: _faulted,
+        faultTask: _faultTaskName,
+        faultCode: _faultCode,
+        running: isRunning && !_faulted,
+        firstScan: result.firstScan,
+        scanCount: _sessionScans,
+        scanTimeMs: _lastScanMs,
+        maxScanTimeMs: _maxScanMs,
+        minScanTimeMs: _minScanMs,
+        freeRun: _freeRun,
+        uptimeMs: _uptime.elapsedMilliseconds,
+        year: now.year, month: now.month, day: now.day,
+        hour: now.hour, minute: now.minute, second: now.second,
+        dateTime: _formatClock(now),
+      ));
+      if (consumeAlarmReset(_activeProject)) {
+        _clearFault();
+      }
     });
+  }
+
+  String _two(int v) => v.toString().padLeft(2, '0');
+  String _formatClock(DateTime d) =>
+      '${d.year}-${_two(d.month)}-${_two(d.day)} ${_two(d.hour)}:${_two(d.minute)}:${_two(d.second)}';
+
+  void _clearFault() {
+    _faulted = false;
+    _faultTaskName = '';
+    _faultCode = 0;
+    _maxScanMs = 0;
+    _minScanMs = 0;
   }
 
   void _switchActiveProject(PlcProject proj) {
@@ -226,6 +461,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     unawaited(_modbusHost.stop());
     unawaited(_mqttHost.disconnect());
     unawaited(_dnpHost.stop());
+    ensureSystemTag(proj);
     setState(() {
       _activeProject = proj;
       if (proj.hmis.isNotEmpty) {
@@ -234,11 +470,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'PROGRAM:${proj.programs.first.name}';
       }
       scanCount = 0;
-      _simRuntime.byRuleId.clear();
-      _ldRuntime.clear();
-      _fbdRuntime.clear();
-      _sfcRuntime.clear();
-      _stRuntime.clear();
+      _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
@@ -329,6 +561,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   /// `_history.capture` call is a no-op.
   void _applySnapshot(String json) {
     final proj = PlcProject.fromJson(jsonDecode(json) as Map<String, dynamic>);
+    // The stored snapshot has the System tag's value neutralized (see
+    // `_snapshot`) — restore it to well-formed defaults; the running scan
+    // loop repopulates the live status fields on the next tick.
+    ensureSystemTag(proj);
     setState(() {
       final i = _allProjects.indexWhere((p) => p.id == proj.id);
       if (i != -1) {
@@ -336,11 +572,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       }
       _activeProject = proj;
       _editorRevision++;
-      _simRuntime.byRuleId.clear();
-      _ldRuntime.clear();
-      _fbdRuntime.clear();
-      _sfcRuntime.clear();
-      _stRuntime.clear();
+      _beginProjectSession();
       _ensureValidView();
     });
     _autosaveTimer?.cancel();
@@ -466,11 +698,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _activeProject = blank;
       _activeViewId = 'MEMORY';
       scanCount = 0;
-      _simRuntime.byRuleId.clear();
-      _ldRuntime.clear();
-      _fbdRuntime.clear();
-      _sfcRuntime.clear();
-      _stRuntime.clear();
+      _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
@@ -502,11 +730,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'MEMORY';
       }
       scanCount = 0;
-      _simRuntime.byRuleId.clear();
-      _ldRuntime.clear();
-      _fbdRuntime.clear();
-      _sfcRuntime.clear();
-      _stRuntime.clear();
+      _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
@@ -586,11 +810,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'MEMORY';
       }
       scanCount = 0;
-      _simRuntime.byRuleId.clear();
-      _ldRuntime.clear();
-      _fbdRuntime.clear();
-      _sfcRuntime.clear();
-      _stRuntime.clear();
+      _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
@@ -640,11 +860,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'MEMORY';
       }
       scanCount = 0;
-      _simRuntime.byRuleId.clear();
-      _ldRuntime.clear();
-      _fbdRuntime.clear();
-      _sfcRuntime.clear();
-      _stRuntime.clear();
+      _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
@@ -761,11 +977,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'MEMORY';
       }
       scanCount = 0;
-      _simRuntime.byRuleId.clear();
-      _ldRuntime.clear();
-      _fbdRuntime.clear();
-      _sfcRuntime.clear();
-      _stRuntime.clear();
+      _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
@@ -861,6 +1073,35 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     });
     _markDirtyAndAutosave();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Program "$progName" deleted')));
+  }
+
+  /// Delete [task], unless doing so would leave any of its programs in no
+  /// other task ("orphaned"). Returns true if deleted, false if refused.
+  bool _deleteTask(PlcTask task) {
+    for (final prog in task.programNames) {
+      final elsewhere = _activeProject.tasks.any((t) => t != task && t.programNames.contains(prog));
+      if (!elsewhere) {
+        return false; // 'prog' would be orphaned
+      }
+    }
+    setState(() => _activeProject.tasks.remove(task));
+    _markDirtyAndAutosave();
+    return true;
+  }
+
+  /// Attempts to delete [task] via [_deleteTask]; on refusal, shows a
+  /// SnackBar naming the program that would be left with no task.
+  void _confirmDeleteTask(PlcTask task) {
+    if (_deleteTask(task)) {
+      return;
+    }
+    final orphan = task.programNames.firstWhere(
+      (prog) => !_activeProject.tasks.any((t) => t != task && t.programNames.contains(prog)),
+      orElse: () => '',
+    );
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Can\'t delete — "$orphan" would be left with no task. Assign it elsewhere first.')),
+    );
   }
 
   void _addNewHmiDashboard() {
@@ -991,6 +1232,36 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
             ),
       body: Column(
         children: [
+          // Watchdog fault banner. Placed at the very top of the body (above
+          // the scan toolbar) so it can never be pushed off-screen or cause a
+          // RenderFlex overflow — it's a plain top-of-column block, not
+          // competing with the toolbar's Row for width.
+          if (_faulted)
+            MaterialBanner(
+              backgroundColor: Colors.red.shade900,
+              content: Text(
+                'PLC FAULT — watchdog on task "$_faultTaskName" (code $_faultCode). '
+                'Scan halted.',
+                style: const TextStyle(color: Colors.white),
+              ),
+              leading: const Icon(Icons.warning_amber, color: Colors.white),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      // Pulse System.AlarmReset so any logic/HMI observers
+                      // watching that tag also see the reset edge, not just
+                      // the shell's own fault flag.
+                      writePath(_activeProject, 'System.AlarmReset', true);
+                      consumeAlarmReset(_activeProject);
+                      _clearFault();
+                    });
+                  },
+                  child: const Text('Clear Fault', style: TextStyle(color: Colors.white)),
+                ),
+              ],
+            ),
+
           // PLC Execution Controls Toolbar (Scan Speed Slider cleanly placed to avoid clipping)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -1077,25 +1348,65 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   }
 
   List<Widget> _buildAppBarActions(BuildContext context, {required bool compact}) {
-    // Run / Pause Toggle
+    // Run / Pause Toggle. Compact iconSize/padding matches undo/redo/
+    // freeRunToggle below — with the free-run toggle added, the compact
+    // AppBar now packs 6 tap targets at 320/360px, so every action here must
+    // shed the default 48px tap-target padding to avoid squeezing
+    // NavigationToolbar's custom layout (which, unlike a Flex, can silently
+    // overlap the leading hamburger under the actions row instead of
+    // throwing an overflow error when it runs out of room).
     final runToggle = IconButton(
       icon: Icon(
         isRunning ? Icons.pause_circle_filled : Icons.play_circle_fill,
         color: isRunning ? Colors.amber : Colors.greenAccent,
-        size: 26,
+        size: compact ? 22 : 26,
       ),
       tooltip: isRunning ? 'Pause Scan Loop' : 'Run Scan Loop',
+      padding: compact ? const EdgeInsets.symmetric(horizontal: 4) : const EdgeInsets.all(8),
+      constraints: compact ? const BoxConstraints() : null,
       onPressed: () {
+        final resuming = !isRunning;
         setState(() {
+          if (resuming) {
+            _startRunSession();
+          }
           isRunning = !isRunning;
         });
+        if (resuming) {
+          // Stopped -> running: re-arm the free-run zero-delay chain, which
+          // idled while paused (see _startScanLoop). No-op cost in fixed
+          // mode — _startScanLoop() cancels+recreates the same
+          // Timer.periodic, it does not double-schedule.
+          _startScanLoop();
+        }
+      },
+    );
+
+    // Free-run / fixed-scan mode toggle. Compact iconSize/padding matches the
+    // undo/redo buttons below so it doesn't push the already-tight compact
+    // AppBar (run/pause + tag toggle + undo/redo + overflow at 320/360px)
+    // into overflow.
+    final freeRunToggle = IconButton(
+      icon: Icon(
+        _freeRun ? Icons.fast_forward : Icons.timer_outlined,
+        color: _freeRun ? Colors.orangeAccent : Colors.grey,
+        size: compact ? 20 : 24,
+      ),
+      tooltip: _freeRun ? 'Free-run (as fast as allowed)' : 'Fixed scan (${scanSpeedMs}ms)',
+      padding: compact ? const EdgeInsets.symmetric(horizontal: 4) : const EdgeInsets.all(8),
+      constraints: compact ? const BoxConstraints() : null,
+      onPressed: () {
+        setState(() => _freeRun = !_freeRun);
+        _startScanLoop();
       },
     );
 
     // Toggle Tag Inspector Side Dock / End Drawer
     final tagToggle = IconButton(
-      icon: Icon(Icons.table_chart, color: isTagDockVisible ? Colors.cyanAccent : Colors.grey, size: 24),
+      icon: Icon(Icons.table_chart, color: isTagDockVisible ? Colors.cyanAccent : Colors.grey, size: compact ? 20 : 24),
       tooltip: 'Toggle Tag Inspector Side Dock',
+      padding: compact ? const EdgeInsets.symmetric(horizontal: 4) : const EdgeInsets.all(8),
+      constraints: compact ? const BoxConstraints() : null,
       onPressed: () => _openTagDock(context),
     );
 
@@ -1134,6 +1445,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
 
         undoButton,
         redoButton,
+        freeRunToggle,
 
         const SizedBox(width: 12),
 
@@ -1163,6 +1475,17 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     // the rest into a menu. Undo/Redo use their own small footprint
     // (default IconButton constraints already trimmed by the AppBar) so
     // adding two more icons here does not overflow at 320px.
+    //
+    // The free-run toggle deliberately goes into this overflow menu rather
+    // than inline: empirically, a 6th inline IconButton in this row (even
+    // with every button's tap target trimmed down) pushes the AppBar's
+    // internal NavigationToolbar layout — a CustomMultiChildLayout, not a
+    // Flex, so it never throws a RenderFlex-overflow assertion — past a
+    // threshold where it silently paints the trailing actions group
+    // overlapping the leading hamburger button at 320px width, making the
+    // hamburger untappable. Routing it through the menu instead keeps this
+    // row at its known-good size while still exposing the toggle from the
+    // app-bar actions on compact widths.
     return [
       runToggle,
       tagToggle,
@@ -1174,6 +1497,9 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         onSelected: (value) {
           if (value == 'step') {
             _executeScan();
+          } else if (value == 'freerun') {
+            setState(() => _freeRun = !_freeRun);
+            _startScanLoop();
           }
         },
         itemBuilder: (ctx) => [
@@ -1182,6 +1508,13 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
             child: ListTile(
               leading: Icon(Icons.skip_next),
               title: Text('Step Scan'),
+            ),
+          ),
+          PopupMenuItem(
+            value: 'freerun',
+            child: ListTile(
+              leading: Icon(_freeRun ? Icons.fast_forward : Icons.timer_outlined, color: _freeRun ? Colors.orangeAccent : Colors.grey),
+              title: Text(_freeRun ? 'Free-run (as fast as allowed)' : 'Fixed scan (${scanSpeedMs}ms)'),
             ),
           ),
           PopupMenuItem(
@@ -1471,6 +1804,20 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
 
                 const SizedBox(height: 16),
 
+                // Add Task Button
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.add_task, size: 16),
+                  label: const Text('Add Task'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.tealAccent,
+                    side: const BorderSide(color: Colors.tealAccent),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                  ),
+                  onPressed: _showAddTaskDialog,
+                ),
+
+                const SizedBox(height: 8),
+
                 // Add Program Button
                 OutlinedButton.icon(
                   icon: const Icon(Icons.add, size: 16),
@@ -1509,10 +1856,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   }
 
   Widget _buildTaskCategoryFolder(String title, IconData icon, String taskType) {
-    final programsInTaskType = <String>[];
-    for (var task in _activeProject.tasks.where((t) => t.type == taskType)) {
-      programsInTaskType.addAll(task.programNames);
-    }
+    final tasksOfType = _activeProject.tasks.where((t) => t.type == taskType).toList();
+    final programCount = tasksOfType.fold<int>(0, (sum, t) => sum + t.programNames.length);
 
     return Padding(
       padding: const EdgeInsets.only(left: 8, top: 4),
@@ -1523,61 +1868,161 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
             children: [
               Icon(icon, size: 14, color: Colors.tealAccent),
               const SizedBox(width: 6),
-              Text('$title (${programsInTaskType.length})', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white70)),
+              Expanded(
+                child: Text(
+                  '$title ($programCount)',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white70),
+                ),
+              ),
             ],
           ),
 
-          if (programsInTaskType.isEmpty)
+          if (tasksOfType.isEmpty)
             const Padding(
               padding: EdgeInsets.only(left: 20, top: 2, bottom: 4),
               child: Text('(none configured)', style: TextStyle(fontSize: 10, color: Colors.grey, fontStyle: FontStyle.italic)),
             )
           else
-            ...programsInTaskType.map((progName) {
-              final prog = _activeProject.programs.firstWhere((p) => p.name == progName, orElse: () => PlcProgram(name: progName, language: 'StructuredText'));
-              final isSelected = _activeViewId == 'PROGRAM:$progName';
-
-              String badgeText = 'ST';
-              Color badgeColor = Colors.blue;
-              if (prog.language == 'LadderLogic') { badgeText = 'LD'; badgeColor = Colors.orange; }
-              if (prog.language == 'FunctionBlockDiagram') { badgeText = 'FBD'; badgeColor = Colors.teal; }
-              if (prog.language == 'SequentialFunctionChart') { badgeText = 'SFC'; badgeColor = Colors.purple; }
-
-              return Container(
-                margin: const EdgeInsets.only(left: 20, top: 2),
-                decoration: BoxDecoration(
-                  color: isSelected ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Material(
-                  color: Colors.transparent,
-                  child: ListTile(
-                    dense: true,
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 6),
-                    leading: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: badgeColor.withValues(alpha: 0.3),
-                        borderRadius: BorderRadius.circular(3),
-                      ),
-                      child: Text(badgeText, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white)),
-                    ),
-                    title: Text(prog.name, style: TextStyle(fontSize: 11, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                      tooltip: 'Delete Program',
-                      onPressed: () => _deleteProgram(prog.name),
-                    ),
-                    onTap: () => _selectView(context, 'PROGRAM:$progName'),
-                  ),
-                ),
-              );
-            }),
+            ...tasksOfType.map(_buildTaskRow),
         ],
       ),
     );
+  }
+
+  /// A single task row: task name + enabled indicator + edit/delete
+  /// IconButtons, with its assigned programs listed underneath (indented).
+  Widget _buildTaskRow(PlcTask task) {
+    return Container(
+      margin: const EdgeInsets.only(left: 20, top: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                task.enabled ? Icons.check_circle_outline : Icons.pause_circle_outline,
+                size: 12,
+                color: task.enabled ? Colors.greenAccent : Colors.grey,
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  task.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.edit_outlined, size: 14, color: Colors.cyanAccent),
+                iconSize: 14,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+                tooltip: 'Edit Task',
+                onPressed: () => _showEditTaskDialog(task),
+              ),
+              IconButton(
+                icon: const Icon(Icons.delete_outline, size: 14, color: Colors.redAccent),
+                iconSize: 14,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+                tooltip: 'Delete Task',
+                onPressed: () => _confirmDeleteTask(task),
+              ),
+            ],
+          ),
+          if (task.programNames.isEmpty)
+            const Padding(
+              padding: EdgeInsets.only(left: 16, top: 2, bottom: 4),
+              child: Text('(no programs assigned)', style: TextStyle(fontSize: 10, color: Colors.grey, fontStyle: FontStyle.italic)),
+            )
+          else
+            ...task.programNames.map(_buildProgramRow),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProgramRow(String progName) {
+    final prog = _activeProject.programs.firstWhere((p) => p.name == progName, orElse: () => PlcProgram(name: progName, language: 'StructuredText'));
+    final isSelected = _activeViewId == 'PROGRAM:$progName';
+
+    String badgeText = 'ST';
+    Color badgeColor = Colors.blue;
+    if (prog.language == 'LadderLogic') { badgeText = 'LD'; badgeColor = Colors.orange; }
+    if (prog.language == 'FunctionBlockDiagram') { badgeText = 'FBD'; badgeColor = Colors.teal; }
+    if (prog.language == 'SequentialFunctionChart') { badgeText = 'SFC'; badgeColor = Colors.purple; }
+
+    return Container(
+      margin: const EdgeInsets.only(left: 16, top: 2),
+      decoration: BoxDecoration(
+        color: isSelected ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: ListTile(
+          dense: true,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 6),
+          leading: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            decoration: BoxDecoration(
+              color: badgeColor.withValues(alpha: 0.3),
+              borderRadius: BorderRadius.circular(3),
+            ),
+            child: Text(badgeText, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white)),
+          ),
+          title: Text(prog.name, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+          trailing: IconButton(
+            icon: const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            tooltip: 'Delete Program',
+            onPressed: () => _deleteProgram(prog.name),
+          ),
+          onTap: () => _selectView(context, 'PROGRAM:$progName'),
+        ),
+      ),
+    );
+  }
+
+  /// Shared save path for "Add Program" whether it assigns to an existing
+  /// task or (via the "＋ New task…" sentinel) creates one on the spot. The
+  /// dialog and [debugAddProgramToNewTask] both funnel through this so the
+  /// UI and the test exercise one implementation.
+  void _addProgramToNewTask({
+    required String programName,
+    required String language,
+    required String taskName,
+    required String taskType,
+    int periodMs = 100,
+    String triggerTag = '',
+    int watchdogMs = 0,
+  }) {
+    final newTask = PlcTask(
+      name: taskName,
+      type: taskType,
+      periodMs: periodMs,
+      programNames: [],
+      triggerTag: taskType == 'Event' ? triggerTag : '',
+      watchdogMs: watchdogMs,
+    );
+    final newProg = PlcProgram(
+      name: programName,
+      language: language,
+      stSource: '// Write ST Code for $programName\n',
+    );
+    setState(() {
+      _activeProject.tasks.add(newTask);
+      _activeProject.programs.add(newProg);
+      if (!newTask.programNames.contains(newProg.name)) {
+        newTask.programNames.add(newProg.name);
+      }
+      _activeViewId = 'PROGRAM:${newProg.name}';
+    });
+    _markDirtyAndAutosave();
   }
 
   void _showAddProgramDialog() {
@@ -1591,57 +2036,249 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
           _activeProject.tasks.add(PlcTask(name: 'MainTask', type: 'Continuous', periodMs: 100, programNames: []));
         }
         String taskName = _activeProject.tasks.first.name;
+        bool isNewTask = false;
+        final newTaskNameCtrl = TextEditingController(text: 'NewTask');
+        String newTaskType = 'Continuous';
+        final newTaskPeriodCtrl = TextEditingController(text: '100');
+        final newTaskWatchdogCtrl = TextEditingController(text: '0');
+        String newTaskTriggerTag = '';
 
         return AlertDialog(
           title: const Text('Add New Program to Project'),
           content: StatefulBuilder(
-            builder: (context, setDlgState) => Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Program Name')),
-                const SizedBox(height: 12),
-                DropdownButton<String>(
-                  value: language,
-                  isExpanded: true,
-                  items: const [
-                    DropdownMenuItem(value: 'StructuredText', child: Text('Structured Text (ST)')),
-                    DropdownMenuItem(value: 'LadderLogic', child: Text('Ladder Logic (LD)')),
-                    DropdownMenuItem(value: 'FunctionBlockDiagram', child: Text('Function Block Diagram (FBD)')),
-                    DropdownMenuItem(value: 'SequentialFunctionChart', child: Text('Sequential Function Chart (SFC)')),
+            builder: (context, setDlgState) => SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Program Name')),
+                  const SizedBox(height: 12),
+                  DropdownButton<String>(
+                    value: language,
+                    isExpanded: true,
+                    items: const [
+                      DropdownMenuItem(value: 'StructuredText', child: Text('Structured Text (ST)')),
+                      DropdownMenuItem(value: 'LadderLogic', child: Text('Ladder Logic (LD)')),
+                      DropdownMenuItem(value: 'FunctionBlockDiagram', child: Text('Function Block Diagram (FBD)')),
+                      DropdownMenuItem(value: 'SequentialFunctionChart', child: Text('Sequential Function Chart (SFC)')),
+                    ],
+                    onChanged: (val) => setDlgState(() => language = val!),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButton<String>(
+                    value: isNewTask ? _kNewTaskSentinel : taskName,
+                    isExpanded: true,
+                    items: [
+                      ..._activeProject.tasks.map((t) => DropdownMenuItem(value: t.name, child: Text('${t.name} (${t.type})'))),
+                      const DropdownMenuItem(value: _kNewTaskSentinel, child: Text(_kNewTaskSentinel)),
+                    ],
+                    onChanged: (val) => setDlgState(() {
+                      if (val == _kNewTaskSentinel) {
+                        isNewTask = true;
+                      } else {
+                        isNewTask = false;
+                        taskName = val!;
+                      }
+                    }),
+                  ),
+                  if (isNewTask) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: newTaskNameCtrl,
+                      decoration: const InputDecoration(labelText: 'New Task Name'),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButton<String>(
+                      value: newTaskType,
+                      isExpanded: true,
+                      items: const [
+                        DropdownMenuItem(value: 'Startup', child: Text('Startup')),
+                        DropdownMenuItem(value: 'Continuous', child: Text('Continuous')),
+                        DropdownMenuItem(value: 'Periodic', child: Text('Periodic')),
+                        DropdownMenuItem(value: 'Event', child: Text('Event')),
+                      ],
+                      onChanged: (val) => setDlgState(() => newTaskType = val!),
+                    ),
+                    if (newTaskType == 'Periodic') ...[
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: newTaskPeriodCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(labelText: 'Period (ms)'),
+                      ),
+                    ],
+                    if (newTaskType == 'Event') ...[
+                      const SizedBox(height: 12),
+                      TagAutocompleteField(
+                        options: leafAndNodePaths(_activeProject),
+                        initialValue: newTaskTriggerTag,
+                        label: 'Trigger Tag (BOOL)',
+                        onChanged: (val) => newTaskTriggerTag = val,
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: newTaskWatchdogCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'Watchdog (ms, 0 = disabled)'),
+                    ),
                   ],
-                  onChanged: (val) => setDlgState(() => language = val!),
-                ),
-                const SizedBox(height: 12),
-                DropdownButton<String>(
-                  value: taskName,
-                  isExpanded: true,
-                  items: _activeProject.tasks.map((t) => DropdownMenuItem(value: t.name, child: Text('${t.name} (${t.type})'))).toList(),
-                  onChanged: (val) => setDlgState(() => taskName = val!),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
             ElevatedButton(
               onPressed: () {
-                final newProg = PlcProgram(
-                  name: nameCtrl.text,
-                  language: language,
-                  stSource: '// Write ST Code for ${nameCtrl.text}\n',
-                );
+                if (isNewTask) {
+                  final newName = newTaskNameCtrl.text.trim().isEmpty ? 'NewTask' : newTaskNameCtrl.text.trim();
+                  _addProgramToNewTask(
+                    programName: nameCtrl.text,
+                    language: language,
+                    taskName: newName,
+                    taskType: newTaskType,
+                    periodMs: int.tryParse(newTaskPeriodCtrl.text) ?? 100,
+                    triggerTag: newTaskTriggerTag,
+                    watchdogMs: int.tryParse(newTaskWatchdogCtrl.text) ?? 0,
+                  );
+                } else {
+                  final newProg = PlcProgram(
+                    name: nameCtrl.text,
+                    language: language,
+                    stSource: '// Write ST Code for ${nameCtrl.text}\n',
+                  );
+                  setState(() {
+                    _activeProject.programs.add(newProg);
+                    final t = _activeProject.tasks.firstWhere((tk) => tk.name == taskName);
+                    if (!t.programNames.contains(newProg.name)) {
+                      t.programNames.add(newProg.name);
+                    }
+                    _activeViewId = 'PROGRAM:${newProg.name}';
+                  });
+                  _markDirtyAndAutosave();
+                }
+                Navigator.pop(ctx);
+              },
+              child: const Text('Add Program'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showAddTaskDialog() {
+    _showTaskFormDialog(existing: null);
+  }
+
+  void _showEditTaskDialog(PlcTask task) {
+    _showTaskFormDialog(existing: task);
+  }
+
+  /// Shared AlertDialog for both creating a new task ([existing] == null)
+  /// and editing an existing one.
+  void _showTaskFormDialog({required PlcTask? existing}) {
+    final isEdit = existing != null;
+    final nameCtrl = TextEditingController(text: existing?.name ?? 'NewTask');
+    String type = existing?.type ?? 'Continuous';
+    final periodCtrl = TextEditingController(text: '${existing?.periodMs ?? 100}');
+    final watchdogCtrl = TextEditingController(text: '${existing?.watchdogMs ?? 0}');
+    String triggerTag = existing?.triggerTag ?? '';
+    bool enabled = existing?.enabled ?? true;
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: Text(isEdit ? 'Edit Task' : 'Add New Task'),
+          content: StatefulBuilder(
+            builder: (context, setDlgState) => SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Task Name')),
+                  const SizedBox(height: 12),
+                  DropdownButton<String>(
+                    value: type,
+                    isExpanded: true,
+                    items: const [
+                      DropdownMenuItem(value: 'Startup', child: Text('Startup')),
+                      DropdownMenuItem(value: 'Continuous', child: Text('Continuous')),
+                      DropdownMenuItem(value: 'Periodic', child: Text('Periodic')),
+                      DropdownMenuItem(value: 'Event', child: Text('Event')),
+                    ],
+                    onChanged: (val) => setDlgState(() => type = val!),
+                  ),
+                  if (type == 'Periodic') ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: periodCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'Period (ms)'),
+                    ),
+                  ],
+                  if (type == 'Event') ...[
+                    const SizedBox(height: 12),
+                    TagAutocompleteField(
+                      options: leafAndNodePaths(_activeProject),
+                      initialValue: triggerTag,
+                      label: 'Trigger Tag (BOOL)',
+                      onChanged: (val) => triggerTag = val,
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: watchdogCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Watchdog (ms, 0 = disabled)'),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Expanded(child: Text('Enabled')),
+                      Switch(
+                        value: enabled,
+                        onChanged: (val) => setDlgState(() => enabled = val),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () {
+                final name = nameCtrl.text.trim().isEmpty ? 'NewTask' : nameCtrl.text.trim();
+                final periodMs = int.tryParse(periodCtrl.text) ?? 100;
+                final watchdogMs = int.tryParse(watchdogCtrl.text) ?? 0;
                 setState(() {
-                  _activeProject.programs.add(newProg);
-                  final t = _activeProject.tasks.firstWhere((tk) => tk.name == taskName);
-                  if (!t.programNames.contains(newProg.name)) {
-                    t.programNames.add(newProg.name);
+                  if (isEdit) {
+                    existing.name = name;
+                    existing.type = type;
+                    existing.periodMs = periodMs;
+                    existing.triggerTag = type == 'Event' ? triggerTag : '';
+                    existing.watchdogMs = watchdogMs;
+                    existing.enabled = enabled;
+                  } else {
+                    _activeProject.tasks.add(PlcTask(
+                      name: name,
+                      type: type,
+                      periodMs: periodMs,
+                      programNames: [],
+                      enabled: enabled,
+                      triggerTag: type == 'Event' ? triggerTag : '',
+                      watchdogMs: watchdogMs,
+                    ));
                   }
-                  _activeViewId = 'PROGRAM:${newProg.name}';
                 });
                 _markDirtyAndAutosave();
                 Navigator.pop(ctx);
               },
-              child: const Text('Add Program'),
+              child: Text(isEdit ? 'Save Task' : 'Add Task'),
             ),
           ],
         );

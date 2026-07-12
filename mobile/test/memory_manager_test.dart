@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/system_tags.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 import 'package:soft_plc_mobile/screens/memory_manager_screen.dart';
 
@@ -229,6 +230,44 @@ void main() {
       expect(find.text('SpareDUT'), findsNWidgets(2));
       // Other DUTs remain available.
       expect(find.text('PumpStatusDUT'), findsWidgets);
+    });
+  });
+
+  group('Reserved System tag protection (Global Tags tab)', () {
+    testWidgets('System tag row offers no delete affordance', (tester) async {
+      final project = _project();
+      ensureSystemTag(project);
+      await tester.pumpWidget(app(project));
+      await tester.pumpAndSettle();
+
+      // 'System' appears twice in the card (the bold name label and the
+      // "Path" field, since a root tag's path equals its name), so this
+      // ancestor lookup resolves to the same Card via two descendant
+      // matches; take the first before asserting on its contents.
+      final systemCard = find
+          .ancestor(
+            of: find.text(kSystemTagName),
+            matching: find.byType(Card),
+          )
+          .first;
+      expect(find.descendant(of: systemCard, matching: find.byIcon(Icons.delete)), findsNothing);
+    });
+
+    testWidgets('Add Tag dialog blocks creating a tag named "System"', (tester) async {
+      final project = _project();
+      ensureSystemTag(project);
+      await tester.pumpWidget(app(project));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Add Tag'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField).first, kSystemTagName);
+      await tester.tap(find.text('Add Tag').last);
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('reserved'), findsOneWidget);
+      expect(project.tags.where((t) => t.name == kSystemTagName).length, 1);
     });
   });
 }

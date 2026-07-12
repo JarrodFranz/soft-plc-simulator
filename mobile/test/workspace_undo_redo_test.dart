@@ -7,11 +7,13 @@ import 'support/responsive_test_utils.dart';
 Widget _app() => const MaterialApp(home: WorkspaceShell());
 
 // The default active project ('Basic Motor Start Stop' / proj_motor) has
-// 7 tags and 1 struct def; adding a tag via the Memory Manager's "Add Tag"
-// dialog (defaults accepted) bumps the tag count by one.
-const String _baseLabel = 'Tags & Structs (7 Tags, 1 Structs)';
-const String _plusOneLabel = 'Tags & Structs (8 Tags, 1 Structs)';
-const String _plusTwoLabel = 'Tags & Structs (9 Tags, 1 Structs)';
+// 7 tags and 1 struct def, plus the reserved `System` status tag the shell
+// injects on boot (`ensureSystemTag`) -> 8 tags baseline. Adding a tag via
+// the Memory Manager's "Add Tag" dialog (defaults accepted) bumps the tag
+// count by one from there.
+const String _baseLabel = 'Tags & Structs (8 Tags, 1 Structs)';
+const String _plusOneLabel = 'Tags & Structs (9 Tags, 1 Structs)';
+const String _plusTwoLabel = 'Tags & Structs (10 Tags, 1 Structs)';
 
 /// Navigates to the Memory Manager view via the left dock nav tree. On
 /// compact widths the dock lives in a Drawer that must be opened first.

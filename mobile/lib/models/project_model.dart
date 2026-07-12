@@ -454,6 +454,8 @@ class PlcTask {
   int periodMs;
   List<String> programNames;
   bool enabled;
+  String triggerTag; // Event task: BOOL trigger tag path; '' = none
+  int watchdogMs;    // per-task watchdog limit in ms; 0 = disabled
 
   PlcTask({
     required this.name,
@@ -461,6 +463,8 @@ class PlcTask {
     this.periodMs = 100,
     required this.programNames,
     this.enabled = true,
+    this.triggerTag = '',
+    this.watchdogMs = 0,
   });
 
   factory PlcTask.fromJson(Map<String, dynamic> json) {
@@ -470,6 +474,8 @@ class PlcTask {
       periodMs: json['period_ms'] ?? 100,
       programNames: List<String>.from(json['programs'] ?? []),
       enabled: json['enabled'] ?? true,
+      triggerTag: json['trigger_tag'] ?? '',
+      watchdogMs: json['watchdog_ms'] ?? 0,
     );
   }
 
@@ -479,6 +485,8 @@ class PlcTask {
     'period_ms': periodMs,
     'programs': programNames,
     'enabled': enabled,
+    'trigger_tag': triggerTag,
+    'watchdog_ms': watchdogMs,
   };
 }
 
