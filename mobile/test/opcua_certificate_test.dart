@@ -86,6 +86,41 @@ void main() {
       expect(_containsSubsequence(der, uriBytes), isTrue);
     });
 
+    test(
+        'self-signed cert carries KeyUsage (critical) + '
+        'ExtendedKeyUsage(serverAuth,clientAuth)', () {
+      final der = buildSelfSignedCertificate(
+        keyPair: kp,
+        applicationUri: 'urn:softplc:sim',
+        commonName: 'SoftPLC Simulator',
+        notBefore: DateTime.utc(2020),
+        notAfter: DateTime.utc(2040),
+      );
+      // KeyUsage OID 2.5.29.15 present, critical, with digitalSignature +
+      // nonRepudiation + keyEncipherment + dataEncipherment.
+      expect(_derContainsOid(der, '2.5.29.15'), isTrue);
+      // The KeyUsage critical BOOLEAN TRUE + BIT STRING value 0xF0 (bits 0-3,
+      // 4 unused) must appear verbatim: 01 01 FF 04 04 03 02 04 F0
+      // (BOOLEAN TRUE, then OCTET STRING wrapping BIT STRING { 04 F0 }).
+      expect(
+        _containsSubsequence(
+          der,
+          Uint8List.fromList(
+            [0x01, 0x01, 0xFF, 0x04, 0x04, 0x03, 0x02, 0x04, 0xF0],
+          ),
+        ),
+        isTrue,
+      );
+      // ExtendedKeyUsage OID 2.5.29.37 with serverAuth (1.3.6.1.5.5.7.3.1) +
+      // clientAuth (1.3.6.1.5.5.7.3.2).
+      expect(_derContainsOid(der, '2.5.29.37'), isTrue);
+      expect(_derContainsOid(der, '1.3.6.1.5.5.7.3.1'), isTrue);
+      expect(_derContainsOid(der, '1.3.6.1.5.5.7.3.2'), isTrue);
+      // Existing guarantees still hold.
+      expect(parseCertificate(der)!.publicKey.modulus, kp.publicKey.modulus);
+      expect(_derContainsOid(der, '2.5.29.17'), isTrue); // SubjectAltName
+    });
+
     test('notAfter in 2050+ still round-trips (GeneralizedTime path)', () {
       final der = buildSelfSignedCertificate(
         keyPair: kp,
@@ -118,6 +153,14 @@ void main() {
       expect(parseCertificate(seq.encodedBytes), isNull);
     });
   });
+}
+
+/// True if the DER TLV encoding of [dottedOid] (an OBJECT IDENTIFIER,
+/// tag 0x06) appears as a contiguous subsequence of [der].
+bool _derContainsOid(Uint8List der, String dottedOid) {
+  final oidBytes = ASN1ObjectIdentifier.fromComponentString(dottedOid)
+      .encodedBytes;
+  return _containsSubsequence(der, Uint8List.fromList(oidBytes));
 }
 
 /// True if [needle] appears as a contiguous subsequence of [haystack].

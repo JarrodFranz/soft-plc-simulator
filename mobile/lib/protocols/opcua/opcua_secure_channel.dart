@@ -49,6 +49,14 @@ const int kAsymSignatureSize = 256;
 /// OPC UA secure-channel nonce length for Basic256Sha256 (bytes).
 const int kSecureChannelNonceLength = 32;
 
+/// The `SignatureData.algorithm` URI for an RSA-PKCS1-v1.5-SHA256 application
+/// signature (CreateSession `serverSignature` / ActivateSession
+/// `clientSignature`). Verified against opcua-0.12.0
+/// `security_policy.rs SecurityPolicy::asymmetric_signature_uri` for
+/// Basic256Sha256 (`http://www.w3.org/2001/04/xmldsig-more#rsa-sha256`).
+const String kRsaSha256SignatureUri =
+    'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256';
+
 /// Symmetric HMAC-SHA256 signature size (bytes) for Basic256Sha256
 /// (security_policy.rs `symmetric_signature_size` -> `SHA256_SIZE`).
 const int kSymSignatureSize = 32;
@@ -580,6 +588,30 @@ class OpcSecureChannel {
     } catch (e) {
       throw OpcSecurityException('buildSecuredMsg failed: $e');
     }
+  }
+
+  /// Signs [data] with the SERVER application-instance private key using
+  /// RSA-PKCS1-v1.5 over SHA-256 (the Basic256Sha256 asymmetric signature).
+  /// Used to build the CreateSession `serverSignature` (a SignatureData over
+  /// `clientCertificateDer ++ clientNonce`) that proves this server holds the
+  /// private key for the certificate it advertised. The algorithm URI paired
+  /// with this signature is [kRsaSha256SignatureUri].
+  Uint8List signApplicationData(Uint8List data) =>
+      rsaPkcs1Sha256Sign(_keyPair.privateKey, data);
+
+  /// Verifies an ActivateSession `clientSignature` (SignatureData) — the
+  /// RSA-PKCS1-v1.5-SHA256 signature the client makes over
+  /// `serverCertificateDer ++ serverNonce` to prove it holds the private key
+  /// for the certificate it presented in the OPN handshake. Verified with the
+  /// CLIENT certificate's public key. Returns false (never throws) when no
+  /// client certificate has been parsed yet or the signature does not verify —
+  /// `rsaPkcs1Sha256Verify` itself returns false on any malformed input.
+  bool verifyClientSignature(Uint8List signedData, Uint8List signature) {
+    final c = clientCertificate;
+    if (c == null) {
+      return false;
+    }
+    return rsaPkcs1Sha256Verify(c.publicKey, signedData, signature);
   }
 
   /// OAEP-SHA1-decrypts a UserNameIdentityToken password ByteString with the

@@ -59,6 +59,7 @@ class OpcUaStatusCodes {
   static const badUserAccessDenied = 0x801F0000; // status_codes.rs:116
   static const badIdentityTokenRejected = 0x80210000; // status_codes.rs:118
   static const badSecurityChecksFailed = 0x80130000; // status_codes.rs:110
+  static const badApplicationSignatureInvalid = 0x80580000; // status_codes.rs:168
 }
 
 /// MessageSecurityMode enum values (enums.rs:856-861, Int32-encoded):
@@ -181,7 +182,17 @@ class _SessionState {
   bool activated = false;
   bool closed = false;
 
-  _SessionState({required this.sessionId, required this.authToken});
+  /// The server nonce issued in this session's CreateSessionResponse (the
+  /// secure channel's own server nonce, or null on a None channel). Task 3's
+  /// ActivateSession `clientSignature` verification signs over
+  /// `serverCertificateDer ++ serverNonce` using exactly this value.
+  final Uint8List? createSessionServerNonce;
+
+  _SessionState({
+    required this.sessionId,
+    required this.authToken,
+    this.createSessionServerNonce,
+  });
 }
 
 /// One instance per connection. Feed it inbound bytes via [onBytes]; it
@@ -1037,8 +1048,8 @@ class OpcUaServerSession {
     reader.string(); // serverUri
     final endpointUrl = reader.string();
     reader.string(); // sessionName
-    reader.byteString(); // clientNonce
-    reader.byteString(); // clientCertificate
+    final clientNonce = reader.byteString(); // clientNonce
+    final clientCertDer = reader.byteString(); // clientCertificate
     final requestedTimeout = reader.float64();
     reader.uint32(); // maxResponseMessageSize — ignored.
 
@@ -1048,7 +1059,12 @@ class OpcUaServerSession {
 
     final sessionId = OpcNodeId.numeric(1, _nextSessionNumericId++);
     final authToken = OpcNodeId.numeric(1, _nextAuthTokenNumericId++);
-    _session = _SessionState(sessionId: sessionId, authToken: authToken);
+    final secureChannel = _channelSecured ? _secureChannel : null;
+    _session = _SessionState(
+      sessionId: sessionId,
+      authToken: authToken,
+      createSessionServerNonce: secureChannel?.serverNonce,
+    );
 
     final revisedTimeout = _boundSessionTimeout(requestedTimeout);
 
@@ -1063,11 +1079,14 @@ class OpcUaServerSession {
     // the two only agree if we echo the channel's server nonce here. A None
     // channel keeps both null exactly as before (the pre-security byte layout).
     //
-    // The `serverSignature` (a SignatureData over clientCert ++ clientNonce)
-    // stays null: the Rust client's verification of it is a documented no-op
-    // (a TODO in its `process_create_session_response`), and v1 does not target
-    // clients that enforce it — see docs/protocols/OPCUA.md "Known limitations".
-    final secureChannel = _channelSecured ? _secureChannel : null;
+    // The `serverSignature` is a SignatureData proving this server holds the
+    // private key for the certificate it advertised: on a SECURED channel with
+    // a client-supplied clientCertificate + clientNonce it is the server key's
+    // RSA-PKCS1-SHA256 signature over `clientCertificateDer ++ clientNonce`
+    // (algorithm [kRsaSha256SignatureUri]) — the value a strict client (and the
+    // Task 3 ActivateSession path) checks. On a None channel — or when the
+    // request omits the clientCertificate/clientNonce — both SignatureData
+    // fields stay null, byte-identical to the pre-security layout.
     final w = OpcUaWriter();
     w.nodeId(const OpcNodeId.numeric(0, _Ids.createSessionResponse));
     w.responseHeader(_respond(header));
@@ -1079,8 +1098,14 @@ class OpcUaServerSession {
     _writeEndpoints(w); // serverEndpoints
     w.int32(-1); // serverSoftwareCertificates: null array
     // SignatureData (signature_data.rs): algorithm String, signature ByteString.
-    w.string(null);
-    w.byteString(null);
+    if (secureChannel != null && clientCertDer != null && clientNonce != null) {
+      final signed = Uint8List.fromList(<int>[...clientCertDer, ...clientNonce]);
+      w.string(kRsaSha256SignatureUri);
+      w.byteString(secureChannel.signApplicationData(signed));
+    } else {
+      w.string(null);
+      w.byteString(null);
+    }
     w.uint32(0); // maxRequestMessageSize
     return [_wrapMsgResponse(chunk, w.take())];
   }
@@ -1126,9 +1151,31 @@ class OpcUaServerSession {
       );
     }
 
-    // clientSignature: SignatureData.
-    reader.string(); // algorithm
-    reader.byteString(); // signature
+    // clientSignature: SignatureData. On a SECURED channel the client MUST
+    // sign `serverCertificate ++ serverNonce` (the values it received in
+    // CreateSessionResponse) with its own certificate's private key, proving
+    // possession of that key. Verify it before the identity-token auth.
+    reader.string(); // clientSignature.algorithm
+    final clientSig = reader.byteString(); // clientSignature.signature
+    if (_channelSecured) {
+      final nonce = _session!.createSessionServerNonce;
+      final chan = _secureChannel;
+      final serverCert = serverCertificateDer;
+      if (clientSig == null ||
+          clientSig.isEmpty ||
+          nonce == null ||
+          chan == null ||
+          serverCert == null ||
+          !chan.verifyClientSignature(
+              Uint8List.fromList(<int>[...serverCert, ...nonce]),
+              Uint8List.fromList(clientSig))) {
+        return _fault(
+          chunk,
+          requestHandle: header.requestHandle,
+          serviceResult: OpcUaStatusCodes.badApplicationSignatureInvalid,
+        );
+      }
+    }
     _skipArrayOfStrings(reader); // clientSoftwareCertificates (SignedSoftwareCertificate[])
     _skipArrayOfStrings(reader); // localeIds
     // userIdentityToken: ExtensionObject. Recognize AnonymousIdentityToken

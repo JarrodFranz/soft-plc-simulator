@@ -489,6 +489,19 @@ void main() {
     );
     expect(channel.lastServerNonce, equals(serverNonce));
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('signApplicationData produces a signature that verifies with the '
+      'server public key', () {
+    final channel = OpcSecureChannel(
+      keyPair: serverKp,
+      certificateDer: serverCertDer,
+    );
+    final data = Uint8List.fromList(<int>[1, 2, 3, 4, 5]);
+    final sig = channel.signApplicationData(data);
+    expect(rsaPkcs1Sha256Verify(serverKp.publicKey, data, sig), isTrue);
+    // Signed with the SERVER key: the client public key must NOT verify it.
+    expect(rsaPkcs1Sha256Verify(clientKp.publicKey, data, sig), isFalse);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 }
 
 /// Client-side mirror of the server's symmetric sign+encrypt (SignAndEncrypt),

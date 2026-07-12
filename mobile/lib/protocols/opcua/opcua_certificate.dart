@@ -11,9 +11,12 @@
 //
 // The reference `CertificateStore` validation (certificate_store.rs) enforces
 // only: key length (needs the public key), validity times, an optional
-// hostname, and the ApplicationUri SubjectAltName. It does NOT inspect
-// keyUsage / extendedKeyUsage, so those extensions (present in x509.rs) are
-// intentionally omitted here to keep the DER minimal and unambiguous.
+// hostname, and the ApplicationUri SubjectAltName. Stricter OPC UA clients
+// (Ignition / Milo / .NET), however, reject an application-instance cert that
+// lacks KeyUsage / ExtendedKeyUsage, so — mirroring x509.rs — the cert also
+// carries KeyUsage (critical: digitalSignature, nonRepudiation,
+// keyEncipherment, dataEncipherment) and ExtendedKeyUsage (serverAuth,
+// clientAuth).
 //
 // Pure Dart: imports ONLY asn1lib, the Task-1 crypto primitives and
 // dart:typed_data (no dart:io / Flutter), and is dart2js / web safe.
@@ -34,6 +37,10 @@ const String _oidRsaEncryption = '1.2.840.113549.1.1.1';
 const String _oidSha256WithRsaEncryption = '1.2.840.113549.1.1.11';
 const String _oidCommonName = '2.5.4.3';
 const String _oidSubjectAltName = '2.5.29.17';
+const String _oidKeyUsage = '2.5.29.15';
+const String _oidExtendedKeyUsage = '2.5.29.37';
+const String _oidServerAuth = '1.3.6.1.5.5.7.3.1';
+const String _oidClientAuth = '1.3.6.1.5.5.7.3.2';
 
 // Context-specific / tagged BER identifier octets.
 const int _tagVersionExplicit = 0xA0; // [0] EXPLICIT (constructed)
@@ -214,9 +221,38 @@ ASN1Sequence _buildName(String commonName) {
   return ASN1Sequence()..add(rdn);
 }
 
-/// Builds the [3] EXPLICIT Extensions field carrying a single SubjectAltName
-/// extension: GeneralNames { uniformResourceIdentifier [6] = [applicationUri] }.
+/// Builds the [3] EXPLICIT Extensions field. Mirrors the application-instance
+/// certificate of `crypto/x509.rs`, carrying (in order):
+///   1. KeyUsage (critical) — digitalSignature, nonRepudiation,
+///      keyEncipherment, dataEncipherment;
+///   2. ExtendedKeyUsage — serverAuth + clientAuth;
+///   3. SubjectAltName — uniformResourceIdentifier [6] = [applicationUri].
+///
+/// Each Extension is `SEQUENCE { extnID OID, [critical BOOLEAN,] extnValue
+/// OCTET STRING }` (RFC 5280 §4.1.2.9); the extnValue OCTET STRING wraps the
+/// DER of the extension-specific value.
 ASN1Object _buildExtensions(String applicationUri) {
+  // KeyUsage ::= BIT STRING. digitalSignature(0), nonRepudiation(1),
+  // keyEncipherment(2), dataEncipherment(3) → the single value byte 0xF0
+  // with 4 unused (trailing) bits, i.e. DER `03 02 04 F0`.
+  final keyUsageBits = ASN1BitString(
+    const <int>[0xF0],
+    unusedbits: 4,
+  );
+  final keyUsage = ASN1Sequence()
+    ..add(ASN1ObjectIdentifier.fromComponentString(_oidKeyUsage))
+    ..add(ASN1Boolean(true)) // critical
+    ..add(ASN1OctetString(keyUsageBits.encodedBytes));
+
+  // ExtKeyUsageSyntax ::= SEQUENCE OF KeyPurposeId (OIDs); non-critical, so the
+  // BOOLEAN is omitted (DEFAULT FALSE).
+  final ekuOids = ASN1Sequence()
+    ..add(ASN1ObjectIdentifier.fromComponentString(_oidServerAuth))
+    ..add(ASN1ObjectIdentifier.fromComponentString(_oidClientAuth));
+  final extendedKeyUsage = ASN1Sequence()
+    ..add(ASN1ObjectIdentifier.fromComponentString(_oidExtendedKeyUsage))
+    ..add(ASN1OctetString(ekuOids.encodedBytes));
+
   final uriGeneralName = ASN1Object.preEncoded(
     _tagUriGeneralName,
     Uint8List.fromList(applicationUri.codeUnits),
@@ -225,7 +261,11 @@ ASN1Object _buildExtensions(String applicationUri) {
   final subjectAltName = ASN1Sequence()
     ..add(ASN1ObjectIdentifier.fromComponentString(_oidSubjectAltName))
     ..add(ASN1OctetString(generalNames.encodedBytes));
-  final extensionSequence = ASN1Sequence()..add(subjectAltName);
+
+  final extensionSequence = ASN1Sequence()
+    ..add(keyUsage)
+    ..add(extendedKeyUsage)
+    ..add(subjectAltName);
   return ASN1Object.preEncoded(
     _tagExtensionsExplicit,
     extensionSequence.encodedBytes,
