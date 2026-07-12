@@ -743,11 +743,17 @@ void main() {
       final sessionId = reader.nodeId();
       final authToken = reader.nodeId();
       final revisedTimeout = reader.float64();
+      // Task 7 regression guard: on a None channel BOTH must stay null —
+      // the byte-identical pre-security layout.
+      final serverNonce = reader.byteString();
+      final serverCertificate = reader.byteString();
 
       expect(sessionId, isNotNull);
       expect(authToken, isNotNull);
       expect(revisedTimeout, lessThanOrEqualTo(3600000));
       expect(revisedTimeout, greaterThanOrEqualTo(10000));
+      expect(serverNonce, isNull);
+      expect(serverCertificate, isNull);
     });
 
     test('Task 2 endpoint echo: CreateSessionResponse advertises the CLIENT-dialed host', () {
@@ -1609,13 +1615,34 @@ void main() {
       final csReader = OpcUaReader(csRespBody);
       csReader.nodeId();
       csReader.responseHeader();
+      csReader.nodeId(); // sessionId
       final authToken = csReader.nodeId();
+      csReader.float64(); // revisedSessionTimeout
+      // Task 7 regression guard: on a SECURED channel the response MUST echo
+      // a non-null serverNonce (== the secure channel's OWN server nonce —
+      // the same value [OpcSecureChannel.decryptUserPassword] verifies
+      // against below) and a non-null serverCertificate (== the app cert DER
+      // injected into the session). Reverting the fix to null/null here
+      // would leave everything else in this test green — only these two
+      // field-level assertions (and the nonce actually being used, right
+      // below) catch that regression.
+      final echoedServerNonce = csReader.byteString();
+      final echoedServerCertificate = csReader.byteString();
+      expect(echoedServerNonce, isNotNull);
+      expect(echoedServerNonce, isNotEmpty);
+      expect(echoedServerNonce, equals(channel.serverNonce));
+      expect(echoedServerNonce, equals(serverNonce));
+      expect(echoedServerCertificate, isNotNull);
+      expect(echoedServerCertificate, equals(serverCertDer));
 
       // --- Secured ActivateSession with an ENCRYPTED UserNameIdentityToken ---
+      // Encrypt the password using the nonce READ FROM THE RESPONSE (not the
+      // pre-known [serverNonce] constant) — proving the end-to-end nonce
+      // echo is what actually authenticates, not a coincidental match.
       final encPassword = _legacyPasswordEncryptSession(
         serverPub: serverKp.publicKey,
         password: 's3cret',
-        serverNonce: serverNonce,
+        serverNonce: Uint8List.fromList(echoedServerNonce!),
       );
       final tokenWriter = OpcUaWriter();
       tokenWriter.string('username');
