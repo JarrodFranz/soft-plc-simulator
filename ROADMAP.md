@@ -125,8 +125,9 @@
 - **Deliverables**:
   - Pure-Dart IEEE 1815 data-link (CRC-16/DNP, `0x0564` framing) + transport (segment reassembly) + application (object headers, static/control object codecs) layers. ✅
   - Outstation handler: Class 0 grouped-read (4 point types, force-aware), SELECT/OPERATE/DIRECT_OPERATE control (CROB + Analog Output Block), force-aware control rejection, g80v1 restart-clear. ✅
+  - **Event classes + unsolicited reporting** ✅ — per-point event Class 0/1/2/3, per-class bounded ring buffers with force-aware change detection, g2v2/g32v3/g32v7 events (48-bit absolute time), solicited Class 1/2/3 polls (CON + flush-on-CONFIRM), unsolicited responses (ENABLE/DISABLE fc20/21, CONFIRM + retry via `unsolConfirmTimeoutMs`/`unsolMaxRetries`/`eventBufferPerClass`), IIN class-available/overflow bits, and the DNP3-card event-Class dropdown.
   - `dart:io` TCP host (`DnpHost`) + Outbound Protocols card (hosting controls, link-address config, point map editor). ✅
-- **Status**: ✅ **SHIPPED — in-app pure-Dart DNP3 outstation v1 (`DnpHost`, `mobile/lib/services/dnp3_host.dart`), machine-verified end-to-end against a REAL third-party DNP3 master (Step Function I/O's `dnp3` crate, `tool/dnp3_e2e.sh`) — Class 0 poll, forced-value read, forced-tag control rejection, DIRECT_OPERATE, and SELECT/OPERATE all confirmed over the real wire (see `docs/protocols/DNP3.md`)**
+- **Status**: ✅ **SHIPPED — in-app pure-Dart DNP3 outstation v1 (`DnpHost`, `mobile/lib/services/dnp3_host.dart`), machine-verified end-to-end against a REAL third-party DNP3 master (Step Function I/O's `dnp3` crate, `tool/dnp3_e2e.sh`) — Class 0 poll, forced-value read, forced-tag control rejection, DIRECT_OPERATE, SELECT/OPERATE, plus solicited Class 1/2/3 event polls and outstation-initiated unsolicited events all confirmed over the real wire (`DNP3 EVENTS PROBE PASS`; see `docs/protocols/DNP3.md`)**
 
 ---
 

@@ -14,7 +14,8 @@ electric utility, water/wastewater, or SCADA head-end software — connects
 a DNP3 master  --TCP/20000 (0x0564 link frames)-->  the app itself
 (SCADA head-end,                                    - owns the tag DB
  an RTU test tool,                                  - answers Class 0 reads
- dnp3.exe, ...)                                     - force-aware
+ dnp3.exe, ...)                                     - Class 1/2/3 events + unsolicited
+                                                     - force-aware
                                                      - SELECT/OPERATE/DIRECT_OPERATE control
 ```
 
@@ -59,20 +60,100 @@ Modbus/OPC UA/MQTT adapters' scalar-only scope).
 
 ## Class 0 integrity polling
 
-Every READ request (regardless of which specific objects/qualifiers it
-names) is answered with a full **Class 0** grouped scan: one object header
-per (point type, variation) bucket present in the map, covering that
-bucket's index range with any gap index zero/offline-filled. This v1
-outstation does not support scoped reads (a single-point read, an
-event-class-specific poll, or `g60v*` event-class objects) — see "v1 scope"
-below. A master's conventional "integrity poll" (`g60v1`/Class 0 read) is
-the intended and fully-supported use case.
+A READ that names no class objects, or explicitly names `g60v1` (Class 0),
+is answered with a full **Class 0** grouped scan: one object header per
+(point type, variation) bucket present in the map, covering that bucket's
+index range with any gap index zero/offline-filled. A master's conventional
+"integrity poll" (`g60v1`/Class 0 read) is the intended and fully-supported
+use case. A READ that additionally names `g60v2`/`g60v3`/`g60v4` (Class
+1/2/3) also appends any buffered events for those classes — see "Event
+classes, events, and unsolicited reporting" below.
 
 Every static object's flags byte carries `ONLINE` (bit 0); a forced point's
 value is read through the same force-aware `readPath` resolver the scan
 engine, OPC UA server, Modbus register handler, and MQTT publisher all
 share — a forced tag's Class 0 value always reflects its **forced** value,
 never its live underlying value.
+
+## Event classes, events, and unsolicited reporting
+
+Each **input** point (`binaryInput`/`analogInput`) carries a per-point
+**event class** in `{0, 1, 2, 3}`, editable on the point-map row (the DNP3
+card's event-Class dropdown) and stored as the additive `event_class` field
+on each map entry:
+
+- **0** (default, and the back-compatible behavior) — static-only: the point
+  never generates events; it is reported only via Class 0. Output points are
+  always effectively class 0 (they don't generate events in v1).
+- **1 / 2 / 3** — the point's changes are captured into event Class 1 / 2 / 3.
+
+A periodic tick (the host's ~500 ms `tickForTest`; ~300 ms in the E2E
+fixture) runs force-aware **change detection**: each participating point's
+current value (via the same `readPath` resolver, so forced values win) is
+compared to its last-reported value, and any change appends one event to
+that point's class buffer. The **first** observation of a point records its
+baseline without emitting (so startup does not flood).
+
+**Event objects** carry the point's own index (qualifier `0x28`: 2-byte
+count + a 2-byte index prefix per point) and a **48-bit absolute timestamp**
+(ms since the DNP3 epoch), grouped by type:
+
+| Event | Object | Notes |
+|---|---|---|
+| Binary Input event | **g2v2** | with absolute time |
+| Analog Input event (int) | **g32v3** | 32-bit, with absolute time |
+| Analog Input event (float) | **g32v7** | single-precision, with absolute time |
+
+**Per-class ring buffers** are bounded (`event_buffer_per_class`, default
+200). When a class buffer is full the oldest event is dropped and the
+**event-buffer-overflow** IIN2 bit (bit 3) is set on responses until the
+buffer drains and a CONFIRM clears it.
+
+**Solicited Class 1/2/3 polls.** A READ naming `g60v2`/`g60v3`/`g60v4`
+returns the buffered events for those classes, appended after the static
+scan if Class 0 was also named. When events are present the response sets
+the application **CON** bit, asking the master to CONFIRM; the events are
+**flushed** (removed from the buffer) only when a matching CONFIRM (same
+application sequence) arrives. A response whose events are never confirmed
+keeps them buffered — they are **deferred, not lost**, and re-reported on
+the next poll.
+
+**Unsolicited reporting.** A master enables/disables unsolicited event
+reporting per class with **ENABLE_UNSOLICITED** (fc 20) / **DISABLE_
+UNSOLICITED** (fc 21), each naming classes via `g60v2/v3/v4`. On enable, the
+outstation queues a one-shot **null unsolicited** announcement (fc 130, no
+objects) — the standard "I am now reporting" signal. Thereafter, when a
+change produces events for an enabled class, the outstation pushes an
+**unsolicited response** (fc 130, `UNS`+`CON`) carrying those events and
+waits for the master's CONFIRM:
+
+- On CONFIRM (matching the unsolicited application sequence), the carried
+  events are flushed and the sequence advances.
+- If no CONFIRM arrives within `unsol_confirm_timeout_ms` (default 5000),
+  the host **retries** the exact same fragment, up to `unsol_max_retries`
+  (default 3) times, then gives up (`failUnsolicited`) — the events stay
+  buffered (sequence unchanged) and are retried on the next change/tick.
+
+**IIN bits.** IIN1 bits 1/2/3 (**Class 1/2/3 events available**) are set
+whenever the corresponding class buffer is non-empty, so even a
+static-only master learns events are waiting. IIN2 bit 3
+(**event-buffer-overflow**) reports a dropped-event overflow as above.
+
+### v1 event simplifications
+
+- **Any-change events, no deadband** — every value change emits an event;
+  there is no analog deadband/threshold (a v2 refinement).
+- **Timestamps are always absolute** (g2v2/g32v3/g32v7, 48-bit time); the
+  relative/no-time event variations are not emitted.
+- **Unsolicited is broadcast to every connected master**, from one shared
+  outstation, rather than tracked per-master. A typical DNP3 TCP deployment
+  has exactly one master connected, so this is a simplification, not a
+  behavioral gap in practice.
+- **Single-slot solicited pending-flush** — one solicited event batch awaits
+  its CONFIRM at a time; an un-confirmed batch's events are deferred (kept
+  buffered and re-reported), never silently lost.
+- Only `binaryInput`/`analogInput` generate events; counters and
+  double-bit-binary event objects are out of scope (see "v1 scope").
 
 ## Control: SELECT / OPERATE / DIRECT_OPERATE
 
@@ -129,25 +210,26 @@ A forced tag's value:
 
 **v1 delivers:** a full data-link (CRC-16/DNP, `0x0564` framing) + transport
 (segment reassembly) + application layer (object headers, Class 0 grouped
-reads, SELECT/OPERATE/DIRECT_OPERATE control) DNP3 outstation over plain
-TCP, 4 point types (Binary Input, Binary Output, Analog Input, Analog
-Output) with their conventional static/control object variations, force-
-aware reads and force-aware control rejection, configurable outstation/
-master link addresses, and the auto-map/manual-map editor described above.
+reads, Class 1/2/3 event polls, unsolicited event reporting,
+SELECT/OPERATE/DIRECT_OPERATE control) DNP3 outstation over plain TCP, 4
+point types (Binary Input, Binary Output, Analog Input, Analog Output) with
+their conventional static/control object variations, per-point event classes
+(Class 1/2/3, g2v2/g32v3/g32v7 events with 48-bit absolute time) plus
+solicited and unsolicited event reporting, force-aware reads and force-aware
+control rejection, configurable outstation/master link addresses, and the
+auto-map/manual-map editor described above.
 
 **Deferred (v2+):**
-- **Unsolicited responses** — this outstation only ever answers a request;
-  it never spontaneously reports a change.
-- **Event classes / event buffers** (Class 1/2/3, g2/g4/g11/g22/g32/g42
-  event objects) — only the current (static) value is ever reported, via
-  Class 0.
-- **Scoped/single-point reads** — every READ is answered as a full Class 0
-  scan regardless of the specific objects/qualifiers requested.
-- **Counters** (g20/g22) — not a supported point type in v1.
+- **Analog deadbands** — events fire on *any* change; there is no
+  deadband/threshold to suppress small analog fluctuations.
+- **Relative/no-time event variations** — only the absolute-time event
+  objects (g2v2/g32v3/g32v7) are emitted.
+- **Counter and double-bit-binary events** (g20/g22/g4) — counters and
+  double-bit binaries are not supported point types in v1.
 - **Time synchronization** (`DELAY_MEASUREMENT`/`RECORD_CURRENT_TIME`/WRITE
   g50) — not implemented; a master's automatic time-sync procedure will not
-  receive the responses it expects (see the E2E probe's note on disabling
-  a master's default automatic task sequence against this outstation).
+  receive the responses it expects. (Event timestamps are the outstation's
+  own absolute wall-clock, not master-synchronized.)
 - **Timed CROB pulses** — `PULSE_ON`/`PULSE_OFF` behave identically to
   `LATCH_ON`/`LATCH_OFF` (an immediate, permanent set), not a timed
   on-then-revert.
@@ -172,11 +254,17 @@ master link addresses, and the auto-map/manual-map editor described above.
 - The outstation handler: Class 0 grouped-read construction (run
   coalescing, gap-filling, mixed int/float Analog buckets), force-aware
   reads, SELECT/OPERATE matching and expiry, DIRECT_OPERATE, force-aware
-  control rejection, unmapped/unsupported-object handling, and the g80v1
-  restart-clear WRITE — `mobile/test/dnp3_outstation_test.dart`.
+  control rejection, unmapped/unsupported-object handling, the g80v1
+  restart-clear WRITE, Class 1/2/3 event reads (CON + flush-on-CONFIRM),
+  ENABLE/DISABLE_UNSOLICITED, and the unsolicited take/confirm/fail API —
+  `mobile/test/dnp3_outstation_test.dart`.
+- The event engine: per-class ring buffers, force-aware change detection,
+  baseline-without-emit, overflow/drop-oldest, and the g2v2/g32v3/g32v7
+  48-bit-time event encoders — `mobile/test/dnp3_events_test.dart`.
 - The `dart:io` socket host (start/stop lifecycle, link-frame dispatch over
   a real loopback socket, destination-address filtering, malformed/hostile-
-  frame connection isolation) — `mobile/test/dnp3_host_test.dart`.
+  frame connection isolation, and the periodic change-detection tick +
+  unsolicited push/CONFIRM/retry loop) — `mobile/test/dnp3_host_test.dart`.
 - Additive persistence: the new `protocols.dnp3` key round-trips
   end-to-end alongside the unchanged `opcua`/`modbus`/`mqtt`/`gatewayUrl`
   keys — `mobile/test/protocol_settings_test.dart`,
@@ -210,6 +298,17 @@ transitively needs `dart:ui`) and:
    *that* value landed too — proving the outstation's byte-identical
    SELECT/OPERATE object-matching logic against a real master's two-pass
    command sequence, not just DIRECT_OPERATE's single-pass path.
+5. Polls **Class 1/2/3 events** (`g60v2/v3/v4`) in a bounded loop against two
+   dedicated, fixture-driven event points (a Class 1 `binaryInput` flipped
+   and a Class 2 `analogInput` incremented every ~1 s), and asserts the
+   master receives at least one **g2 binary event** and one **g32 analog
+   event** — proving change detection, the per-class event buffers, and the
+   solicited Class-read + CON/CONFIRM-flush path against a real master.
+6. Brings up a second master association configured to **ENABLE unsolicited**
+   for Class 1/2/3 during startup, and asserts it receives outstation-
+   **initiated** unsolicited g2/g32 events (captured via the crate's
+   `ReadType::Unsolicited`), which the `dnp3` crate auto-CONFIRMs — proving
+   the unsolicited enable → push → CONFIRM path end to end.
 
 Run it from the repo root (bash/Git Bash):
 
@@ -223,18 +322,26 @@ before running the Rust master probe as the client). A successful run ends
 with:
 
 ```
-DNP3 PROBE PASS
+DNP3 EVENTS PROBE PASS
 ```
+
+If the environment can't run the live Rust master (no `cargo` on PATH, or
+the `dnp3` crate can't be fetched/built offline), the script does **not**
+fake a pass: it compile-checks the probe (`cargo build --example
+dnp3_probe`), runs the Dart unit suite as the in-process proof, and reports
+the live-master leg as **SKIPPED** with the reason, exiting on the unit
+suite's result.
 
 **Requires a human with a real master (manual, documented here, not
 automatable in CI):**
 - Pointing the app at a real SCADA head-end or RTU test tool over a real
   network, to confirm reachability/firewall behavior beyond `127.0.0.1`.
-- Confirming a master's automatic time-synchronization or unsolicited-
-  response-enabling handshake degrades gracefully against this outstation
-  (v1 implements neither — see "v1 scope" above); the E2E probe above
-  deliberately configures its own master association to skip that default
-  automatic sequence rather than exercise it.
+- Confirming a master's automatic time-synchronization handshake degrades
+  gracefully against this outstation (v1 does not implement time sync — see
+  "v1 scope" above); the E2E probe's static/control leg deliberately
+  configures its own master association to skip that default automatic
+  sequence, while its unsolicited leg does exercise the real
+  disable → integrity-scan → enable-unsolicited startup handshake.
 
 ## Out of scope / positioning
 
@@ -242,7 +349,7 @@ This is a **simulator/training tool, not a safety-certified or
 conformance-tested product**. The outstation implementation targets DNP3
 master *compatibility* (a real third-party master library, real SCADA
 head-ends), not formal DNP3 Conformance Test Procedure certification. Do
-not use it to control real safety-critical equipment. Unsolicited
-responses, event classes, counters, time synchronization, timed CROB
+not use it to control real safety-critical equipment. Analog deadbands,
+relative-time event variations, counters, time synchronization, timed CROB
 pulses, serial/UDP transport, and data-link confirmation are not
 implemented (see "v1 scope" above).
