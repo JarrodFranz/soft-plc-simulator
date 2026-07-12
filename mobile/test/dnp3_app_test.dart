@@ -426,6 +426,26 @@ void main() {
       expect(getDnpTime48(bytes, 5), 2000);
     });
 
+    test('g11v2 binary output event = same bytes as g2v2', () {
+      final a = encodeG11V2(value: true, flags: DnpFlags.online, timeMs: 1000);
+      final b = encodeG2V2(value: true, flags: DnpFlags.online, timeMs: 1000);
+      expect(a, b);
+      expect(a.length, 7);
+      expect(a[0], 0x81); // online | state
+    });
+    test('g42v3 analog output int event = same bytes as g32v3', () {
+      final a = encodeG42V3(value: 0x11223344, flags: DnpFlags.online, timeMs: 1000);
+      final b = encodeG32V3(value: 0x11223344, flags: DnpFlags.online, timeMs: 1000);
+      expect(a, b);
+      expect(a.length, 11);
+    });
+    test('g42v7 analog output float event = same bytes as g32v7', () {
+      final a = encodeG42V7(value: 1.5, flags: DnpFlags.online, timeMs: 2000);
+      final b = encodeG32V7(value: 1.5, flags: DnpFlags.online, timeMs: 2000);
+      expect(a, b);
+      expect(a.length, 11);
+    });
+
     test('48-bit time survives a value above 2^32 (dart2js-safe)', () {
       const t = 1893456000000; // ~2030, exceeds 32 bits
       final bytes = encodeG2V2(value: false, flags: 0, timeMs: t);

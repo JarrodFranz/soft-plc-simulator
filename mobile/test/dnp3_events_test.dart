@@ -162,4 +162,73 @@ void main() {
     eng.detectChanges(project, map, 1000);
     expect(eng.pull({1}).single.boolValue, isTrue);
   });
+
+  // A Class-1 binaryOutput change appends exactly one binary output event.
+  test('class 1 binaryOutput change -> one binary output event', () {
+    final project = _buildProject({'Motor': ('BOOL', 'Internal', false)});
+    final map = DnpMap(entries: [
+      DnpMapEntry(tag: 'Motor', pointType: 'binaryOutput', index: 0, eventClass: 1),
+    ]);
+    final eng = DnpEventEngine();
+    eng.detectChanges(project, map, 0); // baseline, no event
+    expect(eng.hasAnyEvents, isFalse);
+    _setTag(project, 'Motor', true);
+    eng.detectChanges(project, map, 1000);
+    final events = eng.pull({1});
+    expect(events.length, 1);
+    expect(events.single.isBinary, isTrue);
+    expect(events.single.pointType, 'binaryOutput');
+    expect(events.single.boolValue, isTrue);
+    expect(events.single.index, 0);
+  });
+
+  // A Class-2 analogOutput change appends an analog event with the new value.
+  test('class 2 analogOutput change -> analog output event with value + time', () {
+    final project = _buildProject({'Setpoint': ('INT32', 'Internal', 1000)});
+    final map = DnpMap(entries: [
+      DnpMapEntry(tag: 'Setpoint', pointType: 'analogOutput', index: 0, eventClass: 2),
+    ]);
+    final eng = DnpEventEngine();
+    eng.detectChanges(project, map, 0);
+    _setTag(project, 'Setpoint', 1234);
+    eng.detectChanges(project, map, 5);
+    final events = eng.pull({2});
+    expect(events.length, 1);
+    expect(events.single.isBinary, isFalse);
+    expect(events.single.isFloat, isFalse);
+    expect(events.single.intValue, 1234);
+    expect(events.single.pointType, 'analogOutput');
+  });
+
+  // Class 0 output generates no events.
+  test('class 0 output generates no events', () {
+    final project = _buildProject({'Motor': ('BOOL', 'Internal', false)});
+    final map = DnpMap(entries: [
+      DnpMapEntry(tag: 'Motor', pointType: 'binaryOutput', index: 0, eventClass: 0),
+    ]);
+    final eng = DnpEventEngine();
+    eng.detectChanges(project, map, 0);
+    _setTag(project, 'Motor', true);
+    eng.detectChanges(project, map, 1);
+    expect(eng.hasAnyEvents, isFalse); // class 0 = no events
+  });
+
+  // Force-aware: a forced binaryOutput's forced value is what gets captured,
+  // exactly like forced inputs (mirrors 'forced input captures forced value').
+  test('forced output captures forced value', () {
+    final project = _buildProject({'Motor': ('BOOL', 'Internal', false)});
+    final map = DnpMap(entries: [
+      DnpMapEntry(tag: 'Motor', pointType: 'binaryOutput', index: 0, eventClass: 1),
+    ]);
+    final eng = DnpEventEngine();
+    eng.detectChanges(project, map, 0); // baseline, no event
+    expect(eng.hasAnyEvents, isFalse);
+    _forceTag(project, 'Motor', true); // force overrides the live value
+    eng.detectChanges(project, map, 1000);
+    final events = eng.pull({1});
+    expect(events.length, 1);
+    expect(events.single.isBinary, isTrue);
+    expect(events.single.pointType, 'binaryOutput');
+    expect(events.single.boolValue, isTrue);
+  });
 }

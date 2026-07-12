@@ -1977,11 +1977,16 @@ class _GatewayScreenState extends State<GatewayScreen> {
               widget.onProjectUpdated();
             },
           );
-          // Event Class assignment only applies to INPUT points (their
-          // changes can be captured into a Class 1/2/3 event buffer);
-          // output points are write targets with no event semantics.
-          final isInputPoint = entry.pointType == 'binaryInput' || entry.pointType == 'analogInput';
-          final Widget eventClassField = isInputPoint
+          // Event Class assignment applies to all four DNP3 point types:
+          // input changes and output-command changes can both be captured
+          // into a Class 1/2/3 event buffer (g2/g32 for inputs, g11/g42 for
+          // outputs). Keep this as an explicit flag so a future point type
+          // with no event semantics can still be excluded.
+          final supportsEvents = entry.pointType == 'binaryInput' ||
+              entry.pointType == 'binaryOutput' ||
+              entry.pointType == 'analogInput' ||
+              entry.pointType == 'analogOutput';
+          final Widget eventClassField = supportsEvents
               ? DropdownButtonFormField<int>(
                   key: const Key('dnp_event_class_dropdown'),
                   initialValue: entry.eventClass,

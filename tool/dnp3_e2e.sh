@@ -6,7 +6,8 @@
 # gateway/examples/dnp3_probe.rs) against it -- Class 0 integrity poll,
 # DIRECT_OPERATE CROB + analog-output-block, re-poll, forced-tag rejection,
 # solicited Class 1/2/3 EVENT poll, and outstation-initiated UNSOLICITED
-# events. Kills the Dart host unconditionally on exit and propagates the
+# events -- covering BOTH input (g2/g32) AND output (g11/g42) change events.
+# Kills the Dart host unconditionally on exit and propagates the
 # probe's exit code. Mirrors `tool/modbus_e2e.sh` (server-role Dart fixture
 # started first; the Rust binary is the client dialing in).
 #

@@ -51,14 +51,21 @@
 //     eventClass 1 -- a DEDICATED, change-driven event point (Task 6).
 //   - `SimulatedAnalog` : INT32, SimulatedInput -> analogInput index 2,
 //     eventClass 2 -- a DEDICATED, change-driven event point (Task 6).
+//   - `SimulatedBinaryOut` : BOOL, Internal -> binaryOutput index 1,
+//     eventClass 3 -- a DEDICATED, change-driven OUTPUT event point (Task 3
+//     output events): its changes surface as g11v2 (binary output) events.
+//   - `SimulatedAnalogOut` : INT32, Internal -> analogOutput index 1,
+//     eventClass 3 -- a DEDICATED, change-driven OUTPUT event point (Task 3
+//     output events): its changes surface as g42v3 (analog output int) events.
 //
-// The two dedicated event points are flipped/incremented on a ~1 s timer
+// The four dedicated event points are flipped/incremented on a ~1 s timer
 // (`changeTimer` in `main`), and a ~300 ms `tickTimer` runs the same
 // change-detection + unsolicited push/retry loop `DnpHost.tickForTest` uses
 // (see `_UnsolDriver`) -- so a real master driving solicited Class 1/2/3
-// polls, or enabling unsolicited reporting, observes those changes as g2/g32
-// events. The original five points above are NEVER mutated by the fixture, so
-// every WS26 static/control probe assertion stays valid.
+// polls, or enabling unsolicited reporting, observes those changes as
+// g2/g32 (input) and g11/g42 (output) events. The original five points above
+// are NEVER mutated by the fixture, so every WS26 static/control probe
+// assertion stays valid.
 //
 // Usage: dart run tool/dnp3_host_probe.dart <port>
 import 'dart:async';
@@ -155,6 +162,26 @@ PlcProject _fixtureProject() {
         value: 1000,
         ioType: 'SimulatedInput',
       ),
+      // --- DEDICATED OUTPUT event points (Task 3 output-events E2E) ----------
+      // Two extra, change-driven OUTPUT points the fixture flips/increments on
+      // the same timer so a real master observes changes -> g11 (binary output)
+      // / g42 (analog output) events. ADDITIVE at FRESH output indices: `Motor`
+      // (binaryOutput 0) and `Setpoint` (analogOutput 0) are never mutated, so
+      // every existing static/control probe assertion still holds.
+      PlcTag(
+        name: 'SimulatedBinaryOut',
+        path: 'Internal.SimulatedBinaryOut',
+        dataType: 'BOOL',
+        value: false,
+        ioType: 'Internal',
+      ),
+      PlcTag(
+        name: 'SimulatedAnalogOut',
+        path: 'Internal.SimulatedAnalogOut',
+        dataType: 'INT32',
+        value: 2000,
+        ioType: 'Internal',
+      ),
     ],
     structDefs: [],
     programs: [],
@@ -180,6 +207,13 @@ PlcProject _fixtureProject() {
       // and reported via solicited Class polls and unsolicited responses.
       DnpMapEntry(tag: 'SimulatedBinary', pointType: 'binaryInput', index: 1, eventClass: 1),
       DnpMapEntry(tag: 'SimulatedAnalog', pointType: 'analogInput', index: 2, eventClass: 2),
+      // Dedicated OUTPUT event points at FRESH output indices (binaryOutput 1 /
+      // analogOutput 1) so they never collide with the static Motor/Setpoint
+      // outputs at index 0. eventClass 3 — their changes are captured into
+      // Class 3 and surface as g11v2 (binary output) / g42v3 (analog output int)
+      // events via solicited Class polls and unsolicited responses.
+      DnpMapEntry(tag: 'SimulatedBinaryOut', pointType: 'binaryOutput', index: 1, eventClass: 3),
+      DnpMapEntry(tag: 'SimulatedAnalogOut', pointType: 'analogOutput', index: 1, eventClass: 3),
     ]),
   );
   return project;
@@ -435,9 +469,15 @@ Future<void> main(List<String> args) async {
   // engine's change detection) reads back for these non-forced tags.
   final binTag = project.tags.firstWhere((t) => t.name == 'SimulatedBinary');
   final anaTag = project.tags.firstWhere((t) => t.name == 'SimulatedAnalog');
+  // Dedicated OUTPUT event points — flipped/incremented on the SAME timer so a
+  // connected master keeps observing output changes -> Class 3 g11/g42 events.
+  final binOutTag = project.tags.firstWhere((t) => t.name == 'SimulatedBinaryOut');
+  final anaOutTag = project.tags.firstWhere((t) => t.name == 'SimulatedAnalogOut');
   final changeTimer = Timer.periodic(const Duration(milliseconds: 1000), (_) {
     binTag.value = !(binTag.value == true);
     anaTag.value = (anaTag.value is int ? anaTag.value as int : 1000) + 1;
+    binOutTag.value = !(binOutTag.value == true);
+    anaOutTag.value = (anaOutTag.value is int ? anaOutTag.value as int : 2000) + 1;
   });
 
   // ignore: avoid_print
