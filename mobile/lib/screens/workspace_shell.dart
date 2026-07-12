@@ -19,6 +19,7 @@ import '../services/modbus_host.dart';
 import '../services/mqtt_host.dart';
 import '../services/opcua_host.dart';
 import '../ui/responsive.dart';
+import '../widgets/tag_autocomplete_field.dart';
 import '../widgets/tag_inspector_dock.dart';
 import 'scan_tick.dart';
 import 'st_editor_screen.dart';
@@ -285,6 +286,19 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         _faultCode = 1;
         isRunning = false;
       });
+
+  /// Test-only hook: the currently active project, for asserting on task /
+  /// program state directly without driving dialog UI.
+  @visibleForTesting
+  PlcProject get debugActiveProject => _activeProject;
+
+  /// Test-only hook: appends [t] to the active project's task list.
+  @visibleForTesting
+  void debugAddTask(PlcTask t) => setState(() => _activeProject.tasks.add(t));
+
+  /// Test-only hook: exercises the [_deleteTask] orphan-guard logic directly.
+  @visibleForTesting
+  bool debugDeleteTask(PlcTask t) => _deleteTask(t);
 
   /// (Re)starts a run session: resets the scheduler/engine runtimes and the
   /// per-session scan-time stats, and (re)starts the uptime/free-run clocks.
@@ -991,6 +1005,35 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Program "$progName" deleted')));
   }
 
+  /// Delete [task], unless doing so would leave any of its programs in no
+  /// other task ("orphaned"). Returns true if deleted, false if refused.
+  bool _deleteTask(PlcTask task) {
+    for (final prog in task.programNames) {
+      final elsewhere = _activeProject.tasks.any((t) => t != task && t.programNames.contains(prog));
+      if (!elsewhere) {
+        return false; // 'prog' would be orphaned
+      }
+    }
+    setState(() => _activeProject.tasks.remove(task));
+    _markDirtyAndAutosave();
+    return true;
+  }
+
+  /// Attempts to delete [task] via [_deleteTask]; on refusal, shows a
+  /// SnackBar naming the program that would be left with no task.
+  void _confirmDeleteTask(PlcTask task) {
+    if (_deleteTask(task)) {
+      return;
+    }
+    final orphan = task.programNames.firstWhere(
+      (prog) => !_activeProject.tasks.any((t) => t != task && t.programNames.contains(prog)),
+      orElse: () => '',
+    );
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Can\'t delete — "$orphan" would be left with no task. Assign it elsewhere first.')),
+    );
+  }
+
   void _addNewHmiDashboard() {
     showDialog(
       context: context,
@@ -1691,6 +1734,20 @@ class WorkspaceShellState extends State<WorkspaceShell> {
 
                 const SizedBox(height: 16),
 
+                // Add Task Button
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.add_task, size: 16),
+                  label: const Text('Add Task'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.tealAccent,
+                    side: const BorderSide(color: Colors.tealAccent),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                  ),
+                  onPressed: _showAddTaskDialog,
+                ),
+
+                const SizedBox(height: 8),
+
                 // Add Program Button
                 OutlinedButton.icon(
                   icon: const Icon(Icons.add, size: 16),
@@ -1729,10 +1786,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   }
 
   Widget _buildTaskCategoryFolder(String title, IconData icon, String taskType) {
-    final programsInTaskType = <String>[];
-    for (var task in _activeProject.tasks.where((t) => t.type == taskType)) {
-      programsInTaskType.addAll(task.programNames);
-    }
+    final tasksOfType = _activeProject.tasks.where((t) => t.type == taskType).toList();
+    final programCount = tasksOfType.fold<int>(0, (sum, t) => sum + t.programNames.length);
 
     return Padding(
       padding: const EdgeInsets.only(left: 8, top: 4),
@@ -1743,59 +1798,122 @@ class WorkspaceShellState extends State<WorkspaceShell> {
             children: [
               Icon(icon, size: 14, color: Colors.tealAccent),
               const SizedBox(width: 6),
-              Text('$title (${programsInTaskType.length})', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white70)),
+              Expanded(
+                child: Text(
+                  '$title ($programCount)',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white70),
+                ),
+              ),
             ],
           ),
 
-          if (programsInTaskType.isEmpty)
+          if (tasksOfType.isEmpty)
             const Padding(
               padding: EdgeInsets.only(left: 20, top: 2, bottom: 4),
               child: Text('(none configured)', style: TextStyle(fontSize: 10, color: Colors.grey, fontStyle: FontStyle.italic)),
             )
           else
-            ...programsInTaskType.map((progName) {
-              final prog = _activeProject.programs.firstWhere((p) => p.name == progName, orElse: () => PlcProgram(name: progName, language: 'StructuredText'));
-              final isSelected = _activeViewId == 'PROGRAM:$progName';
-
-              String badgeText = 'ST';
-              Color badgeColor = Colors.blue;
-              if (prog.language == 'LadderLogic') { badgeText = 'LD'; badgeColor = Colors.orange; }
-              if (prog.language == 'FunctionBlockDiagram') { badgeText = 'FBD'; badgeColor = Colors.teal; }
-              if (prog.language == 'SequentialFunctionChart') { badgeText = 'SFC'; badgeColor = Colors.purple; }
-
-              return Container(
-                margin: const EdgeInsets.only(left: 20, top: 2),
-                decoration: BoxDecoration(
-                  color: isSelected ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Material(
-                  color: Colors.transparent,
-                  child: ListTile(
-                    dense: true,
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 6),
-                    leading: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: badgeColor.withValues(alpha: 0.3),
-                        borderRadius: BorderRadius.circular(3),
-                      ),
-                      child: Text(badgeText, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white)),
-                    ),
-                    title: Text(prog.name, style: TextStyle(fontSize: 11, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                      tooltip: 'Delete Program',
-                      onPressed: () => _deleteProgram(prog.name),
-                    ),
-                    onTap: () => _selectView(context, 'PROGRAM:$progName'),
-                  ),
-                ),
-              );
-            }),
+            ...tasksOfType.map(_buildTaskRow),
         ],
+      ),
+    );
+  }
+
+  /// A single task row: task name + enabled indicator + edit/delete
+  /// IconButtons, with its assigned programs listed underneath (indented).
+  Widget _buildTaskRow(PlcTask task) {
+    return Container(
+      margin: const EdgeInsets.only(left: 20, top: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                task.enabled ? Icons.check_circle_outline : Icons.pause_circle_outline,
+                size: 12,
+                color: task.enabled ? Colors.greenAccent : Colors.grey,
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  task.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.edit_outlined, size: 14, color: Colors.cyanAccent),
+                iconSize: 14,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+                tooltip: 'Edit Task',
+                onPressed: () => _showEditTaskDialog(task),
+              ),
+              IconButton(
+                icon: const Icon(Icons.delete_outline, size: 14, color: Colors.redAccent),
+                iconSize: 14,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+                tooltip: 'Delete Task',
+                onPressed: () => _confirmDeleteTask(task),
+              ),
+            ],
+          ),
+          if (task.programNames.isEmpty)
+            const Padding(
+              padding: EdgeInsets.only(left: 16, top: 2, bottom: 4),
+              child: Text('(no programs assigned)', style: TextStyle(fontSize: 10, color: Colors.grey, fontStyle: FontStyle.italic)),
+            )
+          else
+            ...task.programNames.map(_buildProgramRow),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProgramRow(String progName) {
+    final prog = _activeProject.programs.firstWhere((p) => p.name == progName, orElse: () => PlcProgram(name: progName, language: 'StructuredText'));
+    final isSelected = _activeViewId == 'PROGRAM:$progName';
+
+    String badgeText = 'ST';
+    Color badgeColor = Colors.blue;
+    if (prog.language == 'LadderLogic') { badgeText = 'LD'; badgeColor = Colors.orange; }
+    if (prog.language == 'FunctionBlockDiagram') { badgeText = 'FBD'; badgeColor = Colors.teal; }
+    if (prog.language == 'SequentialFunctionChart') { badgeText = 'SFC'; badgeColor = Colors.purple; }
+
+    return Container(
+      margin: const EdgeInsets.only(left: 16, top: 2),
+      decoration: BoxDecoration(
+        color: isSelected ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: ListTile(
+          dense: true,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 6),
+          leading: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            decoration: BoxDecoration(
+              color: badgeColor.withValues(alpha: 0.3),
+              borderRadius: BorderRadius.circular(3),
+            ),
+            child: Text(badgeText, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white)),
+          ),
+          title: Text(prog.name, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+          trailing: IconButton(
+            icon: const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            tooltip: 'Delete Program',
+            onPressed: () => _deleteProgram(prog.name),
+          ),
+          onTap: () => _selectView(context, 'PROGRAM:$progName'),
+        ),
       ),
     );
   }
@@ -1862,6 +1980,124 @@ class WorkspaceShellState extends State<WorkspaceShell> {
                 Navigator.pop(ctx);
               },
               child: const Text('Add Program'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showAddTaskDialog() {
+    _showTaskFormDialog(existing: null);
+  }
+
+  void _showEditTaskDialog(PlcTask task) {
+    _showTaskFormDialog(existing: task);
+  }
+
+  /// Shared AlertDialog for both creating a new task ([existing] == null)
+  /// and editing an existing one.
+  void _showTaskFormDialog({required PlcTask? existing}) {
+    final isEdit = existing != null;
+    final nameCtrl = TextEditingController(text: existing?.name ?? 'NewTask');
+    String type = existing?.type ?? 'Continuous';
+    final periodCtrl = TextEditingController(text: '${existing?.periodMs ?? 100}');
+    final watchdogCtrl = TextEditingController(text: '${existing?.watchdogMs ?? 0}');
+    String triggerTag = existing?.triggerTag ?? '';
+    bool enabled = existing?.enabled ?? true;
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: Text(isEdit ? 'Edit Task' : 'Add New Task'),
+          content: StatefulBuilder(
+            builder: (context, setDlgState) => SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Task Name')),
+                  const SizedBox(height: 12),
+                  DropdownButton<String>(
+                    value: type,
+                    isExpanded: true,
+                    items: const [
+                      DropdownMenuItem(value: 'Startup', child: Text('Startup')),
+                      DropdownMenuItem(value: 'Continuous', child: Text('Continuous')),
+                      DropdownMenuItem(value: 'Periodic', child: Text('Periodic')),
+                      DropdownMenuItem(value: 'Event', child: Text('Event')),
+                    ],
+                    onChanged: (val) => setDlgState(() => type = val!),
+                  ),
+                  if (type == 'Periodic') ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: periodCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'Period (ms)'),
+                    ),
+                  ],
+                  if (type == 'Event') ...[
+                    const SizedBox(height: 12),
+                    TagAutocompleteField(
+                      options: leafAndNodePaths(_activeProject),
+                      initialValue: triggerTag,
+                      label: 'Trigger Tag (BOOL)',
+                      onChanged: (val) => triggerTag = val,
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: watchdogCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Watchdog (ms, 0 = disabled)'),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Expanded(child: Text('Enabled')),
+                      Switch(
+                        value: enabled,
+                        onChanged: (val) => setDlgState(() => enabled = val),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () {
+                final name = nameCtrl.text.trim().isEmpty ? 'NewTask' : nameCtrl.text.trim();
+                final periodMs = int.tryParse(periodCtrl.text) ?? 100;
+                final watchdogMs = int.tryParse(watchdogCtrl.text) ?? 0;
+                setState(() {
+                  if (isEdit) {
+                    existing.name = name;
+                    existing.type = type;
+                    existing.periodMs = periodMs;
+                    existing.triggerTag = type == 'Event' ? triggerTag : '';
+                    existing.watchdogMs = watchdogMs;
+                    existing.enabled = enabled;
+                  } else {
+                    _activeProject.tasks.add(PlcTask(
+                      name: name,
+                      type: type,
+                      periodMs: periodMs,
+                      programNames: [],
+                      enabled: enabled,
+                      triggerTag: type == 'Event' ? triggerTag : '',
+                      watchdogMs: watchdogMs,
+                    ));
+                  }
+                });
+                _markDirtyAndAutosave();
+                Navigator.pop(ctx);
+              },
+              child: Text(isEdit ? 'Save Task' : 'Add Task'),
             ),
           ],
         );
