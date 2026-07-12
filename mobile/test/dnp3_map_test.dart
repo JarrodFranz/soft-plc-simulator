@@ -186,5 +186,42 @@ void main() {
       final legacy = DnpMapEntry.fromJson({'tag': 'X', 'point_type': 'binaryInput', 'index': 0});
       expect(legacy.eventClass, 0);
     });
+
+    test('DnpMapEntry.fromJson clamps out-of-range event_class into 0..3', () {
+      // Corrupted/hand-edited JSON with an out-of-range high value clamps to 3.
+      final high = DnpMapEntry.fromJson({
+        'tag': 'Y',
+        'point_type': 'analogInput',
+        'index': 0,
+        'event_class': 99,
+      });
+      expect(high.eventClass, 3);
+
+      // A negative value clamps to 0.
+      final low = DnpMapEntry.fromJson({
+        'tag': 'Z',
+        'point_type': 'analogInput',
+        'index': 0,
+        'event_class': -1,
+      });
+      expect(low.eventClass, 0);
+
+      // A normal in-range value still round-trips unchanged.
+      final normal = DnpMapEntry.fromJson({
+        'tag': 'W',
+        'point_type': 'analogInput',
+        'index': 0,
+        'event_class': 2,
+      });
+      expect(normal.eventClass, 2);
+
+      // The missing-key default is still 0.
+      final missing = DnpMapEntry.fromJson({
+        'tag': 'V',
+        'point_type': 'analogInput',
+        'index': 0,
+      });
+      expect(missing.eventClass, 0);
+    });
   });
 }

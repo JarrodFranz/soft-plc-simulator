@@ -38,7 +38,7 @@ class DnpMapEntry {
         tag: json['tag']?.toString() ?? '',
         pointType: json['point_type']?.toString() ?? 'binaryInput',
         index: (json['index'] as num?)?.toInt() ?? 0,
-        eventClass: (json['event_class'] as num?)?.toInt() ?? 0,
+        eventClass: (((json['event_class'] as num?)?.toInt() ?? 0)).clamp(0, 3),
       );
 
   Map<String, dynamic> toJson() => {
