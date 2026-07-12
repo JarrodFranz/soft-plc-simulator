@@ -16,9 +16,12 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../models/project_model.dart';
+import '../models/protocol_settings.dart';
+import '../protocols/opcua/opcua_secure_channel.dart';
 import '../protocols/opcua/opcua_session.dart';
 import '../protocols/opcua/opcua_services.dart';
 import '../protocols/opcua/opcua_transport.dart';
+import 'opcua_cert_store.dart';
 
 /// Lifecycle status of the [OpcUaHost].
 enum OpcUaHostStatus { stopped, running, error }
@@ -133,9 +136,92 @@ Future<String> _bestDisplayHost() async {
 /// Fully opt-in: until [start] is called, this class does nothing and the
 /// app behaves exactly as it does today.
 class OpcUaHost extends ChangeNotifier {
+  /// Injected certificate store (tests supply one with `overrideDir` pointed
+  /// at a temp directory). `null` (the production default) resolves to a
+  /// fresh `OpcUaCertStore()` — the real app-support-directory store — the
+  /// first time an identity is needed.
+  OpcUaHost({OpcUaCertStore? certStore}) : _certStore = certStore;
+
+  final OpcUaCertStore? _certStore;
+
   ServerSocket? _serverSocket;
   final List<_Connection> _connections = [];
   StreamSubscription<Socket>? _acceptSub;
+
+  /// The app's OPC UA application-instance identity (RSA keypair + self-signed
+  /// certificate), loaded from the cert store at `start()` — but ONLY when
+  /// the project's `securityModes` configures a secured policy (see
+  /// `start()`). Null for a `['None']`-only project (the cert store is never
+  /// touched, so there is no RSA-2048 keygen cost on first run), and also
+  /// null if a secured project's identity load ever fails — in that case
+  /// `start()` surfaces `OpcUaHostStatus.error` instead of serving a broken
+  /// secure endpoint (see `_loadAppIdentity`).
+  OpcAppIdentity? _appIdentity;
+
+  /// The (applicationUri, commonName) an identity was last loaded/regenerated
+  /// with — retained so `regenerateCertificate()` (callable at any time after
+  /// a start) uses the same identity parameters without needing the original
+  /// `projectProvider` again.
+  String? _appCertApplicationUri;
+  String? _appCertCommonName;
+
+  /// The app certificate's SHA-1 thumbprint as colon-separated hex (e.g.
+  /// `AA:BB:CC:...`), for display in the OPC UA card. Null until an identity
+  /// has been loaded (i.e. before the first successful `start()`, or if
+  /// cert-store loading failed).
+  String? get appCertThumbprint {
+    final identity = _appIdentity;
+    if (identity == null) return null;
+    return identity.thumbprint
+        .map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase())
+        .join(':');
+  }
+
+  /// Regenerates the app's OPC UA application-instance certificate (a fresh
+  /// RSA-2048 keypair + self-signed cert), replacing whatever identity was
+  /// previously loaded/generated. A no-op if `start()` has never successfully
+  /// loaded an identity yet (nothing to regenerate against). Never throws —
+  /// a cert-store failure here just leaves the previous identity in place.
+  Future<void> regenerateCertificate() async {
+    final applicationUri = _appCertApplicationUri;
+    final commonName = _appCertCommonName;
+    if (applicationUri == null || commonName == null) {
+      return;
+    }
+    try {
+      final store = _certStore ?? OpcUaCertStore();
+      final identity = await store.regenerate(
+        applicationUri: applicationUri,
+        commonName: commonName,
+      );
+      _appIdentity = identity;
+      if (!_disposed) {
+        notifyListeners();
+      }
+    } catch (_) {
+      // Keep the previous identity; regeneration failing must never crash
+      // the app or drop the existing (still-valid) certificate.
+    }
+  }
+
+  /// Loads (or creates on first run) the app's OPC UA identity from the cert
+  /// store. Only ever called from `start()` when the project's
+  /// `securityModes` configures a secured policy — a `['None']`-only project
+  /// never calls this, so it never pays the RSA-2048 keygen cost nor touches
+  /// the cert store at all. Any failure (corrupt store, filesystem/platform-
+  /// channel error, etc.) propagates to the caller: `start()` turns it into
+  /// `OpcUaHostStatus.error` rather than serving a secured endpoint with a
+  /// null certificate.
+  Future<OpcAppIdentity> _loadAppIdentity({
+    required String applicationUri,
+    required String commonName,
+  }) {
+    final store = _certStore ?? OpcUaCertStore();
+    return store.loadOrCreate(
+      applicationUri: applicationUri,
+      commonName: commonName,
+    );
+  }
 
   /// The ONLY Timer this app ever owns for OPC UA: a 20 Hz (50ms) clock tick
   /// driving every connection's `onClockTick`. Exists ONLY between a
@@ -207,6 +293,44 @@ class OpcUaHost extends ChangeNotifier {
       return;
     }
     final port = opcua.port;
+    final applicationUri = 'urn:softplc:${project.id}';
+    final commonName = project.name.isEmpty ? 'Mobile Soft PLC' : project.name;
+    // Retained regardless of secure policy so `regenerateCertificate()` (an
+    // explicit, on-demand operator action from the gateway screen) always
+    // knows the identity parameters to generate against, even for a
+    // ['None']-only project that never auto-loads/generates one at start().
+    _appCertApplicationUri = applicationUri;
+    _appCertCommonName = commonName;
+
+    final hasSecurePolicy = opcua.securityModes.any((m) => m != 'None');
+
+    // Load (or create on first run) the app's certificate identity BEFORE
+    // binding/accepting — a per-connection OpcSecureChannel (built in
+    // _acceptConnection) needs it. Only done when the project actually
+    // configures a secured policy: a `['None']`-only project must never pay
+    // the RSA-2048 keygen cost nor touch the cert store at all. A secured
+    // project whose identity load fails must NOT silently start with a null
+    // certificate (a configured secure endpoint would advertise no cert and
+    // simply not work, with no error surfaced) — surface it as a start()
+    // failure instead, mirroring how a bind failure below already does.
+    if (hasSecurePolicy) {
+      try {
+        _appIdentity = await _loadAppIdentity(
+          applicationUri: applicationUri,
+          commonName: commonName,
+        );
+      } catch (e) {
+        _appIdentity = null;
+        _setStatus(
+          OpcUaHostStatus.error,
+          error: 'OPC UA security is enabled but the application certificate '
+              'could not be generated/loaded: $e',
+        );
+        return;
+      }
+    } else {
+      _appIdentity = null;
+    }
 
     try {
       final serverSocket = await ServerSocket.bind(InternetAddress.anyIPv4, port);
@@ -219,13 +343,13 @@ class OpcUaHost extends ChangeNotifier {
       final services = OpcUaProjectServices(projectProvider: projectProvider);
       final info = OpcUaServerInfo(
         applicationName: 'Mobile Soft PLC',
-        applicationUri: 'urn:softplc:${project.id}',
+        applicationUri: applicationUri,
         endpointUrl: endpoint,
         namespaceUri: opcua.namespaceUri,
       );
 
       _acceptSub = serverSocket.listen(
-        (socket) => _acceptConnection(socket, info, services),
+        (socket) => _acceptConnection(socket, info, services, opcua),
         onError: (Object e, StackTrace st) {
           _setStatus(OpcUaHostStatus.error, error: e.toString());
         },
@@ -278,9 +402,48 @@ class OpcUaHost extends ChangeNotifier {
     }
   }
 
-  void _acceptConnection(Socket socket, OpcUaServerInfo info, OpcUaProjectServices services) {
+  /// Accepts one inbound connection: builds a fresh per-connection
+  /// [OpcSecureChannel] (when [config] enables a secured policy AND an app
+  /// identity is available — see [_appIdentity]) and wires it, together with
+  /// [config]'s security settings, into that connection's brand-new
+  /// [OpcUaServerSession]. A `securityModes: ['None']`-only config still
+  /// passes its (unused) settings through so endpoint advertisement stays
+  /// correct, but never allocates a channel — the None path stays exactly
+  /// the pre-security byte-identical flow.
+  void _acceptConnection(
+    Socket socket,
+    OpcUaServerInfo info,
+    OpcUaProjectServices services,
+    OpcUaProtocolConfig config,
+  ) {
     try {
-      final session = OpcUaServerSession(info: info, services: services, sampler: services.sample);
+      final identity = _appIdentity;
+      final hasSecurePolicy = config.securityModes.any((m) => m != 'None');
+      final channel = (hasSecurePolicy && identity != null)
+          ? OpcSecureChannel(
+              keyPair: identity.keyPair,
+              certificateDer: identity.certificateDer,
+            )
+          : null;
+      final session = OpcUaServerSession(
+        info: info,
+        services: services,
+        sampler: services.sample,
+        securityModes: config.securityModes,
+        serverCertificateDer: identity?.certificateDer,
+        // Fail closed: passwords are never persisted, so after a restart /
+        // project reload every configured credential has a blank password.
+        // Skip any credential with an empty username OR empty password so a
+        // blank-after-reload entry is simply not an accepted login (rather
+        // than an empty-password login that any known username could use).
+        credentials: <String, String>{
+          for (final c in config.credentials)
+            if (c.username.isNotEmpty && c.password.isNotEmpty)
+              c.username: c.password,
+        },
+        allowAnonymous: config.allowAnonymous,
+        secureChannel: channel,
+      );
       final conn = _Connection(socket, session, () => _clock.elapsedMilliseconds);
       _connections.add(conn);
       if (!_disposed) {

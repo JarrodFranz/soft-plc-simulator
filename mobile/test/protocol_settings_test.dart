@@ -92,6 +92,41 @@ void main() {
       });
       expect(cfg.port, 4840);
     });
+
+    test('security fields default (None, no creds, anonymous allowed) on a '
+        'legacy record', () {
+      final cfg = OpcUaProtocolConfig.fromJson({
+        'enabled': true,
+        'namespace_uri': 'urn:x',
+        'map': {
+          'opcua_map': {'namespace_uri': 'urn:x', 'nodes': []},
+        },
+      });
+      expect(cfg.securityModes, ['None']);
+      expect(cfg.credentials, isEmpty);
+      expect(cfg.allowAnonymous, isTrue);
+    });
+
+    test('security fields round-trip; credentials persist the username ONLY '
+        '(never the password)', () {
+      final custom = OpcUaProtocolConfig(
+        namespaceUri: 'urn:x',
+        map: OpcuaMap(namespaceUri: 'urn:x', nodes: []),
+        securityModes: ['None', 'Basic256Sha256/SignAndEncrypt'],
+        credentials: [OpcUaUserCredential(username: 'operator', password: 's3cret')],
+        allowAnonymous: false,
+      );
+      final json = custom.toJson();
+      // The serialized credential carries no password key.
+      final creds = json['credentials'] as List;
+      expect(creds.single, {'username': 'operator'});
+
+      final rt = OpcUaProtocolConfig.fromJson(json);
+      expect(rt.securityModes, ['None', 'Basic256Sha256/SignAndEncrypt']);
+      expect(rt.allowAnonymous, isFalse);
+      expect(rt.credentials.single.username, 'operator');
+      expect(rt.credentials.single.password, ''); // password not persisted
+    });
   });
 
   group('ProtocolSettings.toJson / fromJson', () {

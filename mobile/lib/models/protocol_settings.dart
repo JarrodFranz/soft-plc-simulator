@@ -22,6 +22,32 @@ import 'project_model.dart';
 /// a `gateway_url` value.
 const String kDefaultGatewayUrl = 'ws://localhost:4855';
 
+/// A single username/password credential the in-app OPC UA host accepts for
+/// UserNameIdentityToken authentication. The password is held in memory only
+/// while a project is loaded — it is INTENTIONALLY never serialized (see
+/// [toJson], which emits the username alone). A saved project therefore
+/// records only which usernames exist; the operator re-enters passwords out of
+/// band (or they are provisioned at runtime). This keeps plaintext passwords
+/// out of the project JSON on disk.
+class OpcUaUserCredential {
+  String username;
+  String password;
+
+  OpcUaUserCredential({required this.username, this.password = ''});
+
+  factory OpcUaUserCredential.fromJson(Map<String, dynamic> j) =>
+      OpcUaUserCredential(
+        username: (j['username'] ?? '').toString(),
+        // Passwords are never persisted; a loaded credential starts blank and
+        // is populated at runtime. Tolerate (but ignore) a legacy 'password'
+        // key if some external tool ever wrote one.
+        password: '',
+      );
+
+  /// Emits the username ONLY — never the password (see the class doc).
+  Map<String, dynamic> toJson() => {'username': username};
+}
+
 /// Per-project OPC UA outbound-protocol configuration: whether the bridge is
 /// enabled, the namespace URI advertised to OPC UA clients, and the node<->tag
 /// map that decides which tags are exposed.
@@ -36,12 +62,35 @@ class OpcUaProtocolConfig {
   /// and fall back to this default on read.
   int port;
 
+  /// The security modes this host advertises, as `Policy/Mode` tokens. Each
+  /// enabled entry becomes one advertised EndpointDescription. Recognized
+  /// values (OPC UA security workstream, WS19 Task 5):
+  ///   - `'None'`                              -> securityMode 1, policy None
+  ///   - `'Basic256Sha256/Sign'`              -> securityMode 2, Basic256Sha256
+  ///   - `'Basic256Sha256/SignAndEncrypt'`    -> securityMode 3, Basic256Sha256
+  /// Defaults to `['None']` so an unconfigured/older project behaves
+  /// byte-identically to the pre-security host (None + Anonymous only).
+  List<String> securityModes;
+
+  /// Username/password credentials accepted for UserNameIdentityToken auth.
+  /// Passwords are not persisted (see [OpcUaUserCredential]).
+  List<OpcUaUserCredential> credentials;
+
+  /// Whether anonymous authentication is accepted. Defaults to `true` (the
+  /// pre-security behavior). When `false`, a client MUST present valid
+  /// username/password credentials.
+  bool allowAnonymous;
+
   OpcUaProtocolConfig({
     this.enabled = false,
     this.namespaceUri = '',
     required this.map,
     this.port = 4840,
-  });
+    List<String>? securityModes,
+    List<OpcUaUserCredential>? credentials,
+    this.allowAnonymous = true,
+  })  : securityModes = securityModes ?? <String>['None'],
+        credentials = credentials ?? <OpcUaUserCredential>[];
 
   factory OpcUaProtocolConfig.fromJson(Map<String, dynamic> j) => OpcUaProtocolConfig(
         enabled: j['enabled'] == true,
@@ -50,6 +99,18 @@ class OpcUaProtocolConfig {
             ? OpcuaMap.fromJson(j['map'] as Map<String, dynamic>)
             : OpcuaMap(namespaceUri: '', nodes: []),
         port: (j['port'] as num?)?.toInt() ?? 4840,
+        securityModes: j['security_modes'] is List
+            ? (j['security_modes'] as List)
+                .map((e) => e.toString())
+                .toList(growable: true)
+            : <String>['None'],
+        credentials: j['credentials'] is List
+            ? (j['credentials'] as List)
+                .whereType<Map<String, dynamic>>()
+                .map(OpcUaUserCredential.fromJson)
+                .toList(growable: true)
+            : <OpcUaUserCredential>[],
+        allowAnonymous: j['allow_anonymous'] == null ? true : j['allow_anonymous'] == true,
       );
 
   Map<String, dynamic> toJson() => {
@@ -57,6 +118,9 @@ class OpcUaProtocolConfig {
         'namespace_uri': namespaceUri,
         'map': map.toJson(),
         'port': port,
+        'security_modes': securityModes,
+        'credentials': credentials.map((c) => c.toJson()).toList(),
+        'allow_anonymous': allowAnonymous,
       };
 
   /// Sane defaults for a project that has never configured OPC UA: disabled,
@@ -67,6 +131,9 @@ class OpcUaProtocolConfig {
         namespaceUri: 'urn:softplc:${p.id}',
         map: OpcuaMap.autoGenerate(p),
         port: 4840,
+        securityModes: <String>['None'],
+        credentials: <OpcUaUserCredential>[],
+        allowAnonymous: true,
       );
 }
 

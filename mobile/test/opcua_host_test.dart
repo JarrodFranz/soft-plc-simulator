@@ -14,6 +14,7 @@ import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 import 'package:soft_plc_mobile/protocols/opcua/opcua_binary.dart';
 import 'package:soft_plc_mobile/protocols/opcua/opcua_transport.dart';
+import 'package:soft_plc_mobile/services/opcua_cert_store.dart';
 import 'package:soft_plc_mobile/services/opcua_host.dart';
 
 // --- Encoding ids, verified against types/node_ids.rs -----------------------
@@ -634,6 +635,116 @@ void main() {
         await host.stop();
         await Future<void>.delayed(const Duration(milliseconds: 150));
         expect(acc.length, bytesBeforeStop);
+      },
+      timeout: const Timeout(Duration(seconds: 15)),
+    );
+  });
+
+  group('OpcUaHost — cert-store wiring (WS19 Task 6)', () {
+    test(
+      'a secure-policy config loads an app identity and exposes its thumbprint; '
+      'regenerateCertificate() replaces it',
+      () async {
+        final dir = await Directory.systemTemp.createTemp('opcua_host_cert_test');
+        addTearDown(() => dir.delete(recursive: true));
+
+        final host = OpcUaHost(certStore: OpcUaCertStore(overrideDir: dir.path));
+        addTearDown(host.stop);
+        final project = _enabledProject(port: 0);
+        project.protocols!.opcua!.securityModes = ['None', 'Basic256Sha256/SignAndEncrypt'];
+
+        expect(host.appCertThumbprint, isNull); // nothing loaded before start()
+
+        await host.start(() => project);
+
+        expect(host.status, OpcUaHostStatus.running);
+        expect(host.appCertThumbprint, isNotNull);
+        expect(host.appCertThumbprint, matches(RegExp(r'^([0-9A-F]{2}:)+[0-9A-F]{2}$')));
+
+        final firstThumbprint = host.appCertThumbprint;
+        await host.regenerateCertificate();
+        expect(host.appCertThumbprint, isNotNull);
+        expect(host.appCertThumbprint, isNot(firstThumbprint));
+      },
+      timeout: const Timeout(Duration(seconds: 15)),
+    );
+
+    test(
+      'a None-only config still starts normally and serves HEL/ACK when the '
+      'cert store is unavailable (loadOrCreate never crashes start())',
+      () async {
+        final host = OpcUaHost(); // no certStore override: production default
+        final project = _enabledProject(port: 0);
+        await host.start(() => project);
+        addTearDown(host.stop);
+
+        expect(host.status, OpcUaHostStatus.running);
+
+        final endpoint = Uri.parse(host.endpointUrl!.replaceFirst('opc.tcp://', 'tcp://'));
+        final socket = await Socket.connect('127.0.0.1', endpoint.port);
+        addTearDown(socket.destroy);
+        socket.add(_helHandshakeFrame());
+        await socket.flush();
+        final response = await _readAtLeast(socket, kMessageHeaderLen);
+        expect(MessageHeader.parse(response).messageType, 'ACK');
+      },
+      timeout: const Timeout(Duration(seconds: 15)),
+    );
+
+    test(
+      'a None-only host reaches running WITHOUT the cert store being '
+      'touched — no keygen, no thumbprint, no key/cert files written',
+      () async {
+        final dir = await Directory.systemTemp.createTemp('opcua_host_none_cert_test');
+        addTearDown(() => dir.delete(recursive: true));
+
+        final host = OpcUaHost(certStore: OpcUaCertStore(overrideDir: dir.path));
+        addTearDown(host.stop);
+        final project = _enabledProject(port: 0);
+        // Default securityModes is None-only (see ProtocolSettings.defaults).
+
+        await host.start(() => project);
+
+        expect(host.status, OpcUaHostStatus.running);
+        expect(host.appCertThumbprint, isNull);
+        expect(await File('${dir.path}${Platform.pathSeparator}key.der').exists(), isFalse);
+        expect(await File('${dir.path}${Platform.pathSeparator}cert.der').exists(), isFalse);
+
+        // The None handshake must still work exactly as before.
+        final endpoint = Uri.parse(host.endpointUrl!.replaceFirst('opc.tcp://', 'tcp://'));
+        final socket = await Socket.connect('127.0.0.1', endpoint.port);
+        addTearDown(socket.destroy);
+        socket.add(_helHandshakeFrame());
+        await socket.flush();
+        final response = await _readAtLeast(socket, kMessageHeaderLen);
+        expect(MessageHeader.parse(response).messageType, 'ACK');
+      },
+      timeout: const Timeout(Duration(seconds: 15)),
+    );
+
+    test(
+      'a secure-policy config whose identity load FAILS ends in '
+      'OpcUaHostStatus.error (not running) with a certificate-related message',
+      () async {
+        // No certStore override: the production default `OpcUaCertStore()`
+        // calls `path_provider`'s `getApplicationSupportDirectory()`, which
+        // has no platform-channel implementation registered in this plain
+        // `flutter_test` (non-widget-binding) environment and throws a
+        // MissingPluginException — the same seam the None-only test above
+        // exercises, but here the project configures a secure policy so the
+        // failure must surface instead of being swallowed.
+        final host = OpcUaHost();
+        addTearDown(host.stop);
+        final project = _enabledProject(port: 0);
+        project.protocols!.opcua!.securityModes = ['None', 'Basic256Sha256/SignAndEncrypt'];
+
+        await host.start(() => project);
+
+        expect(host.status, OpcUaHostStatus.error);
+        expect(host.lastError, isNotNull);
+        expect(host.lastError, contains('certificate'));
+        expect(host.appCertThumbprint, isNull);
+        expect(host.endpointUrl, isNull);
       },
       timeout: const Timeout(Duration(seconds: 15)),
     );

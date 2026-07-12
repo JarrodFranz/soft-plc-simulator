@@ -427,6 +427,130 @@ OpcChunk parseChunk(Uint8List data) {
   );
 }
 
+/// The plaintext chunk header + security header of an OPN/MSG/CLO chunk,
+/// parsed WITHOUT touching the (possibly encrypted) sequence-header+body that
+/// follows. For a secured chunk the bytes `frame[securityHeaderEnd..size]` are
+/// signed+encrypted and must be handed to the secure channel to decrypt before
+/// the sequence header can be read — [parseChunk] cannot be used there because
+/// it assumes the remainder is plaintext.
+///
+/// [securityHeaderEnd] is the offset at which the (encrypted) remainder begins,
+/// i.e. immediately after the asymmetric security header (OPN) or the symmetric
+/// security header (MSG/CLO). The signed range used by the secure channel is
+/// exactly `frame[0..securityHeaderEnd]` ++ the decrypted remainder-minus-
+/// signature (mirrors `secure_channel.rs` `asymmetric_decrypt_and_verify`).
+class OpcChunkHeader {
+  final String messageType; // 'OPN' | 'MSG' | 'CLO'
+  final String chunkType; // 'F' | 'C' | 'A'
+  final int size; // total on-wire chunk size (message header `messageSize`)
+  final int secureChannelId;
+  final String? securityPolicyUri; // OPN only
+  final List<int>? senderCertificate; // OPN only
+  final List<int>? receiverCertificateThumbprint; // OPN only
+  final int? tokenId; // MSG/CLO only
+  final int securityHeaderEnd; // offset where the secured remainder begins
+
+  bool get isFinal => chunkType == 'F';
+
+  const OpcChunkHeader({
+    required this.messageType,
+    required this.chunkType,
+    required this.size,
+    required this.secureChannelId,
+    this.securityPolicyUri,
+    this.senderCertificate,
+    this.receiverCertificateThumbprint,
+    this.tokenId,
+    required this.securityHeaderEnd,
+  });
+}
+
+/// Parses ONLY the chunk header (12 bytes) + security header of an OPN/MSG/CLO
+/// chunk — all of which are plaintext on the wire even for a secured chunk. The
+/// bytes from [OpcChunkHeader.securityHeaderEnd] to `size` are the secured
+/// remainder (sequence header + body + padding + signature, encrypted) which
+/// the secure channel decrypts. Malformed/truncated input throws
+/// [FormatException] — never hangs, never throws an unrelated exception.
+OpcChunkHeader parseChunkHeader(Uint8List frame) {
+  if (frame.length < kChunkHeaderLen) {
+    throw const FormatException('opc.tcp: truncated chunk header');
+  }
+  final messageType = String.fromCharCodes(frame.sublist(0, 3));
+  if (messageType != 'OPN' && messageType != 'MSG' && messageType != 'CLO') {
+    throw FormatException('opc.tcp: unrecognized chunk message type "$messageType"');
+  }
+  final chunkType = String.fromCharCode(frame[3]);
+  if (chunkType != 'F' && chunkType != 'C' && chunkType != 'A') {
+    throw FormatException('opc.tcp: unrecognized chunk flag "$chunkType"');
+  }
+  final size = _readU32LE(frame, 4);
+  final secureChannelId = _readU32LE(frame, 8);
+  if (frame.length < size) {
+    throw const FormatException('opc.tcp: chunk shorter than declared size');
+  }
+
+  var offset = kChunkHeaderLen;
+  String? securityPolicyUri;
+  List<int>? senderCertificate;
+  List<int>? receiverCertificateThumbprint;
+  int? tokenId;
+
+  if (messageType == 'OPN') {
+    securityPolicyUri = _readString(frame, offset, (n) => offset += n);
+    final certLen = _readI32LE(frame, offset);
+    offset += 4;
+    if (certLen == -1) {
+      senderCertificate = null;
+    } else if (certLen < -1) {
+      throw const FormatException('opc.tcp: negative sender certificate length');
+    } else {
+      final start = offset;
+      if (start + certLen > frame.length) {
+        throw const FormatException('opc.tcp: truncated sender certificate');
+      }
+      senderCertificate = frame.sublist(start, start + certLen);
+      offset += certLen;
+    }
+
+    final thumbLen = _readI32LE(frame, offset);
+    offset += 4;
+    if (thumbLen == -1) {
+      receiverCertificateThumbprint = null;
+    } else if (thumbLen < -1) {
+      throw const FormatException('opc.tcp: negative receiver thumbprint length');
+    } else {
+      final start = offset;
+      if (start + thumbLen > frame.length) {
+        throw const FormatException('opc.tcp: truncated receiver thumbprint');
+      }
+      receiverCertificateThumbprint = frame.sublist(start, start + thumbLen);
+      offset += thumbLen;
+    }
+  } else {
+    if (offset + 4 > frame.length) {
+      throw const FormatException('opc.tcp: truncated symmetric security header');
+    }
+    tokenId = _readU32LE(frame, offset);
+    offset += 4;
+  }
+
+  if (offset > size) {
+    throw const FormatException('opc.tcp: security header longer than declared size');
+  }
+
+  return OpcChunkHeader(
+    messageType: messageType,
+    chunkType: chunkType,
+    size: size,
+    secureChannelId: secureChannelId,
+    securityPolicyUri: securityPolicyUri,
+    senderCertificate: senderCertificate,
+    receiverCertificateThumbprint: receiverCertificateThumbprint,
+    tokenId: tokenId,
+    securityHeaderEnd: offset,
+  );
+}
+
 Uint8List _buildChunk({
   required String messageType,
   required String chunkType,

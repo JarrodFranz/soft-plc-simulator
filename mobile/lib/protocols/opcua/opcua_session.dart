@@ -13,9 +13,12 @@
 // Specific files cited inline next to each constant/decision.
 library opcua_session;
 
+import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
 import 'opcua_binary.dart';
+import 'opcua_crypto.dart' show secureRandomBytes;
+import 'opcua_secure_channel.dart';
 import 'opcua_subscriptions.dart';
 import 'opcua_transport.dart';
 
@@ -40,6 +43,7 @@ class _Ids {
   static const closeSessionResponse = 476; // node_ids.rs:1681
   static const serviceFault = 397; // node_ids.rs:1662
   static const anonymousIdentityToken = 321; // node_ids.rs:1641
+  static const userNameIdentityToken = 324; // node_ids.rs:1642
 }
 
 /// StatusCodes used by this state machine. Verified one-by-one against
@@ -52,10 +56,19 @@ class OpcUaStatusCodes {
   static const badSessionNotActivated = 0x80270000; // status_codes.rs:124
   static const badTcpMessageTypeInvalid = 0x807E0000; // status_codes.rs:205
   static const badCommunicationError = 0x80050000; // status_codes.rs:90
+  static const badUserAccessDenied = 0x801F0000; // status_codes.rs:116
+  static const badIdentityTokenRejected = 0x80210000; // status_codes.rs:118
+  static const badSecurityChecksFailed = 0x80130000; // status_codes.rs:110
 }
 
-/// MessageSecurityMode.None (enums.rs:856-861, Int32-encoded).
+/// MessageSecurityMode enum values (enums.rs:856-861, Int32-encoded):
+/// None = 1, Sign = 2, SignAndEncrypt = 3.
 const int _securityModeNone = 1;
+const int _securityModeSign = 2;
+const int _securityModeSignAndEncrypt = 3;
+
+/// UserTokenType.UserName (enums.rs:888-893, Int32-encoded).
+const int _userTokenTypeUserName = 1;
 
 /// SecurityTokenRequestType (channel_security_token.rs:920-923,
 /// Int32-encoded): Issue = 0, Renew = 1.
@@ -136,6 +149,20 @@ abstract class OpcUaServiceHandler {
   );
 }
 
+/// One advertised (policy, mode) endpoint, resolved from a `securityModes`
+/// token.
+class _EndpointSpec {
+  final String policyUri;
+  final int securityMode;
+  final bool secure;
+
+  const _EndpointSpec({
+    required this.policyUri,
+    required this.securityMode,
+    required this.secure,
+  });
+}
+
 class _ChannelState {
   int channelId;
   int tokenId;
@@ -166,8 +193,42 @@ class OpcUaServerSession {
   final OpcUaServiceHandler? services;
   final OpcDataValue Function(OpcNodeId)? sampler;
 
+  /// The `Policy/Mode` tokens this session advertises as EndpointDescriptions
+  /// (see [OpcUaProtocolConfig.securityModes] for the recognized values).
+  /// Defaults to `['None']` so an un-configured session behaves exactly like the
+  /// pre-security host (a single None+Anonymous endpoint).
+  final List<String> securityModes;
+
+  /// The server's application-instance certificate DER, advertised as the
+  /// `serverCertificate` ByteString on secure endpoints. Null for a None-only
+  /// host. Injected by the host (Task 6).
+  final Uint8List? serverCertificateDer;
+
+  /// Accepted username -> password credentials for UserNameIdentityToken auth.
+  /// Empty when no username auth is configured.
+  final Map<String, String> credentials;
+
+  /// Whether anonymous authentication is accepted. Default `true`
+  /// (pre-security behavior).
+  final bool allowAnonymous;
+
+  /// The per-connection secure channel (Task 4/5). Non-null enables the secured
+  /// OPN/MSG path; a client that opens a `SecurityPolicy#None` channel still
+  /// takes the byte-identical None path even when this is non-null. Null =
+  /// None-only / back-compat.
+  final OpcSecureChannel? _secureChannel;
+
+  /// Injected 32-byte nonce generator (server nonce per OPN). Defaults to a
+  /// cryptographically-strong random; tests inject a deterministic one.
+  final Uint8List Function() _serverNonceGen;
+
   bool _helloReceived = false;
   bool _shouldClose = false;
+
+  /// True once a NON-None OPN has been processed on this connection — gates the
+  /// symmetric MSG in/out path. A None OPN leaves this false so the None path
+  /// stays byte-identical even when a channel is injected.
+  bool _channelSecured = false;
 
   _ChannelState? _channel;
   _SessionState? _session;
@@ -200,7 +261,21 @@ class OpcUaServerSession {
   /// behavior for tests/hosts that don't wire one up).
   SubscriptionManager? _subscriptionManager;
 
-  OpcUaServerSession({required this.info, required this.services, this.sampler});
+  OpcUaServerSession({
+    required this.info,
+    required this.services,
+    this.sampler,
+    List<String>? securityModes,
+    this.serverCertificateDer,
+    Map<String, String>? credentials,
+    this.allowAnonymous = true,
+    OpcSecureChannel? secureChannel,
+    Uint8List Function()? serverNonceGenerator,
+  })  : securityModes = securityModes ?? const <String>['None'],
+        credentials = credentials ?? const <String, String>{},
+        _secureChannel = secureChannel,
+        _serverNonceGen = serverNonceGenerator ??
+            (() => secureRandomBytes(kSecureChannelNonceLength));
 
   bool get shouldClose => _shouldClose;
 
@@ -332,6 +407,22 @@ class OpcUaServerSession {
   // --- OPN (OpenSecureChannel) ------------------------------------------
 
   List<Uint8List> _handleOpn(Uint8List frame) {
+    // Peek the (plaintext) security header to decide None vs secured. The None
+    // path below is byte-identical to the pre-security host; the secured path
+    // routes through the injected [OpcSecureChannel].
+    final chunkHeader = parseChunkHeader(frame);
+    final policyUri = chunkHeader.securityPolicyUri ?? kSecurityPolicyNoneUri;
+    if (policyUri != kSecurityPolicyNoneUri) {
+      final channel = _secureChannel;
+      if (channel == null) {
+        return _err(
+          OpcUaStatusCodes.badSecurityChecksFailed,
+          'secured OPN requested but no secure channel is configured',
+        );
+      }
+      return _handleSecuredOpn(frame, chunkHeader, channel);
+    }
+
     final chunk = parseChunk(frame);
     if (!chunk.isFinal) {
       return _err(
@@ -401,6 +492,149 @@ class OpcUaServerSession {
     return [responseChunk];
   }
 
+  /// Secured (Basic256Sha256) OpenSecureChannel: verify+decrypt the client OPN
+  /// through the injected [channel], parse the real clientNonce, derive the
+  /// symmetric key set for the new/renewed token, and return a signed+encrypted
+  /// OPN response carrying a non-null serverNonce. Mirrors the None [_handleOpn]
+  /// body but with the crypto envelope; a decrypt/verify failure degrades to a
+  /// clean ERR (never an uncaught throw).
+  List<Uint8List> _handleSecuredOpn(
+    Uint8List frame,
+    OpcChunkHeader header,
+    OpcSecureChannel channel,
+  ) {
+    if (!header.isFinal) {
+      return _err(
+        OpcUaStatusCodes.badTcpMessageTypeInvalid,
+        'multi-chunk (non-final) messages are not supported',
+      );
+    }
+
+    final rawHeader = Uint8List.sublistView(frame, 0, header.securityHeaderEnd);
+    final rawAfter =
+        Uint8List.sublistView(frame, header.securityHeaderEnd, header.size);
+    final serverNonce = _serverNonceGen();
+
+    final Uint8List plaintext;
+    try {
+      plaintext = channel.openFromClient(
+        policyUri: header.securityPolicyUri!,
+        senderCertificate: header.senderCertificate == null
+            ? null
+            : Uint8List.fromList(header.senderCertificate!),
+        rawHeader: rawHeader,
+        rawAfterSecurityHeader: rawAfter,
+        serverNonce: serverNonce,
+        clientNonce: Uint8List(0), // real nonce parsed from the plaintext below
+        receiverCertificateThumbprint:
+            header.receiverCertificateThumbprint == null
+                ? null
+                : Uint8List.fromList(header.receiverCertificateThumbprint!),
+        deriveKeys: false,
+      );
+    } on OpcSecurityException {
+      return _err(
+        OpcUaStatusCodes.badSecurityChecksFailed,
+        'secure channel OPN verification/decryption failed',
+      );
+    }
+
+    // plaintext = sequenceHeader(8) ++ OpenSecureChannelRequest body.
+    if (plaintext.length < 8) {
+      return _err(
+        OpcUaStatusCodes.badTcpMessageTypeInvalid,
+        'secured OPN plaintext shorter than its sequence header',
+      );
+    }
+    final requestId = ByteData.sublistView(plaintext, 4, 8)
+        .getUint32(0, Endian.little);
+
+    final reader = OpcUaReader(Uint8List.sublistView(plaintext, 8));
+    final requestTypeId = reader.nodeId();
+    if (!requestTypeId.isNumeric ||
+        requestTypeId.numericId != _Ids.openSecureChannelRequest) {
+      return _err(
+        OpcUaStatusCodes.badTcpMessageTypeInvalid,
+        'expected OpenSecureChannelRequest in secured OPN chunk',
+      );
+    }
+    final reqHeader = reader.requestHeader();
+    reader.uint32(); // clientProtocolVersion — ignored.
+    final requestType = reader.int32(); // SecurityTokenRequestType
+    final securityMode = reader.int32(); // MessageSecurityMode
+    final clientNonce = reader.byteString(); // the REAL client nonce
+    final requestedLifetime = reader.uint32();
+
+    // The requested MessageSecurityMode governs the subsequent symmetric MSGs.
+    channel.messageSecurityMode = securityMode == _securityModeSign
+        ? OpcSecurityMode.sign
+        : OpcSecurityMode.signAndEncrypt;
+
+    final isRenew = requestType != _requestTypeIssue;
+    if (isRenew) {
+      if (_channel == null || header.secureChannelId != _channel!.channelId) {
+        return _err(
+          OpcUaStatusCodes.badSecureChannelIdInvalid,
+          'Renew on an unknown secure channel',
+        );
+      }
+      _channel!.tokenId = _nextTokenId++;
+      _channel!.lifetimeMs = _boundLifetime(requestedLifetime);
+    } else {
+      _channel = _ChannelState(
+        channelId: _nextChannelId++,
+        tokenId: _nextTokenId++,
+        lifetimeMs: _boundLifetime(requestedLifetime),
+      );
+    }
+    _channelSecured = true;
+
+    // Derive the symmetric key set for the (new/renewed) token. On Renew the
+    // channel retains the previous token's keys within its lifetime.
+    channel.deriveSymmetricKeys(
+      tokenId: _channel!.tokenId,
+      clientNonce:
+          clientNonce == null ? Uint8List(0) : Uint8List.fromList(clientNonce),
+      serverNonce: serverNonce,
+    );
+
+    final w = OpcUaWriter();
+    w.nodeId(const OpcNodeId.numeric(0, _Ids.openSecureChannelResponse));
+    w.responseHeader(ResponseHeader(
+      timestamp: DateTime.now().toUtc(),
+      requestHandle: reqHeader.requestHandle,
+      serviceResult: OpcUaStatusCodes.good,
+    ));
+    w.uint32(0); // serverProtocolVersion
+    w.uint32(_channel!.channelId);
+    w.uint32(_channel!.tokenId);
+    w.dateTime(DateTime.now().toUtc());
+    w.uint32(_channel!.lifetimeMs);
+    w.byteString(serverNonce); // non-null for a secured channel
+    final body = w.take();
+
+    final seqNum = _nextSeq();
+    final seqBody = BytesBuilder(copy: true)
+      ..add(_sequenceHeader(seqNum, requestId))
+      ..add(body);
+    final respFrame = channel.buildSecuredOpnResponse(
+      secureChannelId: _channel!.channelId,
+      sequenceNumber: seqNum,
+      requestId: requestId,
+      plaintextSequenceAndBody: seqBody.takeBytes(),
+    );
+    return [respFrame];
+  }
+
+  /// Encodes an 8-byte sequence header (sequenceNumber, requestId) — used to
+  /// prefix a plaintext body handed to the secure channel's chunk builders.
+  Uint8List _sequenceHeader(int sequenceNumber, int requestId) {
+    final b = ByteData(8)
+      ..setUint32(0, sequenceNumber, Endian.little)
+      ..setUint32(4, requestId, Endian.little);
+    return b.buffer.asUint8List();
+  }
+
   int _boundLifetime(int requested) {
     final wanted = requested <= 0 ? _maxChannelLifetimeMs : requested;
     final capped = wanted < _maxChannelLifetimeMs ? wanted : _maxChannelLifetimeMs;
@@ -427,7 +661,19 @@ class OpcUaServerSession {
   // --- MSG (service dispatch) --------------------------------------------
 
   List<Uint8List> _handleMsg(Uint8List frame, int nowMs) {
-    final chunk = parseChunk(frame);
+    final OpcChunk chunk;
+    if (_channelSecured) {
+      final secured = _decryptSecuredMsg(frame);
+      if (secured == null) {
+        return _err(
+          OpcUaStatusCodes.badSecurityChecksFailed,
+          'secured MSG verification/decryption failed',
+        );
+      }
+      chunk = secured;
+    } else {
+      chunk = parseChunk(frame);
+    }
     if (!chunk.isFinal) {
       return _err(
         OpcUaStatusCodes.badTcpMessageTypeInvalid,
@@ -500,12 +746,84 @@ class OpcUaServerSession {
     return [_wrapMsgResponse(requestChunk, w.take())];
   }
 
+  /// Verifies+decrypts a secured inbound MSG/CLO chunk into a plaintext
+  /// [OpcChunk] (as [parseChunk] would yield for None). Returns null on any
+  /// MAC/decrypt/format failure so the caller degrades to a clean error. A
+  /// non-final chunk is returned undecrypted so the caller's `isFinal` guard
+  /// reports the multi-chunk error unchanged.
+  OpcChunk? _decryptSecuredMsg(Uint8List frame) {
+    final channel = _secureChannel;
+    if (channel == null) {
+      return null;
+    }
+    try {
+      final header = parseChunkHeader(frame);
+      if (!header.isFinal) {
+        return OpcChunk(
+          messageType: header.messageType,
+          chunkType: header.chunkType,
+          secureChannelId: header.secureChannelId,
+          tokenId: header.tokenId,
+          sequenceNumber: 0,
+          requestId: 0,
+          body: Uint8List(0),
+        );
+      }
+      final rawHeader =
+          Uint8List.sublistView(frame, 0, header.securityHeaderEnd);
+      final rawAfter =
+          Uint8List.sublistView(frame, header.securityHeaderEnd, header.size);
+      final tokenId = header.tokenId ?? 0;
+      final plaintext = channel.openSymmetric(
+        tokenId: tokenId,
+        rawHeader: rawHeader,
+        rawAfterSecurityHeader: rawAfter,
+      );
+      // plaintext = sequenceHeader(8) ++ body.
+      if (plaintext.length < 8) {
+        return null;
+      }
+      final view = ByteData.sublistView(plaintext, 0, 8);
+      final sequenceNumber = view.getUint32(0, Endian.little);
+      final requestId = view.getUint32(4, Endian.little);
+      return OpcChunk(
+        messageType: header.messageType,
+        chunkType: header.chunkType,
+        secureChannelId: header.secureChannelId,
+        tokenId: tokenId,
+        sequenceNumber: sequenceNumber,
+        requestId: requestId,
+        body: Uint8List.fromList(Uint8List.sublistView(plaintext, 8)),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   Uint8List _wrapMsgResponse(OpcChunk requestChunk, Uint8List body) {
+    return _buildMsgOut(requestChunk.requestId, body);
+  }
+
+  /// Frames one outbound MSG body — secured via [OpcSecureChannel.buildSecuredMsg]
+  /// on a secured channel, or a plain [buildMsgChunk] otherwise (byte-identical
+  /// to the pre-security host). Uses the current channel/token ids and the
+  /// server's own next sequence number.
+  Uint8List _buildMsgOut(int requestId, Uint8List body) {
+    final channel = _secureChannel;
+    if (_channelSecured && channel != null) {
+      return channel.buildSecuredMsg(
+        secureChannelId: _channel!.channelId,
+        tokenId: _channel!.tokenId,
+        sequenceNumber: _nextSeq(),
+        requestId: requestId,
+        body: body,
+      );
+    }
     return buildMsgChunk(
       secureChannelId: _channel!.channelId,
       tokenId: _channel!.tokenId,
       sequenceNumber: _nextSeq(),
-      requestId: requestChunk.requestId,
+      requestId: requestId,
       body: body,
     );
   }
@@ -518,13 +836,7 @@ class OpcUaServerSession {
   /// ids and the server's own next sequence number, same as every other
   /// outbound frame.
   Uint8List _wrapMsgResponseForRequestId(int requestId, Uint8List body) {
-    return buildMsgChunk(
-      secureChannelId: _channel!.channelId,
-      tokenId: _channel!.tokenId,
-      sequenceNumber: _nextSeq(),
-      requestId: requestId,
-      body: body,
-    );
+    return _buildMsgOut(requestId, body);
   }
 
   /// GetEndpointsRequest (get_endpoints_request.rs): requestHeader(consumed
@@ -544,25 +856,106 @@ class OpcUaServerSession {
     final w = OpcUaWriter();
     w.nodeId(const OpcNodeId.numeric(0, _Ids.getEndpointsResponse));
     w.responseHeader(_respond(header));
-    w.int32(1); // endpoints: one EndpointDescription
-    _writeEndpointDescription(w);
+    _writeEndpoints(w);
     return [_wrapMsgResponse(chunk, w.take())];
+  }
+
+  /// Writes the EndpointDescription[] array: `Int32 count` + one
+  /// EndpointDescription per enabled (policy, mode) in [securityModes]. For the
+  /// default `['None']` (+ allowAnonymous, no credentials) this emits exactly
+  /// one None/Anonymous endpoint — byte-identical to the pre-security host.
+  void _writeEndpoints(OpcUaWriter w) {
+    final specs = _enabledEndpoints();
+    w.int32(specs.length);
+    for (final spec in specs) {
+      _writeEndpointDescription(w, spec);
+    }
+  }
+
+  /// Parses [securityModes] into the concrete (policyUri, securityMode int,
+  /// secure) endpoint set. Unrecognized tokens are skipped; if nothing is
+  /// recognized, a single None endpoint is advertised so the server is never
+  /// endpoint-less.
+  List<_EndpointSpec> _enabledEndpoints() {
+    final specs = <_EndpointSpec>[];
+    for (final token in securityModes) {
+      switch (token) {
+        case 'None':
+          specs.add(const _EndpointSpec(
+            policyUri: kSecurityPolicyNoneUri,
+            securityMode: _securityModeNone,
+            secure: false,
+          ));
+          break;
+        case 'Basic256Sha256/Sign':
+          specs.add(const _EndpointSpec(
+            policyUri: kSecurityPolicyBasic256Sha256Uri,
+            securityMode: _securityModeSign,
+            secure: true,
+          ));
+          break;
+        case 'Basic256Sha256/SignAndEncrypt':
+          specs.add(const _EndpointSpec(
+            policyUri: kSecurityPolicyBasic256Sha256Uri,
+            securityMode: _securityModeSignAndEncrypt,
+            secure: true,
+          ));
+          break;
+        default:
+          // Unknown token — skip.
+          break;
+      }
+    }
+    if (specs.isEmpty) {
+      specs.add(const _EndpointSpec(
+        policyUri: kSecurityPolicyNoneUri,
+        securityMode: _securityModeNone,
+        secure: false,
+      ));
+    }
+    return specs;
   }
 
   /// EndpointDescription (endpoint_description.rs): endpointUrl,
   /// server ApplicationDescription, serverCertificate ByteString,
   /// securityMode Int32 enum, securityPolicyUri, userIdentityTokens array,
-  /// transportProfileUri, securityLevel Byte.
-  void _writeEndpointDescription(OpcUaWriter w) {
+  /// transportProfileUri, securityLevel Byte. Secure endpoints carry the
+  /// server certificate DER; the None endpoint carries a null certificate and
+  /// securityLevel 0 (byte-identical to the pre-security host).
+  void _writeEndpointDescription(OpcUaWriter w, _EndpointSpec spec) {
     w.string(_advertisedEndpointUrl());
     _writeApplicationDescription(w);
-    w.byteString(null); // serverCertificate
-    w.int32(_securityModeNone);
-    w.string(kSecurityPolicyNoneUri);
-    w.int32(1); // userIdentityTokens: one UserTokenPolicy
-    _writeAnonymousUserTokenPolicy(w);
+    w.byteString(spec.secure ? serverCertificateDer : null);
+    w.int32(spec.securityMode);
+    w.string(spec.policyUri);
+    _writeUserTokenPolicies(w, secure: spec.secure);
     w.string(_transportProfileUriUaTcp);
-    w.uint8(0); // securityLevel
+    w.uint8(spec.secure ? 1 : 0); // securityLevel (0 for None, unchanged)
+  }
+
+  /// Writes the UserTokenPolicy[] for one endpoint: an anonymous policy when
+  /// [allowAnonymous], plus a username policy when [credentials] are
+  /// configured. For the default (allowAnonymous, no credentials) this is
+  /// exactly one anonymous policy — byte-identical to the pre-security host.
+  void _writeUserTokenPolicies(OpcUaWriter w, {required bool secure}) {
+    final writeAnonymous = allowAnonymous;
+    final writeUserName = credentials.isNotEmpty;
+    var count = 0;
+    if (writeAnonymous) count++;
+    if (writeUserName) count++;
+    // Never advertise an endpoint with zero token policies.
+    if (count == 0) {
+      w.int32(1);
+      _writeAnonymousUserTokenPolicy(w);
+      return;
+    }
+    w.int32(count);
+    if (writeAnonymous) {
+      _writeAnonymousUserTokenPolicy(w);
+    }
+    if (writeUserName) {
+      _writeUserNameUserTokenPolicy(w, secure: secure);
+    }
   }
 
   /// Task 2 (discovery/endpoint-echo): the endpointUrl to advertise in
@@ -615,6 +1008,17 @@ class OpcUaServerSession {
     w.string(null); // securityPolicyUri
   }
 
+  /// UserTokenPolicy for username/password auth (tokenType UserName=1). On a
+  /// secure endpoint the password is encrypted with Basic256Sha256; on a None
+  /// endpoint the policy carries a null securityPolicyUri (plaintext password).
+  void _writeUserNameUserTokenPolicy(OpcUaWriter w, {required bool secure}) {
+    w.string('username');
+    w.int32(_userTokenTypeUserName);
+    w.string(null); // issuedTokenType
+    w.string(null); // issuerEndpointUrl
+    w.string(secure ? kSecurityPolicyBasic256Sha256Uri : null);
+  }
+
   List<Uint8List> _handleCreateSession(
     OpcChunk chunk,
     OpcUaReader reader,
@@ -648,16 +1052,31 @@ class OpcUaServerSession {
 
     final revisedTimeout = _boundSessionTimeout(requestedTimeout);
 
+    // On a SECURED channel the CreateSessionResponse MUST carry the server's
+    // application-instance certificate and a server nonce; a strict OPC UA
+    // client (e.g. the Rust `opcua` crate) rejects the session with
+    // Bad_CertificateInvalid if `serverCertificate` is null, and — critically —
+    // it overwrites its own secure-channel nonce with THIS `serverNonce` and
+    // then uses that nonce to OAEP-encrypt the UserNameIdentityToken password
+    // on ActivateSession. Our own [OpcSecureChannel.decryptUserPassword]
+    // verifies that trailing nonce against the same channel's server nonce, so
+    // the two only agree if we echo the channel's server nonce here. A None
+    // channel keeps both null exactly as before (the pre-security byte layout).
+    //
+    // The `serverSignature` (a SignatureData over clientCert ++ clientNonce)
+    // stays null: the Rust client's verification of it is a documented no-op
+    // (a TODO in its `process_create_session_response`), and v1 does not target
+    // clients that enforce it — see docs/protocols/OPCUA.md "Known limitations".
+    final secureChannel = _channelSecured ? _secureChannel : null;
     final w = OpcUaWriter();
     w.nodeId(const OpcNodeId.numeric(0, _Ids.createSessionResponse));
     w.responseHeader(_respond(header));
     w.nodeId(sessionId);
     w.nodeId(authToken);
     w.float64(revisedTimeout);
-    w.byteString(null); // serverNonce
-    w.byteString(null); // serverCertificate
-    w.int32(1); // serverEndpoints: same one EndpointDescription
-    _writeEndpointDescription(w);
+    w.byteString(secureChannel?.serverNonce); // serverNonce (null on None)
+    w.byteString(secureChannel != null ? serverCertificateDer : null); // serverCertificate
+    _writeEndpoints(w); // serverEndpoints
     w.int32(-1); // serverSoftwareCertificates: null array
     // SignatureData (signature_data.rs): algorithm String, signature ByteString.
     w.string(null);
@@ -712,26 +1131,38 @@ class OpcUaServerSession {
     reader.byteString(); // signature
     _skipArrayOfStrings(reader); // clientSoftwareCertificates (SignedSoftwareCertificate[])
     _skipArrayOfStrings(reader); // localeIds
-    // userIdentityToken: ExtensionObject. Accept AnonymousIdentityToken or
-    // an empty/null ExtensionObject as anonymous (lenient v1) — mirrors
-    // server/identity_token.rs:22-27 ("if o.is_empty() { ... Treat as
-    // anonymous }").
+    // userIdentityToken: ExtensionObject. Recognize AnonymousIdentityToken
+    // (or an empty/null ExtensionObject — server/identity_token.rs:22-27) and
+    // UserNameIdentityToken; anything else is rejected.
     final tokenTypeId = reader.extensionObjectHeader();
-    if (reader.lastExtensionObjectHasBody) {
-      reader.byteString(); // drain the body; we don't validate its contents.
-    }
-    final isKnownAnonymousToken = tokenTypeId.isNumeric &&
+    final tokenBody =
+        reader.lastExtensionObjectHasBody ? reader.byteString() : null;
+    reader.string(); // userTokenSignature.algorithm
+    reader.byteString(); // userTokenSignature.signature
+
+    final isAnonymous = tokenTypeId.isNumeric &&
         (tokenTypeId.numericId == _Ids.anonymousIdentityToken ||
             (tokenTypeId.numericId == 0 && tokenTypeId.namespace == 0));
-    if (!isKnownAnonymousToken) {
+    final isUserName = tokenTypeId.isNumeric &&
+        tokenTypeId.numericId == _Ids.userNameIdentityToken;
+
+    final int authResult;
+    if (isUserName) {
+      authResult = _validateUserNameToken(tokenBody);
+    } else if (isAnonymous) {
+      authResult = allowAnonymous
+          ? OpcUaStatusCodes.good
+          : OpcUaStatusCodes.badIdentityTokenRejected;
+    } else {
+      authResult = OpcUaStatusCodes.badIdentityTokenRejected;
+    }
+    if (authResult != OpcUaStatusCodes.good) {
       return _fault(
         chunk,
         requestHandle: header.requestHandle,
-        serviceResult: OpcUaStatusCodes.badServiceUnsupported,
+        serviceResult: authResult,
       );
     }
-    reader.string(); // userTokenSignature.algorithm
-    reader.byteString(); // userTokenSignature.signature
 
     _session!.activated = true;
 
@@ -742,6 +1173,88 @@ class OpcUaServerSession {
     w.int32(-1); // results: null array
     w.int32(-1); // diagnosticInfos: null array
     return [_wrapMsgResponse(chunk, w.take())];
+  }
+
+  /// Validates a UserNameIdentityToken body (policyId String, userName String,
+  /// password ByteString, encryptionAlgorithm String — user_name_identity_token.rs)
+  /// against the configured [credentials]. On a secured channel the password is
+  /// OAEP-decrypted via the secure channel (which also verifies the trailing
+  /// server nonce); on a None channel it is the plaintext bytes. Returns
+  /// Good on a match, else Bad_UserAccessDenied (wrong password / unknown user)
+  /// or Bad_IdentityTokenRejected (unusable token).
+  int _validateUserNameToken(List<int>? tokenBody) {
+    if (tokenBody == null) {
+      return OpcUaStatusCodes.badIdentityTokenRejected;
+    }
+    if (credentials.isEmpty) {
+      // No username auth configured — reject username tokens.
+      return OpcUaStatusCodes.badIdentityTokenRejected;
+    }
+    final String? userName;
+    final List<int>? passwordBytes;
+    final String? encryptionAlgorithm;
+    try {
+      final r = OpcUaReader(Uint8List.fromList(tokenBody));
+      r.string(); // policyId — not used for authz here.
+      userName = r.string();
+      passwordBytes = r.byteString();
+      encryptionAlgorithm = r.string();
+    } catch (_) {
+      return OpcUaStatusCodes.badIdentityTokenRejected;
+    }
+    if (userName == null || passwordBytes == null) {
+      return OpcUaStatusCodes.badIdentityTokenRejected;
+    }
+
+    final String? password;
+    final channel = _secureChannel;
+    final hasEncryption =
+        encryptionAlgorithm != null && encryptionAlgorithm.isNotEmpty;
+    if (hasEncryption) {
+      // Encrypted password — requires the secure channel to decrypt.
+      if (channel == null) {
+        return OpcUaStatusCodes.badIdentityTokenRejected;
+      }
+      password = channel.decryptUserPassword(Uint8List.fromList(passwordBytes));
+      if (password == null) {
+        // Decrypt / nonce-verification failed.
+        return OpcUaStatusCodes.badIdentityTokenRejected;
+      }
+    } else {
+      // Plaintext password (None-policy user token).
+      try {
+        password = utf8.decode(passwordBytes);
+      } catch (_) {
+        return OpcUaStatusCodes.badIdentityTokenRejected;
+      }
+    }
+
+    final expected = credentials[userName];
+    // Fail closed: never authenticate on an empty client password or an empty
+    // expected password. Passwords are never persisted, so post-reload a
+    // configured credential has a blank expected value; treating that as a
+    // valid match would let any known username in with an empty password
+    // (over a None endpoint this needs no crypto at all).
+    if (password.isEmpty || expected == null || expected.isEmpty) {
+      return OpcUaStatusCodes.badUserAccessDenied;
+    }
+    if (_constantTimeEquals(expected, password)) {
+      return OpcUaStatusCodes.good;
+    }
+    return OpcUaStatusCodes.badUserAccessDenied;
+  }
+
+  /// Length-independent constant-time-ish string comparison for credential
+  /// checking (avoids early-out timing leaks on the matching prefix).
+  bool _constantTimeEquals(String a, String b) {
+    final ab = utf8.encode(a);
+    final bb = utf8.encode(b);
+    var diff = ab.length ^ bb.length;
+    final n = ab.length < bb.length ? ab.length : bb.length;
+    for (var i = 0; i < n; i++) {
+      diff |= ab[i] ^ bb[i];
+    }
+    return diff == 0;
   }
 
   void _skipArrayOfStrings(OpcUaReader reader) {

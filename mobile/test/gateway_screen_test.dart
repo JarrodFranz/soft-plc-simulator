@@ -69,6 +69,25 @@ class _FakeCountsOpcUaHost extends OpcUaHost {
   }
 }
 
+/// A fake host that fakes `appCertThumbprint`/`regenerateCertificate()` (no
+/// real cert-store I/O or RSA keygen) — used to test the OPC UA card's
+/// app-certificate display + Regenerate button without the ~1-3s real keygen
+/// cost (that's what `opcua_host_test.dart`'s cert-store wiring test is for).
+class _FakeCertOpcUaHost extends OpcUaHost {
+  String? _fakeThumbprint;
+  int regenerateCalls = 0;
+
+  @override
+  String? get appCertThumbprint => _fakeThumbprint;
+
+  @override
+  Future<void> regenerateCertificate() async {
+    regenerateCalls++;
+    _fakeThumbprint = 'AA:BB:CC:${regenerateCalls.toString().padLeft(2, '0')}';
+    notifyListeners();
+  }
+}
+
 /// A fake host that fakes `status` directly (no real socket) — mirrors
 /// [_FakeCountsOpcUaHost]: used ONLY to prove the MQTT card disables its
 /// config-edit fields (format dropdown, topic/namespace fields, etc.) while
@@ -583,6 +602,189 @@ void main() {
       await tester.tap(find.byKey(const Key('opcua_enable_switch')));
       await tester.pump();
       host.setRunning(subscriptions: 12, monitoredItems: 345);
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('OPC UA security config (WS19 Task 6)', () {
+    testWidgets('None switch is always on and disabled (non-removable)', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('opcua_enable_switch')));
+      await tester.pump();
+
+      final noneSwitch = tester.widget<Switch>(
+        find.byKey(const Key('opcua_security_none_switch')),
+      );
+      expect(noneSwitch.value, isTrue);
+      expect(noneSwitch.onChanged, isNull);
+      expect(project.protocols!.opcua!.securityModes, contains('None'));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('toggling Basic256Sha256 Sign edits securityModes', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('opcua_enable_switch')));
+      await tester.pump();
+
+      expect(project.protocols!.opcua!.securityModes, isNot(contains('Basic256Sha256/Sign')));
+
+      await tester.tap(find.byKey(const Key('opcua_security_sign_switch')));
+      await tester.pump();
+      expect(project.protocols!.opcua!.securityModes, contains('Basic256Sha256/Sign'));
+
+      await tester.tap(find.byKey(const Key('opcua_security_sign_switch')));
+      await tester.pump();
+      expect(project.protocols!.opcua!.securityModes, isNot(contains('Basic256Sha256/Sign')));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('toggling Basic256Sha256 Sign & Encrypt edits securityModes', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('opcua_enable_switch')));
+      await tester.pump();
+
+      await tester.tap(find.byKey(const Key('opcua_security_sign_encrypt_switch')));
+      await tester.pump();
+      expect(
+        project.protocols!.opcua!.securityModes,
+        contains('Basic256Sha256/SignAndEncrypt'),
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('toggling allow-anonymous edits allowAnonymous', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('opcua_enable_switch')));
+      await tester.pump();
+
+      expect(project.protocols!.opcua!.allowAnonymous, isTrue);
+      await tester.ensureVisible(find.byKey(const Key('opcua_allow_anonymous_switch')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('opcua_allow_anonymous_switch')));
+      await tester.pump();
+      expect(project.protocols!.opcua!.allowAnonymous, isFalse);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('adding, editing, and deleting a credential row edits config.credentials', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('opcua_enable_switch')));
+      await tester.pump();
+
+      expect(project.protocols!.opcua!.credentials, isEmpty);
+
+      await tester.ensureVisible(find.byKey(const Key('opcua_add_credential_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('opcua_add_credential_button')));
+      await tester.pump();
+      expect(project.protocols!.opcua!.credentials.length, 1);
+
+      await tester.ensureVisible(find.byKey(const Key('opcua_credential_username_0')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('opcua_credential_username_0')), 'operator');
+      await tester.pump();
+      await tester.ensureVisible(find.byKey(const Key('opcua_credential_password_0')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('opcua_credential_password_0')), 's3cret');
+      await tester.pump();
+
+      expect(project.protocols!.opcua!.credentials.single.username, 'operator');
+      expect(project.protocols!.opcua!.credentials.single.password, 's3cret');
+
+      // Password never leaks into the persisted project JSON.
+      final json = project.protocols!.opcua!.toJson();
+      expect((json['credentials'] as List).single, {'username': 'operator'});
+
+      await tester.ensureVisible(find.byKey(const Key('opcua_credential_delete_0')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('opcua_credential_delete_0')));
+      await tester.pump();
+      expect(project.protocols!.opcua!.credentials, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('app-cert thumbprint shows a placeholder until an identity is loaded, '
+        'and the Regenerate button calls host.regenerateCertificate()', (tester) async {
+      final project = _project();
+      final host = _FakeCertOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('opcua_enable_switch')));
+      await tester.pump();
+
+      expect(find.textContaining('Not yet generated'), findsOneWidget);
+
+      await tester.ensureVisible(find.byKey(const Key('opcua_regenerate_cert_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('opcua_regenerate_cert_button')));
+      await tester.pump();
+
+      expect(host.regenerateCalls, 1);
+      expect(find.textContaining('Not yet generated'), findsNothing);
+      expect(find.byKey(const Key('opcua_cert_thumbprint_text')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 320 width with security section, credentials, and cert section shown', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      await setSurface(tester, smallPhoneSize);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('opcua_enable_switch')));
+      await tester.pump();
+      await tester.ensureVisible(find.byKey(const Key('opcua_add_credential_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('opcua_add_credential_button')));
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 1400 width with security section, credentials, and cert section shown', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      await setSurface(tester, desktopSize);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('opcua_enable_switch')));
+      await tester.pump();
+      await tester.ensureVisible(find.byKey(const Key('opcua_add_credential_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('opcua_add_credential_button')));
       await tester.pump();
 
       expect(tester.takeException(), isNull);
