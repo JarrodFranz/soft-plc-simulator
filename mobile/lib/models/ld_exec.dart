@@ -52,9 +52,12 @@ double _operandValue(PlcProject p, String s) {
 
 /// Executes every LadderLogic program in [p], rungs top-to-bottom, once.
 /// Writes are immediately visible to later rungs (seal-in works).
-void executeLdPrograms(PlcProject p, int dtMs, LdExecRuntime rt) {
+void executeLdPrograms(PlcProject p, int dtMs, LdExecRuntime rt, {Set<String>? only}) {
   for (final prog in p.programs) {
     if (prog.language != 'LadderLogic') {
+      continue;
+    }
+    if (only != null && !only.contains(prog.name)) {
       continue;
     }
     for (final rung in prog.rungs) {

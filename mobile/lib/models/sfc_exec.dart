@@ -34,9 +34,12 @@ void _forceAwareWrite(PlcProject p, String path, dynamic value) {
 /// runs each scan (N semantics), STEP_T accumulates by scan ticks, and the
 /// first true outgoing transition (list order) switches the active step —
 /// the new step acts from the next scan.
-void executeSfcPrograms(PlcProject p, int dtMs, SfcRuntime rt) {
+void executeSfcPrograms(PlcProject p, int dtMs, SfcRuntime rt, {Set<String>? only}) {
   for (final prog in p.programs) {
     if (prog.language != 'SequentialFunctionChart' || prog.sfcSteps.isEmpty) {
+      continue;
+    }
+    if (only != null && !only.contains(prog.name)) {
       continue;
     }
     // Resolve (or initialize) the active step.

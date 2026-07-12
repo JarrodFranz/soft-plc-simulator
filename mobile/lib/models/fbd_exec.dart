@@ -489,9 +489,12 @@ String _resolvedToPin(FbdWire w, FbdBlock? toBlock) {
 /// TON/TOF are executed statefully (per-block state in [rt]), producing both
 /// `Q` and `ET` outputs. TAG_OUTPUT writes its `IN` force-aware. Cycles
 /// terminate deterministically without hanging. Never throws.
-void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt) {
+void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? only}) {
   for (final prog in p.programs) {
     if (prog.language != 'FunctionBlockDiagram' || prog.fbdBlocks.isEmpty) {
+      continue;
+    }
+    if (only != null && !only.contains(prog.name)) {
       continue;
     }
     final byId = <String, FbdBlock>{};
