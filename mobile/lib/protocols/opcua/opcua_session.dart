@@ -1230,7 +1230,15 @@ class OpcUaServerSession {
     }
 
     final expected = credentials[userName];
-    if (expected != null && _constantTimeEquals(expected, password)) {
+    // Fail closed: never authenticate on an empty client password or an empty
+    // expected password. Passwords are never persisted, so post-reload a
+    // configured credential has a blank expected value; treating that as a
+    // valid match would let any known username in with an empty password
+    // (over a None endpoint this needs no crypto at all).
+    if (password.isEmpty || expected == null || expected.isEmpty) {
+      return OpcUaStatusCodes.badUserAccessDenied;
+    }
+    if (_constantTimeEquals(expected, password)) {
       return OpcUaStatusCodes.good;
     }
     return OpcUaStatusCodes.badUserAccessDenied;

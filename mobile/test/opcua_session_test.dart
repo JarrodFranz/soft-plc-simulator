@@ -1459,6 +1459,149 @@ void main() {
       expect(badDecoded.header.serviceResult, 0x801F0000); // Bad_UserAccessDenied
     });
 
+    test('empty-password credential (post-reload state) is REJECTED, not '
+        'authenticated, for an empty client password', () {
+      // Passwords are never persisted, so after a restart / project reload a
+      // configured credential has a blank password. Fail closed: a client
+      // presenting that username with an EMPTY password must be rejected —
+      // over a None endpoint this attack needs no crypto at all.
+      OpcUaServerSession freshSession() {
+        final s = OpcUaServerSession(
+          info: _info,
+          services: null,
+          credentials: const {'operator': ''}, // blank-after-reload
+          allowAnonymous: false,
+        );
+        s.onBytes(_buildHello(), 0);
+        return s;
+      }
+
+      ({int channelId, int tokenId, OpcNodeId authToken}) openAndCreate(
+          OpcUaServerSession s) {
+        final opn = s.onBytes(
+          _buildOpenSecureChannelRequestChunk(
+              secureChannelId: 0, sequenceNumber: 1, requestId: 10),
+          0,
+        );
+        final r = OpcUaReader(parseChunk(opn.single).body);
+        r.nodeId();
+        r.responseHeader();
+        r.uint32();
+        final channelId = r.uint32();
+        final tokenId = r.uint32();
+        final create = s.onBytes(
+          _buildCreateSessionRequestChunk(
+            secureChannelId: channelId,
+            tokenId: tokenId,
+            sequenceNumber: 2,
+            requestId: 11,
+          ),
+          0,
+        );
+        final authToken = _decodeResponseChunk(create.single).reader.nodeId();
+        return (channelId: channelId, tokenId: tokenId, authToken: authToken);
+      }
+
+      final session = freshSession();
+      final c = openAndCreate(session);
+      final frames = session.onBytes(
+        _buildActivateSessionUserNameChunk(
+          secureChannelId: c.channelId,
+          tokenId: c.tokenId,
+          sequenceNumber: 3,
+          requestId: 12,
+          authToken: c.authToken,
+          userName: 'operator',
+          password: '', // empty client password
+        ),
+        0,
+      );
+      final decoded = _decodeResponseChunk(frames.single);
+      expect(decoded.encodingId, _serviceFaultId);
+      expect(decoded.header.serviceResult, 0x801F0000); // Bad_UserAccessDenied
+    });
+
+    test('known username with an empty password is rejected even when a '
+        'DIFFERENT credential has a non-empty password', () {
+      // 'admin' has a real password; 'operator' is blank-after-reload. A client
+      // presenting operator/'' must not slip in on the back of admin's entry.
+      OpcUaServerSession freshSession() {
+        final s = OpcUaServerSession(
+          info: _info,
+          services: null,
+          credentials: const {'admin': 'r3alpass', 'operator': ''},
+          allowAnonymous: false,
+        );
+        s.onBytes(_buildHello(), 0);
+        return s;
+      }
+
+      ({int channelId, int tokenId, OpcNodeId authToken}) openAndCreate(
+          OpcUaServerSession s) {
+        final opn = s.onBytes(
+          _buildOpenSecureChannelRequestChunk(
+              secureChannelId: 0, sequenceNumber: 1, requestId: 10),
+          0,
+        );
+        final r = OpcUaReader(parseChunk(opn.single).body);
+        r.nodeId();
+        r.responseHeader();
+        r.uint32();
+        final channelId = r.uint32();
+        final tokenId = r.uint32();
+        final create = s.onBytes(
+          _buildCreateSessionRequestChunk(
+            secureChannelId: channelId,
+            tokenId: tokenId,
+            sequenceNumber: 2,
+            requestId: 11,
+          ),
+          0,
+        );
+        final authToken = _decodeResponseChunk(create.single).reader.nodeId();
+        return (channelId: channelId, tokenId: tokenId, authToken: authToken);
+      }
+
+      // operator/'' -> rejected.
+      final s1 = freshSession();
+      final c1 = openAndCreate(s1);
+      final f1 = s1.onBytes(
+        _buildActivateSessionUserNameChunk(
+          secureChannelId: c1.channelId,
+          tokenId: c1.tokenId,
+          sequenceNumber: 3,
+          requestId: 12,
+          authToken: c1.authToken,
+          userName: 'operator',
+          password: '',
+        ),
+        0,
+      );
+      final d1 = _decodeResponseChunk(f1.single);
+      expect(d1.encodingId, _serviceFaultId);
+      expect(d1.header.serviceResult, 0x801F0000); // Bad_UserAccessDenied
+
+      // The non-empty credential still authenticates with its correct password
+      // (existing behavior preserved).
+      final s2 = freshSession();
+      final c2 = openAndCreate(s2);
+      final f2 = s2.onBytes(
+        _buildActivateSessionUserNameChunk(
+          secureChannelId: c2.channelId,
+          tokenId: c2.tokenId,
+          sequenceNumber: 3,
+          requestId: 12,
+          authToken: c2.authToken,
+          userName: 'admin',
+          password: 'r3alpass',
+        ),
+        0,
+      );
+      final d2 = _decodeResponseChunk(f2.single);
+      expect(d2.encodingId, _activateSessionResponseId);
+      expect(d2.header.serviceResult, _statusGood);
+    });
+
     test('anonymous refused when allowAnonymous=false', () {
       final session = OpcUaServerSession(
         info: _info,

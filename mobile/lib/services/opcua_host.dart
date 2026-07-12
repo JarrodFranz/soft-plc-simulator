@@ -431,8 +431,15 @@ class OpcUaHost extends ChangeNotifier {
         sampler: services.sample,
         securityModes: config.securityModes,
         serverCertificateDer: identity?.certificateDer,
+        // Fail closed: passwords are never persisted, so after a restart /
+        // project reload every configured credential has a blank password.
+        // Skip any credential with an empty username OR empty password so a
+        // blank-after-reload entry is simply not an accepted login (rather
+        // than an empty-password login that any known username could use).
         credentials: <String, String>{
-          for (final c in config.credentials) c.username: c.password,
+          for (final c in config.credentials)
+            if (c.username.isNotEmpty && c.password.isNotEmpty)
+              c.username: c.password,
         },
         allowAnonymous: config.allowAnonymous,
         secureChannel: channel,

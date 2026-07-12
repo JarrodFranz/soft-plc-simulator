@@ -239,7 +239,8 @@ E2E probe does.
 ### Known limitations (v3, documented deliberately)
 
 - **The app certificate omits `KeyUsage`/`ExtendedKeyUsage` extensions.** It
-  carries only Basic constraints + the `applicationUri` SAN. The Rust
+  carries only the `applicationUri` SAN (there is no `BasicConstraints`
+  extension either). The Rust
   `opcua` client accepts it, but a **strict client (Ignition/Eclipse Milo,
   the .NET OPC UA stack) MAY reject** a cert lacking
   `KeyUsage=digitalSignature,keyEncipherment,dataEncipherment` /
@@ -259,6 +260,12 @@ E2E probe does.
   `process_create_session_response`), so the live handshake succeeds; a
   client that strictly verifies the server signature would reject it. This
   is the natural companion to the KeyUsage add above.
+- **The `ActivateSession` client signature is not verified.** The server does
+  not check the client's `clientSignature` (proof-of-possession of the client
+  certificate's private key over serverCert ++ serverNonce), so a client is
+  not required to prove it holds the cert it presented. This is the structural
+  twin of the null `serverSignature` above — both are unimplemented sides of
+  the same mutual proof-of-possession handshake.
 - **Deferred:** deprecated policies (`Basic128Rsa15`, `Basic256`),
   `Aes*Sha256*` policies, `X509IdentityToken` user auth, and a managed
   trust-list / rejected-cert store (v3 is trust-on-first-use only).
