@@ -296,6 +296,25 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   @visibleForTesting
   PlcProject get debugActiveProject => _activeProject;
 
+  /// Test-only hook: whether the shell currently holds a latched watchdog
+  /// fault, for asserting fault state directly without scraping banner text.
+  @visibleForTesting
+  bool get debugFaulted => _faulted;
+
+  /// Test-only hook: adds [proj] to the in-memory project catalog (mirrors
+  /// what `_createNewProject`/`_importProject` do) so it's a valid target
+  /// for `debugSwitchToProject` — the project switcher UI only ever offers
+  /// projects already in `_allProjects`.
+  @visibleForTesting
+  void debugAddProject(PlcProject proj) => setState(() => _allProjects.add(proj));
+
+  /// Test-only hook: drives the same project-replacement path as picking
+  /// [proj] from the project switcher UI. Used by widget tests to exercise
+  /// `_switchActiveProject` (and therefore `_beginProjectSession`) without
+  /// needing to drive the picker dialog.
+  @visibleForTesting
+  void debugSwitchToProject(PlcProject proj) => _switchActiveProject(proj);
+
   /// Test-only hook: appends [t] to the active project's task list.
   @visibleForTesting
   void debugAddTask(PlcTask t) => setState(() => _activeProject.tasks.add(t));
@@ -329,6 +348,27 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         triggerTag: triggerTag,
         watchdogMs: watchdogMs,
       );
+
+  /// Reset all per-run-session runtime state when the active project is
+  /// replaced (switch / undo-redo / create / duplicate / delete / reset /
+  /// import): scheduler, watchdog fault, scan-time stats, and timers. A
+  /// replaced project must never inherit another project's fault or telemetry.
+  void _beginProjectSession() {
+    _scan.resetSession();
+    _faulted = false;
+    _faultTaskName = '';
+    _faultCode = 0;
+    _sessionScans = 0;
+    _lastScanMs = 0;
+    _maxScanMs = 0;
+    _minScanMs = 0;
+    _uptime
+      ..reset()
+      ..start();
+    _sinceLast
+      ..reset()
+      ..start();
+  }
 
   /// (Re)starts a run session: resets the scheduler/engine runtimes and the
   /// per-session scan-time stats, and (re)starts the uptime/free-run clocks.
@@ -430,7 +470,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'PROGRAM:${proj.programs.first.name}';
       }
       scanCount = 0;
-      _scan.resetSession();
+      _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
@@ -532,7 +572,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       }
       _activeProject = proj;
       _editorRevision++;
-      _scan.resetSession();
+      _beginProjectSession();
       _ensureValidView();
     });
     _autosaveTimer?.cancel();
@@ -658,7 +698,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _activeProject = blank;
       _activeViewId = 'MEMORY';
       scanCount = 0;
-      _scan.resetSession();
+      _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
@@ -690,7 +730,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'MEMORY';
       }
       scanCount = 0;
-      _scan.resetSession();
+      _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
@@ -770,7 +810,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'MEMORY';
       }
       scanCount = 0;
-      _scan.resetSession();
+      _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
@@ -820,7 +860,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'MEMORY';
       }
       scanCount = 0;
-      _scan.resetSession();
+      _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
@@ -937,7 +977,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'MEMORY';
       }
       scanCount = 0;
-      _scan.resetSession();
+      _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
