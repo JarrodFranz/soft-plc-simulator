@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
@@ -9,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/project_model.dart';
 import '../models/project_history.dart';
 import '../models/system_tags.dart';
+import '../models/tag_resolver.dart';
 import '../data/default_projects.dart';
 import '../data/project_repository.dart';
 import '../data/project_transfer.dart';
@@ -40,10 +42,10 @@ class WorkspaceShell extends StatefulWidget {
   const WorkspaceShell({super.key, this.repository});
 
   @override
-  State<WorkspaceShell> createState() => _WorkspaceShellState();
+  State<WorkspaceShell> createState() => WorkspaceShellState();
 }
 
-class _WorkspaceShellState extends State<WorkspaceShell> {
+class WorkspaceShellState extends State<WorkspaceShell> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   // Project Workspace Repository
@@ -61,6 +63,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   int scanCount = 0;
   int scanSpeedMs = 500; // Configurable scan speed (50ms to 2000ms)
   Timer? _scanTimer;
+  Timer? _supervisorTimer;
   final ScanTickRuntime _scan = ScanTickRuntime();
   final OpcUaHost _opcuaHost = OpcUaHost();
   final ModbusHost _modbusHost = ModbusHost();
@@ -69,7 +72,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
 
   // Scheduler-driven scan-tick status (fault latch + scan-time stats),
   // surfaced via the reserved `System` tag each scan (see `system_tags.dart`).
-  final bool _freeRun = false;
+  bool _freeRun = false;
   bool _faulted = false;
   String _faultTaskName = '';
   int _faultCode = 0;
@@ -126,6 +129,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   @override
   void dispose() {
     _scanTimer?.cancel();
+    _supervisorTimer?.cancel();
     _autosaveTimer?.cancel();
     _opcuaHost.dispose();
     _modbusHost.dispose();
@@ -224,14 +228,51 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     _startScanLoop();
   }
 
+  /// (Re)arms the scan loop, mode-aware: fixed mode ticks on a
+  /// `Timer.periodic`; free-run re-arms a zero-delay `Timer` after each tick
+  /// so the event loop (and therefore the UI) still gets a chance to paint
+  /// between scans instead of the loop starving it. A slow supervisor timer
+  /// always runs alongside either mode so an external `System.AlarmReset`
+  /// write (e.g. from HMI/logic, not the Clear Fault button) still clears a
+  /// latched fault even while the scan loop itself is halted.
   void _startScanLoop() {
     _scanTimer?.cancel();
-    _scanTimer = Timer.periodic(Duration(milliseconds: scanSpeedMs), (timer) {
-      if (isRunning) {
-        _executeScan();
+    if (_freeRun) {
+      void arm() {
+        _scanTimer = Timer(Duration.zero, () {
+          if (isRunning && !_faulted) {
+            _executeScan();
+          }
+          arm();
+        });
+      }
+      arm();
+    } else {
+      _scanTimer = Timer.periodic(Duration(milliseconds: scanSpeedMs), (timer) {
+        if (isRunning && !_faulted) {
+          _executeScan();
+        }
+      });
+    }
+    _supervisorTimer?.cancel();
+    _supervisorTimer = Timer.periodic(const Duration(milliseconds: 200), (timer) {
+      if (_faulted && consumeAlarmReset(_activeProject)) {
+        setState(_clearFault);
       }
     });
   }
+
+  /// Test-only hook: forces the shell into a faulted state (as if the
+  /// watchdog had tripped mid-scan) without needing to drive an actual
+  /// scan-tick fault through a program. Used by widget tests to exercise the
+  /// fault banner / Clear Fault flow deterministically.
+  @visibleForTesting
+  void debugForceFault(String task) => setState(() {
+        _faulted = true;
+        _faultTaskName = task;
+        _faultCode = 1;
+        isRunning = false;
+      });
 
   /// (Re)starts a run session: resets the scheduler/engine runtimes and the
   /// per-session scan-time stats, and (re)starts the uptime/free-run clocks.
@@ -1066,6 +1107,36 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
             ),
       body: Column(
         children: [
+          // Watchdog fault banner. Placed at the very top of the body (above
+          // the scan toolbar) so it can never be pushed off-screen or cause a
+          // RenderFlex overflow — it's a plain top-of-column block, not
+          // competing with the toolbar's Row for width.
+          if (_faulted)
+            MaterialBanner(
+              backgroundColor: Colors.red.shade900,
+              content: Text(
+                'PLC FAULT — watchdog on task "$_faultTaskName" (code $_faultCode). '
+                'Scan halted.',
+                style: const TextStyle(color: Colors.white),
+              ),
+              leading: const Icon(Icons.warning_amber, color: Colors.white),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      // Pulse System.AlarmReset so any logic/HMI observers
+                      // watching that tag also see the reset edge, not just
+                      // the shell's own fault flag.
+                      writePath(_activeProject, 'System.AlarmReset', true);
+                      consumeAlarmReset(_activeProject);
+                      _clearFault();
+                    });
+                  },
+                  child: const Text('Clear Fault', style: TextStyle(color: Colors.white)),
+                ),
+              ],
+            ),
+
           // PLC Execution Controls Toolbar (Scan Speed Slider cleanly placed to avoid clipping)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -1152,14 +1223,22 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   }
 
   List<Widget> _buildAppBarActions(BuildContext context, {required bool compact}) {
-    // Run / Pause Toggle
+    // Run / Pause Toggle. Compact iconSize/padding matches undo/redo/
+    // freeRunToggle below — with the free-run toggle added, the compact
+    // AppBar now packs 6 tap targets at 320/360px, so every action here must
+    // shed the default 48px tap-target padding to avoid squeezing
+    // NavigationToolbar's custom layout (which, unlike a Flex, can silently
+    // overlap the leading hamburger under the actions row instead of
+    // throwing an overflow error when it runs out of room).
     final runToggle = IconButton(
       icon: Icon(
         isRunning ? Icons.pause_circle_filled : Icons.play_circle_fill,
         color: isRunning ? Colors.amber : Colors.greenAccent,
-        size: 26,
+        size: compact ? 22 : 26,
       ),
       tooltip: isRunning ? 'Pause Scan Loop' : 'Run Scan Loop',
+      padding: compact ? const EdgeInsets.symmetric(horizontal: 4) : const EdgeInsets.all(8),
+      constraints: compact ? const BoxConstraints() : null,
       onPressed: () {
         setState(() {
           if (!isRunning) {
@@ -1170,10 +1249,31 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       },
     );
 
+    // Free-run / fixed-scan mode toggle. Compact iconSize/padding matches the
+    // undo/redo buttons below so it doesn't push the already-tight compact
+    // AppBar (run/pause + tag toggle + undo/redo + overflow at 320/360px)
+    // into overflow.
+    final freeRunToggle = IconButton(
+      icon: Icon(
+        _freeRun ? Icons.fast_forward : Icons.timer_outlined,
+        color: _freeRun ? Colors.orangeAccent : Colors.grey,
+        size: compact ? 20 : 24,
+      ),
+      tooltip: _freeRun ? 'Free-run (as fast as allowed)' : 'Fixed scan (${scanSpeedMs}ms)',
+      padding: compact ? const EdgeInsets.symmetric(horizontal: 4) : const EdgeInsets.all(8),
+      constraints: compact ? const BoxConstraints() : null,
+      onPressed: () {
+        setState(() => _freeRun = !_freeRun);
+        _startScanLoop();
+      },
+    );
+
     // Toggle Tag Inspector Side Dock / End Drawer
     final tagToggle = IconButton(
-      icon: Icon(Icons.table_chart, color: isTagDockVisible ? Colors.cyanAccent : Colors.grey, size: 24),
+      icon: Icon(Icons.table_chart, color: isTagDockVisible ? Colors.cyanAccent : Colors.grey, size: compact ? 20 : 24),
       tooltip: 'Toggle Tag Inspector Side Dock',
+      padding: compact ? const EdgeInsets.symmetric(horizontal: 4) : const EdgeInsets.all(8),
+      constraints: compact ? const BoxConstraints() : null,
       onPressed: () => _openTagDock(context),
     );
 
@@ -1212,6 +1312,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
 
         undoButton,
         redoButton,
+        freeRunToggle,
 
         const SizedBox(width: 12),
 
@@ -1241,6 +1342,17 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     // the rest into a menu. Undo/Redo use their own small footprint
     // (default IconButton constraints already trimmed by the AppBar) so
     // adding two more icons here does not overflow at 320px.
+    //
+    // The free-run toggle deliberately goes into this overflow menu rather
+    // than inline: empirically, a 6th inline IconButton in this row (even
+    // with every button's tap target trimmed down) pushes the AppBar's
+    // internal NavigationToolbar layout — a CustomMultiChildLayout, not a
+    // Flex, so it never throws a RenderFlex-overflow assertion — past a
+    // threshold where it silently paints the trailing actions group
+    // overlapping the leading hamburger button at 320px width, making the
+    // hamburger untappable. Routing it through the menu instead keeps this
+    // row at its known-good size while still exposing the toggle from the
+    // app-bar actions on compact widths.
     return [
       runToggle,
       tagToggle,
@@ -1252,6 +1364,9 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         onSelected: (value) {
           if (value == 'step') {
             _executeScan();
+          } else if (value == 'freerun') {
+            setState(() => _freeRun = !_freeRun);
+            _startScanLoop();
           }
         },
         itemBuilder: (ctx) => [
@@ -1260,6 +1375,13 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
             child: ListTile(
               leading: Icon(Icons.skip_next),
               title: Text('Step Scan'),
+            ),
+          ),
+          PopupMenuItem(
+            value: 'freerun',
+            child: ListTile(
+              leading: Icon(_freeRun ? Icons.fast_forward : Icons.timer_outlined, color: _freeRun ? Colors.orangeAccent : Colors.grey),
+              title: Text(_freeRun ? 'Free-run (as fast as allowed)' : 'Fixed scan (${scanSpeedMs}ms)'),
             ),
           ),
           PopupMenuItem(
