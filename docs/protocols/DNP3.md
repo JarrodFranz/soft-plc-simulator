@@ -77,15 +77,20 @@ never its live underlying value.
 
 ## Event classes, events, and unsolicited reporting
 
-Each **input** point (`binaryInput`/`analogInput`) carries a per-point
-**event class** in `{0, 1, 2, 3}`, editable on the point-map row (the DNP3
-card's event-Class dropdown) and stored as the additive `event_class` field
-on each map entry:
+Every point — **input** (`binaryInput`/`analogInput`) **and output**
+(`binaryOutput`/`analogOutput`) — carries a per-point **event class** in
+`{0, 1, 2, 3}`, editable on the point-map row (the DNP3 card's event-Class
+dropdown, shown on every point type) and stored as the additive `event_class`
+field on each map entry:
 
 - **0** (default, and the back-compatible behavior) — static-only: the point
-  never generates events; it is reported only via Class 0. Output points are
-  always effectively class 0 (they don't generate events in v1).
+  never generates events; it is reported only via Class 0.
 - **1 / 2 / 3** — the point's changes are captured into event Class 1 / 2 / 3.
+
+Output points generate events on the **same any-change trigger** as inputs:
+whether the value changed because of a master command (SELECT/OPERATE/
+DIRECT_OPERATE) or because logic/simulation wrote the underlying tag, the
+change is detected the same way and emitted into the point's event class.
 
 A periodic tick (the host's ~500 ms `tickForTest`; ~300 ms in the E2E
 fixture) runs force-aware **change detection**: each participating point's
@@ -101,8 +106,18 @@ count + a 2-byte index prefix per point) and a **48-bit absolute timestamp**
 | Event | Object | Notes |
 |---|---|---|
 | Binary Input event | **g2v2** | with absolute time |
+| Binary Output event | **g11v2** | output-status change, with absolute time |
 | Analog Input event (int) | **g32v3** | 32-bit, with absolute time |
 | Analog Input event (float) | **g32v7** | single-precision, with absolute time |
+| Analog Output event (int) | **g42v3** | 32-bit output-status change, with absolute time |
+| Analog Output event (float) | **g42v7** | single-precision output-status change, with absolute time |
+
+All **four** point types now report change events: the outstation groups a
+mixed event batch into per-type buckets so binary/analog and input/output
+events each carry their correct object group (g2/g11 for binary
+input/output, g32/g42 for analog input/output). Output events ride the exact
+same Class-poll (solicited `g60v2/v3/v4`) and unsolicited-reporting paths as
+input events.
 
 **Per-class ring buffers** are bounded (`event_buffer_per_class`, default
 200). When a class buffer is full the oldest event is dropped and the
@@ -152,8 +167,9 @@ static-only master learns events are waiting. IIN2 bit 3
 - **Single-slot solicited pending-flush** — one solicited event batch awaits
   its CONFIRM at a time; an un-confirmed batch's events are deferred (kept
   buffered and re-reported), never silently lost.
-- Only `binaryInput`/`analogInput` generate events; counters and
-  double-bit-binary event objects are out of scope (see "v1 scope").
+- All four point types (`binaryInput`/`binaryOutput`/`analogInput`/
+  `analogOutput`) generate events; counters and double-bit-binary event
+  objects are out of scope (see "v1 scope").
 
 ## Control: SELECT / OPERATE / DIRECT_OPERATE
 
@@ -214,8 +230,9 @@ reads, Class 1/2/3 event polls, unsolicited event reporting,
 SELECT/OPERATE/DIRECT_OPERATE control) DNP3 outstation over plain TCP, 4
 point types (Binary Input, Binary Output, Analog Input, Analog Output) with
 their conventional static/control object variations, per-point event classes
-(Class 1/2/3, g2v2/g32v3/g32v7 events with 48-bit absolute time) plus
-solicited and unsolicited event reporting, force-aware reads and force-aware
+on all four point types (Class 1/2/3, g2v2/g11v2/g32v3/g32v7/g42v3/g42v7
+events with 48-bit absolute time) plus solicited and unsolicited event
+reporting, force-aware reads and force-aware
 control rejection, configurable outstation/master link addresses, and the
 auto-map/manual-map editor described above.
 
@@ -223,7 +240,7 @@ auto-map/manual-map editor described above.
 - **Analog deadbands** — events fire on *any* change; there is no
   deadband/threshold to suppress small analog fluctuations.
 - **Relative/no-time event variations** — only the absolute-time event
-  objects (g2v2/g32v3/g32v7) are emitted.
+  objects (g2v2/g11v2/g32v3/g32v7/g42v3/g42v7) are emitted.
 - **Counter and double-bit-binary events** (g20/g22/g4) — counters and
   double-bit binaries are not supported point types in v1.
 - **Time synchronization** (`DELAY_MEASUREMENT`/`RECORD_CURRENT_TIME`/WRITE
@@ -258,8 +275,9 @@ auto-map/manual-map editor described above.
   restart-clear WRITE, Class 1/2/3 event reads (CON + flush-on-CONFIRM),
   ENABLE/DISABLE_UNSOLICITED, and the unsolicited take/confirm/fail API —
   `mobile/test/dnp3_outstation_test.dart`.
-- The event engine: per-class ring buffers, force-aware change detection,
-  baseline-without-emit, overflow/drop-oldest, and the g2v2/g32v3/g32v7
+- The event engine: per-class ring buffers, force-aware change detection
+  (across all four point types, input and output), baseline-without-emit,
+  overflow/drop-oldest, and the g2v2/g11v2/g32v3/g32v7/g42v3/g42v7
   48-bit-time event encoders — `mobile/test/dnp3_events_test.dart`.
 - The `dart:io` socket host (start/stop lifecycle, link-frame dispatch over
   a real loopback socket, destination-address filtering, malformed/hostile-
@@ -298,17 +316,21 @@ transitively needs `dart:ui`) and:
    *that* value landed too — proving the outstation's byte-identical
    SELECT/OPERATE object-matching logic against a real master's two-pass
    command sequence, not just DIRECT_OPERATE's single-pass path.
-5. Polls **Class 1/2/3 events** (`g60v2/v3/v4`) in a bounded loop against two
-   dedicated, fixture-driven event points (a Class 1 `binaryInput` flipped
-   and a Class 2 `analogInput` incremented every ~1 s), and asserts the
-   master receives at least one **g2 binary event** and one **g32 analog
-   event** — proving change detection, the per-class event buffers, and the
-   solicited Class-read + CON/CONFIRM-flush path against a real master.
+5. Polls **Class 1/2/3 events** (`g60v2/v3/v4`) in a bounded loop against
+   four dedicated, fixture-driven event points (a Class 1 `binaryInput`
+   flipped, a Class 2 `analogInput` incremented, a Class 3 `binaryOutput`
+   flipped, and a Class 3 `analogOutput` incremented, every ~1 s), and
+   asserts the master receives at least one **g2 binary-input event**, one
+   **g32 analog-input event**, one **g11 binary-OUTPUT event**, and one
+   **g42 analog-OUTPUT event** — proving change detection across all four
+   point types, the per-class event buffers, and the solicited Class-read +
+   CON/CONFIRM-flush path against a real master.
 6. Brings up a second master association configured to **ENABLE unsolicited**
    for Class 1/2/3 during startup, and asserts it receives outstation-
-   **initiated** unsolicited g2/g32 events (captured via the crate's
-   `ReadType::Unsolicited`), which the `dnp3` crate auto-CONFIRMs — proving
-   the unsolicited enable → push → CONFIRM path end to end.
+   **initiated** unsolicited g2/g32 (input) **and g11/g42 (output)** events
+   (captured via the crate's `ReadType::Unsolicited`), which the `dnp3` crate
+   auto-CONFIRMs — proving the unsolicited enable → push → CONFIRM path end to
+   end for both input and output events.
 
 Run it from the repo root (bash/Git Bash):
 

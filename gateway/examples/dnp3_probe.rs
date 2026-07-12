@@ -67,19 +67,22 @@
 //!      flagged for real-master verification (steps 3-5 above only ever
 //!      use single-pass DIRECT_OPERATE).
 //!
-//! Steps 6-7 (Task 6 EVENTS) extend the proof to the DNP3 event machinery:
+//! Steps 6-7 (EVENTS) extend the proof to the DNP3 event machinery, for BOTH
+//! input AND output points:
 //!   6. Solicited Class 1/2/3 event poll: poll `g60v2/v3/v4` in a bounded
-//!      loop until the master receives at least one g2 binary event AND one
-//!      g32 analog-int event for the two DEDICATED, fixture-driven event
-//!      points (binaryInput index 1 / analogInput index 2) -- proving change
-//!      detection + per-class event buffers + the solicited Class-read path
+//!      loop until the master receives at least one g2 binary INPUT event, one
+//!      g32 analog-int INPUT event, one g11 binary OUTPUT event, AND one g42
+//!      analog-int OUTPUT event -- for the four DEDICATED, fixture-driven event
+//!      points (binaryInput index 1 / analogInput index 2 / binaryOutput index
+//!      1 / analogOutput index 1) -- proving change detection over all four
+//!      point types + per-class event buffers + the solicited Class-read path
 //!      against a real master.
 //!   7. Unsolicited: a second master association configured to ENABLE
 //!      unsolicited for Class 1/2/3 during startup. After the handshake the
 //!      outstation pushes the fixture's ongoing changes on its own; the probe
-//!      asserts it receives outstation-INITIATED unsolicited g2/g32 events
-//!      (captured via `ReadType::Unsolicited`), which the `dnp3` crate
-//!      auto-CONFIRMs.
+//!      asserts it receives outstation-INITIATED unsolicited g2/g32 (input) AND
+//!      g11/g42 (output) events (captured via `ReadType::Unsolicited`), which
+//!      the `dnp3` crate auto-CONFIRMs.
 //!
 //! Prints `DNP3 EVENTS PROBE PASS` and exits 0 on success; on any failure
 //! prints `DNP3 EVENTS PROBE FAIL: <reason>` and exits 1 -- never panics past
@@ -118,6 +121,15 @@ const AO_INDEX: u16 = 0;
 /// 1/2/3 polls and via outstation-initiated unsolicited responses.
 const BI_EVENT_INDEX: u16 = 1; // binaryInput index 1, eventClass 1
 const AI_EVENT_INDEX: u16 = 2; // analogInput index 2, eventClass 2
+
+/// Dedicated, change-driven OUTPUT EVENT points (Task 3 output events). The
+/// Dart fixture flips the binary output and increments the analog output on the
+/// same ~1 s timer; their changes surface as g11v2 (binary output event) /
+/// g42v3 (analog output int event) objects — routed by the `dnp3` crate through
+/// the SAME `handle_binary_output_status` / `handle_analog_output_status`
+/// callbacks as the static output status, but with `HeaderInfo::is_event` true.
+const BO_EVENT_INDEX: u16 = 1; // binaryOutput index 1, eventClass 3
+const AO_EVENT_INDEX: u16 = 1; // analogOutput index 1, eventClass 3
 
 const EXPECTED_BI: bool = true;
 const EXPECTED_AI_INT: f64 = 4222.0;
@@ -161,11 +173,21 @@ struct Snapshot {
     /// value for the same index never populates these.
     bi_event: Option<bool>,
     ai_int_event: Option<f64>,
+    /// Last OUTPUT EVENT value seen for the dedicated output event points (any
+    /// read type) — captured only when `HeaderInfo::is_event` is true, so a
+    /// static Class 0 output-status value for the same index (index 0) never
+    /// populates these (and these use index 1). g11v2 -> `bo_event`, g42v3 ->
+    /// `ao_int_event`.
+    bo_event: Option<bool>,
+    ao_int_event: Option<f64>,
     /// Last event value seen specifically inside an UNSOLICITED fragment
     /// (`ReadType::Unsolicited`) — the falsifiable proof the outstation pushed
     /// the change on its own, not in response to a poll.
     bi_event_unsol: Option<bool>,
     ai_int_event_unsol: Option<f64>,
+    /// Same, for the dedicated OUTPUT event points.
+    bo_event_unsol: Option<bool>,
+    ao_int_event_unsol: Option<f64>,
 }
 
 /// A [ReadHandler] that captures every measurement value this probe cares
@@ -230,26 +252,48 @@ impl ReadHandler for CapturingHandler {
 
     fn handle_binary_output_status(
         &mut self,
-        _info: HeaderInfo,
+        info: HeaderInfo,
         iter: &mut dyn Iterator<Item = (BinaryOutputStatus, u16)>,
     ) {
+        let unsol = self.in_unsolicited;
         let mut snap = self.snapshot.lock().unwrap();
         for (v, idx) in iter {
-            if idx == BO_INDEX {
+            if !info.is_event && idx == BO_INDEX {
+                // Static output status (g10v2) from a Class 0 scan — the FORCED
+                // Motor point.
                 snap.bo = Some(v.value);
+            }
+            if info.is_event && idx == BO_EVENT_INDEX {
+                // Binary OUTPUT event (g11v2) — the dedicated Class 3 output
+                // point the fixture flips.
+                snap.bo_event = Some(v.value);
+                if unsol {
+                    snap.bo_event_unsol = Some(v.value);
+                }
             }
         }
     }
 
     fn handle_analog_output_status(
         &mut self,
-        _info: HeaderInfo,
+        info: HeaderInfo,
         iter: &mut dyn Iterator<Item = (AnalogOutputStatus, u16)>,
     ) {
+        let unsol = self.in_unsolicited;
         let mut snap = self.snapshot.lock().unwrap();
         for (v, idx) in iter {
-            if idx == AO_INDEX {
+            if !info.is_event && idx == AO_INDEX {
+                // Static output status (g40v1) from a Class 0 scan — the
+                // Setpoint point the control steps operate on.
                 snap.ao = Some(v.value);
+            }
+            if info.is_event && idx == AO_EVENT_INDEX {
+                // Analog OUTPUT event (g42v3) — the dedicated Class 3 output
+                // point the fixture increments.
+                snap.ao_int_event = Some(v.value);
+                if unsol {
+                    snap.ao_int_event_unsol = Some(v.value);
+                }
             }
         }
     }
@@ -508,29 +552,36 @@ async fn run(host: &str, port: u16) -> Result<(), String> {
 
     // --- Step 6: solicited Class 1/2/3 EVENT poll --------------------------
     //
-    // The fixture flips the dedicated binary (index 1, Class 1) and increments
-    // the dedicated analog (index 2, Class 2) every ~1 s. Poll the event
-    // classes in a bounded loop until the master has received at least one
-    // g2 binary event AND one g32 analog-int event — proving change detection
-    // + event buffering + the solicited Class-read path work against a real
-    // master. (Values change continuously, so this observes "≥1 of each"
-    // rather than a single fixed value.)
-    println!("[probe] polling Class 1/2/3 events until a binary AND an analog event arrive...");
+    // The fixture flips the dedicated binary INPUT (index 1, Class 1) and
+    // increments the dedicated analog INPUT (index 2, Class 2), AND flips the
+    // dedicated binary OUTPUT (index 1, Class 3) and increments the dedicated
+    // analog OUTPUT (index 1, Class 3), every ~1 s. Poll the event classes in a
+    // bounded loop until the master has received at least one g2 binary INPUT
+    // event, one g32 analog-int INPUT event, one g11 binary OUTPUT event, AND
+    // one g42 analog-int OUTPUT event — proving change detection across all four
+    // point types + event buffering + the solicited Class-read path work
+    // against a real master. (Values change continuously, so this observes "≥1
+    // of each" rather than a single fixed value.)
+    println!("[probe] polling Class 1/2/3 events until binary+analog INPUT and binary+analog OUTPUT events all arrive...");
     let events_deadline = Instant::now() + EVENTS_DEADLINE;
     loop {
         class123_read(&mut association).await?;
         let snap = *snapshot.lock().unwrap();
-        if snap.bi_event.is_some() && snap.ai_int_event.is_some() {
+        if snap.bi_event.is_some()
+            && snap.ai_int_event.is_some()
+            && snap.bo_event.is_some()
+            && snap.ao_int_event.is_some()
+        {
             println!(
-                "[probe] Class 1/2/3 event poll OK: binary event[{BI_EVENT_INDEX}]={:?}, analog event[{AI_EVENT_INDEX}]={:?}.",
-                snap.bi_event, snap.ai_int_event
+                "[probe] Class 1/2/3 event poll OK: binary INPUT event[{BI_EVENT_INDEX}]={:?}, analog INPUT event[{AI_EVENT_INDEX}]={:?}, binary OUTPUT event[{BO_EVENT_INDEX}]={:?}, analog OUTPUT event[{AO_EVENT_INDEX}]={:?}.",
+                snap.bi_event, snap.ai_int_event, snap.bo_event, snap.ao_int_event
             );
             break;
         }
         if Instant::now() >= events_deadline {
             return Err(format!(
-                "timed out waiting for solicited Class 1/2/3 events: binary event={:?}, analog event={:?}",
-                snap.bi_event, snap.ai_int_event
+                "timed out waiting for solicited Class 1/2/3 events: binary INPUT event={:?}, analog INPUT event={:?}, binary OUTPUT event={:?}, analog OUTPUT event={:?}",
+                snap.bi_event, snap.ai_int_event, snap.bo_event, snap.ao_int_event
             ));
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -601,21 +652,25 @@ async fn run(host: &str, port: u16) -> Result<(), String> {
         .map_err(|_| "unsolicited channel.enable() timed out".to_string())?
         .map_err(|e| format!("unsolicited channel.enable() failed: {e}"))?;
 
-    println!("[probe] waiting for outstation-initiated unsolicited binary AND analog events...");
+    println!("[probe] waiting for outstation-initiated unsolicited binary+analog INPUT and binary+analog OUTPUT events...");
     let unsol_deadline = Instant::now() + EVENTS_DEADLINE;
     loop {
         let snap = *unsol_snapshot.lock().unwrap();
-        if snap.bi_event_unsol.is_some() && snap.ai_int_event_unsol.is_some() {
+        if snap.bi_event_unsol.is_some()
+            && snap.ai_int_event_unsol.is_some()
+            && snap.bo_event_unsol.is_some()
+            && snap.ao_int_event_unsol.is_some()
+        {
             println!(
-                "[probe] unsolicited leg OK: unsolicited binary event[{BI_EVENT_INDEX}]={:?}, unsolicited analog event[{AI_EVENT_INDEX}]={:?}.",
-                snap.bi_event_unsol, snap.ai_int_event_unsol
+                "[probe] unsolicited leg OK: unsolicited binary INPUT event[{BI_EVENT_INDEX}]={:?}, unsolicited analog INPUT event[{AI_EVENT_INDEX}]={:?}, unsolicited binary OUTPUT event[{BO_EVENT_INDEX}]={:?}, unsolicited analog OUTPUT event[{AO_EVENT_INDEX}]={:?}.",
+                snap.bi_event_unsol, snap.ai_int_event_unsol, snap.bo_event_unsol, snap.ao_int_event_unsol
             );
             break;
         }
         if Instant::now() >= unsol_deadline {
             return Err(format!(
-                "timed out waiting for UNSOLICITED events: unsolicited binary={:?}, unsolicited analog={:?}",
-                snap.bi_event_unsol, snap.ai_int_event_unsol
+                "timed out waiting for UNSOLICITED events: unsolicited binary INPUT={:?}, unsolicited analog INPUT={:?}, unsolicited binary OUTPUT={:?}, unsolicited analog OUTPUT={:?}",
+                snap.bi_event_unsol, snap.ai_int_event_unsol, snap.bo_event_unsol, snap.ao_int_event_unsol
             ));
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
