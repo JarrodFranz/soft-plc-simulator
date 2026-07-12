@@ -12,6 +12,7 @@ import 'package:soft_plc_mobile/models/fbd_exec.dart';
 import 'package:soft_plc_mobile/models/sfc_exec.dart';
 import 'package:soft_plc_mobile/models/st_exec.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
+import 'package:soft_plc_mobile/models/system_tags.dart';
 
 // One full scan tick, exactly as the shell runs it.
 void _scan(PlcProject p, SimRuntime sim, LdExecRuntime ld, FbdRuntime fbd,
@@ -363,6 +364,100 @@ void main() {
     expect(entry.table, 'coil');
     expect(entry.address, 0);
     expect(entry.access, 'ReadWrite');
+
+    // Strongest check: byte-identical after round-trip.
+    expect(jsonEncode(restored.toJson()), jsonEncode(original.toJson()));
+  });
+
+  test('WS25: PlcTask.triggerTag/watchdogMs and the reserved System tag round-trip', () {
+    final task = PlcTask(
+      name: 'AlarmEventTask',
+      type: 'Event',
+      periodMs: 50,
+      programNames: ['Alarm_LD'],
+      triggerTag: 'AlarmTrigger',
+      watchdogMs: 250,
+    );
+    final original = PlcProject(
+      id: 'ws25_scheduler_roundtrip',
+      name: 'WS25 Scheduler Round-Trip Fixture',
+      controllerName: 'PLC_TEST',
+      tags: [
+        PlcTag(
+          name: 'AlarmTrigger',
+          path: 'AlarmTrigger',
+          dataType: 'BOOL',
+          value: false,
+          ioType: 'Internal',
+        ),
+      ],
+      structDefs: [],
+      programs: [],
+      tasks: [task],
+      hmis: [],
+    );
+    // Populate the reserved System tag (as the shell does on boot) so its
+    // composite value has real, non-default content to round-trip.
+    ensureSystemTag(original);
+    updateSystemStatus(
+      original,
+      const SystemSnapshot(
+        fault: true,
+        faultTask: 'AlarmEventTask',
+        faultCode: 3,
+        running: true,
+        firstScan: false,
+        scanCount: 42,
+        scanTimeMs: 12.5,
+        maxScanTimeMs: 30.0,
+        minScanTimeMs: 8.0,
+        freeRun: true,
+        uptimeMs: 999000,
+        year: 2026,
+        month: 7,
+        day: 12,
+        hour: 9,
+        minute: 30,
+        second: 15,
+        dateTime: '2026-07-12T09:30:15',
+      ),
+    );
+    writePath(original, 'System.AlarmReset', true);
+
+    final restored = _roundTrip(original);
+
+    // PlcTask fields.
+    expect(restored.tasks.length, 1);
+    final taskB = restored.tasks.single;
+    expect(taskB.type, 'Event');
+    expect(taskB.triggerTag, 'AlarmTrigger',
+        reason: 'PlcTask.triggerTag must survive toJson/fromJson');
+    expect(taskB.watchdogMs, 250,
+        reason: 'PlcTask.watchdogMs must survive toJson/fromJson');
+
+    // Reserved System tag: presence, type, and every field written above.
+    final sysTag =
+        restored.tags.firstWhere((t) => t.name == kSystemTagName);
+    expect(sysTag.dataType, kSystemTypeName);
+    expect(readPath(restored, 'System.Fault'), true);
+    expect(readPath(restored, 'System.FaultTask'), 'AlarmEventTask');
+    expect(readPath(restored, 'System.FaultCode'), 3);
+    expect(readPath(restored, 'System.Running'), true);
+    expect(readPath(restored, 'System.FirstScan'), false);
+    expect(readPath(restored, 'System.ScanCount'), 42);
+    expect(readPath(restored, 'System.ScanTimeMs'), 12.5);
+    expect(readPath(restored, 'System.MaxScanTimeMs'), 30.0);
+    expect(readPath(restored, 'System.MinScanTimeMs'), 8.0);
+    expect(readPath(restored, 'System.FreeRun'), true);
+    expect(readPath(restored, 'System.UptimeMs'), 999000);
+    expect(readPath(restored, 'System.Year'), 2026);
+    expect(readPath(restored, 'System.Month'), 7);
+    expect(readPath(restored, 'System.Day'), 12);
+    expect(readPath(restored, 'System.Hour'), 9);
+    expect(readPath(restored, 'System.Minute'), 30);
+    expect(readPath(restored, 'System.Second'), 15);
+    expect(readPath(restored, 'System.DateTime'), '2026-07-12T09:30:15');
+    expect(readPath(restored, 'System.AlarmReset'), true);
 
     // Strongest check: byte-identical after round-trip.
     expect(jsonEncode(restored.toJson()), jsonEncode(original.toJson()));
