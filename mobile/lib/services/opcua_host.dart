@@ -149,10 +149,13 @@ class OpcUaHost extends ChangeNotifier {
   StreamSubscription<Socket>? _acceptSub;
 
   /// The app's OPC UA application-instance identity (RSA keypair + self-signed
-  /// certificate), loaded from the cert store at `start()`. Null until a
-  /// successful `start()` has loaded one (or if loading ever fails — see
-  /// `_loadAppIdentity`, which never lets a cert-store failure crash the
-  /// host: the None-only path stays fully functional without an identity).
+  /// certificate), loaded from the cert store at `start()` — but ONLY when
+  /// the project's `securityModes` configures a secured policy (see
+  /// `start()`). Null for a `['None']`-only project (the cert store is never
+  /// touched, so there is no RSA-2048 keygen cost on first run), and also
+  /// null if a secured project's identity load ever fails — in that case
+  /// `start()` surfaces `OpcUaHostStatus.error` instead of serving a broken
+  /// secure endpoint (see `_loadAppIdentity`).
   OpcAppIdentity? _appIdentity;
 
   /// The (applicationUri, commonName) an identity was last loaded/regenerated
@@ -202,26 +205,22 @@ class OpcUaHost extends ChangeNotifier {
   }
 
   /// Loads (or creates on first run) the app's OPC UA identity from the cert
-  /// store. Any failure (corrupt store, filesystem/platform-channel error,
-  /// etc.) degrades to `null` — the host still binds and serves the
-  /// None-only path exactly as before Task 6; only secured connections
-  /// (which need a certificate) are affected, and those already reject
-  /// cleanly per-connection when no [OpcSecureChannel] is available.
-  Future<OpcAppIdentity?> _loadAppIdentity({
+  /// store. Only ever called from `start()` when the project's
+  /// `securityModes` configures a secured policy — a `['None']`-only project
+  /// never calls this, so it never pays the RSA-2048 keygen cost nor touches
+  /// the cert store at all. Any failure (corrupt store, filesystem/platform-
+  /// channel error, etc.) propagates to the caller: `start()` turns it into
+  /// `OpcUaHostStatus.error` rather than serving a secured endpoint with a
+  /// null certificate.
+  Future<OpcAppIdentity> _loadAppIdentity({
     required String applicationUri,
     required String commonName,
-  }) async {
-    _appCertApplicationUri = applicationUri;
-    _appCertCommonName = commonName;
-    try {
-      final store = _certStore ?? OpcUaCertStore();
-      return await store.loadOrCreate(
-        applicationUri: applicationUri,
-        commonName: commonName,
-      );
-    } catch (_) {
-      return null;
-    }
+  }) {
+    final store = _certStore ?? OpcUaCertStore();
+    return store.loadOrCreate(
+      applicationUri: applicationUri,
+      commonName: commonName,
+    );
   }
 
   /// The ONLY Timer this app ever owns for OPC UA: a 20 Hz (50ms) clock tick
@@ -296,20 +295,44 @@ class OpcUaHost extends ChangeNotifier {
     final port = opcua.port;
     final applicationUri = 'urn:softplc:${project.id}';
     final commonName = project.name.isEmpty ? 'Mobile Soft PLC' : project.name;
+    // Retained regardless of secure policy so `regenerateCertificate()` (an
+    // explicit, on-demand operator action from the gateway screen) always
+    // knows the identity parameters to generate against, even for a
+    // ['None']-only project that never auto-loads/generates one at start().
+    _appCertApplicationUri = applicationUri;
+    _appCertCommonName = commonName;
+
+    final hasSecurePolicy = opcua.securityModes.any((m) => m != 'None');
+
+    // Load (or create on first run) the app's certificate identity BEFORE
+    // binding/accepting — a per-connection OpcSecureChannel (built in
+    // _acceptConnection) needs it. Only done when the project actually
+    // configures a secured policy: a `['None']`-only project must never pay
+    // the RSA-2048 keygen cost nor touch the cert store at all. A secured
+    // project whose identity load fails must NOT silently start with a null
+    // certificate (a configured secure endpoint would advertise no cert and
+    // simply not work, with no error surfaced) — surface it as a start()
+    // failure instead, mirroring how a bind failure below already does.
+    if (hasSecurePolicy) {
+      try {
+        _appIdentity = await _loadAppIdentity(
+          applicationUri: applicationUri,
+          commonName: commonName,
+        );
+      } catch (e) {
+        _appIdentity = null;
+        _setStatus(
+          OpcUaHostStatus.error,
+          error: 'OPC UA security is enabled but the application certificate '
+              'could not be generated/loaded: $e',
+        );
+        return;
+      }
+    } else {
+      _appIdentity = null;
+    }
 
     try {
-      // Load (or create on first run) the app's certificate identity BEFORE
-      // binding/accepting — a per-connection OpcSecureChannel (built in
-      // _acceptConnection) needs it, and RSA keygen on first run is worth
-      // finishing before we start accepting sockets. A failure here (see
-      // _loadAppIdentity) degrades to a null identity rather than aborting
-      // start(): the None-only path must keep working even if the cert store
-      // is unavailable.
-      _appIdentity = await _loadAppIdentity(
-        applicationUri: applicationUri,
-        commonName: commonName,
-      );
-
       final serverSocket = await ServerSocket.bind(InternetAddress.anyIPv4, port);
       _serverSocket = serverSocket;
 
