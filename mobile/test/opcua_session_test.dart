@@ -756,6 +756,31 @@ void main() {
       expect(serverCertificate, isNull);
     });
 
+    test('None channel: CreateSessionResponse SignatureData stays null/null', () {
+      final frames = session.onBytes(_buildCreateSessionRequestChunk(
+        secureChannelId: channelId,
+        tokenId: tokenId,
+        sequenceNumber: 2,
+        requestId: 11,
+      ), 0);
+      final decoded = _decodeResponseChunk(frames.single);
+      expect(decoded.encodingId, _createSessionResponseId);
+      final reader = decoded.reader;
+      reader.nodeId(); // sessionId
+      reader.nodeId(); // authToken
+      reader.float64(); // revisedSessionTimeout
+      reader.byteString(); // serverNonce
+      reader.byteString(); // serverCertificate
+      _readEndpoints(reader); // serverEndpoints
+      reader.int32(); // serverSoftwareCertificates
+      // On a None channel BOTH SignatureData fields must remain null — the
+      // byte-identical pre-security layout.
+      final algorithm = reader.string();
+      final signature = reader.byteString();
+      expect(algorithm, isNull);
+      expect(signature, isNull);
+    });
+
     test('Task 2 endpoint echo: CreateSessionResponse advertises the CLIENT-dialed host', () {
       final frames = session.onBytes(_buildCreateSessionRequestChunk(
         secureChannelId: channelId,
@@ -1821,6 +1846,136 @@ void main() {
       final asHeader = asReader.responseHeader();
       expect(asTypeId.numericId, _activateSessionResponseId);
       expect(asHeader.serviceResult, _statusGood);
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    test('secured CreateSession carries a serverSignature (RSA-SHA256) over '
+        'clientCertificate ++ clientNonce', () {
+      final serverKp = generateRsa2048(fortunaRandom(List<int>.filled(32, 7)));
+      final clientKp = generateRsa2048(fortunaRandom(List<int>.filled(32, 11)));
+      final serverCertDer = buildSelfSignedCertificate(
+        keyPair: serverKp,
+        applicationUri: 'urn:server',
+        commonName: 'S',
+        notBefore: DateTime.utc(2020),
+        notAfter: DateTime.utc(2040),
+      );
+      final clientCertDer = buildSelfSignedCertificate(
+        keyPair: clientKp,
+        applicationUri: 'urn:client',
+        commonName: 'C',
+        notBefore: DateTime.utc(2020),
+        notAfter: DateTime.utc(2040),
+      );
+      final serverNonce = Uint8List.fromList(
+          List<int>.generate(kSecureChannelNonceLength, (i) => 200 - i));
+      final channelClientNonce = Uint8List.fromList(
+          List<int>.generate(kSecureChannelNonceLength, (i) => i + 1));
+      // The CreateSessionRequest.clientNonce is a DISTINCT field from the OPN
+      // channel nonce; the serverSignature covers THIS value (++ the client
+      // cert DER), so use an obviously different byte pattern here.
+      final createSessionClientNonce = Uint8List.fromList(
+          List<int>.generate(kSecureChannelNonceLength, (i) => (i * 5 + 9) & 0xff));
+
+      final channel =
+          OpcSecureChannel(keyPair: serverKp, certificateDer: serverCertDer);
+      final session = OpcUaServerSession(
+        info: _info,
+        services: null,
+        securityModes: const ['Basic256Sha256/SignAndEncrypt'],
+        serverCertificateDer: serverCertDer,
+        secureChannel: channel,
+        serverNonceGenerator: () => serverNonce,
+      );
+
+      session.onBytes(_buildHello(), 0);
+
+      // --- Secured OPN (Issue, SignAndEncrypt) ---
+      final opnBody = OpcUaWriter();
+      opnBody.nodeId(const OpcNodeId.numeric(0, _openSecureChannelRequestId));
+      opnBody.requestHeader(_reqHeader());
+      opnBody.uint32(0); // clientProtocolVersion
+      opnBody.int32(0); // requestType Issue
+      opnBody.int32(3); // securityMode SignAndEncrypt
+      opnBody.byteString(channelClientNonce);
+      opnBody.uint32(3600000); // requestedLifetime
+      final opnSeqBody = Uint8List.fromList(
+          <int>[..._seqHeader(1, 1), ...opnBody.take()]);
+      final opnFrame = _asymSignEncryptOpn(
+        signKey: clientKp.privateKey,
+        encKey: serverKp.publicKey,
+        senderCertDer: clientCertDer,
+        receiverThumbprint: sha1(serverCertDer),
+        plainSeqBody: opnSeqBody,
+      );
+      final opnOut = session.onBytes(opnFrame, 0);
+      final respPlain = _asymDecryptVerifyOpn(
+        decKey: clientKp.privateKey,
+        verifyKey: serverKp.publicKey,
+        frame: opnOut.single,
+      );
+      final respReader = OpcUaReader(Uint8List.sublistView(respPlain, 8));
+      respReader.nodeId();
+      respReader.responseHeader();
+      respReader.uint32(); // serverProtocolVersion
+      final channelId = respReader.uint32();
+      final tokenId = respReader.uint32();
+
+      final clientKeys = channel.clientKeys!;
+      final serverKeys = channel.serverKeys!;
+
+      // --- Secured CreateSession with a NON-NULL clientNonce ---
+      final csBody = OpcUaWriter();
+      csBody.nodeId(const OpcNodeId.numeric(0, _createSessionRequestId));
+      csBody.requestHeader(_reqHeader(requestHandle: 3));
+      csBody.string('urn:test:client');
+      csBody.string('urn:test:client:product');
+      csBody.localizedText(const OpcLocalizedText(text: 'C'));
+      csBody.int32(1);
+      csBody.string(null);
+      csBody.string(null);
+      csBody.int32(-1);
+      csBody.string(null); // serverUri
+      csBody.string('opc.tcp://127.0.0.1:4840'); // endpointUrl
+      csBody.string('sess'); // sessionName
+      csBody.byteString(createSessionClientNonce); // clientNonce
+      csBody.byteString(clientCertDer); // clientCertificate
+      csBody.float64(1200000);
+      csBody.uint32(0);
+      final csFrame = _symBuildSession(
+        keys: clientKeys,
+        secureChannelId: channelId,
+        tokenId: tokenId,
+        sequenceNumber: 2,
+        requestId: 11,
+        body: csBody.take(),
+      );
+      final csOut = session.onBytes(csFrame, 0);
+      final csRespBody =
+          _symOpenSessionBody(keys: serverKeys, frame: csOut.single);
+      final csReader = OpcUaReader(csRespBody);
+      csReader.nodeId();
+      csReader.responseHeader();
+      csReader.nodeId(); // sessionId
+      csReader.nodeId(); // authToken
+      csReader.float64(); // revisedSessionTimeout
+      csReader.byteString(); // serverNonce
+      csReader.byteString(); // serverCertificate
+      _readEndpoints(csReader); // serverEndpoints
+      final softwareCerts = csReader.int32(); // serverSoftwareCertificates
+      expect(softwareCerts, -1);
+      // SignatureData: algorithm String + signature ByteString.
+      final algorithm = csReader.string();
+      final signature = csReader.byteString();
+      expect(algorithm,
+          'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256');
+      expect(signature, isNotNull);
+      final signedData = Uint8List.fromList(
+          <int>[...clientCertDer, ...createSessionClientNonce]);
+      expect(
+        rsaPkcs1Sha256Verify(
+            serverKp.publicKey, signedData, Uint8List.fromList(signature!)),
+        isTrue,
+      );
     }, timeout: const Timeout(Duration(minutes: 2)));
   });
 }
