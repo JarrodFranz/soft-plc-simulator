@@ -31,4 +31,20 @@ void main() {
     expect(blocked, isFalse); // delete refused
     expect(proj.tasks.any((t) => t.name == 'PollTask'), isTrue); // still there
   });
+
+  testWidgets('deleteTask succeeds when its programs are also owned by another task', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: WorkspaceShell()));
+    await tester.pumpAndSettle();
+    final state = tester.state<WorkspaceShellState>(find.byType(WorkspaceShell));
+
+    final proj = state.debugActiveProject;
+    proj.programs.add(PlcProgram(name: 'Shared', language: 'StructuredText', stSource: ''));
+    state.debugAddTask(PlcTask(name: 'Main', type: 'Continuous', programNames: ['Shared']));
+    state.debugAddTask(PlcTask(name: 'Extra', type: 'Periodic', periodMs: 500, programNames: ['Shared']));
+
+    final removed = state.debugDeleteTask(proj.tasks.firstWhere((t) => t.name == 'Extra'));
+    expect(removed, isTrue); // delete succeeds; 'Shared' remains owned by 'Main'
+    expect(state.debugActiveProject.tasks.any((t) => t.name == 'Extra'), isFalse);
+    expect(state.debugActiveProject.programs.any((p) => p.name == 'Shared'), isTrue);
+  });
 }
