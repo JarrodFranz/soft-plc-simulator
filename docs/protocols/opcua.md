@@ -31,9 +31,14 @@ retired the previous companion-gateway approach).
 4. Tap **Start hosting**. The card shows live status (Stopped / Running /
    Error), the exposed-tag count, connected client count, and — once
    running — the endpoint URL (`opc.tcp://<device-ip>:<port>`).
-5. Point any OPC UA client at that endpoint: Security Policy **None**,
-   **Anonymous** authentication (v1 has no certificates/encryption/user
-   tokens — see "v1 scope" below).
+5. Point any OPC UA client at that endpoint. Two security options are
+   offered (whichever ones you enable on the card — see "Security
+   (Basic256Sha256 + user auth)" below):
+   - Security Policy **None** + **Anonymous** — for LAN
+     commissioning/training, no certificates or encryption.
+   - Security Policy **Basic256Sha256** with **Sign** or **SignAndEncrypt**
+     message security, authenticating either **Anonymous** or with a
+     configured **username/password** — an encrypted, authenticated session.
 6. Browse the address space: every mapped tag appears as a `Variable` node
    directly under the standard **Objects** folder, named by its tag's short
    name, with a node id of the form `ns=1;s=<tag_name>` (or `ns=1;i=<n>` for
@@ -87,14 +92,15 @@ only). Unsupported/unknown services answer a proper `ServiceFault`
 - **Subscriptions/MonitoredItems** — v1 clients poll via `Read`; there is no
   server-push/monitored-item support yet. **Shipped in v2 — see
   "Subscriptions (v2)" below.**
-- **Encryption** (`Basic256Sha256` etc.) — v1 is Security Policy `None` only,
-  appropriate for LAN commissioning/training, not a certified/secure
-  deployment.
+- **Encryption** (`Basic256Sha256` etc.) — v1 is Security Policy `None` only.
+  **Shipped in v3 — see "Security (Basic256Sha256 + user auth)" below.**
+- **User-token authentication** — v1 is Anonymous only. **Shipped in v3
+  (username/password) — see "Security (Basic256Sha256 + user auth)" below.**
 - **Multi-chunk reassembly** — v1 negotiates generous (~1 MB) single-chunk
   buffers, ample for the address spaces this app builds; an oversize message
   is rejected cleanly rather than crashing.
-- User-token authentication, `TranslateBrowsePaths`, and other optional
-  services (all answer `ServiceFault`).
+- `TranslateBrowsePaths` and other optional services (all answer
+  `ServiceFault`).
 
 ## Subscriptions (v2)
 
@@ -165,6 +171,98 @@ that will silently bite you):
 - No sequence-number wraparound handling (not reachable in any session
   short-lived enough for a training/simulator deployment).
 
+## Security (Basic256Sha256 + user auth) (v3)
+
+v3 adds a real, hand-rolled, **pure-Dart** OPC UA security stack — no crypto
+FFI, no companion process. A client can now open an **encrypted, signed,
+authenticated** session instead of the plaintext `None`/Anonymous one.
+
+### Policies offered
+
+Endpoint advertisement is driven by the per-project
+`protocols.opcua.securityModes` list (additive persistence, default
+`['None']`). The recognized tokens are:
+
+- `None` — plaintext (the v1/v2 behavior; still offered for LAN
+  commissioning).
+- `Basic256Sha256/Sign` — messages are signed (HMAC-SHA256) but not
+  encrypted (integrity/authenticity, no confidentiality).
+- `Basic256Sha256/SignAndEncrypt` — messages are signed **and** encrypted
+  (AES-256-CBC). This is the mode a Basic256Sha256 client uses by default
+  and the mode the live E2E exercises.
+
+Both secured modes are implemented; `SignAndEncrypt` is the exercised/target
+mode. Authentication is configured independently: `allowAnonymous` (default
+true) and a list of username/password `credentials` (passwords are **not**
+persisted to project JSON — they are re-entered per session config).
+
+### The handshake
+
+1. **Asymmetric `OpenSecureChannel` (OPN).** When the policy is not `None`,
+   the OPN request/response are secured with RSA: the body is
+   **RSA-OAEP-SHA1-encrypted** to the peer's certificate public key and
+   **RSA-PKCS#1-v1.5-SHA256-signed** with the sender's private key. Each side
+   contributes a 32-byte nonce.
+2. **`P_SHA256` key derivation.** From the two nonces the OPC UA
+   `P_SHA256(secret, seed)` PRF derives the symmetric key material — separate
+   signing key, encrypting key, and IV for each direction (client→server keys
+   use `secret = serverNonce, seed = clientNonce`; server→client the reverse).
+3. **Symmetric `MSG`/`CLO`.** All subsequent chunks are secured with the
+   derived keys: **HMAC-SHA256** signatures and (for `SignAndEncrypt`)
+   **AES-256-CBC** encryption, with PKCS#7-style padding sized to the AES
+   block. `Sign`-only mode signs but does not encrypt.
+4. **Session + user auth.** `CreateSession`/`ActivateSession` run over the
+   secured channel. On a secured channel the `CreateSessionResponse` returns
+   the server's application-instance **certificate** and a **server nonce**
+   (a strict client rejects the session with `Bad_CertificateInvalid` if the
+   certificate is absent, and uses the returned server nonce as the OAEP
+   nonce for the user password — so both must be echoed). A
+   `UserNameIdentityToken` password is **RSA-OAEP-encrypted** by the client
+   as `UInt32-LE length ++ passwordBytes ++ serverNonce`; the server
+   OAEP-decrypts it, verifies the trailing nonce matches the channel's
+   server nonce, then constant-time-compares the password against the
+   configured credential.
+
+### The application certificate + auto-trust
+
+The app's identity is a single **RSA-2048 keypair + self-signed X.509
+certificate**, generated once on first run and persisted to app-local
+storage (`services/opcua_cert_store.dart` — the only OPC UA security file
+allowed to touch `dart:io`/`path_provider`). The private key never leaves
+the device, is never logged, and is never written into project JSON. The
+certificate's `SubjectAltName` carries the server's `applicationUri`
+(`urn:softplc:<projectId>`), and the OPC UA card shows its SHA-1 thumbprint
+with a **Regenerate** action (fresh keypair + cert). Clients are expected to
+**trust-on-first-use** (auto-trust) this self-signed cert, exactly as the
+E2E probe does.
+
+### Known limitations (v3, documented deliberately)
+
+- **The app certificate omits `KeyUsage`/`ExtendedKeyUsage` extensions.** It
+  carries only Basic constraints + the `applicationUri` SAN. The Rust
+  `opcua` client accepts it, but a **strict client (Ignition/Eclipse Milo,
+  the .NET OPC UA stack) MAY reject** a cert lacking
+  `KeyUsage=digitalSignature,keyEncipherment,dataEncipherment` /
+  `ExtendedKeyUsage=serverAuth,clientAuth`. **This is the most likely first
+  add** if a strict client refuses the certificate.
+- **`Sign` vs `SignAndEncrypt`.** Both are implemented; `SignAndEncrypt` is
+  the exercised/target mode (the live E2E proves it). `Sign`-only is
+  available but not covered by the live client leg.
+- **A single app-wide certificate is reused across projects.** There is one
+  identity per app install, not one per project — so the `applicationUri`
+  must be app-wide-stable. (The server advertises the current project's
+  `urn:softplc:<projectId>`; the persisted cert's SAN must match whatever
+  `applicationUri` the endpoint reports, which the host keeps consistent.)
+- **The `CreateSession` `serverSignature` is not populated.** The server
+  returns a null `SignatureData` (over clientCert ++ clientNonce). The Rust
+  client's verification of it is a no-op (a documented TODO in its
+  `process_create_session_response`), so the live handshake succeeds; a
+  client that strictly verifies the server signature would reject it. This
+  is the natural companion to the KeyUsage add above.
+- **Deferred:** deprecated policies (`Basic128Rsa15`, `Basic256`),
+  `Aes*Sha256*` policies, `X509IdentityToken` user auth, and a managed
+  trust-list / rejected-cert store (v3 is trust-on-first-use only).
+
 ## Platform notes
 
 - **iOS**: the app can only accept inbound connections while it is in the
@@ -229,6 +327,20 @@ the probing client) so the notification the probe observes can only have
 come from the server's own publish loop — proof that a third-party client
 receives pushed data changes, not just polled reads.
 
+Then, as the **security machine-proof (v3)**, the same probe opens a
+**second session** at Security Policy **`Basic256Sha256`** with
+**`SignAndEncrypt`** message security, authenticated with a
+**username/password** (`UserNameIdentityToken`), and runs
+`Browse` → `Read` → `Write` → `Read`-back-verify **over the fully encrypted
+channel**. This exercises the entire asymmetric OPN (RSA-OAEP encrypt +
+RSA-PKCS#1-SHA256 sign) + `P_SHA256` key derivation + symmetric AES-256/
+HMAC-SHA256 channel + OAEP-encrypted password path end-to-end: if any of
+that byte layout or the app certificate were wrong, the real client would
+reject the channel here (`Bad_SecurityChecksFailed` /
+`Bad_CertificateInvalid` / a decrypt failure), not silently pass. The probe
+auto-trusts the server's self-signed cert (trust-on-first-use). A successful
+secure leg prints `OPCUA SECURITY PROBE PASS`.
+
 Run it from the repo root (bash/Git Bash):
 
 ```bash
@@ -243,7 +355,17 @@ ends with:
 ```
 SUBSCRIPTION PASS
 PROBE PASS
+...
+OPCUA SECURITY PROBE PASS
 ```
+
+**Honest fallback:** if `cargo`/the `opcua` crate can't run in the
+environment (no toolchain, offline crate fetch), the script does **not** fake
+a pass — it compile-checks the probe (`cargo build --example opcua_probe`),
+runs the Dart unit suite as the in-process proof of the same crypto/
+secure-channel codec, and reports the live-master leg as **SKIPPED** with the
+reason (its exit code reflects the unit suite, never a probe that didn't
+run).
 
 **Requires a human with a real OPC UA client (manual, documented here, not
 automatable in CI):**
@@ -260,7 +382,10 @@ automatable in CI):**
 This is a **simulator/training tool, not a safety-certified or
 OPC-Foundation-certified product**. The hand-rolled server targets client
 *compatibility* (UAExpert and common SCADA stacks talking Security Policy
-`None`), not formal certification. Do not use it to control real safety-
-critical equipment. Historical access and method nodes are not implemented;
+`None` **or** `Basic256Sha256` with username/password), not formal
+certification, and its self-signed application certificate omits the
+KeyUsage/ExtendedKeyUsage extensions a strict client may demand (see "Known
+limitations" above). Do not use it to control real safety-critical
+equipment. Historical access and method nodes are not implemented;
 scalar leaf tags only (struct/array members are not individually addressable
 as separate nodes in v1).

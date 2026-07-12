@@ -29,11 +29,20 @@ import 'package:soft_plc_mobile/models/opcua_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart' show writePath;
+import 'package:soft_plc_mobile/protocols/opcua/opcua_certificate.dart';
+import 'package:soft_plc_mobile/protocols/opcua/opcua_crypto.dart';
+import 'package:soft_plc_mobile/protocols/opcua/opcua_secure_channel.dart';
 import 'package:soft_plc_mobile/protocols/opcua/opcua_services.dart';
 import 'package:soft_plc_mobile/protocols/opcua/opcua_session.dart';
 import 'package:soft_plc_mobile/protocols/opcua/opcua_transport.dart';
 
 const int _maxFrameBytes = 16 * 1024 * 1024;
+
+/// The one username/password credential the secure endpoint accepts, matching
+/// the Rust probe's `IdentityToken::UserName("operator", "opcua-secret-1")`
+/// (see `gateway/examples/opcua_probe.rs`).
+const String _fixtureUsername = 'operator';
+const String _fixturePassword = 'opcua-secret-1';
 
 /// Builds the fixture project the E2E probe expects:
 ///   - `Start_PB` : BOOL,    ReadWrite -> ns=1;s=Start_PB
@@ -78,6 +87,17 @@ PlcProject _fixtureProject(int port) {
     enabled: true,
     namespaceUri: 'urn:softplc:e2e-fixture',
     port: port,
+    // Advertise BOTH a None/Anonymous endpoint (the pre-security leg the Rust
+    // probe still exercises) AND a Basic256Sha256/SignAndEncrypt endpoint (the
+    // WS-security leg Task 7 proves). Anonymous stays allowed for the None leg;
+    // the secure leg authenticates with the one known username/password below.
+    // The token strings here are the EXACT values `OpcUaServerSession` parses
+    // (see its `_advertisedEndpoints`): 'None' and 'Basic256Sha256/SignAndEncrypt'.
+    securityModes: <String>['None', 'Basic256Sha256/SignAndEncrypt'],
+    allowAnonymous: true,
+    credentials: <OpcUaUserCredential>[
+      OpcUaUserCredential(username: _fixtureUsername, password: _fixturePassword),
+    ],
     map: OpcuaMap(
       namespaceUri: 'urn:softplc:e2e-fixture',
       nodes: [
@@ -177,17 +197,87 @@ Future<void> main(List<String> args) async {
 
   final endpoint = 'opc.tcp://127.0.0.1:${serverSocket.port}';
   final services = OpcUaProjectServices(projectProvider: () => project);
+  // The app cert's SubjectAltName URI MUST equal the applicationUri the
+  // endpoint advertises, or a strict OPC UA client rejects the certificate
+  // during the OPN handshake. Derive it ONCE and feed the SAME value to both
+  // `OpcUaCertStore.loadOrCreate` (SAN) and `OpcUaServerInfo` (advertised URI),
+  // exactly as `OpcUaHost.start` does (`urn:softplc:${project.id}`).
+  final applicationUri = 'urn:softplc:${project.id}';
   final info = OpcUaServerInfo(
     applicationName: 'Mobile Soft PLC E2E Fixture',
-    applicationUri: 'urn:softplc:${project.id}',
+    applicationUri: applicationUri,
     endpointUrl: endpoint,
     namespaceUri: opcua.namespaceUri,
   );
 
+  // Generate the app's RSA-2048 keypair + self-signed certificate ONCE at
+  // startup, when a secured policy is enabled. This deliberately does NOT go
+  // through `services/opcua_cert_store.dart` (the real app's store): that file
+  // imports `path_provider`, whose import graph pulls in `dart:ui`, which is
+  // unavailable under a plain `dart run` process — the very reason this
+  // fixture talks to the pure `protocols/opcua` layer directly instead of
+  // importing `services/opcua_host.dart` (see the file header). So we call the
+  // SAME pure primitives the cert store itself calls (`generateRsa2048` +
+  // `buildSelfSignedCertificate` — see `OpcUaCertStore._generateAndPersist`),
+  // producing a byte-identical self-signed application-instance cert whose
+  // SubjectAltName URI is `applicationUri`. Persistence is irrelevant for a
+  // short-lived fixture, so we skip it and keep the identity in memory.
+  final hasSecurePolicy = opcua.securityModes.any((m) => m != 'None');
+  OpcRsaKeyPair? appKeyPair;
+  Uint8List? appCertDer;
+  if (hasSecurePolicy) {
+    try {
+      final keyPair = generateRsa2048(fortunaRandom());
+      final now = DateTime.now().toUtc();
+      final certificateDer = buildSelfSignedCertificate(
+        keyPair: keyPair,
+        applicationUri: applicationUri,
+        commonName: project.name.isEmpty ? 'Mobile Soft PLC E2E Fixture' : project.name,
+        notBefore: now.subtract(const Duration(days: 1)),
+        notAfter: DateTime.utc(now.year + 20, now.month, now.day),
+      );
+      appKeyPair = keyPair;
+      appCertDer = certificateDer;
+      final thumbprint =
+          sha1(certificateDer).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      // ignore: avoid_print
+      print('[fixture host] generated app certificate '
+          '(applicationUri=$applicationUri thumbprint=$thumbprint)');
+    } catch (e) {
+      stderr.writeln('FAILED TO GENERATE APP CERTIFICATE: $e');
+      exit(1);
+    }
+  }
+
   final clock = Stopwatch()..start();
   serverSocket.listen((socket) {
     try {
-      final session = OpcUaServerSession(info: info, services: services, sampler: services.sample);
+      // Per accepted connection, build a fresh `OpcSecureChannel` from the
+      // app identity (only when a secured policy is enabled AND the identity
+      // was generated) and inject it + the security config into that
+      // connection's brand-new session — mirroring `OpcUaHost._acceptConnection`.
+      // The None path (no secure policy) leaves `secureChannel` null and is
+      // byte-identical to the pre-security flow.
+      final keyPair = appKeyPair;
+      final certDer = appCertDer;
+      final channel = (hasSecurePolicy && keyPair != null && certDer != null)
+          ? OpcSecureChannel(
+              keyPair: keyPair,
+              certificateDer: certDer,
+            )
+          : null;
+      final session = OpcUaServerSession(
+        info: info,
+        services: services,
+        sampler: services.sample,
+        securityModes: opcua.securityModes,
+        serverCertificateDer: certDer,
+        credentials: <String, String>{
+          for (final c in opcua.credentials) c.username: c.password,
+        },
+        allowAnonymous: opcua.allowAnonymous,
+        secureChannel: channel,
+      );
       final conn = _Connection(socket, session, clock);
       _connections.add(conn);
       socket.listen(

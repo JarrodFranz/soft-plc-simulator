@@ -1052,14 +1052,30 @@ class OpcUaServerSession {
 
     final revisedTimeout = _boundSessionTimeout(requestedTimeout);
 
+    // On a SECURED channel the CreateSessionResponse MUST carry the server's
+    // application-instance certificate and a server nonce; a strict OPC UA
+    // client (e.g. the Rust `opcua` crate) rejects the session with
+    // Bad_CertificateInvalid if `serverCertificate` is null, and — critically —
+    // it overwrites its own secure-channel nonce with THIS `serverNonce` and
+    // then uses that nonce to OAEP-encrypt the UserNameIdentityToken password
+    // on ActivateSession. Our own [OpcSecureChannel.decryptUserPassword]
+    // verifies that trailing nonce against the same channel's server nonce, so
+    // the two only agree if we echo the channel's server nonce here. A None
+    // channel keeps both null exactly as before (the pre-security byte layout).
+    //
+    // The `serverSignature` (a SignatureData over clientCert ++ clientNonce)
+    // stays null: the Rust client's verification of it is a documented no-op
+    // (a TODO in its `process_create_session_response`), and v1 does not target
+    // clients that enforce it — see docs/protocols/OPCUA.md "Known limitations".
+    final secureChannel = _channelSecured ? _secureChannel : null;
     final w = OpcUaWriter();
     w.nodeId(const OpcNodeId.numeric(0, _Ids.createSessionResponse));
     w.responseHeader(_respond(header));
     w.nodeId(sessionId);
     w.nodeId(authToken);
     w.float64(revisedTimeout);
-    w.byteString(null); // serverNonce
-    w.byteString(null); // serverCertificate
+    w.byteString(secureChannel?.serverNonce); // serverNonce (null on None)
+    w.byteString(secureChannel != null ? serverCertificateDer : null); // serverCertificate
     _writeEndpoints(w); // serverEndpoints
     w.int32(-1); // serverSoftwareCertificates: null array
     // SignatureData (signature_data.rs): algorithm String, signature ByteString.
