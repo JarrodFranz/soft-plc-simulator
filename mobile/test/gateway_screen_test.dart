@@ -1748,18 +1748,51 @@ void main() {
       await tester.pumpAndSettle();
       await _selectTab(tester, dnpTabKey);
 
-      // The input row shows the event-Class dropdown, defaulting to Static.
+      // Both the input row and the output row show the event-Class dropdown
+      // now (all four DNP3 point types support events), each defaulting to
+      // Static. Row order follows map.entries order: input row first.
       final dropdownFinder = find.byKey(const Key('dnp_event_class_dropdown'));
-      expect(dropdownFinder, findsOneWidget, reason: 'only the input row gets an event-Class dropdown');
+      expect(dropdownFinder, findsNWidgets(2), reason: 'both input and output rows get an event-Class dropdown');
       expect(inputEntry.eventClass, 0);
+      expect(outputEntry.eventClass, 0);
 
-      await tester.tap(dropdownFinder);
+      await tester.tap(dropdownFinder.first);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Class 2').last);
       await tester.pumpAndSettle();
 
       expect(inputEntry.eventClass, 2);
-      expect(outputEntry.eventClass, 0, reason: 'the output row is untouched (no dropdown of its own)');
+      expect(outputEntry.eventClass, 0, reason: 'editing the input row dropdown leaves the output row untouched');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('DNP3 card exposes an event-Class dropdown on output rows too, and editing it sets eventClass',
+        (tester) async {
+      final project = _project();
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.dnp3!.enabled = true;
+      final outputEntry = DnpMapEntry(tag: 'Motor_Run', pointType: 'binaryOutput', index: 0);
+      project.protocols!.dnp3!.map = DnpMap(entries: [outputEntry]);
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final dnpHost = _CountingDnpHost();
+      addTearDown(dnpHost.dispose);
+      await setSurface(tester, desktopSize);
+
+      await tester.pumpWidget(_app(project, host, dnpHost: dnpHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, dnpTabKey);
+
+      final dropdownFinder = find.byKey(const Key('dnp_event_class_dropdown'));
+      expect(dropdownFinder, findsOneWidget, reason: 'the binaryOutput row shows the event-Class dropdown');
+      expect(outputEntry.eventClass, 0);
+
+      await tester.tap(dropdownFinder);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Class 1').last);
+      await tester.pumpAndSettle();
+
+      expect(outputEntry.eventClass, 1);
       expect(tester.takeException(), isNull);
     });
 

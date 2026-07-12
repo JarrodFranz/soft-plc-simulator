@@ -441,28 +441,47 @@ class DnpOutstation {
     );
   }
 
-  /// Encodes [events] into DNP3 event objects, grouped by type: binary
-  /// events -> one g2v2 object, analog-int -> g32v3, analog-float -> g32v7.
-  /// Each uses qualifier 0x28 (2-byte count + a 2-byte LE index prefix
-  /// before each point), since events carry their own point index. FIFO
-  /// order is preserved within each group.
+  /// Encodes [events] into DNP3 event objects, grouped by type and by
+  /// input-vs-output into 6 buckets: binaryInput -> g2v2, binaryOutput ->
+  /// g11v2, analogInput-int -> g32v3, analogOutput-int -> g42v3,
+  /// analogInput-float -> g32v7, analogOutput-float -> g42v7. Each uses
+  /// qualifier 0x28 (2-byte count + a 2-byte LE index prefix before each
+  /// point), since events carry their own point index. FIFO order is
+  /// preserved within each group; empty buckets emit nothing, so an
+  /// all-input event set produces exactly the 3 groups it always did.
   Uint8List _encodeEventObjects(List<DnpEvent> events) {
-    final binary = events.where((e) => e.isBinary).toList();
-    final analogInt = events.where((e) => !e.isBinary && !e.isFloat).toList();
-    final analogFloat = events.where((e) => !e.isBinary && e.isFloat).toList();
+    bool isOut(DnpEvent e) => e.pointType == 'binaryOutput' || e.pointType == 'analogOutput';
+    final binIn = events.where((e) => e.isBinary && !isOut(e)).toList();
+    final binOut = events.where((e) => e.isBinary && isOut(e)).toList();
+    final aIntIn = events.where((e) => !e.isBinary && !e.isFloat && !isOut(e)).toList();
+    final aIntOut = events.where((e) => !e.isBinary && !e.isFloat && isOut(e)).toList();
+    final aFloatIn = events.where((e) => !e.isBinary && e.isFloat && !isOut(e)).toList();
+    final aFloatOut = events.where((e) => !e.isBinary && e.isFloat && isOut(e)).toList();
 
     final out = BytesBuilder();
-    if (binary.isNotEmpty) {
+    if (binIn.isNotEmpty) {
       out.add(_encodeEventGroup(
-          2, 2, binary, (e) => encodeG2V2(value: e.boolValue, flags: e.flags, timeMs: e.timeMs)));
+          2, 2, binIn, (e) => encodeG2V2(value: e.boolValue, flags: e.flags, timeMs: e.timeMs)));
     }
-    if (analogInt.isNotEmpty) {
+    if (binOut.isNotEmpty) {
       out.add(_encodeEventGroup(
-          32, 3, analogInt, (e) => encodeG32V3(value: e.intValue, flags: e.flags, timeMs: e.timeMs)));
+          11, 2, binOut, (e) => encodeG11V2(value: e.boolValue, flags: e.flags, timeMs: e.timeMs)));
     }
-    if (analogFloat.isNotEmpty) {
+    if (aIntIn.isNotEmpty) {
       out.add(_encodeEventGroup(
-          32, 7, analogFloat, (e) => encodeG32V7(value: e.floatValue, flags: e.flags, timeMs: e.timeMs)));
+          32, 3, aIntIn, (e) => encodeG32V3(value: e.intValue, flags: e.flags, timeMs: e.timeMs)));
+    }
+    if (aIntOut.isNotEmpty) {
+      out.add(_encodeEventGroup(
+          42, 3, aIntOut, (e) => encodeG42V3(value: e.intValue, flags: e.flags, timeMs: e.timeMs)));
+    }
+    if (aFloatIn.isNotEmpty) {
+      out.add(_encodeEventGroup(
+          32, 7, aFloatIn, (e) => encodeG32V7(value: e.floatValue, flags: e.flags, timeMs: e.timeMs)));
+    }
+    if (aFloatOut.isNotEmpty) {
+      out.add(_encodeEventGroup(
+          42, 7, aFloatOut, (e) => encodeG42V7(value: e.floatValue, flags: e.flags, timeMs: e.timeMs)));
     }
     return out.toBytes();
   }

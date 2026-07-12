@@ -166,6 +166,35 @@ int _g41Status(Uint8List resp) {
   return dec.status;
 }
 
+/// Decodes the (group, variation) of each object header in an
+/// index-prefixed (qualifier 0x28) event-object payload — i.e. what
+/// `_encodeEventObjects` produces — by walking `decodeObjectHeader` and
+/// skipping each header's `count` points (2-byte LE index prefix + a
+/// fixed-size payload per point, per DNP3 group/variation).
+const _eventPointSizes = {
+  (2, 2): 7, // g2v2 binary input event: 1 flags + 48-bit time
+  (11, 2): 7, // g11v2 binary output event: same payload shape as g2v2
+  (32, 3): 11, // g32v3 analog input event (int32): 1 flags + 4 value + 6 time
+  (42, 3): 11, // g42v3 analog output event (int32): same shape as g32v3
+  (32, 7): 11, // g32v7 analog input event (float32): 1 flags + 4 value + 6 time
+  (42, 7): 11, // g42v7 analog output event (float32): same shape as g32v7
+};
+
+List<(int, int)> _decodeEventObjectGroups(Uint8List objData) {
+  final groups = <(int, int)>[];
+  var offset = 0;
+  while (offset < objData.length) {
+    final decoded = decodeObjectHeader(objData, offset);
+    if (decoded == null) break;
+    final h = decoded.header;
+    final size = _eventPointSizes[(h.group, h.variation)];
+    if (size == null || h.count == null) break;
+    groups.add((h.group, h.variation));
+    offset = decoded.nextOffset + h.count! * (2 + size);
+  }
+  return groups;
+}
+
 void main() {
   late PlcProject project;
   late DnpOutstation outstation;
@@ -359,6 +388,29 @@ void main() {
     // Next detect with no change -> nothing to send.
     outstation.detectChanges(400);
     expect(outstation.takeEventUnsolicited(400), isNull);
+  });
+
+  test('solicited Class read returns output events as g11v2 + g42v3 (not g2/g32)', () {
+    project.protocols!.dnp3!.map = DnpMap(entries: [
+      DnpMapEntry(tag: 'BoTag', pointType: 'binaryOutput', index: 0, eventClass: 1),
+      DnpMapEntry(tag: 'AoInt', pointType: 'analogOutput', index: 0, eventClass: 2),
+    ]);
+    outstation.detectChanges(0);
+    writePath(project, 'BoTag', true);
+    writePath(project, 'AoInt', 42);
+    outstation.detectChanges(1);
+
+    final resp = outstation.handleAppRequest(
+        frag(0xC0, DnpFunc.read, [60, 2, 0x06, 60, 3, 0x06]), nowMs: 1);
+    final objs = resp.sublist(4);
+    final groups = _decodeEventObjectGroups(objs);
+    expect(groups.contains((11, 2)), isTrue, reason: 'g11v2 binary output event group present');
+    expect(groups.contains((42, 3)), isTrue, reason: 'g42v3 analog output event group present');
+    // A binaryOutput/analogOutput-only event set must NOT be grouped under
+    // the input groups (g2v2 binary-input, g32v3 analog-input) — that would
+    // indicate misgrouping.
+    expect(groups.contains((2, 2)), isFalse, reason: 'no g2v2 (binary-input) group for an output-only event set');
+    expect(groups.contains((32, 3)), isFalse, reason: 'no g32v3 (analog-input) group for an output-only event set');
   });
 
   test('IIN class-available + overflow bits reflect the engine', () {
