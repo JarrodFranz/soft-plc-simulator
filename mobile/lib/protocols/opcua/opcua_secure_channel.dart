@@ -397,9 +397,13 @@ class OpcSecureChannel {
   ///   HMAC-signed range, so — like [openFromClient]'s `rawHeader` — it MUST be
   ///   a slice of the original wire bytes, never re-encoded.
   /// - [rawAfterSecurityHeader]: the secured remainder
-  ///   `frame.sublist(header.securityHeaderEnd, header.size)` — for
-  ///   SignAndEncrypt the AES-encrypted `sequenceHeader ++ body ++ padding ++
-  ///   signature`; for Sign the plaintext `sequenceHeader ++ body ++ signature`.
+  ///   `frame.sublist(header.securityHeaderEnd, header.size)` — for both Sign
+  ///   and SignAndEncrypt this is `sequenceHeader ++ body ++ padding ++
+  ///   signature`; for SignAndEncrypt that whole region is AES-256-CBC
+  ///   encrypted, for Sign it stays in the clear (mirrors `secure_channel.rs`'s
+  ///   `symmetric_sign` vs `symmetric_sign_and_encrypt`, which share
+  ///   `add_space_for_padding_and_signature` and differ only by the encrypt
+  ///   step).
   /// - [tokenId]: the symmetric security header's tokenId, selecting the key set
   ///   (so a Renew's older token still verifies).
   ///
@@ -416,34 +420,25 @@ class OpcSecureChannel {
     }
     try {
       final keys = _clientKeysForToken(tokenId);
-      if (messageSecurityMode == OpcSecurityMode.sign) {
-        // No encryption; layout is plaintext seqHeader++body++signature(32).
-        if (rawAfterSecurityHeader.length < kSymSignatureSize) {
-          throw const OpcSecurityException('symmetric MSG shorter than its signature');
-        }
-        final signedEnd = rawAfterSecurityHeader.length - kSymSignatureSize;
-        _verifySymmetricSignature(
-          signingKey: keys.signingKey,
-          rawHeader: rawHeader,
-          signedRemainder:
-              Uint8List.sublistView(rawAfterSecurityHeader, 0, signedEnd),
-          signature: Uint8List.sublistView(rawAfterSecurityHeader, signedEnd),
-        );
-        return Uint8List.fromList(
-            Uint8List.sublistView(rawAfterSecurityHeader, 0, signedEnd));
-      }
 
-      // SignAndEncrypt: AES-256-CBC decrypt, then verify HMAC, then strip padding.
-      if (rawAfterSecurityHeader.isEmpty ||
-          rawAfterSecurityHeader.length % kSymBlockSize != 0) {
-        throw const OpcSecurityException(
-            'symmetric MSG ciphertext is not a multiple of the AES block size');
+      // Sign and SignAndEncrypt share the same verify + padding-strip layout;
+      // they differ ONLY in whether rawAfterSecurityHeader is first
+      // AES-256-CBC decrypted.
+      Uint8List decrypted;
+      if (messageSecurityMode == OpcSecurityMode.sign) {
+        decrypted = rawAfterSecurityHeader;
+      } else {
+        if (rawAfterSecurityHeader.isEmpty ||
+            rawAfterSecurityHeader.length % kSymBlockSize != 0) {
+          throw const OpcSecurityException(
+              'symmetric MSG ciphertext is not a multiple of the AES block size');
+        }
+        decrypted = aes256CbcDecrypt(
+          keys.encryptingKey,
+          keys.iv,
+          rawAfterSecurityHeader,
+        );
       }
-      final decrypted = aes256CbcDecrypt(
-        keys.encryptingKey,
-        keys.iv,
-        rawAfterSecurityHeader,
-      );
       if (decrypted.length < kSymSignatureSize + 1) {
         throw const OpcSecurityException('symmetric MSG plaintext too short');
       }
@@ -458,7 +453,8 @@ class OpcSecureChannel {
       // Strip OPC UA symmetric padding: the last byte before the signature is
       // the padding value; there are (paddingByte + 1) padding bytes, all equal
       // to it (minimum_padding == 1 for a <=256-byte key; secure_channel.rs
-      // add_space_for_padding_and_signature).
+      // add_space_for_padding_and_signature — applied for BOTH Sign and
+      // SignAndEncrypt).
       final paddingByte = decrypted[signedEnd - 1];
       final paddingTotal = paddingByte + 1;
       if (paddingTotal > signedEnd) {
@@ -532,21 +528,12 @@ class OpcSecureChannel {
       );
       const headerSize = kChunkHeaderLen + 4; // 12 + tokenId(4) = 16
 
-      if (messageSecurityMode == OpcSecurityMode.sign) {
-        // No padding, no encryption; append the HMAC over the whole chunk.
-        final signedLen = plainFrame.length; // seqHeader+body already included
-        final out = Uint8List(signedLen + kSymSignatureSize);
-        out.setRange(0, signedLen, plainFrame);
-        // messageSize includes the signature.
-        ByteData.sublistView(out, 4, 8)
-            .setUint32(0, out.length, Endian.little);
-        final sig = hmacSha256(
-            keys.signingKey, Uint8List.sublistView(out, 0, signedLen));
-        out.setRange(signedLen, out.length, sig);
-        return out;
-      }
-
-      // SignAndEncrypt.
+      // Sign and SignAndEncrypt share the same padding + HMAC byte layout —
+      // messageHeader ++ securityHeader ++ sequenceHeader ++ body ++ padding
+      // ++ HMAC(32) — and differ ONLY in whether the sequenceHeader..HMAC
+      // region is then AES-256-CBC encrypted (mirrors `secure_channel.rs`'s
+      // `symmetric_sign` vs `symmetric_sign_and_encrypt`, which both call
+      // `add_space_for_padding_and_signature`).
       final padding = _symPadding(body.length);
       final encRegionLen =
           8 + body.length + padding.length + kSymSignatureSize;
@@ -559,9 +546,9 @@ class OpcSecureChannel {
       tmp.setRange(plainFrame.length, plainFrame.length + padding.length, padding);
       // The trailing signature region stays zero until signed below.
 
-      // AES-CBC does not expand length, so the final chunk size equals the
-      // padded plaintext size. Set messageSize BEFORE signing (it is inside the
-      // signed range).
+      // Neither AES-CBC nor the Sign-only path expand length beyond the
+      // padded plaintext size, so the final chunk size is the same in both
+      // modes. Set messageSize BEFORE signing (it is inside the signed range).
       final finalSize = tmp.length;
       ByteData.sublistView(tmp, 4, 8).setUint32(0, finalSize, Endian.little);
 
@@ -570,8 +557,15 @@ class OpcSecureChannel {
           hmacSha256(keys.signingKey, Uint8List.sublistView(tmp, 0, signedEnd));
       tmp.setRange(signedEnd, tmp.length, sig);
 
-      // Encrypt the region [headerSize .. end] (sequence header + body +
-      // padding + signature) with the server encrypting key/IV.
+      if (messageSecurityMode == OpcSecurityMode.sign) {
+        // No AES step — tmp (header ++ seqHeader ++ body ++ padding ++ HMAC)
+        // is already the final on-wire chunk, in the clear.
+        return tmp;
+      }
+
+      // SignAndEncrypt: encrypt the region [headerSize .. end] (sequence
+      // header + body + padding + signature) with the server encrypting
+      // key/IV.
       final cipher = aes256CbcEncrypt(
         keys.encryptingKey,
         keys.iv,

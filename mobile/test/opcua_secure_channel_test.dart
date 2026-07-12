@@ -294,6 +294,90 @@ void main() {
     );
   });
 
+  test(
+      'symmetric MSG round-trips (sign-only, no AES) and a tampered MAC is '
+      'rejected', () {
+    final channel = OpcSecureChannel(
+      keyPair: serverKp,
+      certificateDer: serverCertDer,
+    );
+    channel.messageSecurityMode = OpcSecurityMode.sign;
+    const tokenId = 8;
+    channel.deriveSymmetricKeys(
+      tokenId: tokenId,
+      clientNonce: clientNonce,
+      serverNonce: serverNonce,
+    );
+    final clientKeys = channel.clientKeys!;
+    final serverKeys = channel.serverKeys!;
+
+    // Body length chosen so it is NOT already block-aligned, forcing >1
+    // padding byte — Sign mode must pad exactly like SignAndEncrypt.
+    final body =
+        Uint8List.fromList(List<int>.generate(53, (i) => (i * 11 + 2) & 0xff));
+
+    // Inbound: the CLIENT signs (no encrypt) with the client key set; the
+    // server's channel.openSymmetric (client keys) must recover it.
+    final inFrame = _symBuildSignOnly(
+      keys: clientKeys,
+      secureChannelId: 12,
+      tokenId: tokenId,
+      sequenceNumber: 2,
+      requestId: 3,
+      body: body,
+    );
+    final inHdr = parseChunkHeader(inFrame);
+    final opened = channel.openSymmetric(
+      tokenId: tokenId,
+      rawHeader: Uint8List.sublistView(inFrame, 0, inHdr.securityHeaderEnd),
+      rawAfterSecurityHeader:
+          Uint8List.sublistView(inFrame, inHdr.securityHeaderEnd, inHdr.size),
+    );
+    expect(opened.length, 8 + body.length);
+    expect(Uint8List.sublistView(opened, 8), equals(body));
+
+    // Outbound: the SERVER builds (Sign mode) with the server key set.
+    final outFrame = channel.buildSecuredMsg(
+      secureChannelId: 12,
+      tokenId: tokenId,
+      sequenceNumber: 5,
+      requestId: 6,
+      body: body,
+    );
+
+    // Sanity-check the built chunk is NOT AES-encrypted: the plaintext
+    // sequenceHeader++body region is present in the clear immediately after
+    // the security header (before the padding + 32-byte HMAC).
+    final outHdr = parseChunkHeader(outFrame);
+    final plainRegion = Uint8List.sublistView(outFrame,
+        outHdr.securityHeaderEnd, outHdr.securityHeaderEnd + 8 + body.length);
+    expect(Uint8List.sublistView(plainRegion, 8), equals(body));
+
+    // The chunk reflects padding + the 32-byte HMAC: the secured region is
+    // longer than the unpadded seqHeader+body+HMAC (padding is present), and
+    // — since Sign uses the same padding sizing as SignAndEncrypt — its
+    // length is a multiple of the AES block size (16).
+    final securedLen = outHdr.size - outHdr.securityHeaderEnd;
+    expect(securedLen, greaterThan(8 + body.length + kSymSignatureSize));
+    expect(securedLen % 16, 0);
+
+    final openedOut = _symOpenBodySignOnly(keys: serverKeys, frame: outFrame);
+    expect(openedOut, equals(body));
+
+    // Tamper: flip a byte inside the signed region -> HMAC fails -> throws.
+    final tampered = Uint8List.fromList(inFrame);
+    tampered[inHdr.securityHeaderEnd + 4] ^= 0xFF;
+    expect(
+      () => channel.openSymmetric(
+        tokenId: tokenId,
+        rawHeader: Uint8List.sublistView(tampered, 0, inHdr.securityHeaderEnd),
+        rawAfterSecurityHeader: Uint8List.sublistView(
+            tampered, inHdr.securityHeaderEnd, inHdr.size),
+      ),
+      throwsA(isA<OpcSecurityException>()),
+    );
+  });
+
   test('Renew derives fresh keys while the old token still validates within '
       'lifetime', () {
     final channel = OpcSecureChannel(
@@ -454,6 +538,68 @@ Uint8List _symBuild({
   out.setRange(0, headerSize, tmp);
   out.setRange(headerSize, out.length, cipher);
   return out;
+}
+
+/// Client-side mirror of the server's symmetric Sign-only path: the SAME
+/// padding + HMAC layout as [_symBuild]'s SignAndEncrypt, but the
+/// sequenceHeader..signature region is left in the clear (no AES step).
+Uint8List _symBuildSignOnly({
+  required OpcChannelKeys keys,
+  required int secureChannelId,
+  required int tokenId,
+  required int sequenceNumber,
+  required int requestId,
+  required Uint8List body,
+}) {
+  const headerSize = 16; // chunk header(12) + tokenId(4)
+  const sig = 32;
+  const block = 16;
+  final plainFrame = buildMsgChunk(
+    secureChannelId: secureChannelId,
+    tokenId: tokenId,
+    sequenceNumber: sequenceNumber,
+    requestId: requestId,
+    body: body,
+  );
+  final encryptSize = 8 + body.length + sig + 1;
+  final rem = encryptSize % block;
+  final inner = rem == 0 ? 0 : block - rem;
+  final padTotal = 1 + inner;
+  final pad = Uint8List(padTotal)..fillRange(0, padTotal, inner & 0xff);
+
+  final tmp = Uint8List(headerSize + 8 + body.length + padTotal + sig);
+  tmp.setRange(0, plainFrame.length, plainFrame);
+  tmp.setRange(plainFrame.length, plainFrame.length + padTotal, pad);
+  ByteData.sublistView(tmp, 4, 8).setUint32(0, tmp.length, Endian.little);
+
+  final signedEnd = tmp.length - sig;
+  final signature =
+      hmacSha256(keys.signingKey, Uint8List.sublistView(tmp, 0, signedEnd));
+  tmp.setRange(signedEnd, tmp.length, signature);
+  return tmp; // no AES step
+}
+
+/// Client-side mirror of the Sign-only receive path: verify HMAC, strip
+/// padding, return the body (dropping the 8-byte sequence header). No AES.
+Uint8List _symOpenBodySignOnly({
+  required OpcChannelKeys keys,
+  required Uint8List frame,
+}) {
+  const sig = 32;
+  final hdr = parseChunkHeader(frame);
+  final rawHeader = Uint8List.sublistView(frame, 0, hdr.securityHeaderEnd);
+  final rawAfter =
+      Uint8List.sublistView(frame, hdr.securityHeaderEnd, hdr.size);
+  final signedEnd = rawAfter.length - sig;
+  final signed = Uint8List(rawHeader.length + signedEnd);
+  signed.setRange(0, rawHeader.length, rawHeader);
+  signed.setRange(rawHeader.length, signed.length,
+      Uint8List.sublistView(rawAfter, 0, signedEnd));
+  final expected = hmacSha256(keys.signingKey, signed);
+  expect(Uint8List.sublistView(rawAfter, signedEnd), equals(expected));
+  final padByte = rawAfter[signedEnd - 1];
+  final bodyEnd = signedEnd - (padByte + 1);
+  return Uint8List.fromList(Uint8List.sublistView(rawAfter, 8, bodyEnd));
 }
 
 /// Client-side mirror of the receive path: AES-decrypt, verify HMAC, strip
