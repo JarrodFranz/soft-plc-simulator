@@ -59,6 +59,7 @@ class OpcUaStatusCodes {
   static const badUserAccessDenied = 0x801F0000; // status_codes.rs:116
   static const badIdentityTokenRejected = 0x80210000; // status_codes.rs:118
   static const badSecurityChecksFailed = 0x80130000; // status_codes.rs:110
+  static const badApplicationSignatureInvalid = 0x80590000; // status_codes.rs:361
 }
 
 /// MessageSecurityMode enum values (enums.rs:856-861, Int32-encoded):
@@ -1150,9 +1151,31 @@ class OpcUaServerSession {
       );
     }
 
-    // clientSignature: SignatureData.
-    reader.string(); // algorithm
-    reader.byteString(); // signature
+    // clientSignature: SignatureData. On a SECURED channel the client MUST
+    // sign `serverCertificate ++ serverNonce` (the values it received in
+    // CreateSessionResponse) with its own certificate's private key, proving
+    // possession of that key. Verify it before the identity-token auth.
+    reader.string(); // clientSignature.algorithm
+    final clientSig = reader.byteString(); // clientSignature.signature
+    if (_channelSecured) {
+      final nonce = _session!.createSessionServerNonce;
+      final chan = _secureChannel;
+      final serverCert = serverCertificateDer;
+      if (clientSig == null ||
+          clientSig.isEmpty ||
+          nonce == null ||
+          chan == null ||
+          serverCert == null ||
+          !chan.verifyClientSignature(
+              Uint8List.fromList(<int>[...serverCert, ...nonce]),
+              Uint8List.fromList(clientSig))) {
+        return _fault(
+          chunk,
+          requestHandle: header.requestHandle,
+          serviceResult: OpcUaStatusCodes.badApplicationSignatureInvalid,
+        );
+      }
+    }
     _skipArrayOfStrings(reader); // clientSoftwareCertificates (SignedSoftwareCertificate[])
     _skipArrayOfStrings(reader); // localeIds
     // userIdentityToken: ExtensionObject. Recognize AnonymousIdentityToken

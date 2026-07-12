@@ -1818,11 +1818,18 @@ void main() {
       tokenWriter.byteString(encPassword);
       tokenWriter.string(
           'http://www.w3.org/2001/04/xmlenc#rsa-oaep'); // OAEP-SHA1
+      // On a secured channel the ActivateSession clientSignature is now
+      // verified: sign serverCertificate ++ serverNonce (cert FIRST) with the
+      // client's OWN key to prove possession of its cert's private key.
+      final clientSig = rsaPkcs1Sha256Sign(
+        clientKp.privateKey,
+        Uint8List.fromList(<int>[...echoedServerCertificate!, ...echoedServerNonce]),
+      );
       final asBody = OpcUaWriter();
       asBody.nodeId(const OpcNodeId.numeric(0, _activateSessionRequestId));
       asBody.requestHeader(_reqHeader(authToken: authToken, requestHandle: 4));
-      asBody.string(null);
-      asBody.byteString(null);
+      asBody.string(kRsaSha256SignatureUri);
+      asBody.byteString(clientSig);
       asBody.int32(-1);
       asBody.int32(-1);
       asBody.extensionObjectHeader(const OpcNodeId.numeric(0, 324),
@@ -1976,6 +1983,192 @@ void main() {
             serverKp.publicKey, signedData, Uint8List.fromList(signature!)),
         isTrue,
       );
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    test('secured ActivateSession accepts a correct client signature and '
+        'rejects a tampered or missing one', () {
+      final serverKp = generateRsa2048(fortunaRandom(List<int>.filled(32, 7)));
+      final clientKp = generateRsa2048(fortunaRandom(List<int>.filled(32, 11)));
+      final serverCertDer = buildSelfSignedCertificate(
+        keyPair: serverKp,
+        applicationUri: 'urn:server',
+        commonName: 'S',
+        notBefore: DateTime.utc(2020),
+        notAfter: DateTime.utc(2040),
+      );
+      final clientCertDer = buildSelfSignedCertificate(
+        keyPair: clientKp,
+        applicationUri: 'urn:client',
+        commonName: 'C',
+        notBefore: DateTime.utc(2020),
+        notAfter: DateTime.utc(2040),
+      );
+      final serverNonce = Uint8List.fromList(
+          List<int>.generate(kSecureChannelNonceLength, (i) => 150 - i));
+      final channelClientNonce = Uint8List.fromList(
+          List<int>.generate(kSecureChannelNonceLength, (i) => i + 1));
+
+      final channel =
+          OpcSecureChannel(keyPair: serverKp, certificateDer: serverCertDer);
+      final session = OpcUaServerSession(
+        info: _info,
+        services: null,
+        securityModes: const ['Basic256Sha256/SignAndEncrypt'],
+        serverCertificateDer: serverCertDer,
+        secureChannel: channel,
+        serverNonceGenerator: () => serverNonce,
+      );
+
+      session.onBytes(_buildHello(), 0);
+
+      // --- Secured OPN (Issue, SignAndEncrypt) ---
+      final opnBody = OpcUaWriter();
+      opnBody.nodeId(const OpcNodeId.numeric(0, _openSecureChannelRequestId));
+      opnBody.requestHeader(_reqHeader());
+      opnBody.uint32(0); // clientProtocolVersion
+      opnBody.int32(0); // requestType Issue
+      opnBody.int32(3); // securityMode SignAndEncrypt
+      opnBody.byteString(channelClientNonce);
+      opnBody.uint32(3600000); // requestedLifetime
+      final opnSeqBody =
+          Uint8List.fromList(<int>[..._seqHeader(1, 1), ...opnBody.take()]);
+      final opnFrame = _asymSignEncryptOpn(
+        signKey: clientKp.privateKey,
+        encKey: serverKp.publicKey,
+        senderCertDer: clientCertDer,
+        receiverThumbprint: sha1(serverCertDer),
+        plainSeqBody: opnSeqBody,
+      );
+      final opnOut = session.onBytes(opnFrame, 0);
+      final respPlain = _asymDecryptVerifyOpn(
+        decKey: clientKp.privateKey,
+        verifyKey: serverKp.publicKey,
+        frame: opnOut.single,
+      );
+      final respReader = OpcUaReader(Uint8List.sublistView(respPlain, 8));
+      respReader.nodeId();
+      respReader.responseHeader();
+      respReader.uint32(); // serverProtocolVersion
+      final channelId = respReader.uint32();
+      final tokenId = respReader.uint32();
+
+      final clientKeys = channel.clientKeys!;
+      final serverKeys = channel.serverKeys!;
+
+      // --- Secured CreateSession ---
+      final csBody = OpcUaWriter();
+      csBody.nodeId(const OpcNodeId.numeric(0, _createSessionRequestId));
+      csBody.requestHeader(_reqHeader(requestHandle: 3));
+      csBody.string('urn:test:client');
+      csBody.string('urn:test:client:product');
+      csBody.localizedText(const OpcLocalizedText(text: 'C'));
+      csBody.int32(1);
+      csBody.string(null);
+      csBody.string(null);
+      csBody.int32(-1);
+      csBody.string(null); // serverUri
+      csBody.string('opc.tcp://127.0.0.1:4840'); // endpointUrl
+      csBody.string('sess'); // sessionName
+      csBody.byteString(null); // clientNonce
+      csBody.byteString(clientCertDer); // clientCertificate
+      csBody.float64(1200000);
+      csBody.uint32(0);
+      final csFrame = _symBuildSession(
+        keys: clientKeys,
+        secureChannelId: channelId,
+        tokenId: tokenId,
+        sequenceNumber: 2,
+        requestId: 11,
+        body: csBody.take(),
+      );
+      final csOut = session.onBytes(csFrame, 0);
+      final csRespBody =
+          _symOpenSessionBody(keys: serverKeys, frame: csOut.single);
+      final csReader = OpcUaReader(csRespBody);
+      csReader.nodeId();
+      csReader.responseHeader();
+      csReader.nodeId(); // sessionId
+      final authToken = csReader.nodeId();
+      csReader.float64(); // revisedSessionTimeout
+      final echoedServerNonce = csReader.byteString();
+      final echoedServerCertificate = csReader.byteString();
+      expect(echoedServerNonce, equals(serverNonce));
+      expect(echoedServerCertificate, equals(serverCertDer));
+
+      // The client proves possession of its cert's private key by signing
+      // serverCertificate ++ serverNonce (cert FIRST) with ITS OWN key.
+      final signedData = Uint8List.fromList(
+          <int>[...echoedServerCertificate!, ...echoedServerNonce!]);
+      final goodSig = rsaPkcs1Sha256Sign(clientKp.privateKey, signedData);
+
+      Uint8List activateFrame({
+        required int seq,
+        required int req,
+        String? algorithm,
+        List<int>? signature,
+      }) {
+        final tokenWriter = OpcUaWriter();
+        tokenWriter.string('anonymous'); // AnonymousIdentityToken.policyId
+        final asBody = OpcUaWriter();
+        asBody.nodeId(const OpcNodeId.numeric(0, _activateSessionRequestId));
+        asBody.requestHeader(
+            _reqHeader(authToken: authToken, requestHandle: req));
+        asBody.string(algorithm); // clientSignature.algorithm
+        asBody.byteString(signature); // clientSignature.signature
+        asBody.int32(-1); // clientSoftwareCertificates
+        asBody.int32(-1); // localeIds
+        asBody.extensionObjectHeader(const OpcNodeId.numeric(0, 321),
+            hasBody: true);
+        asBody.byteString(tokenWriter.take());
+        asBody.string(null); // userTokenSignature.algorithm
+        asBody.byteString(null); // userTokenSignature.signature
+        return _symBuildSession(
+          keys: clientKeys,
+          secureChannelId: channelId,
+          tokenId: tokenId,
+          sequenceNumber: seq,
+          requestId: req,
+          body: asBody.take(),
+        );
+      }
+
+      ({int? encodingId, int serviceResult}) sendActivate(Uint8List frame) {
+        final out = session.onBytes(frame, 0);
+        final body = _symOpenSessionBody(keys: serverKeys, frame: out.single);
+        final r = OpcUaReader(body);
+        final typeId = r.nodeId();
+        final header = r.responseHeader();
+        return (
+          encodingId: typeId.numericId,
+          serviceResult: header.serviceResult
+        );
+      }
+
+      // REJECT tampered: flip a byte of the otherwise-valid signature.
+      final tampered = Uint8List.fromList(goodSig);
+      tampered[0] ^= 0xff;
+      final badResult = sendActivate(activateFrame(
+          seq: 3,
+          req: 12,
+          algorithm: kRsaSha256SignatureUri,
+          signature: tampered));
+      expect(badResult.encodingId, _serviceFaultId);
+      expect(badResult.serviceResult, 0x80590000); // Bad_ApplicationSignatureInvalid
+
+      // REJECT missing: null signature on a secured channel.
+      final missingResult = sendActivate(
+          activateFrame(seq: 4, req: 13, algorithm: null, signature: null));
+      expect(missingResult.encodingId, _serviceFaultId);
+      expect(missingResult.serviceResult, 0x80590000);
+
+      // ACCEPT: correct signature over serverCertificate ++ serverNonce.
+      final goodResult = sendActivate(activateFrame(
+          seq: 5,
+          req: 14,
+          algorithm: kRsaSha256SignatureUri,
+          signature: goodSig));
+      expect(goodResult.encodingId, _activateSessionResponseId);
+      expect(goodResult.serviceResult, _statusGood);
     }, timeout: const Timeout(Duration(minutes: 2)));
   });
 }

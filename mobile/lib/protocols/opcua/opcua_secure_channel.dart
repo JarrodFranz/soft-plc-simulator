@@ -599,6 +599,21 @@ class OpcSecureChannel {
   Uint8List signApplicationData(Uint8List data) =>
       rsaPkcs1Sha256Sign(_keyPair.privateKey, data);
 
+  /// Verifies an ActivateSession `clientSignature` (SignatureData) — the
+  /// RSA-PKCS1-v1.5-SHA256 signature the client makes over
+  /// `serverCertificateDer ++ serverNonce` to prove it holds the private key
+  /// for the certificate it presented in the OPN handshake. Verified with the
+  /// CLIENT certificate's public key. Returns false (never throws) when no
+  /// client certificate has been parsed yet or the signature does not verify —
+  /// `rsaPkcs1Sha256Verify` itself returns false on any malformed input.
+  bool verifyClientSignature(Uint8List signedData, Uint8List signature) {
+    final c = clientCertificate;
+    if (c == null) {
+      return false;
+    }
+    return rsaPkcs1Sha256Verify(c.publicKey, signedData, signature);
+  }
+
   /// OAEP-SHA1-decrypts a UserNameIdentityToken password ByteString with the
   /// server private key, returning the UTF-8 password. Mirrors
   /// `user_identity.rs legacy_password_decrypt`: the plaintext is
