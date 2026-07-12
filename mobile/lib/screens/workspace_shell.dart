@@ -235,18 +235,30 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// always runs alongside either mode so an external `System.AlarmReset`
   /// write (e.g. from HMI/logic, not the Clear Fault button) still clears a
   /// latched fault even while the scan loop itself is halted.
+  ///
+  /// Free-run only re-arms the next zero-delay timer while `isRunning` is
+  /// true and `_faulted` is false — paused/faulted goes fully idle (no
+  /// scheduled timer at all) instead of spinning an indefinite no-op
+  /// zero-delay chain. `_startScanLoop()` is called again on the
+  /// stopped -> running toggle (see the run/pause `IconButton` below) to
+  /// resume the chain.
   void _startScanLoop() {
     _scanTimer?.cancel();
     if (_freeRun) {
       void arm() {
         _scanTimer = Timer(Duration.zero, () {
-          if (isRunning && !_faulted) {
-            _executeScan();
+          if (!isRunning || _faulted) {
+            // Paused/faulted: go idle, do not re-arm. Resumed by the next
+            // _startScanLoop() call (run toggle or free-run/speed change).
+            return;
           }
+          _executeScan();
           arm();
         });
       }
-      arm();
+      if (isRunning && !_faulted) {
+        arm();
+      }
     } else {
       _scanTimer = Timer.periodic(Duration(milliseconds: scanSpeedMs), (timer) {
         if (isRunning && !_faulted) {
@@ -1240,12 +1252,20 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       padding: compact ? const EdgeInsets.symmetric(horizontal: 4) : const EdgeInsets.all(8),
       constraints: compact ? const BoxConstraints() : null,
       onPressed: () {
+        final resuming = !isRunning;
         setState(() {
-          if (!isRunning) {
+          if (resuming) {
             _startRunSession();
           }
           isRunning = !isRunning;
         });
+        if (resuming) {
+          // Stopped -> running: re-arm the free-run zero-delay chain, which
+          // idled while paused (see _startScanLoop). No-op cost in fixed
+          // mode — _startScanLoop() cancels+recreates the same
+          // Timer.periodic, it does not double-schedule.
+          _startScanLoop();
+        }
       },
     );
 
