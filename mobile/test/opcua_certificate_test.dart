@@ -97,16 +97,18 @@ void main() {
         notAfter: DateTime.utc(2040),
       );
       // KeyUsage OID 2.5.29.15 present, critical, with digitalSignature +
-      // nonRepudiation + keyEncipherment + dataEncipherment.
+      // nonRepudiation + keyEncipherment + dataEncipherment + keyCertSign.
       expect(_derContainsOid(der, '2.5.29.15'), isTrue);
-      // The KeyUsage critical BOOLEAN TRUE + BIT STRING value 0xF0 (bits 0-3,
-      // 4 unused) must appear verbatim: 01 01 FF 04 04 03 02 04 F0
-      // (BOOLEAN TRUE, then OCTET STRING wrapping BIT STRING { 04 F0 }).
+      // The KeyUsage critical BOOLEAN TRUE + BIT STRING value 0xF4 (bits
+      // 0-3 + 5 = keyCertSign, 2 unused) must appear verbatim:
+      // 01 01 FF 04 04 03 02 02 F4 (BOOLEAN TRUE, then OCTET STRING wrapping
+      // BIT STRING { 02 F4 }). keyCertSign is required for a self-signed cert
+      // used as its own trust anchor (Milo/Ignition rejects without it).
       expect(
         _containsSubsequence(
           der,
           Uint8List.fromList(
-            [0x01, 0x01, 0xFF, 0x04, 0x04, 0x03, 0x02, 0x04, 0xF0],
+            [0x01, 0x01, 0xFF, 0x04, 0x04, 0x03, 0x02, 0x02, 0xF4],
           ),
         ),
         isTrue,
