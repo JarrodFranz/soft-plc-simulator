@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
+import '../models/system_tags.dart';
 import '../models/tag_resolver.dart';
 import '../ui/responsive.dart';
 
@@ -200,11 +201,17 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                               // Value Display & Controls
                               Row(
                                 children: [
-                                  // Live Value Pill
+                                  // Live Value Pill. The reserved System tag
+                                  // is never a BOOL (it's the SYSTEM
+                                  // composite), but the name is also checked
+                                  // explicitly here: PlcTag.access isn't
+                                  // enforced anywhere at the model layer, so
+                                  // this UI-level name guard is what actually
+                                  // keeps the System root un-editable.
                                   Flexible(
                                     child: InkWell(
                                       onTap: () {
-                                        if (isBool) {
+                                        if (isBool && tag.name != kSystemTagName) {
                                           setState(() {
                                             if (tag.isForced) {
                                               tag.forcedValue = !(tag.forcedValue == true);
@@ -247,7 +254,10 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                                   // ill-defined to force (readPath's force
                                   // overlay only ever applies to scalars), so
                                   // the control is not offered for those rows.
-                                  if (tag.value is! Map && tag.value is! List)
+                                  // The System root is additionally excluded
+                                  // by name (reserved; read-only status/
+                                  // AlarmReset live under it, not on it).
+                                  if (tag.value is! Map && tag.value is! List && tag.name != kSystemTagName)
                                     touchable(
                                       ElevatedButton.icon(
                                         icon: Icon(tag.isForced ? Icons.lock : Icons.lock_open, size: 14),
@@ -297,9 +307,18 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
   // Read-only row for a composite/array/integer-bit child, recursing into
   // its own children when expanded. Mirrors memory_manager_screen's
   // _childRowData pattern but rendered as an indented row (not a table).
+  //
+  // Exactly one child path is writable: `System.AlarmReset`, the sole
+  // control field on the reserved System tag (every other System.* field is
+  // a status readout the shell overwrites every scan, and PlcTag.access is
+  // not enforced at the model layer — this UI-level allowlist is what
+  // actually keeps the rest of System read-only).
+  static const String _writableSystemChildPath = '$kSystemTagName.AlarmReset';
+
   Widget _buildChildRow(TagChild child, int depth) {
     final isExpanded = _expandedTags.contains(child.path);
     final value = readPath(widget.project, child.path);
+    final isWritable = child.path == _writableSystemChildPath && child.dataType == 'BOOL';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -339,15 +358,43 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                 ),
               ),
               const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  '$value',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.right,
-                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.cyanAccent),
+              if (isWritable)
+                touchable(
+                  Container(
+                    key: const ValueKey('inspector-write-System.AlarmReset'),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: (value == true ? Colors.amber : Colors.grey).withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(color: value == true ? Colors.amber : Colors.white24),
+                    ),
+                    child: Text(
+                      '$value',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: value == true ? Colors.amberAccent : Colors.grey,
+                      ),
+                    ),
+                  ),
+                  onTap: () {
+                    writePath(widget.project, child.path, !(value == true));
+                    setState(() {});
+                    widget.onTagStateChanged();
+                  },
+                )
+              else
+                Flexible(
+                  child: Text(
+                    '$value',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.cyanAccent),
+                  ),
                 ),
-              ),
             ],
           ),
         ),

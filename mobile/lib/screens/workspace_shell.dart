@@ -34,6 +34,10 @@ import 'gateway_screen.dart';
 /// Debounce window between the last project mutation and the autosave write.
 const Duration _autosaveDebounce = Duration(milliseconds: 800);
 
+/// Sentinel item appended to the Add-Program dialog's task dropdown; picking
+/// it reveals inline task-creation fields instead of an existing task.
+const String _kNewTaskSentinel = '＋ New task…';
+
 class WorkspaceShell extends StatefulWidget {
   /// Optional injection seam so tests (and callers that already own a
   /// [ProjectRepository]) can share one backing store with the shell instead
@@ -299,6 +303,32 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// Test-only hook: exercises the [_deleteTask] orphan-guard logic directly.
   @visibleForTesting
   bool debugDeleteTask(PlcTask t) => _deleteTask(t);
+
+  /// Test-only hook: exercises the Add-Program dialog's "＋ New task…" save
+  /// path directly — creates [taskName]/[taskType] (with [periodMs] /
+  /// [triggerTag] / [watchdogMs] as applicable), adds it to the active
+  /// project, then creates [programName]/[language] and assigns it to the
+  /// new task. The dialog itself calls the same path so UI and test share
+  /// one implementation.
+  @visibleForTesting
+  void debugAddProgramToNewTask({
+    required String programName,
+    required String language,
+    required String taskName,
+    required String taskType,
+    int periodMs = 100,
+    String triggerTag = '',
+    int watchdogMs = 0,
+  }) =>
+      _addProgramToNewTask(
+        programName: programName,
+        language: language,
+        taskName: taskName,
+        taskType: taskType,
+        periodMs: periodMs,
+        triggerTag: triggerTag,
+        watchdogMs: watchdogMs,
+      );
 
   /// (Re)starts a run session: resets the scheduler/engine runtimes and the
   /// per-session scan-time stats, and (re)starts the uptime/free-run clocks.
@@ -1918,6 +1948,43 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     );
   }
 
+  /// Shared save path for "Add Program" whether it assigns to an existing
+  /// task or (via the "＋ New task…" sentinel) creates one on the spot. The
+  /// dialog and [debugAddProgramToNewTask] both funnel through this so the
+  /// UI and the test exercise one implementation.
+  void _addProgramToNewTask({
+    required String programName,
+    required String language,
+    required String taskName,
+    required String taskType,
+    int periodMs = 100,
+    String triggerTag = '',
+    int watchdogMs = 0,
+  }) {
+    final newTask = PlcTask(
+      name: taskName,
+      type: taskType,
+      periodMs: periodMs,
+      programNames: [],
+      triggerTag: taskType == 'Event' ? triggerTag : '',
+      watchdogMs: watchdogMs,
+    );
+    final newProg = PlcProgram(
+      name: programName,
+      language: language,
+      stSource: '// Write ST Code for $programName\n',
+    );
+    setState(() {
+      _activeProject.tasks.add(newTask);
+      _activeProject.programs.add(newProg);
+      if (!newTask.programNames.contains(newProg.name)) {
+        newTask.programNames.add(newProg.name);
+      }
+      _activeViewId = 'PROGRAM:${newProg.name}';
+    });
+    _markDirtyAndAutosave();
+  }
+
   void _showAddProgramDialog() {
     showDialog(
       context: context,
@@ -1929,54 +1996,128 @@ class WorkspaceShellState extends State<WorkspaceShell> {
           _activeProject.tasks.add(PlcTask(name: 'MainTask', type: 'Continuous', periodMs: 100, programNames: []));
         }
         String taskName = _activeProject.tasks.first.name;
+        bool isNewTask = false;
+        final newTaskNameCtrl = TextEditingController(text: 'NewTask');
+        String newTaskType = 'Continuous';
+        final newTaskPeriodCtrl = TextEditingController(text: '100');
+        final newTaskWatchdogCtrl = TextEditingController(text: '0');
+        String newTaskTriggerTag = '';
 
         return AlertDialog(
           title: const Text('Add New Program to Project'),
           content: StatefulBuilder(
-            builder: (context, setDlgState) => Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Program Name')),
-                const SizedBox(height: 12),
-                DropdownButton<String>(
-                  value: language,
-                  isExpanded: true,
-                  items: const [
-                    DropdownMenuItem(value: 'StructuredText', child: Text('Structured Text (ST)')),
-                    DropdownMenuItem(value: 'LadderLogic', child: Text('Ladder Logic (LD)')),
-                    DropdownMenuItem(value: 'FunctionBlockDiagram', child: Text('Function Block Diagram (FBD)')),
-                    DropdownMenuItem(value: 'SequentialFunctionChart', child: Text('Sequential Function Chart (SFC)')),
+            builder: (context, setDlgState) => SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Program Name')),
+                  const SizedBox(height: 12),
+                  DropdownButton<String>(
+                    value: language,
+                    isExpanded: true,
+                    items: const [
+                      DropdownMenuItem(value: 'StructuredText', child: Text('Structured Text (ST)')),
+                      DropdownMenuItem(value: 'LadderLogic', child: Text('Ladder Logic (LD)')),
+                      DropdownMenuItem(value: 'FunctionBlockDiagram', child: Text('Function Block Diagram (FBD)')),
+                      DropdownMenuItem(value: 'SequentialFunctionChart', child: Text('Sequential Function Chart (SFC)')),
+                    ],
+                    onChanged: (val) => setDlgState(() => language = val!),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButton<String>(
+                    value: isNewTask ? _kNewTaskSentinel : taskName,
+                    isExpanded: true,
+                    items: [
+                      ..._activeProject.tasks.map((t) => DropdownMenuItem(value: t.name, child: Text('${t.name} (${t.type})'))),
+                      const DropdownMenuItem(value: _kNewTaskSentinel, child: Text(_kNewTaskSentinel)),
+                    ],
+                    onChanged: (val) => setDlgState(() {
+                      if (val == _kNewTaskSentinel) {
+                        isNewTask = true;
+                      } else {
+                        isNewTask = false;
+                        taskName = val!;
+                      }
+                    }),
+                  ),
+                  if (isNewTask) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: newTaskNameCtrl,
+                      decoration: const InputDecoration(labelText: 'New Task Name'),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButton<String>(
+                      value: newTaskType,
+                      isExpanded: true,
+                      items: const [
+                        DropdownMenuItem(value: 'Startup', child: Text('Startup')),
+                        DropdownMenuItem(value: 'Continuous', child: Text('Continuous')),
+                        DropdownMenuItem(value: 'Periodic', child: Text('Periodic')),
+                        DropdownMenuItem(value: 'Event', child: Text('Event')),
+                      ],
+                      onChanged: (val) => setDlgState(() => newTaskType = val!),
+                    ),
+                    if (newTaskType == 'Periodic') ...[
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: newTaskPeriodCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(labelText: 'Period (ms)'),
+                      ),
+                    ],
+                    if (newTaskType == 'Event') ...[
+                      const SizedBox(height: 12),
+                      TagAutocompleteField(
+                        options: leafAndNodePaths(_activeProject),
+                        initialValue: newTaskTriggerTag,
+                        label: 'Trigger Tag (BOOL)',
+                        onChanged: (val) => newTaskTriggerTag = val,
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: newTaskWatchdogCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'Watchdog (ms, 0 = disabled)'),
+                    ),
                   ],
-                  onChanged: (val) => setDlgState(() => language = val!),
-                ),
-                const SizedBox(height: 12),
-                DropdownButton<String>(
-                  value: taskName,
-                  isExpanded: true,
-                  items: _activeProject.tasks.map((t) => DropdownMenuItem(value: t.name, child: Text('${t.name} (${t.type})'))).toList(),
-                  onChanged: (val) => setDlgState(() => taskName = val!),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
             ElevatedButton(
               onPressed: () {
-                final newProg = PlcProgram(
-                  name: nameCtrl.text,
-                  language: language,
-                  stSource: '// Write ST Code for ${nameCtrl.text}\n',
-                );
-                setState(() {
-                  _activeProject.programs.add(newProg);
-                  final t = _activeProject.tasks.firstWhere((tk) => tk.name == taskName);
-                  if (!t.programNames.contains(newProg.name)) {
-                    t.programNames.add(newProg.name);
-                  }
-                  _activeViewId = 'PROGRAM:${newProg.name}';
-                });
-                _markDirtyAndAutosave();
+                if (isNewTask) {
+                  final newName = newTaskNameCtrl.text.trim().isEmpty ? 'NewTask' : newTaskNameCtrl.text.trim();
+                  _addProgramToNewTask(
+                    programName: nameCtrl.text,
+                    language: language,
+                    taskName: newName,
+                    taskType: newTaskType,
+                    periodMs: int.tryParse(newTaskPeriodCtrl.text) ?? 100,
+                    triggerTag: newTaskTriggerTag,
+                    watchdogMs: int.tryParse(newTaskWatchdogCtrl.text) ?? 0,
+                  );
+                } else {
+                  final newProg = PlcProgram(
+                    name: nameCtrl.text,
+                    language: language,
+                    stSource: '// Write ST Code for ${nameCtrl.text}\n',
+                  );
+                  setState(() {
+                    _activeProject.programs.add(newProg);
+                    final t = _activeProject.tasks.firstWhere((tk) => tk.name == taskName);
+                    if (!t.programNames.contains(newProg.name)) {
+                      t.programNames.add(newProg.name);
+                    }
+                    _activeViewId = 'PROGRAM:${newProg.name}';
+                  });
+                  _markDirtyAndAutosave();
+                }
                 Navigator.pop(ctx);
               },
               child: const Text('Add Program'),

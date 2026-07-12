@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
+import '../models/system_tags.dart';
 import '../models/tag_resolver.dart';
 import '../ui/responsive.dart';
 
@@ -120,6 +121,7 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
         String dataType = 'BOOL';
         String ioType = 'SimulatedInput';
         final arrayLenCtrl = TextEditingController(text: '0');
+        String? errorText;
 
         final availableTypes = ['BOOL', 'INT16', 'INT32', 'INT64', 'FLOAT64', 'STRING',
             ...builtinCompositeNames(), ...widget.currentProject.structDefs.map((s) => s.name)];
@@ -130,7 +132,10 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
             content: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Tag Name')),
+                TextField(
+                  controller: nameCtrl,
+                  decoration: InputDecoration(labelText: 'Tag Name', errorText: errorText),
+                ),
                 TextField(controller: pathCtrl, decoration: const InputDecoration(labelText: 'Browse Path')),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
@@ -157,6 +162,12 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
               ElevatedButton(
                 onPressed: () {
+                  // `System` is reserved: block creating a same-named tag so
+                  // a user can't shadow/effectively rename the built-in one.
+                  if (nameCtrl.text.trim() == kSystemTagName) {
+                    setDlgState(() => errorText = '"$kSystemTagName" is reserved and cannot be reused');
+                    return;
+                  }
                   final arrLen = int.tryParse(arrayLenCtrl.text) ?? 0;
                   final tag = PlcTag(
                     name: nameCtrl.text,
@@ -375,7 +386,9 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
         isTimer: isTimer,
         expandable: expandable,
         isExpanded: isExpanded,
-        isDeletable: true,
+        // The reserved `System` tag cannot be deleted (see `_deleteTag`); hide
+        // the affordance entirely rather than offering a no-op control.
+        isDeletable: tag.name != kSystemTagName,
         depth: 0,
         rawValue: tag.value,
         // Root rows render their value as static text (matching the pre-WS5
@@ -400,6 +413,12 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
     }
     for (final child in childrenOf(widget.currentProject, path)) {
       final isExpanded = _expandedTagKeys.contains(child.path);
+      // Every field under the reserved System tag is a read-only status
+      // readout except `System.AlarmReset`; PlcTag.access isn't enforced at
+      // the model layer, so this name-based check is what actually keeps the
+      // rest of System un-editable here.
+      final isReservedSystemChild = child.path.startsWith('$kSystemTagName.');
+      final isWritableSystemChild = child.path == '$kSystemTagName.AlarmReset';
       out.add(_TagRowData(
         name: child.label,
         path: child.path,
@@ -412,7 +431,9 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
         isDeletable: false,
         depth: depth,
         rawValue: child.value,
-        isBoolLeaf: !child.hasChildren && child.dataType == 'BOOL',
+        isBoolLeaf: !child.hasChildren &&
+            child.dataType == 'BOOL' &&
+            (!isReservedSystemChild || isWritableSystemChild),
         hasChildren: child.hasChildren,
       ));
       out.addAll(_childRowData(child.path, depth + 1));
@@ -431,6 +452,11 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
   }
 
   void _deleteTag(String name) {
+    // The reserved `System` tag is never deletable: the scheduler and
+    // AlarmReset flow depend on it always existing.
+    if (name == kSystemTagName) {
+      return;
+    }
     setState(() {
       widget.currentProject.tags.removeWhere((t) => t.name == name || t.name.startsWith('$name.'));
     });
