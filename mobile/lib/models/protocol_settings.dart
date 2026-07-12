@@ -250,12 +250,25 @@ class DnpProtocolConfig {
   int masterAddress;
   DnpMap map;
 
+  /// Unsolicited CONFIRM-wait timeout (ms) before a retry. DNP3 default 5000.
+  int unsolConfirmTimeoutMs;
+
+  /// Max unsolicited retries before giving up (events stay buffered). Default 3.
+  int unsolMaxRetries;
+
+  /// Per-class event ring-buffer capacity; oldest dropped + overflow flagged
+  /// when full. Default 200.
+  int eventBufferPerClass;
+
   DnpProtocolConfig({
     this.enabled = false,
     this.port = 20000,
     this.outstationAddress = 1024,
     this.masterAddress = 1,
     required this.map,
+    this.unsolConfirmTimeoutMs = 5000,
+    this.unsolMaxRetries = 3,
+    this.eventBufferPerClass = 200,
   });
 
   factory DnpProtocolConfig.fromJson(Map<String, dynamic> j) => DnpProtocolConfig(
@@ -266,6 +279,9 @@ class DnpProtocolConfig {
         map: j['map'] != null
             ? DnpMap.fromJson(j['map'] as Map<String, dynamic>)
             : DnpMap(entries: []),
+        unsolConfirmTimeoutMs: (j['unsol_confirm_timeout_ms'] as num?)?.toInt() ?? 5000,
+        unsolMaxRetries: (j['unsol_max_retries'] as num?)?.toInt() ?? 3,
+        eventBufferPerClass: (j['event_buffer_per_class'] as num?)?.toInt() ?? 200,
       );
 
   Map<String, dynamic> toJson() => {
@@ -274,6 +290,9 @@ class DnpProtocolConfig {
         'outstation_address': outstationAddress,
         'master_address': masterAddress,
         'map': map.toJson(),
+        'unsol_confirm_timeout_ms': unsolConfirmTimeoutMs,
+        'unsol_max_retries': unsolMaxRetries,
+        'event_buffer_per_class': eventBufferPerClass,
       };
 
   /// Sane defaults for a project that has never configured DNP3: disabled,
@@ -286,6 +305,9 @@ class DnpProtocolConfig {
         outstationAddress: 1024,
         masterAddress: 1,
         map: DnpMap.autoGenerate(p),
+        unsolConfirmTimeoutMs: 5000,
+        unsolMaxRetries: 3,
+        eventBufferPerClass: 200,
       );
 }
 

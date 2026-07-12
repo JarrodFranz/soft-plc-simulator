@@ -67,13 +67,27 @@
 //!      flagged for real-master verification (steps 3-5 above only ever
 //!      use single-pass DIRECT_OPERATE).
 //!
-//! Prints `DNP3 PROBE PASS` and exits 0 on success; on any failure prints
-//! `DNP3 PROBE FAIL: <reason>` and exits 1 -- never panics past the top
-//! level.
+//! Steps 6-7 (Task 6 EVENTS) extend the proof to the DNP3 event machinery:
+//!   6. Solicited Class 1/2/3 event poll: poll `g60v2/v3/v4` in a bounded
+//!      loop until the master receives at least one g2 binary event AND one
+//!      g32 analog-int event for the two DEDICATED, fixture-driven event
+//!      points (binaryInput index 1 / analogInput index 2) -- proving change
+//!      detection + per-class event buffers + the solicited Class-read path
+//!      against a real master.
+//!   7. Unsolicited: a second master association configured to ENABLE
+//!      unsolicited for Class 1/2/3 during startup. After the handshake the
+//!      outstation pushes the fixture's ongoing changes on its own; the probe
+//!      asserts it receives outstation-INITIATED unsolicited g2/g32 events
+//!      (captured via `ReadType::Unsolicited`), which the `dnp3` crate
+//!      auto-CONFIRMs.
+//!
+//! Prints `DNP3 EVENTS PROBE PASS` and exits 0 on success; on any failure
+//! prints `DNP3 EVENTS PROBE FAIL: <reason>` and exits 1 -- never panics past
+//! the top level.
 use std::env;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dnp3::app::control::*;
 use dnp3::app::measurement::*;
@@ -98,6 +112,13 @@ const AI_FLOAT_INDEX: u16 = 1;
 const BO_INDEX: u16 = 0; // FORCED
 const AO_INDEX: u16 = 0;
 
+/// Dedicated, change-driven EVENT points (Task 6). The Dart fixture flips the
+/// binary and increments the analog on a ~1 s timer; their changes surface as
+/// g2v2 (binary event) / g32v3 (analog-int event) objects via solicited Class
+/// 1/2/3 polls and via outstation-initiated unsolicited responses.
+const BI_EVENT_INDEX: u16 = 1; // binaryInput index 1, eventClass 1
+const AI_EVENT_INDEX: u16 = 2; // analogInput index 2, eventClass 2
+
 const EXPECTED_BI: bool = true;
 const EXPECTED_AI_INT: f64 = 4222.0;
 const EXPECTED_AI_FLOAT: f64 = 88.5;
@@ -119,6 +140,12 @@ const AO_SELECT_OPERATE_VALUE: i32 = 6000;
 /// CI job wrapping it) block forever.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Overall bound on each of the two events legs (solicited Class 1/2/3 poll
+/// loop; outstation-initiated unsolicited wait). The fixture drives a change
+/// every ~1 s, so both a binary and an analog event comfortably arrive well
+/// inside this window; the cap only guards against a stuck outstation.
+const EVENTS_DEADLINE: Duration = Duration::from_secs(30);
+
 /// Measurement values captured off the wire by [CapturingHandler], keyed by
 /// point index within each point type -- what every assertion below reads
 /// back and checks.
@@ -129,6 +156,16 @@ struct Snapshot {
     ai_float: Option<f64>,
     bo: Option<bool>,
     ao: Option<f64>,
+    /// Last EVENT value seen for the dedicated event points (any read type) —
+    /// captured only when `HeaderInfo::is_event` is true, so a static Class 0
+    /// value for the same index never populates these.
+    bi_event: Option<bool>,
+    ai_int_event: Option<f64>,
+    /// Last event value seen specifically inside an UNSOLICITED fragment
+    /// (`ReadType::Unsolicited`) — the falsifiable proof the outstation pushed
+    /// the change on its own, not in response to a poll.
+    bi_event_unsol: Option<bool>,
+    ai_int_event_unsol: Option<f64>,
 }
 
 /// A [ReadHandler] that captures every measurement value this probe cares
@@ -137,33 +174,56 @@ struct Snapshot {
 /// 0 poll's results assertable after `association.read()` returns.
 struct CapturingHandler {
     snapshot: Arc<Mutex<Snapshot>>,
+    /// True while the fragment currently being processed is an outstation-
+    /// initiated unsolicited response — set per fragment in [begin_fragment],
+    /// read by the type-specific handlers to route event values into the
+    /// `*_unsol` snapshot slots.
+    in_unsolicited: bool,
 }
 
 impl ReadHandler for CapturingHandler {
+    fn begin_fragment(&mut self, read_type: ReadType, _header: ResponseHeader) -> MaybeAsync<()> {
+        self.in_unsolicited = matches!(read_type, ReadType::Unsolicited);
+        MaybeAsync::ready(())
+    }
+
     fn handle_binary_input(
         &mut self,
-        _info: HeaderInfo,
+        info: HeaderInfo,
         iter: &mut dyn Iterator<Item = (BinaryInput, u16)>,
     ) {
+        let unsol = self.in_unsolicited;
         let mut snap = self.snapshot.lock().unwrap();
         for (v, idx) in iter {
-            if idx == BI_INDEX {
+            if !info.is_event && idx == BI_INDEX {
                 snap.bi = Some(v.value);
+            }
+            if info.is_event && idx == BI_EVENT_INDEX {
+                snap.bi_event = Some(v.value);
+                if unsol {
+                    snap.bi_event_unsol = Some(v.value);
+                }
             }
         }
     }
 
     fn handle_analog_input(
         &mut self,
-        _info: HeaderInfo,
+        info: HeaderInfo,
         iter: &mut dyn Iterator<Item = (AnalogInput, u16)>,
     ) {
+        let unsol = self.in_unsolicited;
         let mut snap = self.snapshot.lock().unwrap();
         for (v, idx) in iter {
-            if idx == AI_INT_INDEX {
+            if !info.is_event && idx == AI_INT_INDEX {
                 snap.ai_int = Some(v.value);
-            } else if idx == AI_FLOAT_INDEX {
+            } else if !info.is_event && idx == AI_FLOAT_INDEX {
                 snap.ai_float = Some(v.value);
+            } else if info.is_event && idx == AI_EVENT_INDEX {
+                snap.ai_int_event = Some(v.value);
+                if unsol {
+                    snap.ai_int_event_unsol = Some(v.value);
+                }
             }
         }
     }
@@ -219,10 +279,26 @@ async fn class0_read(association: &mut AssociationHandle) -> Result<(), String> 
         .map_err(|e| format!("Class 0 read failed: {e}"))
 }
 
+/// Issues a bounded solicited Class 1/2/3 EVENT poll (`g60v2`+`g60v3`+`g60v4`,
+/// no Class 0), so the response carries only buffered events — the master's
+/// [CapturingHandler] routes any g2/g32 event objects into the snapshot's
+/// `*_event` slots. The `dnp3` master auto-CONFIRMs the CON-flagged event
+/// response, flushing those events on the outstation.
+async fn class123_read(association: &mut AssociationHandle) -> Result<(), String> {
+    timeout(
+        CALL_TIMEOUT,
+        association.read(ReadRequest::class_scan(Classes::class123())),
+    )
+    .await
+        .map_err(|_| "Class 1/2/3 event read timed out".to_string())?
+        .map_err(|e| format!("Class 1/2/3 event read failed: {e}"))
+}
+
 async fn run(host: &str, port: u16) -> Result<(), String> {
     let snapshot = Arc::new(Mutex::new(Snapshot::default()));
     let handler = CapturingHandler {
         snapshot: snapshot.clone(),
+        in_unsolicited: false,
     };
 
     let master_address = EndpointAddress::try_new(MASTER_ADDRESS)
@@ -430,6 +506,121 @@ async fn run(host: &str, port: u16) -> Result<(), String> {
     }
     println!("[probe] SELECT/OPERATE re-poll OK: Analog Output changed to {AO_SELECT_OPERATE_VALUE}.");
 
+    // --- Step 6: solicited Class 1/2/3 EVENT poll --------------------------
+    //
+    // The fixture flips the dedicated binary (index 1, Class 1) and increments
+    // the dedicated analog (index 2, Class 2) every ~1 s. Poll the event
+    // classes in a bounded loop until the master has received at least one
+    // g2 binary event AND one g32 analog-int event — proving change detection
+    // + event buffering + the solicited Class-read path work against a real
+    // master. (Values change continuously, so this observes "≥1 of each"
+    // rather than a single fixed value.)
+    println!("[probe] polling Class 1/2/3 events until a binary AND an analog event arrive...");
+    let events_deadline = Instant::now() + EVENTS_DEADLINE;
+    loop {
+        class123_read(&mut association).await?;
+        let snap = *snapshot.lock().unwrap();
+        if snap.bi_event.is_some() && snap.ai_int_event.is_some() {
+            println!(
+                "[probe] Class 1/2/3 event poll OK: binary event[{BI_EVENT_INDEX}]={:?}, analog event[{AI_EVENT_INDEX}]={:?}.",
+                snap.bi_event, snap.ai_int_event
+            );
+            break;
+        }
+        if Instant::now() >= events_deadline {
+            return Err(format!(
+                "timed out waiting for solicited Class 1/2/3 events: binary event={:?}, analog event={:?}",
+                snap.bi_event, snap.ai_int_event
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    // Disable the quiet association's channel so it stops receiving/confirming
+    // the outstation's broadcast unsolicited responses — the unsolicited leg
+    // below uses a fresh, unsolicited-ENABLED association so the events it
+    // observes are unambiguously delivered to it.
+    println!("[probe] disabling the quiet channel before the unsolicited leg...");
+    timeout(CALL_TIMEOUT, channel.disable())
+        .await
+        .map_err(|_| "channel.disable() timed out".to_string())?
+        .map_err(|e| format!("channel.disable() failed: {e}"))?;
+
+    // --- Step 7: outstation-INITIATED unsolicited events -------------------
+    //
+    // A second master, this time configured to ENABLE unsolicited reporting
+    // for Class 1/2/3 during its startup handshake (disable → integrity scan →
+    // enable-unsolicited). The `dnp3` crate auto-CONFIRMs unsolicited
+    // responses. After startup, the outstation pushes the fixture's ongoing
+    // changes as unsolicited fragments on its own; the handler records event
+    // values seen inside `ReadType::Unsolicited` fragments into the `*_unsol`
+    // slots, so asserting those become Some proves the events arrived
+    // UNSOLICITED (outstation-initiated), not as a poll response.
+    println!("[probe] bringing up an unsolicited-ENABLED master association...");
+    let unsol_snapshot = Arc::new(Mutex::new(Snapshot::default()));
+    let unsol_handler = CapturingHandler {
+        snapshot: unsol_snapshot.clone(),
+        in_unsolicited: false,
+    };
+
+    let mut unsol_config = MasterChannelConfig::new(master_address);
+    unsol_config.decode_level = AppDecodeLevel::ObjectValues.into();
+    let mut unsol_channel = spawn_master_tcp_client(
+        LinkErrorMode::Close,
+        unsol_config,
+        EndpointList::new(format!("{host}:{port}"), &[]),
+        ConnectStrategy::default(),
+        NullListener::create(),
+    );
+
+    // disable_unsol=all, enable_unsol=all, startup integrity = Class 1230,
+    // no auto event-scan-on-IIN. This drives the real ENABLE_UNSOLICITED
+    // (fc 20, g60v2/v3/v4) the outstation acts on to start pushing.
+    let unsol_assoc_config = AssociationConfig::new(
+        EventClasses::all(),
+        EventClasses::all(),
+        Classes::all(),
+        EventClasses::none(),
+    );
+    let _unsol_association = timeout(
+        CALL_TIMEOUT,
+        unsol_channel.add_association(
+            outstation_address,
+            unsol_assoc_config,
+            Box::new(unsol_handler),
+            Box::new(ProbeAssociationHandler),
+            Box::new(ProbeAssociationInformation),
+        ),
+    )
+    .await
+    .map_err(|_| "unsolicited add_association timed out".to_string())?
+    .map_err(|e| format!("unsolicited add_association failed: {e}"))?;
+
+    timeout(CALL_TIMEOUT, unsol_channel.enable())
+        .await
+        .map_err(|_| "unsolicited channel.enable() timed out".to_string())?
+        .map_err(|e| format!("unsolicited channel.enable() failed: {e}"))?;
+
+    println!("[probe] waiting for outstation-initiated unsolicited binary AND analog events...");
+    let unsol_deadline = Instant::now() + EVENTS_DEADLINE;
+    loop {
+        let snap = *unsol_snapshot.lock().unwrap();
+        if snap.bi_event_unsol.is_some() && snap.ai_int_event_unsol.is_some() {
+            println!(
+                "[probe] unsolicited leg OK: unsolicited binary event[{BI_EVENT_INDEX}]={:?}, unsolicited analog event[{AI_EVENT_INDEX}]={:?}.",
+                snap.bi_event_unsol, snap.ai_int_event_unsol
+            );
+            break;
+        }
+        if Instant::now() >= unsol_deadline {
+            return Err(format!(
+                "timed out waiting for UNSOLICITED events: unsolicited binary={:?}, unsolicited analog={:?}",
+                snap.bi_event_unsol, snap.ai_int_event_unsol
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
     Ok(())
 }
 
@@ -455,11 +646,11 @@ async fn main() -> ExitCode {
 
     match run(&host, port).await {
         Ok(()) => {
-            println!("DNP3 PROBE PASS");
+            println!("DNP3 EVENTS PROBE PASS");
             ExitCode::SUCCESS
         }
         Err(reason) => {
-            println!("DNP3 PROBE FAIL: {reason}");
+            println!("DNP3 EVENTS PROBE FAIL: {reason}");
             ExitCode::FAILURE
         }
     }

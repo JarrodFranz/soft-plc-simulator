@@ -60,17 +60,30 @@ import 'dart:typed_data';
 
 /// DNP3 Application Layer function codes relevant to a v1 outstation.
 class DnpFunc {
+  static const int confirm = 0;
   static const int read = 1;
   static const int select = 3;
   static const int operate = 4;
   static const int directOperate = 5;
+  static const int enableUnsolicited = 20;
+  static const int disableUnsolicited = 21;
   static const int response = 129; // 0x81
+  static const int unsolicitedResponse = 130; // 0x82
 }
 
 // --- IIN (Internal Indications) ---------------------------------------------
 
 /// IIN1 (first-transmitted IIN octet) bit constants.
 class DnpIin1 {
+  /// Bit 1 (0x02): one or more Class 1 events are buffered, awaiting a poll.
+  static const int class1Events = 0x02;
+
+  /// Bit 2 (0x04): one or more Class 2 events are buffered, awaiting a poll.
+  static const int class2Events = 0x04;
+
+  /// Bit 3 (0x08): one or more Class 3 events are buffered, awaiting a poll.
+  static const int class3Events = 0x08;
+
   /// Bit 7 (0x80): the outstation has restarted since this bit was last
   /// cleared by the master.
   static const int deviceRestart = 0x80;
@@ -86,6 +99,10 @@ class DnpIin2 {
 
   /// Bit 2 (0x04): a qualifier/range/parameter in the request was invalid.
   static const int parameterError = 0x04;
+
+  /// Bit 3 (0x08): the event buffer overflowed and one or more events were
+  /// discarded before the master could poll/confirm them.
+  static const int eventBufferOverflow = 0x08;
 }
 
 /// Packs [iin1] and [iin2] into the single 16-bit value this codec's
@@ -520,6 +537,94 @@ Uint8List encodeG40V1({required int value, int flags = 0}) {
 /// [encodeG30V5] but for the AO point type.
 Uint8List encodeG40V3({required double value, int flags = 0}) {
   return encodeG30V5(value: value, flags: flags);
+}
+
+// --- Event object encoders + 48-bit time (outstation -> master, unsolicited
+// responses and event-class reads) ------------------------------------------
+
+/// Writes [timeMs] (ms since 1970-01-01 UTC) as a 48-bit little-endian
+/// integer at [offset] in [bd]. dart2js-safe: the split uses arithmetic
+/// (`%`/`~/` on 2^32), never a `>> 32` bit-shift (JS bitwise ops truncate to
+/// 32 bits) and never setInt64 (unimplemented under dart2js).
+void _setDnpTime48(ByteData bd, int offset, int timeMs) {
+  final t = timeMs < 0 ? 0 : timeMs;
+  final low = t % 0x100000000; // low 32 bits
+  final high = t ~/ 0x100000000; // bits 32..47
+  bd.setUint32(offset, low, Endian.little);
+  bd.setUint16(offset + 4, high & 0xFFFF, Endian.little);
+}
+
+/// Reads a 48-bit little-endian DNP3 timestamp at [offset]. Test/parse helper.
+int getDnpTime48(Uint8List data, int offset) {
+  final bd = ByteData.sublistView(data, offset, offset + 6);
+  final low = bd.getUint32(0, Endian.little);
+  final high = bd.getUint16(4, Endian.little);
+  return high * 0x100000000 + low;
+}
+
+/// Encodes a g2v2 (Binary Input Event with absolute time) object: 1 flags
+/// byte (bit 7 = STATE from [value], bits 0-6 from [flags]) + 48-bit LE time.
+Uint8List encodeG2V2({required bool value, required int flags, required int timeMs}) {
+  final bd = ByteData(7);
+  bd.setUint8(0, (flags & 0x7F) | (value ? DnpFlags.state : 0));
+  _setDnpTime48(bd, 1, timeMs);
+  return bd.buffer.asUint8List();
+}
+
+/// Encodes a g32v3 (Analog Input Event, 32-bit with time) object: 1 flags
+/// byte + int32 LE [value] + 48-bit LE time.
+Uint8List encodeG32V3({required int value, required int flags, required int timeMs}) {
+  final bd = ByteData(11);
+  bd.setUint8(0, flags & 0xFF);
+  bd.setInt32(1, value, Endian.little);
+  _setDnpTime48(bd, 5, timeMs);
+  return bd.buffer.asUint8List();
+}
+
+/// Encodes a g32v7 (Analog Input Event, single-precision float with time)
+/// object: 1 flags byte + float32 LE [value] + 48-bit LE time.
+Uint8List encodeG32V7({required double value, required int flags, required int timeMs}) {
+  final bd = ByteData(11);
+  bd.setUint8(0, flags & 0xFF);
+  bd.setFloat32(1, value, Endian.little);
+  _setDnpTime48(bd, 5, timeMs);
+  return bd.buffer.asUint8List();
+}
+
+/// Maps a g60 (Class Objects) variation to its DNP3 event class: v1 = Class 0
+/// (static), v2 = Class 1, v3 = Class 2, v4 = Class 3. Returns `null` for any
+/// other variation.
+int? dnpClassOfG60Variation(int variation) {
+  switch (variation) {
+    case 1:
+      return 0;
+    case 2:
+      return 1;
+    case 3:
+      return 2;
+    case 4:
+      return 3;
+    default:
+      return null;
+  }
+}
+
+/// Builds an UNSOLICITED RESPONSE fragment (function code 130): app control
+/// FIR|FIN|CON|UNS|seq, then IIN(2, LE per [packIin]), then [objectData]. The
+/// UNS bit marks this as unsolicited and CON requests the master's CONFIRM.
+Uint8List buildUnsolicitedResponse({
+  required int seq,
+  required int iin,
+  required Uint8List objectData,
+}) {
+  final appControl = 0x80 | 0x40 | 0x20 | 0x10 | (seq & 0x0F); // FIR|FIN|CON|UNS
+  final out = BytesBuilder();
+  out.addByte(appControl);
+  out.addByte(DnpFunc.unsolicitedResponse & 0xFF);
+  out.addByte(iin & 0xFF);
+  out.addByte((iin >> 8) & 0xFF);
+  out.add(objectData);
+  return out.toBytes();
 }
 
 // --- Control object codecs (master -> outstation, in write requests) -------

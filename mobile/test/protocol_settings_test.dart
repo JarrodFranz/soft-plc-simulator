@@ -550,6 +550,24 @@ void main() {
       expect(settings.toJson().containsKey('dnp3'), isFalse);
     });
 
+    test('DnpProtocolConfig carries unsol/buffer fields and defaults them', () {
+      final c = DnpProtocolConfig(
+        map: DnpMap(entries: []),
+        unsolConfirmTimeoutMs: 7000,
+        unsolMaxRetries: 5,
+        eventBufferPerClass: 50,
+      );
+      final round = DnpProtocolConfig.fromJson(c.toJson());
+      expect(round.unsolConfirmTimeoutMs, 7000);
+      expect(round.unsolMaxRetries, 5);
+      expect(round.eventBufferPerClass, 50);
+      // Legacy JSON (no new keys) falls back to spec defaults.
+      final legacy = DnpProtocolConfig.fromJson({'enabled': true, 'port': 20000});
+      expect(legacy.unsolConfirmTimeoutMs, 5000);
+      expect(legacy.unsolMaxRetries, 3);
+      expect(legacy.eventBufferPerClass, 200);
+    });
+
     test('existing opcua/modbus/mqtt keys are untouched when dnp3 is present', () {
       final settings = ProtocolSettings(
         opcua: OpcUaProtocolConfig.defaults(PlcProject(

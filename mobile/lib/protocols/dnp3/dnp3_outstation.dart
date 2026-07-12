@@ -6,11 +6,11 @@
 // `DnpTransportReassembler.addSegment` hands back) — Task 5's host owns
 // transport segmentation + link framing + the actual socket.
 //
-// Scope: Class 0 integrity READ (always answered as a full grouped scan —
-// this v1 outstation does not support scoped/event-class-specific reads, see
-// the doc comment on [DnpOutstation.handleAppRequest]) and
-// SELECT/OPERATE/DIRECT_OPERATE control of a CROB (g12v1, on a binaryOutput
-// point) or an Analog Output Block (g41v1/g41v3, on an analogOutput point).
+// Scope: Class 0 integrity READ (a full grouped scan) plus Class 1/2/3 event
+// reads and unsolicited reporting (Task 4 — see the doc comment on
+// [DnpOutstation.handleAppRequest]) and SELECT/OPERATE/DIRECT_OPERATE control
+// of a CROB (g12v1, on a binaryOutput point) or an Analog Output Block
+// (g41v1/g41v3, on an analogOutput point).
 //
 // Class 0 response layout: one object header (range8/range16 qualifier) per
 // (point type, variation) bucket present in the map, covering that bucket's
@@ -48,6 +48,7 @@ import '../../models/dnp3_map.dart';
 import '../../models/project_model.dart';
 import '../../models/tag_resolver.dart';
 import 'dnp3_app.dart';
+import 'dnp3_events.dart';
 
 /// WRITE function code (clears IIN bits, e.g. DEVICE_RESTART) — not exposed
 /// by [DnpFunc] because Task 3's codec only names the function codes an
@@ -105,26 +106,95 @@ class DnpOutstation {
   bool _restartPending = true;
   _PendingControl? _pending;
 
-  DnpOutstation({required this.projectProvider});
+  /// The Task 2 event engine: per-class (1/2/3) bounded event buffers plus
+  /// force-aware change detection, driven each tick by [detectChanges].
+  final DnpEventEngine _events;
+
+  /// Event classes (1/2/3) currently enabled for unsolicited reporting via
+  /// ENABLE_UNSOLICITED (fc 20) / DISABLE_UNSOLICITED (fc 21).
+  final Set<int> _unsolEnabled = <int>{};
+
+  /// The application sequence number the NEXT unsolicited response will use;
+  /// advances (mod 16) only when the master CONFIRMs the in-flight one.
+  int _unsolSeq = 0;
+
+  /// In-flight unsolicited attempt: the exact bytes sent (for a host retry)
+  /// and the events it carried (flushed on CONFIRM). Null when nothing is
+  /// in flight.
+  Uint8List? _unsolInFlightBytes;
+  List<DnpEvent>? _unsolInFlightEvents;
+
+  /// Pending null-unsolicited announcement (set on ENABLE_UNSOLICITED).
+  bool _pendingNullUnsol = false;
+
+  /// Events reported in the last solicited Class read awaiting a CONFIRM,
+  /// keyed by that response's application sequence.
+  List<DnpEvent>? _pendingSolicitedFlush;
+  int _pendingSolicitedSeq = -1;
+
+  DnpOutstation({required this.projectProvider, int eventBufferPerClass = 200})
+      : _events = DnpEventEngine(capacityPerClass: eventBufferPerClass);
 
   /// True until the master clears IIN1 bit 7 via the g80v1 WRITE described
   /// in [_writeClearsRestart] — exposed mainly for tests; every response
   /// already carries this as the DEVICE_RESTART IIN bit.
   bool get isRestartPending => _restartPending;
 
-  int _iin1() => _restartPending ? DnpIin1.deviceRestart : 0;
+  /// Event classes (1/2/3) currently enabled for unsolicited reporting — for
+  /// the host's UI indicator. Read-only view over the internal set.
+  Set<int> get unsolicitedEnabledClasses => Set<int>.unmodifiable(_unsolEnabled);
+
+  /// True while an unsolicited fragment has been handed to the host and is
+  /// awaiting either a CONFIRM ([_confirmUnsolicited]) or [failUnsolicited].
+  bool get hasUnsolicitedInFlight => _unsolInFlightBytes != null;
+
+  /// The currently in-flight unsolicited fragment (for a host retry), or
+  /// null when nothing is in flight.
+  Uint8List? get inFlightUnsolicitedBytes => _unsolInFlightBytes;
+
+  int _iin1() {
+    var v = _restartPending ? DnpIin1.deviceRestart : 0;
+    final cls = _events.classesWithEvents;
+    if (cls.contains(1)) {
+      v |= DnpIin1.class1Events;
+    }
+    if (cls.contains(2)) {
+      v |= DnpIin1.class2Events;
+    }
+    if (cls.contains(3)) {
+      v |= DnpIin1.class3Events;
+    }
+    return v;
+  }
+
+  /// IIN2 bits driven by the event engine (currently just event-buffer
+  /// overflow) — OR this into every response's IIN2 alongside whatever
+  /// request-specific IIN2 bits that response already carries.
+  int _iin2Base() => _events.overflowed ? DnpIin2.eventBufferOverflow : 0;
+
+  /// Runs one force-aware change-detection pass over the current project
+  /// map, capturing any Class 1/2/3 point changes into the event engine.
+  /// Never throws — a bug here must not break the host's tick loop.
+  void detectChanges(int nowMs) {
+    try {
+      final project = projectProvider();
+      final map = _mapFor(project);
+      _events.detectChanges(project, map, nowMs);
+    } catch (_) {
+      // Detection must never throw into the host tick.
+    }
+  }
 
   /// Handles one application-layer request fragment (`APP_CONTROL
   /// FUNCTION_CODE [objects...]`, no transport/link framing — that's Task
   /// 5's host layer) and returns the response fragment in the same form.
   ///
-  /// [DnpFunc.read] is always answered with a full Class-0-style grouped
-  /// scan of every mapped point across all 4 point types, regardless of
-  /// which specific objects the request named: this v1 outstation doesn't
-  /// support scoped reads (a single-point read or an event-class poll), only
-  /// the classic "integrity poll" a master issues via g60v1/Class 0. See
-  /// the Task 4 report for why this is flagged as a real-master interop
-  /// concern for Task 6.
+  /// [DnpFunc.read] inspects which g60 (Class Objects) variations the
+  /// master named: no g60 objects at all, or an explicit g60v1 (Class 0),
+  /// gets the full static integrity scan across all 4 point types; g60v2/
+  /// v3/v4 additionally append any buffered Class 1/2/3 events (see
+  /// [_handleRead]). [DnpFunc.confirm] never gets a reply — see
+  /// [_confirmSolicited]/[_confirmUnsolicited].
   ///
   /// Never throws: any parse failure or internal error yields an
   /// IIN2-flagged (PARAMETER_ERROR) response instead.
@@ -138,7 +208,7 @@ class DnpOutstation {
         fir: true,
         fin: true,
         con: false,
-        iin: packIin(_iin1(), DnpIin2.parameterError),
+        iin: packIin(_iin1(), DnpIin2.parameterError | _iin2Base()),
         objectData: Uint8List(0),
       );
     }
@@ -151,12 +221,24 @@ class DnpOutstation {
         fir: true,
         fin: true,
         con: false,
-        iin: packIin(_iin1(), DnpIin2.parameterError),
+        iin: packIin(_iin1(), DnpIin2.parameterError | _iin2Base()),
         objectData: Uint8List(0),
       );
     }
     final rawSeq = frag[0] & 0x0F;
     final rawFunctionCode = frag[1];
+
+    // CONFIRM (fc 0) carries no response of its own — it acknowledges a
+    // prior solicited or unsolicited response and never gets a reply.
+    if (rawFunctionCode == DnpFunc.confirm) {
+      final uns = (frag[0] & 0x10) != 0;
+      if (uns) {
+        _confirmUnsolicited(rawSeq);
+      } else {
+        _confirmSolicited(rawSeq);
+      }
+      return Uint8List(0); // no response fragment for a CONFIRM
+    }
 
     // WRITE is handled directly off the raw bytes rather than through
     // `parseAppRequest`: that codec has no per-point size for g80v1 (a
@@ -172,7 +254,7 @@ class DnpOutstation {
         fir: true,
         fin: true,
         con: false,
-        iin: packIin(_iin1(), 0),
+        iin: packIin(_iin1(), 0 | _iin2Base()),
         objectData: Uint8List(0),
       );
     }
@@ -185,7 +267,7 @@ class DnpOutstation {
         fir: true,
         fin: true,
         con: false,
-        iin: packIin(_iin1(), DnpIin2.parameterError),
+        iin: packIin(_iin1(), DnpIin2.parameterError | _iin2Base()),
         objectData: Uint8List(0),
       );
     }
@@ -199,13 +281,17 @@ class DnpOutstation {
         return _handleOperate(project, req, nowMs);
       case DnpFunc.directOperate:
         return _handleDirectOperate(project, req);
+      case DnpFunc.enableUnsolicited:
+        return _handleUnsolControl(req, enable: true);
+      case DnpFunc.disableUnsolicited:
+        return _handleUnsolControl(req, enable: false);
       default:
         return buildAppResponse(
           seq: req.seq,
           fir: true,
           fin: true,
           con: false,
-          iin: packIin(_iin1(), DnpIin2.noFuncCodeSupport),
+          iin: packIin(_iin1(), DnpIin2.noFuncCodeSupport | _iin2Base()),
           objectData: Uint8List(0),
         );
     }
@@ -302,19 +388,100 @@ class DnpOutstation {
     return found;
   }
 
-  // --- Class 0 read ------------------------------------------------------
+  // --- Read (Class 0 static + Class 1/2/3 events) -------------------------
 
+  /// Serves a READ request: which g60 (Class Objects) variations the master
+  /// named decides what's included. No g60 objects at all, or an explicit
+  /// g60v1 (Class 0), gets the full static integrity scan (preserving the
+  /// original v1 behavior byte-for-byte). g60v2/v3/v4 additionally append
+  /// any buffered Class 1/2/3 events, setting CON so the master knows to
+  /// CONFIRM before they're flushed (see [_confirmSolicited]).
   Uint8List _handleRead(PlcProject project, DnpAppRequest req) {
     final map = _mapFor(project);
-    final payload = _buildClassZeroPayload(project, map);
+
+    // Which classes did the request name via g60 objects?
+    final requested = <int>{};
+    var namedAnyClass = false;
+    for (final h in req.objects) {
+      if (h.group == 60) {
+        final cls = dnpClassOfG60Variation(h.variation);
+        if (cls != null) {
+          requested.add(cls);
+          namedAnyClass = true;
+        }
+      }
+    }
+
+    final includeStatic = !namedAnyClass || requested.contains(0);
+    final eventClasses = requested.where((c) => c >= 1 && c <= 3).toSet();
+
+    final out = BytesBuilder();
+    if (includeStatic) {
+      out.add(_buildClassZeroPayload(project, map));
+    }
+
+    var con = false;
+    if (eventClasses.isNotEmpty) {
+      final events = _events.pull(eventClasses);
+      if (events.isNotEmpty) {
+        out.add(_encodeEventObjects(events));
+        con = true;
+        _pendingSolicitedFlush = events;
+        _pendingSolicitedSeq = req.seq;
+      }
+    }
+
     return buildAppResponse(
       seq: req.seq,
       fir: true,
       fin: true,
-      con: false,
-      iin: packIin(_iin1(), 0),
-      objectData: payload,
+      con: con,
+      iin: packIin(_iin1(), _iin2Base()),
+      objectData: out.toBytes(),
     );
+  }
+
+  /// Encodes [events] into DNP3 event objects, grouped by type: binary
+  /// events -> one g2v2 object, analog-int -> g32v3, analog-float -> g32v7.
+  /// Each uses qualifier 0x28 (2-byte count + a 2-byte LE index prefix
+  /// before each point), since events carry their own point index. FIFO
+  /// order is preserved within each group.
+  Uint8List _encodeEventObjects(List<DnpEvent> events) {
+    final binary = events.where((e) => e.isBinary).toList();
+    final analogInt = events.where((e) => !e.isBinary && !e.isFloat).toList();
+    final analogFloat = events.where((e) => !e.isBinary && e.isFloat).toList();
+
+    final out = BytesBuilder();
+    if (binary.isNotEmpty) {
+      out.add(_encodeEventGroup(
+          2, 2, binary, (e) => encodeG2V2(value: e.boolValue, flags: e.flags, timeMs: e.timeMs)));
+    }
+    if (analogInt.isNotEmpty) {
+      out.add(_encodeEventGroup(
+          32, 3, analogInt, (e) => encodeG32V3(value: e.intValue, flags: e.flags, timeMs: e.timeMs)));
+    }
+    if (analogFloat.isNotEmpty) {
+      out.add(_encodeEventGroup(
+          32, 7, analogFloat, (e) => encodeG32V7(value: e.floatValue, flags: e.flags, timeMs: e.timeMs)));
+    }
+    return out.toBytes();
+  }
+
+  Uint8List _encodeEventGroup(
+    int group,
+    int variation,
+    List<DnpEvent> events,
+    Uint8List Function(DnpEvent) encodeOne,
+  ) {
+    final out = BytesBuilder();
+    out.add(encodeObjectHeader(
+        group: group, variation: variation, qualifier: DnpQualifier.indexPrefix16, count: events.length));
+    for (final e in events) {
+      out.addByte(e.index & 0xFF);
+      out.addByte((e.index >> 8) & 0xFF);
+      out.add(encodeOne(e));
+    }
+    return out.toBytes();
   }
 
   Uint8List _buildClassZeroPayload(PlcProject project, DnpMap map) {
@@ -460,6 +627,111 @@ class DnpOutstation {
     return runs;
   }
 
+  // --- CONFIRM routing + ENABLE/DISABLE_UNSOLICITED -----------------------
+
+  /// Handles ENABLE_UNSOLICITED (fc 20) / DISABLE_UNSOLICITED (fc 21): each
+  /// g60 object in the request names a class (via its variation) to enable
+  /// or disable. Enabling queues a one-shot null unsolicited announcement
+  /// (see [takeNullUnsolicited]) — standard DNP3 restart/enable semantics,
+  /// telling the master this outstation is now actively reporting.
+  Uint8List _handleUnsolControl(DnpAppRequest req, {required bool enable}) {
+    for (final h in req.objects) {
+      if (h.group == 60) {
+        final cls = dnpClassOfG60Variation(h.variation);
+        if (cls != null && cls >= 1 && cls <= 3) {
+          if (enable) {
+            _unsolEnabled.add(cls);
+          } else {
+            _unsolEnabled.remove(cls);
+          }
+        }
+      }
+    }
+    if (enable) {
+      _pendingNullUnsol = true;
+    }
+    return buildAppResponse(
+      seq: req.seq,
+      fir: true,
+      fin: true,
+      con: false,
+      iin: packIin(_iin1(), _iin2Base()),
+      objectData: Uint8List(0),
+    );
+  }
+
+  /// Confirms the events reported by the last solicited Class read (see
+  /// [_handleRead]), flushing them from the event engine — but only if
+  /// [seq] matches the sequence of the response that carried them; a stale
+  /// or mismatched CONFIRM is silently ignored (the events stay buffered).
+  void _confirmSolicited(int seq) {
+    if (_pendingSolicitedFlush != null && seq == _pendingSolicitedSeq) {
+      _events.flush(_pendingSolicitedFlush!);
+      _events.clearOverflow();
+      _pendingSolicitedFlush = null;
+      _pendingSolicitedSeq = -1;
+    }
+  }
+
+  /// Confirms the in-flight unsolicited fragment (see [takeNullUnsolicited]/
+  /// [takeEventUnsolicited]), flushing any events it carried and advancing
+  /// [_unsolSeq] — but only if [seq] matches the in-flight fragment's
+  /// sequence.
+  void _confirmUnsolicited(int seq) {
+    if (_unsolInFlightBytes != null && seq == _unsolSeq) {
+      if (_unsolInFlightEvents != null) {
+        _events.flush(_unsolInFlightEvents!);
+      }
+      _events.clearOverflow();
+      _unsolSeq = (_unsolSeq + 1) & 0x0F;
+      _unsolInFlightBytes = null;
+      _unsolInFlightEvents = null;
+    }
+  }
+
+  // --- Host-facing unsolicited push API ------------------------------------
+
+  /// If an ENABLE_UNSOLICITED queued a null announcement and nothing is in
+  /// flight, returns that null unsolicited fragment (fc 130, no objects) and
+  /// marks it in-flight; else null.
+  Uint8List? takeNullUnsolicited() {
+    if (!_pendingNullUnsol || _unsolInFlightBytes != null) {
+      return null;
+    }
+    _pendingNullUnsol = false;
+    final bytes = buildUnsolicitedResponse(
+        seq: _unsolSeq, iin: packIin(_iin1(), _iin2Base()), objectData: Uint8List(0));
+    _unsolInFlightBytes = bytes;
+    _unsolInFlightEvents = <DnpEvent>[]; // null carries no events to flush
+    return bytes;
+  }
+
+  /// If unsolicited is enabled for a class with pending events and nothing
+  /// is in flight, builds an unsolicited response (fc 130, UNS+CON) carrying
+  /// those events, marks it in-flight, and returns it; else null.
+  Uint8List? takeEventUnsolicited(int nowMs) {
+    if (_unsolInFlightBytes != null || _unsolEnabled.isEmpty) {
+      return null;
+    }
+    final events = _events.pull(_unsolEnabled);
+    if (events.isEmpty) {
+      return null;
+    }
+    final bytes = buildUnsolicitedResponse(
+        seq: _unsolSeq, iin: packIin(_iin1(), _iin2Base()), objectData: _encodeEventObjects(events));
+    _unsolInFlightBytes = bytes;
+    _unsolInFlightEvents = events;
+    return bytes;
+  }
+
+  /// Abandon the in-flight unsolicited attempt after the host exhausts its
+  /// retries: events stay buffered (retried on the next change/tick), and
+  /// the unsolicited sequence is NOT advanced.
+  void failUnsolicited() {
+    _unsolInFlightBytes = null;
+    _unsolInFlightEvents = null;
+  }
+
   // --- Control (SELECT / OPERATE / DIRECT_OPERATE) ------------------------
 
   Uint8List _handleDirectOperate(PlcProject project, DnpAppRequest req) {
@@ -470,7 +742,7 @@ class DnpOutstation {
       fir: true,
       fin: true,
       con: false,
-      iin: packIin(_iin1(), result.iin2),
+      iin: packIin(_iin1(), result.iin2 | _iin2Base()),
       objectData: result.objectData,
     );
   }
@@ -484,7 +756,7 @@ class DnpOutstation {
       fir: true,
       fin: true,
       con: false,
-      iin: packIin(_iin1(), result.iin2),
+      iin: packIin(_iin1(), result.iin2 | _iin2Base()),
       objectData: result.objectData,
     );
   }
@@ -499,7 +771,7 @@ class DnpOutstation {
         fir: true,
         fin: true,
         con: false,
-        iin: packIin(_iin1(), result.iin2),
+        iin: packIin(_iin1(), result.iin2 | _iin2Base()),
         objectData: result.objectData,
       );
     }
@@ -511,7 +783,7 @@ class DnpOutstation {
       fir: true,
       fin: true,
       con: false,
-      iin: packIin(_iin1(), result.iin2),
+      iin: packIin(_iin1(), result.iin2 | _iin2Base()),
       objectData: result.objectData,
     );
   }

@@ -397,4 +397,75 @@ void main() {
       expect(() => parseAppRequest(garbage), returnsNormally);
     });
   });
+
+  group('event object encoders + 48-bit time (Task 3)', () {
+    test('g2v2 binary event encodes flags+state and 48-bit LE time', () {
+      final bytes = encodeG2V2(value: true, flags: DnpFlags.online, timeMs: 0x0102030405);
+      expect(bytes.length, 7);
+      // flags byte: online (0x01) | state (0x80) = 0x81
+      expect(bytes[0], 0x81);
+      // 48-bit LE time 0x0102030405 -> 05 04 03 02 01 00
+      expect(bytes.sublist(1), [0x05, 0x04, 0x03, 0x02, 0x01, 0x00]);
+      expect(getDnpTime48(bytes, 1), 0x0102030405);
+    });
+
+    test('g32v3 analog int event: flags + int32 LE + 48-bit time', () {
+      final bytes = encodeG32V3(value: 0x11223344, flags: DnpFlags.online, timeMs: 1000);
+      expect(bytes.length, 11);
+      expect(bytes[0], 0x01);
+      expect(bytes.sublist(1, 5), [0x44, 0x33, 0x22, 0x11]);
+      expect(getDnpTime48(bytes, 5), 1000);
+    });
+
+    test('g32v7 analog float event: flags + float32 LE + 48-bit time', () {
+      final bytes = encodeG32V7(value: 1.5, flags: DnpFlags.online, timeMs: 2000);
+      expect(bytes.length, 11);
+      expect(bytes[0], 0x01);
+      final bd = ByteData.sublistView(bytes, 1, 5);
+      expect(bd.getFloat32(0, Endian.little), 1.5);
+      expect(getDnpTime48(bytes, 5), 2000);
+    });
+
+    test('48-bit time survives a value above 2^32 (dart2js-safe)', () {
+      const t = 1893456000000; // ~2030, exceeds 32 bits
+      final bytes = encodeG2V2(value: false, flags: 0, timeMs: t);
+      expect(getDnpTime48(bytes, 1), t);
+    });
+
+    test('dnpClassOfG60Variation maps variations to classes', () {
+      expect(dnpClassOfG60Variation(1), 0);
+      expect(dnpClassOfG60Variation(2), 1);
+      expect(dnpClassOfG60Variation(3), 2);
+      expect(dnpClassOfG60Variation(4), 3);
+      expect(dnpClassOfG60Variation(9), isNull);
+    });
+
+    test('parse ENABLE_UNSOLICITED (fc20) naming class 1 via g60v2/all-points', () {
+      // APP_CONTROL, fc=20, then object header g60 v2 qualifier 0x06 (all points).
+      final frag = Uint8List.fromList([0xC0, 20, 60, 2, 0x06]);
+      final req = parseAppRequest(frag);
+      expect(req, isNotNull);
+      expect(req!.functionCode, DnpFunc.enableUnsolicited);
+      expect(req.objects.single.group, 60);
+      expect(req.objects.single.variation, 2);
+    });
+
+    test('parse a CONFIRM (fc0) with no objects', () {
+      final frag = Uint8List.fromList([0xD0, 0]); // UNS+... fc0
+      final req = parseAppRequest(frag);
+      expect(req, isNotNull);
+      expect(req!.functionCode, DnpFunc.confirm);
+      expect(req.objects, isEmpty);
+      expect(req.uns, isTrue);
+      expect(req.seq, 0);
+    });
+
+    test('buildUnsolicitedResponse sets fc130 and FIR|FIN|CON|UNS', () {
+      final resp = buildUnsolicitedResponse(seq: 5, iin: packIin(0, 0), objectData: Uint8List(0));
+      // app control = 0x80|0x40|0x20|0x10|seq = 0xF5
+      expect(resp[0], 0xF5);
+      expect(resp[1], 130);
+      expect(resp.length, 4); // control + func + IIN(2)
+    });
+  });
 }

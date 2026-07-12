@@ -120,6 +120,11 @@ class _Connection {
     }
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     final response = outstation.handleAppRequest(appFragment, nowMs: nowMs);
+    if (response.isEmpty) {
+      // A CONFIRM (function code 0) yields an empty response fragment —
+      // CONFIRMs never get a reply of their own.
+      return;
+    }
     final responseFrames = _buildResponseFrames(
       appFragment: response,
       outstationAddress: outstationAddress,
@@ -220,6 +225,21 @@ class DnpHost extends ChangeNotifier {
   final List<_Connection> _connections = [];
   StreamSubscription<Socket>? _acceptSub;
 
+  /// The shared outstation instance driving every connection — also read by
+  /// the periodic [tickForTest] tick to run change detection and the
+  /// unsolicited push/retry loop. Null whenever the host is stopped.
+  DnpOutstation? _outstation;
+
+  /// Periodic change-detection + unsolicited push/retry driver — see
+  /// [tickForTest]. Ticks on wall-clock time in production; tests drive
+  /// [tickForTest] directly with a controlled clock instead.
+  Timer? _tick;
+  int _unsolSentAtMs = 0;
+  int _unsolRetryCount = 0;
+  int _unsolTimeoutMs = 5000;
+  int _unsolMaxRetries = 3;
+  static const int _tickPeriodMs = 500;
+
   DnpHostStatus _status = DnpHostStatus.stopped;
   DnpHostStatus get status => _status;
 
@@ -272,6 +292,9 @@ class DnpHost extends ChangeNotifier {
     final port = dnp3.port;
     final outstationAddress = dnp3.outstationAddress;
     final masterAddress = dnp3.masterAddress;
+    _unsolTimeoutMs = dnp3.unsolConfirmTimeoutMs;
+    _unsolMaxRetries = dnp3.unsolMaxRetries;
+    final eventBufferPerClass = dnp3.eventBufferPerClass;
 
     try {
       final serverSocket = await ServerSocket.bind(InternetAddress.anyIPv4, port);
@@ -280,7 +303,10 @@ class DnpHost extends ChangeNotifier {
       final host = await _bestDisplayHost();
       _endpointUrl = 'dnp3://$host:${serverSocket.port}';
 
-      final outstation = DnpOutstation(projectProvider: projectProvider);
+      final outstation = DnpOutstation(
+        projectProvider: projectProvider,
+        eventBufferPerClass: eventBufferPerClass,
+      );
 
       _acceptSub = serverSocket.listen(
         (socket) => _acceptConnection(socket, outstation, outstationAddress, masterAddress),
@@ -291,6 +317,14 @@ class DnpHost extends ChangeNotifier {
       );
 
       _setStatus(DnpHostStatus.running);
+      _outstation = outstation;
+      _tick = Timer.periodic(const Duration(milliseconds: _tickPeriodMs), (_) {
+        try {
+          tickForTest(DateTime.now().millisecondsSinceEpoch);
+        } catch (_) {
+          // A tick must never crash the host.
+        }
+      });
     } catch (e) {
       _serverSocket = null;
       _setStatus(DnpHostStatus.error, error: e.toString());
@@ -351,6 +385,71 @@ class DnpHost extends ChangeNotifier {
     }
   }
 
+  /// One change-detection + unsolicited-push/retry pass. Package-visible so
+  /// tests can drive it with a controlled clock instead of wall time.
+  @visibleForTesting
+  void tickForTest(int nowMs) {
+    final os = _outstation;
+    if (os == null || _connections.isEmpty) {
+      return;
+    }
+    os.detectChanges(nowMs);
+
+    if (os.hasUnsolicitedInFlight) {
+      // Awaiting CONFIRM: retry on timeout, give up after the cap.
+      if (nowMs - _unsolSentAtMs >= _unsolTimeoutMs) {
+        if (_unsolRetryCount < _unsolMaxRetries) {
+          _unsolRetryCount++;
+          _unsolSentAtMs = nowMs;
+          final bytes = os.inFlightUnsolicitedBytes;
+          if (bytes != null) {
+            _broadcast(bytes);
+          }
+        } else {
+          os.failUnsolicited();
+          _unsolRetryCount = 0;
+        }
+      }
+      return;
+    }
+
+    // Nothing in flight: a CONFIRM (or nothing sent yet) — reset retry state.
+    _unsolRetryCount = 0;
+    final frame = os.takeNullUnsolicited() ?? os.takeEventUnsolicited(nowMs);
+    if (frame != null) {
+      _unsolSentAtMs = nowMs;
+      _broadcast(frame);
+    }
+  }
+
+  /// Wraps an application fragment in transport + link framing (dest = master,
+  /// src = outstation) and writes it to every live connection.
+  ///
+  /// v1 simplification: one shared outstation broadcasting to every
+  /// connected socket, rather than per-master unsolicited state — a typical
+  /// DNP3 TCP deployment has exactly one master connected, so this is not a
+  /// behavioral gap in practice, just a simplification this host doesn't
+  /// need to outgrow yet.
+  void _broadcast(Uint8List appFragment) {
+    for (final conn in List<_Connection>.from(_connections)) {
+      if (conn._closed) {
+        continue;
+      }
+      final frames = _buildResponseFrames(
+        appFragment: appFragment,
+        outstationAddress: conn.outstationAddress,
+        masterAddress: conn.masterAddress,
+      );
+      for (final f in frames) {
+        try {
+          conn.socket.add(f);
+        } catch (_) {
+          // Drop broadcast errors per-connection.
+        }
+      }
+    }
+  }
+
   /// Stops hosting: closes every live connection and the listening socket.
   /// Safe to call when already stopped.
   Future<void> stop() async {
@@ -373,6 +472,10 @@ class DnpHost extends ChangeNotifier {
     }
     _serverSocket = null;
     _endpointUrl = null;
+    _tick?.cancel();
+    _tick = null;
+    _outstation = null;
+    _unsolRetryCount = 0;
     _setStatus(DnpHostStatus.stopped);
   }
 
