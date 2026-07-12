@@ -8,11 +8,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/project_model.dart';
 import '../models/project_history.dart';
-import '../models/sim_engine.dart';
-import '../models/ld_exec.dart';
-import '../models/fbd_exec.dart';
-import '../models/sfc_exec.dart';
-import '../models/st_exec.dart';
+import '../models/system_tags.dart';
 import '../data/default_projects.dart';
 import '../data/project_repository.dart';
 import '../data/project_transfer.dart';
@@ -22,6 +18,7 @@ import '../services/mqtt_host.dart';
 import '../services/opcua_host.dart';
 import '../ui/responsive.dart';
 import '../widgets/tag_inspector_dock.dart';
+import 'scan_tick.dart';
 import 'st_editor_screen.dart';
 import 'ld_editor_screen.dart';
 import 'fbd_editor_screen.dart';
@@ -64,15 +61,22 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   int scanCount = 0;
   int scanSpeedMs = 500; // Configurable scan speed (50ms to 2000ms)
   Timer? _scanTimer;
-  final SimRuntime _simRuntime = SimRuntime();
-  final LdExecRuntime _ldRuntime = LdExecRuntime();
-  final FbdRuntime _fbdRuntime = FbdRuntime();
-  final SfcRuntime _sfcRuntime = SfcRuntime();
-  final StRuntime _stRuntime = StRuntime();
+  final ScanTickRuntime _scan = ScanTickRuntime();
   final OpcUaHost _opcuaHost = OpcUaHost();
   final ModbusHost _modbusHost = ModbusHost();
   final MqttHost _mqttHost = MqttHost();
   final DnpHost _dnpHost = DnpHost();
+
+  // Scheduler-driven scan-tick status (fault latch + scan-time stats),
+  // surfaced via the reserved `System` tag each scan (see `system_tags.dart`).
+  final bool _freeRun = false;
+  bool _faulted = false;
+  String _faultTaskName = '';
+  int _faultCode = 0;
+  double _lastScanMs = 0, _maxScanMs = 0, _minScanMs = 0;
+  int _sessionScans = 0;
+  final Stopwatch _uptime = Stopwatch();
+  final Stopwatch _sinceLast = Stopwatch();
 
   // Side Dock Inspector State
   bool isTagDockVisible = true;
@@ -92,7 +96,26 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   final ProjectHistory _history = ProjectHistory();
   int _editorRevision = 0;
 
-  String _snapshot() => jsonEncode(_activeProject.toJson());
+  /// Serializes the active project for undo/redo + autosave-dirty
+  /// comparison. The reserved `System` tag's value is neutralized to a fixed
+  /// placeholder first: it carries continuously-changing per-scan telemetry
+  /// (scan count, scan timers, wall clock) written every tick by
+  /// `_executeScan`, which would otherwise make every snapshot compare as
+  /// "changed" even with no user edit — corrupting dirty-detection and the
+  /// undo/redo stacks whenever the scan loop is running. This does not
+  /// affect what's actually persisted to disk (`_runAutosave` saves
+  /// `_activeProject` directly, live values intact); `_applySnapshot` calls
+  /// `ensureSystemTag` right after restoring to backfill sane defaults.
+  String _snapshot() {
+    final json = _activeProject.toJson();
+    final tagsJson = (json['project'] as Map)['tags'] as List;
+    for (final t in tagsJson) {
+      if (t is Map && t['name'] == kSystemTagName) {
+        t['initial_value'] = <String, dynamic>{};
+      }
+    }
+    return jsonEncode(json);
+  }
 
   @override
   void initState() {
@@ -177,6 +200,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       active = loadedProjects.first;
     }
 
+    for (final pr in loadedProjects) {
+      ensureSystemTag(pr);
+    }
+
     if (!mounted) return;
     setState(() {
       _repo = repo;
@@ -193,6 +220,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _history.reset(_snapshot());
     });
     await repo?.setActiveProjectId(_activeProject.id);
+    _startRunSession();
     _startScanLoop();
   }
 
@@ -205,15 +233,85 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     });
   }
 
+  /// (Re)starts a run session: resets the scheduler/engine runtimes and the
+  /// per-session scan-time stats, and (re)starts the uptime/free-run clocks.
+  /// Called on boot and on every stopped -> running transition.
+  void _startRunSession() {
+    _scan.resetSession();
+    _sessionScans = 0;
+    _lastScanMs = _maxScanMs = _minScanMs = 0;
+    _uptime
+      ..reset()
+      ..start();
+    _sinceLast
+      ..reset()
+      ..start();
+  }
+
   void _executeScan() {
+    if (_faulted) {
+      return;
+    }
+    final dtMs = _freeRun
+        ? (_sinceLast.elapsedMilliseconds.clamp(0, 1000))
+        : scanSpeedMs;
+    _sinceLast
+      ..reset()
+      ..start();
+    final tickSw = Stopwatch()..start();
+
+    final result = runScanTick(_activeProject, dtMs, _scan);
+
+    tickSw.stop();
+    final now = DateTime.now();
     setState(() {
       scanCount++;
-      applySimRules(_activeProject, _activeProject.simRules, scanSpeedMs, _simRuntime);
-      executeLdPrograms(_activeProject, scanSpeedMs, _ldRuntime);
-      executeFbdPrograms(_activeProject, scanSpeedMs, _fbdRuntime);
-      executeSfcPrograms(_activeProject, scanSpeedMs, _sfcRuntime);
-      executeStPrograms(_activeProject, scanSpeedMs, _stRuntime);
+      _sessionScans++;
+      _lastScanMs = tickSw.elapsedMicroseconds / 1000.0;
+      if (_sessionScans == 1 || _lastScanMs > _maxScanMs) {
+        _maxScanMs = _lastScanMs;
+      }
+      if (_sessionScans == 1 || _lastScanMs < _minScanMs) {
+        _minScanMs = _lastScanMs;
+      }
+      if (result.faulted) {
+        _faulted = true;
+        _faultTaskName = result.faultTask;
+        _faultCode = result.faultCode;
+        isRunning = false;
+      }
+      updateSystemStatus(_activeProject, SystemSnapshot(
+        fault: _faulted,
+        faultTask: _faultTaskName,
+        faultCode: _faultCode,
+        running: isRunning && !_faulted,
+        firstScan: result.firstScan,
+        scanCount: _sessionScans,
+        scanTimeMs: _lastScanMs,
+        maxScanTimeMs: _maxScanMs,
+        minScanTimeMs: _minScanMs,
+        freeRun: _freeRun,
+        uptimeMs: _uptime.elapsedMilliseconds,
+        year: now.year, month: now.month, day: now.day,
+        hour: now.hour, minute: now.minute, second: now.second,
+        dateTime: _formatClock(now),
+      ));
+      if (consumeAlarmReset(_activeProject)) {
+        _clearFault();
+      }
     });
+  }
+
+  String _two(int v) => v.toString().padLeft(2, '0');
+  String _formatClock(DateTime d) =>
+      '${d.year}-${_two(d.month)}-${_two(d.day)} ${_two(d.hour)}:${_two(d.minute)}:${_two(d.second)}';
+
+  void _clearFault() {
+    _faulted = false;
+    _faultTaskName = '';
+    _faultCode = 0;
+    _maxScanMs = 0;
+    _minScanMs = 0;
   }
 
   void _switchActiveProject(PlcProject proj) {
@@ -226,6 +324,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     unawaited(_modbusHost.stop());
     unawaited(_mqttHost.disconnect());
     unawaited(_dnpHost.stop());
+    ensureSystemTag(proj);
     setState(() {
       _activeProject = proj;
       if (proj.hmis.isNotEmpty) {
@@ -234,11 +333,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'PROGRAM:${proj.programs.first.name}';
       }
       scanCount = 0;
-      _simRuntime.byRuleId.clear();
-      _ldRuntime.clear();
-      _fbdRuntime.clear();
-      _sfcRuntime.clear();
-      _stRuntime.clear();
+      _scan.resetSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
@@ -329,6 +424,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   /// `_history.capture` call is a no-op.
   void _applySnapshot(String json) {
     final proj = PlcProject.fromJson(jsonDecode(json) as Map<String, dynamic>);
+    // The stored snapshot has the System tag's value neutralized (see
+    // `_snapshot`) — restore it to well-formed defaults; the running scan
+    // loop repopulates the live status fields on the next tick.
+    ensureSystemTag(proj);
     setState(() {
       final i = _allProjects.indexWhere((p) => p.id == proj.id);
       if (i != -1) {
@@ -336,11 +435,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       }
       _activeProject = proj;
       _editorRevision++;
-      _simRuntime.byRuleId.clear();
-      _ldRuntime.clear();
-      _fbdRuntime.clear();
-      _sfcRuntime.clear();
-      _stRuntime.clear();
+      _scan.resetSession();
       _ensureValidView();
     });
     _autosaveTimer?.cancel();
@@ -466,11 +561,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _activeProject = blank;
       _activeViewId = 'MEMORY';
       scanCount = 0;
-      _simRuntime.byRuleId.clear();
-      _ldRuntime.clear();
-      _fbdRuntime.clear();
-      _sfcRuntime.clear();
-      _stRuntime.clear();
+      _scan.resetSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
@@ -502,11 +593,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'MEMORY';
       }
       scanCount = 0;
-      _simRuntime.byRuleId.clear();
-      _ldRuntime.clear();
-      _fbdRuntime.clear();
-      _sfcRuntime.clear();
-      _stRuntime.clear();
+      _scan.resetSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
@@ -586,11 +673,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'MEMORY';
       }
       scanCount = 0;
-      _simRuntime.byRuleId.clear();
-      _ldRuntime.clear();
-      _fbdRuntime.clear();
-      _sfcRuntime.clear();
-      _stRuntime.clear();
+      _scan.resetSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
@@ -640,11 +723,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'MEMORY';
       }
       scanCount = 0;
-      _simRuntime.byRuleId.clear();
-      _ldRuntime.clear();
-      _fbdRuntime.clear();
-      _sfcRuntime.clear();
-      _stRuntime.clear();
+      _scan.resetSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
@@ -761,11 +840,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'MEMORY';
       }
       scanCount = 0;
-      _simRuntime.byRuleId.clear();
-      _ldRuntime.clear();
-      _fbdRuntime.clear();
-      _sfcRuntime.clear();
-      _stRuntime.clear();
+      _scan.resetSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
@@ -1087,6 +1162,9 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       tooltip: isRunning ? 'Pause Scan Loop' : 'Run Scan Loop',
       onPressed: () {
         setState(() {
+          if (!isRunning) {
+            _startRunSession();
+          }
           isRunning = !isRunning;
         });
       },
