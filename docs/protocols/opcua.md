@@ -247,12 +247,14 @@ client-signature verification) are now **CLOSED**:
   `buildSelfSignedCertificate`) includes, in addition to the
   `applicationUri` SAN: a `critical` `KeyUsage` extension with
   `digitalSignature`, `nonRepudiation`, `keyEncipherment`,
-  `dataEncipherment` (the OPC UA end-entity bit set — bits 0-3, no
-  `keyCertSign`, since this is a leaf cert, not a CA), and an
-  `ExtendedKeyUsage` extension with `serverAuth`/`clientAuth`. **If a
-  specific strict client still rejects the self-signed cert because it
-  additionally demands `keyCertSign` (self-signed-as-CA expectation), that
-  is the first tweak to try.**
+  `dataEncipherment`, **and `keyCertSign`** (bits 0-3 + 5; BIT STRING
+  `03 02 02 F4`), and an `ExtendedKeyUsage` extension with
+  `serverAuth`/`clientAuth`. **`keyCertSign` is required** even though this
+  is a leaf cert: a self-signed cert is validated as its own trust anchor,
+  and a strict validator (Eclipse Milo, the stack Ignition uses) rejects an
+  anchor lacking `keyCertSign` with `Bad_CertificateUseNotAllowed`
+  ("required KeyUsage 'keyCertSign' not found") — confirmed live against
+  Ignition 8.3. This matches the vendored Rust `x509.rs`.
   **Operational note — existing certs are NOT retroactively upgraded:** an
   app-local certificate generated *before* this change lacks these
   extensions (it predates the code that adds them) and will not gain them

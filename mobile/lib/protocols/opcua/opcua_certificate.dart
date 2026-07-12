@@ -15,7 +15,7 @@
 // (Ignition / Milo / .NET), however, reject an application-instance cert that
 // lacks KeyUsage / ExtendedKeyUsage, so — mirroring x509.rs — the cert also
 // carries KeyUsage (critical: digitalSignature, nonRepudiation,
-// keyEncipherment, dataEncipherment) and ExtendedKeyUsage (serverAuth,
+// keyEncipherment, dataEncipherment, keyCertSign) and ExtendedKeyUsage (serverAuth,
 // clientAuth).
 //
 // Pure Dart: imports ONLY asn1lib, the Task-1 crypto primitives and
@@ -224,7 +224,8 @@ ASN1Sequence _buildName(String commonName) {
 /// Builds the [3] EXPLICIT Extensions field. Mirrors the application-instance
 /// certificate of `crypto/x509.rs`, carrying (in order):
 ///   1. KeyUsage (critical) — digitalSignature, nonRepudiation,
-///      keyEncipherment, dataEncipherment;
+///      keyEncipherment, dataEncipherment, keyCertSign (the last is required
+///      because a self-signed cert is validated as its own trust anchor);
 ///   2. ExtendedKeyUsage — serverAuth + clientAuth;
 ///   3. SubjectAltName — uniformResourceIdentifier [6] = [applicationUri].
 ///
@@ -233,11 +234,20 @@ ASN1Sequence _buildName(String commonName) {
 /// DER of the extension-specific value.
 ASN1Object _buildExtensions(String applicationUri) {
   // KeyUsage ::= BIT STRING. digitalSignature(0), nonRepudiation(1),
-  // keyEncipherment(2), dataEncipherment(3) → the single value byte 0xF0
-  // with 4 unused (trailing) bits, i.e. DER `03 02 04 F0`.
+  // keyEncipherment(2), dataEncipherment(3), keyCertSign(5) → the single
+  // value byte 0xF4 with 2 unused (trailing) bits, i.e. DER `03 02 02 F4`.
+  //
+  // keyCertSign is REQUIRED here even though this is an application-instance
+  // (end-entity) cert: it is SELF-SIGNED, so a strict validator treats it as
+  // its own trust anchor and, per RFC 5280 §6.1 / OPC UA, an anchor that
+  // signs a cert (itself) must assert keyCertSign. Eclipse Milo (Ignition's
+  // stack) rejects a self-signed app cert lacking it with
+  // Bad_CertificateUseNotAllowed ("required KeyUsage 'keyCertSign' not
+  // found") — confirmed live against Ignition. This mirrors the vendored
+  // Rust `x509.rs`, which sets keyCertSign for exactly this reason.
   final keyUsageBits = ASN1BitString(
-    const <int>[0xF0],
-    unusedbits: 4,
+    const <int>[0xF4],
+    unusedbits: 2,
   );
   final keyUsage = ASN1Sequence()
     ..add(ASN1ObjectIdentifier.fromComponentString(_oidKeyUsage))
