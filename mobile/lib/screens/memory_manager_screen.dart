@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/system_tags.dart';
 import '../models/tag_resolver.dart';
+import '../models/test_tag_set.dart';
 import '../ui/responsive.dart';
 
 /// Resolved, display-ready data for one row of the hierarchical tag tree —
@@ -62,10 +63,10 @@ class MemoryManagerScreen extends StatefulWidget {
   });
 
   @override
-  State<MemoryManagerScreen> createState() => _MemoryManagerScreenState();
+  State<MemoryManagerScreen> createState() => MemoryManagerScreenState();
 }
 
-class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTickerProviderStateMixin {
+class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTickerProviderStateMixin {
   late TabController _tabController;
 
   // Sorting State for Global Tags Table
@@ -74,6 +75,10 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
 
   // Set of expanded parent tags (e.g. 'TONTimer', 'TONTimer.PRE')
   final Set<String> _expandedTagKeys = {};
+
+  // Set of folder names collapsed in the folder-grouped tag list (root '' is
+  // never collapsible — it always renders its tags directly).
+  final Set<String> _collapsedFolders = {};
 
   @override
   void initState() {
@@ -110,6 +115,263 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
         return ascending ? cmp : -cmp;
       });
     });
+  }
+
+  void _showSnack(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// Validates and generates a `TestSetSpec`'s bulk test tags, mirroring the
+  /// Generate Test Set dialog's save action. Shared by the dialog and tests
+  /// so both go through the exact same validation + mutation path.
+  ///
+  /// Rejects (with a SnackBar) if: the folder name is empty; `minValue` is
+  /// not strictly less than `maxValue` (this also guards a downstream
+  /// `counter` clamp crash in the signal engine); or any generated tag name
+  /// collides with an existing project tag. Otherwise builds the set, adds
+  /// the tags + signal generators to the project, appends the tags to each
+  /// ticked protocol's map (skipping any protocol that isn't configured on
+  /// the project), and notifies [PlcProject] listeners via
+  /// `widget.onProjectUpdated`.
+  @visibleForTesting
+  bool debugGenerateTestSet(
+    TestSetSpec spec, {
+    required bool opcua,
+    required bool modbus,
+    required bool dnp3,
+    required bool mqtt,
+  }) {
+    final folder = spec.folder.trim();
+    if (folder.isEmpty) {
+      _showSnack('Folder name cannot be empty');
+      return false;
+    }
+    if (!(spec.minValue < spec.maxValue)) {
+      _showSnack('Min value must be less than max value');
+      return false;
+    }
+    spec.folder = folder;
+    final built = buildTestSet(spec);
+    final existingNames = widget.currentProject.tags.map((t) => t.name).toSet();
+    if (built.tags.any((t) => existingNames.contains(t.name))) {
+      _showSnack('A tag with one of these names already exists — choose a different base name');
+      return false;
+    }
+
+    setState(() {
+      widget.currentProject.tags.addAll(built.tags);
+      widget.currentProject.signalGens.addAll(built.gens);
+
+      final protocols = widget.currentProject.protocols;
+      if (opcua && protocols?.opcua != null) {
+        appendToOpcuaMap(protocols!.opcua!.map, built.tags);
+      }
+      if (modbus && protocols?.modbus != null) {
+        appendToModbusMap(protocols!.modbus!.map, built.tags);
+      }
+      if (dnp3 && protocols?.dnp3 != null) {
+        appendToDnpMap(protocols!.dnp3!.map, built.tags);
+      }
+      if (mqtt && protocols?.mqtt != null) {
+        appendToMqttMap(protocols!.mqtt!.map, built.tags);
+      }
+    });
+    widget.onProjectUpdated();
+    return true;
+  }
+
+  /// Deletes every tag whose `folder` is [folder], along with their
+  /// `SignalGen`s (matched by `targetPath`, which is the bare tag name — see
+  /// `test_tag_set.dart`) and their entries in all four protocol maps.
+  /// Shared by the folder-row delete affordance and tests.
+  @visibleForTesting
+  void debugDeleteFolder(String folder) {
+    final removedNames = widget.currentProject.tags
+        .where((t) => t.folder == folder)
+        .map((t) => t.name)
+        .toSet();
+    if (removedNames.isEmpty) {
+      return;
+    }
+    setState(() {
+      widget.currentProject.tags.removeWhere((t) => t.folder == folder);
+      widget.currentProject.signalGens.removeWhere((g) => removedNames.contains(g.targetPath));
+
+      final protocols = widget.currentProject.protocols;
+      protocols?.opcua?.map.nodes.removeWhere((n) => removedNames.contains(n.tag));
+      protocols?.modbus?.map.entries.removeWhere((e) => removedNames.contains(e.tag));
+      protocols?.dnp3?.map.entries.removeWhere((e) => removedNames.contains(e.tag));
+      protocols?.mqtt?.map.entries.removeWhere((e) => removedNames.contains(e.tag));
+
+      _collapsedFolders.remove(folder);
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _confirmDeleteFolder(String folder) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Folder'),
+        content: Text(
+          'Delete folder "$folder" and all its tags? This removes their signal generators '
+          'and any protocol-map entries too. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              debugDeleteFolder(folder);
+              Navigator.pop(ctx);
+            },
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showGenerateTestSetDialog() {
+    final protocols = widget.currentProject.protocols;
+    final opcuaAvailable = protocols?.opcua?.enabled == true;
+    final modbusAvailable = protocols?.modbus?.enabled == true;
+    final dnp3Available = protocols?.dnp3?.enabled == true;
+    final mqttAvailable = protocols?.mqtt?.enabled == true;
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        final folderCtrl = TextEditingController(text: '');
+        final baseNameCtrl = TextEditingController(text: 'Tag');
+        final countCtrl = TextEditingController(text: '10');
+        final minCtrl = TextEditingController(text: '0');
+        final maxCtrl = TextEditingController(text: '100');
+        final periodCtrl = TextEditingController(text: '1000');
+        String type = 'ramp';
+        bool opcua = false;
+        bool modbus = false;
+        bool dnp3 = false;
+        bool mqtt = false;
+
+        return StatefulBuilder(
+          builder: (context, setDlgState) => AlertDialog(
+            title: const Text('Generate Test Set'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: folderCtrl,
+                    autofocus: true,
+                    decoration: const InputDecoration(labelText: 'Folder Name'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: baseNameCtrl,
+                    decoration: const InputDecoration(labelText: 'Base Tag Name'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: countCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Count'),
+                  ),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<String>(
+                    initialValue: type,
+                    decoration: const InputDecoration(labelText: 'Signal Type'),
+                    items: const ['ramp', 'sine', 'square', 'triangle', 'random', 'counter', 'toggle']
+                        .map((t) => DropdownMenuItem(value: t, child: Text(t)))
+                        .toList(),
+                    onChanged: (val) => setDlgState(() => type = val!),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: minCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+                    decoration: const InputDecoration(labelText: 'Min Value'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: maxCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+                    decoration: const InputDecoration(labelText: 'Max Value'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: periodCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Period (ms)'),
+                  ),
+                  if (opcuaAvailable || modbusAvailable || dnp3Available || mqttAvailable) ...[
+                    const SizedBox(height: 12),
+                    const Text('Add to protocol map(s):', style: TextStyle(fontWeight: FontWeight.bold)),
+                    if (opcuaAvailable)
+                      CheckboxListTile(
+                        value: opcua,
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        title: const Text('OPC UA'),
+                        onChanged: (v) => setDlgState(() => opcua = v ?? false),
+                      ),
+                    if (modbusAvailable)
+                      CheckboxListTile(
+                        value: modbus,
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        title: const Text('Modbus TCP'),
+                        onChanged: (v) => setDlgState(() => modbus = v ?? false),
+                      ),
+                    if (dnp3Available)
+                      CheckboxListTile(
+                        value: dnp3,
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        title: const Text('DNP3'),
+                        onChanged: (v) => setDlgState(() => dnp3 = v ?? false),
+                      ),
+                    if (mqttAvailable)
+                      CheckboxListTile(
+                        value: mqtt,
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        title: const Text('MQTT'),
+                        onChanged: (v) => setDlgState(() => mqtt = v ?? false),
+                      ),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              ElevatedButton(
+                onPressed: () {
+                  final spec = TestSetSpec(
+                    folder: folderCtrl.text.trim(),
+                    baseName: baseNameCtrl.text.trim().isEmpty ? 'Tag' : baseNameCtrl.text.trim(),
+                    count: int.tryParse(countCtrl.text) ?? 0,
+                    type: type,
+                    minValue: double.tryParse(minCtrl.text) ?? 0,
+                    maxValue: double.tryParse(maxCtrl.text) ?? 0,
+                    periodMs: int.tryParse(periodCtrl.text) ?? 1000,
+                  );
+                  final ok = debugGenerateTestSet(spec, opcua: opcua, modbus: modbus, dnp3: dnp3, mqtt: mqtt);
+                  if (ok) {
+                    Navigator.pop(ctx);
+                  }
+                },
+                child: const Text('Generate'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   void _showAddTagDialog() {
@@ -219,11 +481,26 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
 
   Widget _buildGlobalTagsHierarchicalTab() {
     return Scaffold(
-      floatingActionButton: FloatingActionButton.extended(
-        icon: const Icon(Icons.add),
-        label: const Text('Add Tag'),
-        backgroundColor: Colors.cyan,
-        onPressed: _showAddTagDialog,
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          FloatingActionButton.extended(
+            heroTag: 'generateTestSet',
+            icon: const Icon(Icons.auto_awesome),
+            label: const Text('Generate Test Set'),
+            backgroundColor: Colors.deepPurple,
+            onPressed: _showGenerateTestSetDialog,
+          ),
+          const SizedBox(height: 12),
+          FloatingActionButton.extended(
+            heroTag: 'addTag',
+            icon: const Icon(Icons.add),
+            label: const Text('Add Tag'),
+            backgroundColor: Colors.cyan,
+            onPressed: _showAddTagDialog,
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -235,38 +512,132 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
             const Text('Expand structured tags (timers, DUTs, arrays) to see their members. Expand integer tags to view individual bits.', style: TextStyle(color: Colors.grey, fontSize: 11)),
             const SizedBox(height: 16),
 
-            Builder(builder: (context) {
-              final data = _buildRowData();
-              if (context.isExpanded) {
-                return Card(
-                  color: const Color(0xFF1E293B),
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: DataTable(
-                      sortColumnIndex: _sortColumnIndex,
-                      sortAscending: _isAscending,
-                      columns: [
-                        DataColumn(label: const Text('Tag / Member Name'), onSort: _sortTags),
-                        DataColumn(label: const Text('Browse Path'), onSort: _sortTags),
-                        DataColumn(label: const Text('Data Type'), onSort: _sortTags),
-                        DataColumn(label: const Text('Live Value'), onSort: _sortTags),
-                        DataColumn(label: const Text('Quality'), onSort: _sortTags),
-                        DataColumn(label: const Text('I/O Classification'), onSort: _sortTags),
-                        const DataColumn(label: Text('Actions / Expand')),
-                      ],
-                      rows: _buildHierarchicalRows(data),
-                    ),
-                  ),
-                );
-              }
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: _buildRowCards(data),
-              );
-            }),
+            ..._buildFolderSections(),
           ],
         ),
       ),
+    );
+  }
+
+  // Top-level tags (no dot in name) bucketed by `folder`, in display order:
+  // root ('') first, then every other folder alphabetically.
+  Map<String, List<PlcTag>> _tagsByFolder() {
+    final grouped = <String, List<PlcTag>>{};
+    for (final tag in widget.currentProject.tags.where((t) => !t.name.contains('.'))) {
+      grouped.putIfAbsent(tag.folder, () => []).add(tag);
+    }
+    return grouped;
+  }
+
+  List<String> _orderedFolderKeys(Map<String, List<PlcTag>> grouped) {
+    final keys = grouped.keys.toList();
+    keys.sort((a, b) {
+      if (a.isEmpty && b.isEmpty) {
+        return 0;
+      }
+      if (a.isEmpty) {
+        return -1;
+      }
+      if (b.isEmpty) {
+        return 1;
+      }
+      return a.compareTo(b);
+    });
+    return keys;
+  }
+
+  // Root tags (folder == '') render directly with no header (there is
+  // nothing to collapse/delete). Every other folder gets a collapsible
+  // header showing its tag count and a delete affordance.
+  List<Widget> _buildFolderSections() {
+    final grouped = _tagsByFolder();
+    final sections = <Widget>[];
+    for (final key in _orderedFolderKeys(grouped)) {
+      final folderTags = grouped[key]!;
+      if (key.isEmpty) {
+        sections.add(_buildGroupBody(folderTags));
+        continue;
+      }
+      final collapsed = _collapsedFolders.contains(key);
+      sections.add(_folderHeader(key, folderTags.length, collapsed));
+      if (!collapsed) {
+        sections.add(_buildGroupBody(folderTags));
+      }
+      sections.add(const SizedBox(height: 12));
+    }
+    return sections;
+  }
+
+  Widget _folderHeader(String folder, int count, bool collapsed) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Material(
+        color: const Color(0xFF0F172A),
+        borderRadius: BorderRadius.circular(6),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: () => setState(() {
+            if (collapsed) {
+              _collapsedFolders.remove(folder);
+            } else {
+              _collapsedFolders.add(folder);
+            }
+          }),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            child: Row(
+              children: [
+                Icon(collapsed ? Icons.folder : Icons.folder_open, color: Colors.amberAccent, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(folder,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                      overflow: TextOverflow.ellipsis),
+                ),
+                const SizedBox(width: 8),
+                Text('$count', style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                const SizedBox(width: 8),
+                touchable(
+                  const Icon(Icons.delete_forever, color: Colors.redAccent, size: 18),
+                  onTap: () => _confirmDeleteFolder(folder),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Renders one folder-group's rows as a DataTable (wide layouts) or a
+  // vertical card list (narrow layouts) — same row-data source either way.
+  Widget _buildGroupBody(List<PlcTag> folderTopLevelTags) {
+    final data = _buildRowData(topLevelTags: folderTopLevelTags);
+    if (context.isExpanded) {
+      return Card(
+        color: const Color(0xFF1E293B),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: DataTable(
+            sortColumnIndex: _sortColumnIndex,
+            sortAscending: _isAscending,
+            columns: [
+              DataColumn(label: const Text('Tag / Member Name'), onSort: _sortTags),
+              DataColumn(label: const Text('Browse Path'), onSort: _sortTags),
+              DataColumn(label: const Text('Data Type'), onSort: _sortTags),
+              DataColumn(label: const Text('Live Value'), onSort: _sortTags),
+              DataColumn(label: const Text('Quality'), onSort: _sortTags),
+              DataColumn(label: const Text('I/O Classification'), onSort: _sortTags),
+              const DataColumn(label: Text('Actions / Expand')),
+            ],
+            rows: _buildHierarchicalRows(data),
+          ),
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: _buildRowCards(data),
     );
   }
 
@@ -367,12 +738,15 @@ class _MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTi
   // Builds the flat, depth-annotated list of resolved row data for the whole
   // tag tree (root tags + expanded descendants). This is the single source
   // of truth consumed by both the DataTable and the compact card list.
-  List<_TagRowData> _buildRowData() {
+  List<_TagRowData> _buildRowData({List<PlcTag>? topLevelTags}) {
     final out = <_TagRowData>[];
     // Filter out child tags that belong under parent structs (e.g. TONTimer.EN) so they render under parent!
-    final topLevelTags = widget.currentProject.tags.where((t) => !t.name.contains('.')).toList();
+    // When [topLevelTags] isn't given (scoping to one folder's group), fall
+    // back to every top-level tag in the project.
+    final tagsToRender =
+        topLevelTags ?? widget.currentProject.tags.where((t) => !t.name.contains('.')).toList();
 
-    for (final tag in topLevelTags) {
+    for (final tag in tagsToRender) {
       final isTimer = tag.dataType == 'TIMER';
       final expandable = childrenOf(widget.currentProject, tag.name).isNotEmpty;
       final isExpanded = _expandedTagKeys.contains(tag.name);
