@@ -70,6 +70,16 @@ void main() {
     expect(readPath(p, 'V'), 3);
   });
 
+  test('counter tolerates inverted min>max bounds without throwing', () {
+    final p = _proj('INT32', 0);
+    final rt = SignalRuntime();
+    final g = _g('counter', min: 100, max: 0, period: 100); // inverted bounds
+    for (var i = 0; i < 5; i++) {
+      expect(() => applySignalGens(p, [g], 100, rt), returnsNormally);
+      expect(readPath(p, 'V'), inInclusiveRange(0, 100));
+    }
+  });
+
   test('toggle flips BOOL each period', () {
     final p = _proj('BOOL', false);
     final rt = SignalRuntime();

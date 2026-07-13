@@ -25,4 +25,23 @@ void main() {
     expect(proj.tags.where((t) => t.folder == 'ramp1'), isEmpty);
     expect(proj.signalGens, isEmpty);
   });
+
+  testWidgets('debugGenerateTestSet rejects count <= 0 and adds nothing', (tester) async {
+    final proj = PlcProject(id: 'x', name: 'x', controllerName: 'c',
+        tags: [], structDefs: [], programs: [], tasks: [], hmis: []);
+    await tester.pumpWidget(MaterialApp(
+      home: MemoryManagerScreen(currentProject: proj, onProjectUpdated: () {}),
+    ));
+    await tester.pumpAndSettle();
+    final state = tester.state<MemoryManagerScreenState>(find.byType(MemoryManagerScreen));
+
+    final ok = state.debugGenerateTestSet(
+      TestSetSpec(folder: 'zero1', baseName: 'Z', count: 0, type: 'ramp',
+        minValue: 0, maxValue: 100, periodMs: 1000),
+      opcua: false, modbus: false, dnp3: false, mqtt: false);
+
+    expect(ok, isFalse);
+    expect(proj.tags, isEmpty);
+    expect(proj.signalGens, isEmpty);
+  });
 }

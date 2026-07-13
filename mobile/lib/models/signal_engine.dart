@@ -80,8 +80,10 @@ void applySignalGens(PlcProject p, List<SignalGen> gens, int dtMs, SignalRuntime
       } else {
         final lo = g.minValue.round();
         final hi = g.maxValue.round();
+        final lower = math.min(lo, hi);
+        final upper = math.max(lo, hi);
         final n = _periodIndex(g, rt.elapsedMs);
-        value = (lo + n).clamp(lo, hi);
+        value = (lo + n).clamp(lower, upper);
       }
     } else if (g.type == 'toggle') {
       final n = g.periodMs <= 0 ? 0 : _periodIndex(g, rt.elapsedMs);

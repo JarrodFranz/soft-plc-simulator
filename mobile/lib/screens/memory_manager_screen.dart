@@ -125,13 +125,14 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
   /// Generate Test Set dialog's save action. Shared by the dialog and tests
   /// so both go through the exact same validation + mutation path.
   ///
-  /// Rejects (with a SnackBar) if: the folder name is empty; `minValue` is
-  /// not strictly less than `maxValue` (this also guards a downstream
-  /// `counter` clamp crash in the signal engine); or any generated tag name
-  /// collides with an existing project tag. Otherwise builds the set, adds
-  /// the tags + signal generators to the project, appends the tags to each
-  /// ticked protocol's map (skipping any protocol that isn't configured on
-  /// the project), and notifies [PlcProject] listeners via
+  /// Rejects (with a SnackBar) if: the folder name is empty; `count` is not
+  /// greater than zero; `minValue` is not strictly less than `maxValue`
+  /// (this also guards a downstream `counter` clamp crash in the signal
+  /// engine); or any generated tag name collides with an existing project
+  /// tag. Otherwise builds the set, adds the tags + signal generators to the
+  /// project, appends the tags to each ticked protocol's map (skipping any
+  /// protocol that isn't configured on the project, or that's configured but
+  /// disabled), and notifies [PlcProject] listeners via
   /// `widget.onProjectUpdated`.
   @visibleForTesting
   bool debugGenerateTestSet(
@@ -144,6 +145,10 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
     final folder = spec.folder.trim();
     if (folder.isEmpty) {
       _showSnack('Folder name cannot be empty');
+      return false;
+    }
+    if (spec.count <= 0) {
+      _showSnack('Count must be greater than zero');
       return false;
     }
     if (!(spec.minValue < spec.maxValue)) {
@@ -163,17 +168,17 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
       widget.currentProject.signalGens.addAll(built.gens);
 
       final protocols = widget.currentProject.protocols;
-      if (opcua && protocols?.opcua != null) {
-        appendToOpcuaMap(protocols!.opcua!.map, built.tags);
+      if (opcua && protocols?.opcua != null && protocols!.opcua!.enabled) {
+        appendToOpcuaMap(protocols.opcua!.map, built.tags);
       }
-      if (modbus && protocols?.modbus != null) {
-        appendToModbusMap(protocols!.modbus!.map, built.tags);
+      if (modbus && protocols?.modbus != null && protocols!.modbus!.enabled) {
+        appendToModbusMap(protocols.modbus!.map, built.tags);
       }
-      if (dnp3 && protocols?.dnp3 != null) {
-        appendToDnpMap(protocols!.dnp3!.map, built.tags);
+      if (dnp3 && protocols?.dnp3 != null && protocols!.dnp3!.enabled) {
+        appendToDnpMap(protocols.dnp3!.map, built.tags);
       }
-      if (mqtt && protocols?.mqtt != null) {
-        appendToMqttMap(protocols!.mqtt!.map, built.tags);
+      if (mqtt && protocols?.mqtt != null && protocols!.mqtt!.enabled) {
+        appendToMqttMap(protocols.mqtt!.map, built.tags);
       }
     });
     widget.onProjectUpdated();
