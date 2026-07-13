@@ -65,4 +65,20 @@ void main() {
     appendToMqttMap(map, tags);
     expect(map.entries.where((e) => e.tag == 'R1').length, 1);
   });
+
+  test('appendToMqttMap folder-prefixes generated metrics', () {
+    final tags = buildTestSet(TestSetSpec(
+      folder: 'Ramp1',
+      baseName: 'R',
+      count: 2,
+      type: 'ramp',
+      minValue: 0,
+      maxValue: 1,
+      periodMs: 1000,
+    )).tags;
+    final map = MqttMap(entries: []);
+    appendToMqttMap(map, tags);
+    expect(map.entries.map((e) => e.metric), ['Ramp1/R1', 'Ramp1/R2']);
+    expect(map.entries.map((e) => e.tag), ['R1', 'R2']);
+  });
 }

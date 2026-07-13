@@ -228,7 +228,11 @@ void appendToMqttMap(MqttMap map, List<PlcTag> tags) {
     if (existingNames.contains(tag.name) || !_isMappable(tag)) {
       continue;
     }
-    map.entries.add(MqttMapEntry(tag: tag.name, metric: tag.name, writable: false));
+    map.entries.add(MqttMapEntry(
+      tag: tag.name,
+      metric: tag.folder.isEmpty ? tag.name : '${tag.folder}/${tag.name}',
+      writable: false,
+    ));
     existingNames.add(tag.name);
   }
 }

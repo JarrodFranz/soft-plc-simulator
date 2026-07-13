@@ -48,6 +48,11 @@ const String _fixturePassword = 'opcua-secret-1';
 ///   - `Start_PB` : BOOL,    ReadWrite -> ns=1;s=Start_PB
 ///   - `Temp`     : FLOAT64, ReadOnly  -> ns=1;s=Temp
 ///   - `Counter`  : INT32,   ReadWrite -> ns=1;s=Counter
+///   - `Ramp1_A`, `Ramp1_B` : FLOAT64, ReadOnly, folder 'Ramp1' -> Task 2
+///     (serve folder nodes) machine-proof: a real client Browses Objects,
+///     finds the synthesized 'Ramp1' FolderType Object among the references,
+///     Browses INTO it, and finds these two tags there instead of flat under
+///     Objects — see `gateway/examples/opcua_probe.rs`'s folder-browse step.
 PlcProject _fixtureProject(int port) {
   final project = PlcProject(
     id: 'proj_opcua_e2e_fixture',
@@ -74,6 +79,22 @@ PlcProject _fixtureProject(int port) {
         dataType: 'INT32',
         value: 0,
         ioType: 'Internal',
+      ),
+      PlcTag(
+        name: 'Ramp1_A',
+        path: 'Inputs.Ramp1_A',
+        dataType: 'FLOAT64',
+        value: 10.0,
+        ioType: 'SimulatedInput',
+        folder: 'Ramp1',
+      ),
+      PlcTag(
+        name: 'Ramp1_B',
+        path: 'Inputs.Ramp1_B',
+        dataType: 'FLOAT64',
+        value: 20.0,
+        ioType: 'SimulatedInput',
+        folder: 'Ramp1',
       ),
     ],
     structDefs: [],
@@ -104,6 +125,8 @@ PlcProject _fixtureProject(int port) {
         OpcuaNode(nodeId: 'ns=1;s=Start_PB', tag: 'Start_PB', access: 'ReadWrite'),
         OpcuaNode(nodeId: 'ns=1;s=Temp', tag: 'Temp', access: 'ReadOnly'),
         OpcuaNode(nodeId: 'ns=1;s=Counter', tag: 'Counter', access: 'ReadWrite'),
+        OpcuaNode(nodeId: 'ns=1;s=Ramp1_A', tag: 'Ramp1_A', access: 'ReadOnly'),
+        OpcuaNode(nodeId: 'ns=1;s=Ramp1_B', tag: 'Ramp1_B', access: 'ReadOnly'),
       ],
     ),
   );

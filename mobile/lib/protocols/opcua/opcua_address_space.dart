@@ -2,10 +2,13 @@
 // no dart:io / Flutter imports. See docs/superpowers/plans/
 // 2026-07-06-in-app-opcua-server.md, Task 3.
 //
-// v1 scope: a flat address space — one Variable node per `OpcuaMap` entry,
-// organized directly under the standard Objects folder (i=85). This is the
-// simplest UAExpert-friendly shape ("Objects > all your tags") and matches
-// the brief's "v1: flat under Objects" guidance.
+// v1 scope: one Variable node per `OpcuaMap` entry, organized under the
+// standard Objects folder (i=85) — either directly (root tags, whose
+// `PlcTag.folder` is '') or one level down inside a synthesized FolderType
+// Object node named after the tag's `folder` (folders don't nest). This is
+// the simplest UAExpert-friendly shape ("Objects > your tags, optionally
+// grouped by folder") and matches the brief's "v1: flat under Objects"
+// guidance for a project with no folders.
 //
 // Every standard NodeId / AttributeId / NodeClass / DataTypeId value used
 // here is cross-checked against the Rust `opcua` crate (v0.12.0), vendored
@@ -89,6 +92,11 @@ const Map<String, OpcUaTypeMapping> _dataTypeMap = {
   'STRING': OpcUaTypeMapping(variantTypeId: 12, dataTypeNodeId: OpcNodeId.numeric(0, 12)),
 };
 
+/// Reserved NodeId-string prefix for synthesized folder Object nodes. A real
+/// tag NodeId is `ns=1;s=<tagName>` (plain identifier), so this marker can
+/// never collide with one.
+const String kFolderNodePrefix = '__folder__/';
+
 /// Numeric Variant type ids eligible for cross-numeric coercion on Write
 /// (everything except Boolean(1)/String(12) — SByte, Byte, Int16, UInt16,
 /// Int32, UInt32, Int64, UInt64, Float, Double). See `OpcUaAddressSpaceEntry
@@ -105,6 +113,7 @@ class OpcUaAddressSpaceEntry {
   final String tagName;
   final String dataType;
   final String access;
+  final String folder;
 
   const OpcUaAddressSpaceEntry({
     required this.nodeId,
@@ -112,6 +121,7 @@ class OpcUaAddressSpaceEntry {
     required this.tagName,
     required this.dataType,
     required this.access,
+    required this.folder,
   });
 
   bool get isWritable => access == 'ReadWrite';
@@ -186,9 +196,11 @@ class OpcUaAddressSpaceEntry {
   }
 }
 
-/// The address space for one project: a flat set of Variable nodes organized
-/// under the standard Objects folder. Values are NOT stored here — reads and
-/// writes always go through the live project's tag DB (see
+/// The address space for one project: a set of Variable nodes organized
+/// under the standard Objects folder, either directly (root tags) or inside
+/// a synthesized FolderType node per distinct `PlcTag.folder`. Values are NOT
+/// stored here — reads and writes always go through the live project's tag
+/// DB (see
 /// `OpcUaAddressSpaceEntry.readVariant` / `OpcUaProjectServices.writeValue`).
 class OpcUaAddressSpace {
   final List<OpcUaAddressSpaceEntry> _entries;
@@ -200,7 +212,10 @@ class OpcUaAddressSpace {
   /// `opcua` config (matches the map/entries also being empty in that case).
   final String namespaceUri;
 
-  OpcUaAddressSpace._(this._entries, this._byNodeId, this.namespaceUri);
+  /// Distinct non-empty tag folders, alphabetically sorted.
+  final List<String> _folders;
+
+  OpcUaAddressSpace._(this._entries, this._byNodeId, this.namespaceUri, this._folders);
 
   /// Builds the address space from `project.protocols?.opcua` (the map +
   /// namespaceUri). Nodes whose `node_id` string cannot be parsed as either
@@ -226,12 +241,20 @@ class OpcUaAddressSpace {
           tagName: node.tag,
           dataType: tag.dataType,
           access: node.access,
+          folder: tag.folder,
         );
         entries.add(entry);
         byNodeId[parsed] = entry;
       }
     }
-    return OpcUaAddressSpace._(entries, byNodeId, opcua?.namespaceUri ?? '');
+    final folderSet = <String>{};
+    for (final e in entries) {
+      if (e.folder.isNotEmpty) {
+        folderSet.add(e.folder);
+      }
+    }
+    final folders = folderSet.toList()..sort();
+    return OpcUaAddressSpace._(entries, byNodeId, opcua?.namespaceUri ?? '', folders);
   }
 
   static PlcTag? _findTag(PlcProject project, String name) {
@@ -291,12 +314,48 @@ class OpcUaAddressSpace {
   /// carries — see [_parseNodeId]).
   List<String> get namespaceArray => [kOpcFoundationNamespaceUri, namespaceUri];
 
-  /// The direct children of [parent] in the Organizes hierarchy: all
-  /// variables when [parent] is the Objects folder, otherwise empty (v1's
-  /// flat layout has no further nesting).
+  /// Distinct non-empty tag folders, alphabetically sorted.
+  List<String> get folders => List.unmodifiable(_folders);
+
+  /// The synthesized folder Object node for [folder]. Uses the reserved
+  /// [kFolderNodePrefix] string-identifier form in namespace 1 — the same
+  /// namespace real tag NodeIds live in — so it never collides with one.
+  OpcNodeId folderNodeId(String folder) => OpcNodeId.string(1, '$kFolderNodePrefix$folder');
+
+  /// True if [nodeId] is one of our synthesized folder Object nodes.
+  bool isFolderNode(OpcNodeId nodeId) =>
+      nodeId.namespace == 1 && nodeId.isString && (nodeId.stringId ?? '').startsWith(kFolderNodePrefix);
+
+  /// The folder name encoded in [nodeId], or `null` if it isn't a folder
+  /// node (see [isFolderNode]).
+  String? folderNameOf(OpcNodeId nodeId) =>
+      isFolderNode(nodeId) ? nodeId.stringId!.substring(kFolderNodePrefix.length) : null;
+
+  /// Entries with no folder (`folder == ''`), in map order.
+  List<OpcUaAddressSpaceEntry> rootVariables() =>
+      _entries.where((e) => e.folder.isEmpty).toList();
+
+  /// The folder names to show directly under [parent]: all [folders] when
+  /// [parent] is the Objects folder, otherwise empty (folders don't nest).
+  List<String> childFolders(OpcNodeId parent) =>
+      isObjectsFolder(parent) ? List.unmodifiable(_folders) : const [];
+
+  /// Entries belonging to [folder], in map order.
+  List<OpcUaAddressSpaceEntry> folderVariables(String folder) =>
+      _entries.where((e) => e.folder == folder).toList();
+
+  /// The direct Variable children of [parent] in the Organizes hierarchy:
+  /// root variables when [parent] is the Objects folder, a folder's
+  /// variables when [parent] is one of our synthesized folder nodes,
+  /// otherwise empty. Callers that also need the folder Object nodes
+  /// themselves should use [childFolders] alongside this.
   List<OpcUaAddressSpaceEntry> children(OpcNodeId parent) {
     if (isObjectsFolder(parent)) {
-      return List.unmodifiable(_entries);
+      return rootVariables();
+    }
+    final folder = folderNameOf(parent);
+    if (folder != null) {
+      return folderVariables(folder);
     }
     return const [];
   }

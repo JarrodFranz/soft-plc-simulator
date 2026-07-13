@@ -87,7 +87,7 @@ class MqttMap {
       }
       entries.add(MqttMapEntry(
         tag: tag.name,
-        metric: tag.name,
+        metric: tag.folder.isEmpty ? tag.name : '${tag.folder}/${tag.name}',
         writable: tag.ioType != 'SimulatedOutput',
       ));
     }

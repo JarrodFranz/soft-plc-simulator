@@ -162,8 +162,9 @@ class OpcUaProjectServices implements OpcUaServiceHandler {
     final isRoot = space.isRootFolder(nodeId);
     final isObjects = space.isObjectsFolder(nodeId);
     final isServer = space.isServerNode(nodeId);
+    final isFolder = space.isFolderNode(nodeId);
     final entry = space.byNodeId(nodeId);
-    if (!isRoot && !isObjects && !isServer && entry == null) {
+    if (!isRoot && !isObjects && !isServer && !isFolder && entry == null) {
       w.statusCode(OpcUaServiceStatusCodes.badNodeIdUnknown);
       w.byteString(null); // continuationPoint
       w.int32(-1); // references: null array
@@ -189,9 +190,11 @@ class OpcUaProjectServices implements OpcUaServiceHandler {
 
     if (isObjects) {
       // Browsing Objects lists the standard Server object first, then every
-      // exposed variable (v1's flat tag layout).
-      final children = space.children(OpcUaStandardNodeIds.objectsFolder);
-      w.int32(children.length + 1);
+      // root-level exposed variable (v1's flat tag layout), then one
+      // FolderType Object reference per non-empty tag folder.
+      final rootVars = space.children(OpcUaStandardNodeIds.objectsFolder);
+      final folders = space.childFolders(OpcUaStandardNodeIds.objectsFolder);
+      w.int32(rootVars.length + folders.length + 1);
       w.nodeId(OpcUaStandardNodeIds.organizesReferenceType);
       w.boolean(true); // isForward
       w.expandedNodeId(OpcUaStandardNodeIds.serverNode);
@@ -199,7 +202,32 @@ class OpcUaProjectServices implements OpcUaServiceHandler {
       w.localizedText(const OpcLocalizedText(text: 'Server'));
       w.int32(OpcUaNodeClass.object);
       w.expandedNodeId(OpcUaStandardNodeIds.serverType);
-      for (final child in children) {
+      for (final child in rootVars) {
+        w.nodeId(OpcUaStandardNodeIds.organizesReferenceType);
+        w.boolean(true); // isForward
+        w.expandedNodeId(child.nodeId);
+        w.qualifiedName(OpcQualifiedName(ns: child.nodeId.namespace, name: child.browseName));
+        w.localizedText(OpcLocalizedText(text: child.browseName));
+        w.int32(OpcUaNodeClass.variable);
+        w.expandedNodeId(OpcUaStandardNodeIds.baseDataVariableType);
+      }
+      for (final folder in folders) {
+        w.nodeId(OpcUaStandardNodeIds.organizesReferenceType);
+        w.boolean(true); // isForward
+        w.expandedNodeId(space.folderNodeId(folder));
+        w.qualifiedName(OpcQualifiedName(ns: 1, name: folder));
+        w.localizedText(OpcLocalizedText(text: folder));
+        w.int32(OpcUaNodeClass.object);
+        w.expandedNodeId(OpcUaStandardNodeIds.folderType);
+      }
+      return;
+    }
+
+    if (isFolder) {
+      // Browsing a synthesized folder Object node lists its variables.
+      final vars = space.children(nodeId);
+      w.int32(vars.length);
+      for (final child in vars) {
         w.nodeId(OpcUaStandardNodeIds.organizesReferenceType);
         w.boolean(true); // isForward
         w.expandedNodeId(child.nodeId);
@@ -271,6 +299,9 @@ class OpcUaProjectServices implements OpcUaServiceHandler {
     }
     if (space.isServerNode(nodeId)) {
       return _readServerNodeAttribute(attributeId, indexRange);
+    }
+    if (space.isFolderNode(nodeId)) {
+      return _readFolderNodeAttribute(space.folderNameOf(nodeId)!, attributeId, indexRange);
     }
 
     final entry = space.byNodeId(nodeId);
@@ -432,6 +463,46 @@ class OpcUaProjectServices implements OpcUaServiceHandler {
           variant: const OpcVariant(
             typeId: 21, // LocalizedText
             value: OpcLocalizedText(text: 'Server'),
+          ),
+          status: OpcUaServiceStatusCodes.good,
+          serverTs: now,
+        );
+      default:
+        return const OpcDataValue(status: OpcUaServiceStatusCodes.badAttributeIdInvalid);
+    }
+  }
+
+  /// Answers a Read of a synthesized folder Object node (ns=1;s=__folder__/
+  /// <folderName>): mirrors [_readServerNodeAttribute] exactly — only the
+  /// identity attributes are meaningful for an Object node, everything else
+  /// (notably `Value`, not applicable to a FolderType Object) falls through
+  /// to Bad_AttributeIdInvalid.
+  OpcDataValue _readFolderNodeAttribute(String folderName, int attributeId, String? indexRange) {
+    if (indexRange != null) {
+      return const OpcDataValue(status: OpcUaServiceStatusCodes.badIndexRangeInvalid);
+    }
+    final now = DateTime.now().toUtc();
+    switch (attributeId) {
+      case OpcUaAttributeIds.nodeClass:
+        return OpcDataValue(
+          variant: const OpcVariant(typeId: 6, value: OpcUaNodeClass.object), // Int32
+          status: OpcUaServiceStatusCodes.good,
+          serverTs: now,
+        );
+      case OpcUaAttributeIds.browseName:
+        return OpcDataValue(
+          variant: OpcVariant(
+            typeId: 20, // QualifiedName
+            value: OpcQualifiedName(ns: 1, name: folderName),
+          ),
+          status: OpcUaServiceStatusCodes.good,
+          serverTs: now,
+        );
+      case OpcUaAttributeIds.displayName:
+        return OpcDataValue(
+          variant: OpcVariant(
+            typeId: 21, // LocalizedText
+            value: OpcLocalizedText(text: folderName),
           ),
           status: OpcUaServiceStatusCodes.good,
           serverTs: now,
