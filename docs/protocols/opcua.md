@@ -73,6 +73,31 @@ to `ReadOnly`). It is stored per-project under the additive `protocols`
 field (`protocols.opcua`), alongside the `port` (additive, default `4840`)
 and `namespaceUri`.
 
+## Folder browsing
+
+A tag's `folder` (the same flat grouping label the Memory Manager and every
+protocol map editor use — see `docs/simulated-test-tags.md`) is also
+reflected in the address space: a tag with a non-empty `folder` is browsed
+as a child of a synthesized **FolderType** Object node (browse name = the
+folder name, node id `ns=1;s=__folder__/<folder>` — a reserved prefix that
+can never collide with a real tag's `ns=1;s=<tagName>`) organized directly
+under the standard **Objects** folder, alongside the folder-node references
+themselves. A root tag (`folder: ''`) still sits directly under Objects — a
+project with no folders browses exactly as it always did before this
+feature existed (byte-identical reference count and shape). Reading a
+folder node's `NodeClass`/`BrowseName`/`DisplayName` answers like any other
+Object node; it has no `Value` attribute.
+
+This is machine-verified end-to-end against a real third-party client — the
+Rust `opcua` crate (`tool/opcua_e2e.sh`): the probe browses Objects, locates
+the folder reference, confirms `NodeClass::Object`, browses into the folder,
+and reads a tag inside it. Any generic FolderType/Organizes-aware OPC UA
+client (Ignition/Eclipse Milo, already confirmed elsewhere in this doc for
+Basic256Sha256 interop, included) is expected to render the same
+`Objects ▸ <folder> ▸ <tag>` hierarchy, since folder nodes use only the
+standard Organizes reference and `FolderType` type definition every OPC UA
+client already understands.
+
 ## v1 scope (and what's deferred to v2+)
 
 **v1 delivers:** `opc.tcp` transport (Hello/Acknowledge/Error framing),

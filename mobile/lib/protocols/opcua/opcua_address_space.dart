@@ -2,10 +2,13 @@
 // no dart:io / Flutter imports. See docs/superpowers/plans/
 // 2026-07-06-in-app-opcua-server.md, Task 3.
 //
-// v1 scope: a flat address space — one Variable node per `OpcuaMap` entry,
-// organized directly under the standard Objects folder (i=85). This is the
-// simplest UAExpert-friendly shape ("Objects > all your tags") and matches
-// the brief's "v1: flat under Objects" guidance.
+// v1 scope: one Variable node per `OpcuaMap` entry, organized under the
+// standard Objects folder (i=85) — either directly (root tags, whose
+// `PlcTag.folder` is '') or one level down inside a synthesized FolderType
+// Object node named after the tag's `folder` (folders don't nest). This is
+// the simplest UAExpert-friendly shape ("Objects > your tags, optionally
+// grouped by folder") and matches the brief's "v1: flat under Objects"
+// guidance for a project with no folders.
 //
 // Every standard NodeId / AttributeId / NodeClass / DataTypeId value used
 // here is cross-checked against the Rust `opcua` crate (v0.12.0), vendored
@@ -193,9 +196,11 @@ class OpcUaAddressSpaceEntry {
   }
 }
 
-/// The address space for one project: a flat set of Variable nodes organized
-/// under the standard Objects folder. Values are NOT stored here — reads and
-/// writes always go through the live project's tag DB (see
+/// The address space for one project: a set of Variable nodes organized
+/// under the standard Objects folder, either directly (root tags) or inside
+/// a synthesized FolderType node per distinct `PlcTag.folder`. Values are NOT
+/// stored here — reads and writes always go through the live project's tag
+/// DB (see
 /// `OpcUaAddressSpaceEntry.readVariant` / `OpcUaProjectServices.writeValue`).
 class OpcUaAddressSpace {
   final List<OpcUaAddressSpaceEntry> _entries;

@@ -28,6 +28,30 @@ no folder rename cascade, and no per-folder settings. A folder exists only
 as long as at least one tag references its name; it disappears once its last
 tag is deleted or reassigned.
 
+### Folders over the wire (OPC UA / MQTT)
+
+A tag's `folder` also shapes how it appears to a client of two of the four
+outbound protocols (Modbus and DNP3 have no hierarchical browse concept and
+are unaffected):
+
+- **OPC UA** — every mapped tag with a non-empty `folder` is browsed as a
+  child of a synthesized **FolderType** Object node (browse name = the
+  folder name), organized directly under the standard **Objects** folder
+  alongside the root-tag Variable nodes (root tags, `folder: ''`, still sit
+  directly under Objects — a project with no folders browses exactly as it
+  always has). In a FolderType-aware client such as Ignition this renders as
+  `Objects ▸ Ramp1 ▸ Ramp001…`. See
+  `mobile/lib/protocols/opcua/opcua_address_space.dart` and
+  `docs/protocols/opcua.md`.
+- **MQTT/Sparkplug B** — a foldered tag's published metric name becomes
+  `'<folder>/<name>'` instead of the bare tag name (root tags are
+  unaffected); the map entry's underlying `tag` field stays the bare tag
+  name — only the published metric name is prefixed. This lets a
+  Sparkplug-aware subscriber (e.g. Ignition's MQTT Engine) group the metrics
+  into the same folder hierarchy in its own tag browser (`MqttMap
+  .autoGenerate` and `appendToMqttMap` in `mobile/lib/models/
+  test_tag_set.dart`).
+
 ## Signal generators
 
 A `SignalGen` is a small, always-on record that drives one tag's value every
