@@ -47,4 +47,37 @@ void main() {
     expect(state.debugActiveProject.tasks.any((t) => t.name == 'Extra'), isFalse);
     expect(state.debugActiveProject.programs.any((p) => p.name == 'Shared'), isTrue);
   });
+
+  testWidgets('add-program "new task" path rejects a duplicate task name', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: WorkspaceShell()));
+    await tester.pumpAndSettle();
+    final state = tester.state<WorkspaceShellState>(find.byType(WorkspaceShell));
+
+    state.debugAddTask(PlcTask(name: 'Dupe', type: 'Continuous', programNames: []));
+    final taskCount = state.debugActiveProject.tasks.length;
+    final progCount = state.debugActiveProject.programs.length;
+
+    // Case-insensitive collision with the existing 'Dupe' task must be rejected.
+    final added = state.debugAddProgramToNewTask(
+      programName: 'Prog1',
+      language: 'StructuredText',
+      taskName: 'dupe',
+      taskType: 'Periodic',
+      periodMs: 250,
+    );
+    expect(added, isFalse); // rejected
+    expect(state.debugActiveProject.tasks.length, taskCount); // no task added
+    expect(state.debugActiveProject.programs.length, progCount); // no program added
+
+    // A unique name still succeeds.
+    final ok = state.debugAddProgramToNewTask(
+      programName: 'Prog2',
+      language: 'StructuredText',
+      taskName: 'FreshTask',
+      taskType: 'Continuous',
+    );
+    expect(ok, isTrue);
+    expect(state.debugActiveProject.tasks.any((t) => t.name == 'FreshTask'), isTrue);
+    expect(state.debugActiveProject.programs.any((p) => p.name == 'Prog2'), isTrue);
+  });
 }

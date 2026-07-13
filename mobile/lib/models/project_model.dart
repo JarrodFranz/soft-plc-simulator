@@ -490,6 +490,25 @@ class PlcTask {
   };
 }
 
+/// True if [name] collides with an existing task in [tasks], compared
+/// case-insensitively after trimming whitespace. [excluding] lets an edit keep
+/// its own name (pass the task being renamed). Task names must be unique
+/// because the scheduler keys its per-task runtime state (periodic
+/// accumulators, event-edge memory) by name — duplicates would share one entry
+/// and mis-schedule.
+bool isTaskNameTaken(List<PlcTask> tasks, String name, {PlcTask? excluding}) {
+  final norm = name.trim().toLowerCase();
+  for (final t in tasks) {
+    if (identical(t, excluding)) {
+      continue;
+    }
+    if (t.name.trim().toLowerCase() == norm) {
+      return true;
+    }
+  }
+  return false;
+}
+
 class SimClause {
   String leftPath;
   String comparator; // '>','<','>=','<=','==','!='

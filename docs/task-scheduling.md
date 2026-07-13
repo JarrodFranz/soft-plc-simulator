@@ -55,6 +55,13 @@ double execution).
 
 Disabled tasks (`enabled == false`) are never due, regardless of type.
 
+**Task names must be unique.** The scheduler keys its per-task runtime state
+(periodic accumulators, Event edge memory) by task name, so two tasks sharing
+a name would collide. Creating or renaming a task to a name already in use —
+compared case-insensitively after trimming whitespace — is rejected in the UI
+(`isTaskNameTaken` in `mobile/lib/models/project_model.dart`), both from the
+Add/Edit Task dialog and the Add-Program dialog's "＋ New task…" path.
+
 ## The per-task watchdog
 
 Each task carries a `watchdogMs` limit (`0` = disabled). While its due

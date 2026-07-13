@@ -330,7 +330,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// new task. The dialog itself calls the same path so UI and test share
   /// one implementation.
   @visibleForTesting
-  void debugAddProgramToNewTask({
+  bool debugAddProgramToNewTask({
     required String programName,
     required String language,
     required String taskName,
@@ -1992,7 +1992,10 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// task or (via the "＋ New task…" sentinel) creates one on the spot. The
   /// dialog and [debugAddProgramToNewTask] both funnel through this so the
   /// UI and the test exercise one implementation.
-  void _addProgramToNewTask({
+  /// Creates [taskName]/[taskType] and files a new [programName] under it.
+  /// Returns false (no mutation) if [taskName] collides with an existing task
+  /// name (case-insensitive) — task names must stay unique.
+  bool _addProgramToNewTask({
     required String programName,
     required String language,
     required String taskName,
@@ -2001,6 +2004,9 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     String triggerTag = '',
     int watchdogMs = 0,
   }) {
+    if (isTaskNameTaken(_activeProject.tasks, taskName)) {
+      return false;
+    }
     final newTask = PlcTask(
       name: taskName,
       type: taskType,
@@ -2023,6 +2029,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _activeViewId = 'PROGRAM:${newProg.name}';
     });
     _markDirtyAndAutosave();
+    return true;
   }
 
   void _showAddProgramDialog() {
@@ -2133,6 +2140,12 @@ class WorkspaceShellState extends State<WorkspaceShell> {
               onPressed: () {
                 if (isNewTask) {
                   final newName = newTaskNameCtrl.text.trim().isEmpty ? 'NewTask' : newTaskNameCtrl.text.trim();
+                  if (isTaskNameTaken(_activeProject.tasks, newName)) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('A task named "$newName" already exists. Choose a unique name.')),
+                    );
+                    return;
+                  }
                   _addProgramToNewTask(
                     programName: nameCtrl.text,
                     language: language,
@@ -2253,6 +2266,12 @@ class WorkspaceShellState extends State<WorkspaceShell> {
             ElevatedButton(
               onPressed: () {
                 final name = nameCtrl.text.trim().isEmpty ? 'NewTask' : nameCtrl.text.trim();
+                if (isTaskNameTaken(_activeProject.tasks, name, excluding: existing)) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('A task named "$name" already exists. Choose a unique name.')),
+                  );
+                  return;
+                }
                 final periodMs = int.tryParse(periodCtrl.text) ?? 100;
                 final watchdogMs = int.tryParse(watchdogCtrl.text) ?? 0;
                 setState(() {
