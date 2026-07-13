@@ -29,6 +29,47 @@ import '../services/opcua_host.dart';
 import '../ui/responsive.dart';
 import '../widgets/tag_autocomplete_field.dart';
 
+/// Groups outbound-protocol map [entries] by the folder of the tag each
+/// entry references, so the map editor can render a subheader per folder
+/// (e.g. for a generated test-tag set) instead of one flat list.
+///
+/// [tagOf] extracts the referenced tag name from an entry; that name is
+/// resolved against [p].tags to find the tag's `folder` (default `''`, the
+/// project root, when the tag can't be found — e.g. a stale/unmapped name).
+///
+/// The returned map is ordered with the root folder (`''`) first, if any
+/// entries land there, followed by the remaining folders alphabetically.
+/// Entry order *within* each bucket preserves the input [entries] order.
+/// Pure and side-effect free — safe to unit test without a widget tree.
+Map<String, List<T>> groupEntriesByFolder<T>(
+  List<T> entries,
+  String Function(T) tagOf,
+  PlcProject p,
+) {
+  String folderOf(String tagName) {
+    for (final t in p.tags) {
+      if (t.name == tagName) {
+        return t.folder;
+      }
+    }
+    return '';
+  }
+
+  final buckets = <String, List<T>>{};
+  for (final entry in entries) {
+    buckets.putIfAbsent(folderOf(tagOf(entry)), () => []).add(entry);
+  }
+
+  final result = <String, List<T>>{};
+  if (buckets.containsKey('')) {
+    result[''] = buckets['']!;
+  }
+  for (final folder in (buckets.keys.where((k) => k != '').toList()..sort())) {
+    result[folder] = buckets[folder]!;
+  }
+  return result;
+}
+
 class GatewayScreen extends StatefulWidget {
   final PlcProject currentProject;
   final OpcUaHost host;
@@ -1202,6 +1243,52 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
   }
 
+  /// Builds the flattened list of row/subheader widgets for an outbound
+  /// protocol's map, grouped by the mapped tag's folder (root rows first,
+  /// via [groupEntriesByFolder]). Root-folder entries get no header — they
+  /// just come first — while each named folder gets a small subheader
+  /// showing the folder name and its entry count before its rows.
+  List<Widget> _groupedMapRows<T>(
+    List<T> entries,
+    String Function(T) tagOf,
+    Widget Function(T) rowBuilder,
+  ) {
+    final grouped = groupEntriesByFolder<T>(entries, tagOf, widget.currentProject);
+    final rows = <Widget>[];
+    grouped.forEach((folder, bucket) {
+      if (folder.isNotEmpty) {
+        rows.add(_folderSubheader(folder, bucket.length));
+      }
+      rows.addAll(bucket.map(rowBuilder));
+    });
+    return rows;
+  }
+
+  /// A small subheader row identifying a folder + its entry count within a
+  /// grouped map list. Uses Expanded + ellipsis on the folder name so a long
+  /// folder name can never push the count off-screen or overflow at narrow
+  /// widths (320/360px).
+  Widget _folderSubheader(String folder, int count) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 10, bottom: 4),
+      child: Row(
+        children: [
+          const Icon(Icons.folder_outlined, size: 14, color: Colors.grey),
+          const SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              folder,
+              style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 4),
+          Text('($count)', style: const TextStyle(color: Colors.grey, fontSize: 11)),
+        ],
+      ),
+    );
+  }
+
   Widget _mapEditorCard(BuildContext context, OpcuaMap map, List<String> tagOptions) {
     return Container(
       decoration: BoxDecoration(
@@ -1241,11 +1328,13 @@ class _GatewayScreenState extends State<GatewayScreen> {
               ),
             )
           else
-            ListView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: map.nodes.length,
-              itemBuilder: (context, i) => _nodeRow(map.nodes[i], tagOptions),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: _groupedMapRows<OpcuaNode>(
+                map.nodes,
+                (n) => n.tag,
+                (n) => _nodeRow(n, tagOptions),
+              ),
             ),
         ],
       ),
@@ -1566,11 +1655,13 @@ class _GatewayScreenState extends State<GatewayScreen> {
               ),
             )
           else
-            ListView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: map.entries.length,
-              itemBuilder: (context, i) => _modbusRow(map.entries[i], tagOptions),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: _groupedMapRows<ModbusMapEntry>(
+                map.entries,
+                (e) => e.tag,
+                (e) => _modbusRow(e, tagOptions),
+              ),
             ),
         ],
       ),
@@ -1922,11 +2013,13 @@ class _GatewayScreenState extends State<GatewayScreen> {
               ),
             )
           else
-            ListView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: map.entries.length,
-              itemBuilder: (context, i) => _dnpRow(map.entries[i], tagOptions),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: _groupedMapRows<DnpMapEntry>(
+                map.entries,
+                (e) => e.tag,
+                (e) => _dnpRow(e, tagOptions),
+              ),
             ),
         ],
       ),
@@ -2490,11 +2583,13 @@ class _GatewayScreenState extends State<GatewayScreen> {
               ),
             )
           else
-            ListView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: map.entries.length,
-              itemBuilder: (context, i) => _mqttRow(map.entries[i], tagOptions),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: _groupedMapRows<MqttMapEntry>(
+                map.entries,
+                (e) => e.tag,
+                (e) => _mqttRow(e, tagOptions),
+              ),
             ),
         ],
       ),

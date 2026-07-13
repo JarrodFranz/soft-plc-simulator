@@ -11,6 +11,15 @@
 // struct-member map entry (`Motor.Speed`) decodes at the correct register
 // width/value.
 //
+// Also hosts the simulated-test-tags workstream's Task 8 E2E machine-proof:
+// a small `buildTestSet` (2 phase-staggered `ramp` tags) appended onto the
+// same Modbus map via `appendToModbusMap`, driven every tick by
+// `applySignalGens` on a real `Timer.periodic` (mirroring
+// `scan_tick.dart`'s per-scan call), so a real external client can observe
+// (a) two simultaneously-read, phase-staggered generated tags differing and
+// (b) one generated tag's value changing between two reads spaced apart in
+// wall-clock time — see `_appendGeneratedRampTestSet` below.
+//
 // IMPORTANT: this does NOT import `services/modbus_host.dart`. `ModbusHost
 // extends ChangeNotifier` (`package:flutter/foundation.dart`), which
 // transitively pulls in Flutter/`dart:ui` machinery unavailable under a
@@ -35,7 +44,9 @@ import 'dart:typed_data';
 import 'package:soft_plc_mobile/models/modbus_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
+import 'package:soft_plc_mobile/models/signal_engine.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart' show writePath;
+import 'package:soft_plc_mobile/models/test_tag_set.dart';
 import 'package:soft_plc_mobile/protocols/modbus/modbus_pdu.dart';
 
 /// The Modbus TCP spec caps a whole ADU (MBAP header + PDU) at 260 bytes —
@@ -63,6 +74,63 @@ const bool _forcedCoilValue = true;
 /// the Task 4 proof that a dotted struct-member map entry decodes at the
 /// correct register width/value, not just a top-level scalar tag.
 const int _structMemberSpeedValue = 9001;
+
+/// Generated test-set parameters (simulated-test-tags workstream, Task 8
+/// E2E). Two `ramp` tags, phase-staggered half a period apart, ranging
+/// [0, 1000] over a 20s period -- long enough that the probe (which runs in
+/// well under a second after `READY`) never crosses the wrap point, short
+/// enough that a few-hundred-ms gap between two reads produces a clearly
+/// non-zero delta (~1000 * dt/20000 = ~15 for a 300ms gap).
+const int _rampTestSetCount = 2;
+const double _rampMin = 0;
+const double _rampMax = 1000;
+const int _rampPeriodMs = 20000;
+
+/// Input-register addresses the two generated ramp tags land on via
+/// `appendToModbusMap`'s next-free-address bookkeeping. Derived, not
+/// arbitrary: the fixture's only pre-existing `input`-table entry is `Temp`
+/// at address 0, and `appendToModbusMap` conservatively reserves the
+/// worst-case width (`ModbusMap.regsForType('FLOAT64')` == 4 registers) for
+/// every existing register-table entry regardless of its real type, so the
+/// next free `input` address is 4 -- `Ramp1` lands at 4 (4 registers, since
+/// `ramp` tags are FLOAT64), `Ramp2` immediately after at 8. See
+/// `gateway/examples/modbus_probe.rs`, which reads these same fixed
+/// addresses.
+const int rampInputAddr1 = 4;
+const int rampInputAddr2 = 8;
+
+/// Builds the `buildTestSet` ramp fixture and appends it onto both
+/// `project.tags`/`project.signalGens` and the Modbus map, asserting the
+/// computed addresses match the documented constants above (so a future
+/// change to the fixture's other entries -- or to `appendToModbusMap`'s
+/// bookkeeping -- fails loudly here instead of silently desyncing the Rust
+/// probe's hardcoded addresses).
+void _appendGeneratedRampTestSet(PlcProject project) {
+  final testSet = buildTestSet(TestSetSpec(
+    folder: 'E2ESim',
+    baseName: 'Ramp',
+    count: _rampTestSetCount,
+    type: 'ramp',
+    minValue: _rampMin,
+    maxValue: _rampMax,
+    periodMs: _rampPeriodMs,
+  ));
+  project.tags.addAll(testSet.tags);
+  project.signalGens.addAll(testSet.gens);
+  appendToModbusMap(project.protocols!.modbus!.map, testSet.tags);
+
+  final entryByTag = {for (final e in project.protocols!.modbus!.map.entries) e.tag: e};
+  final ramp1 = entryByTag['Ramp1'];
+  final ramp2 = entryByTag['Ramp2'];
+  if (ramp1 == null || ramp1.table != 'input' || ramp1.address != rampInputAddr1 ||
+      ramp2 == null || ramp2.table != 'input' || ramp2.address != rampInputAddr2) {
+    stderr.writeln(
+        'FIXTURE INVARIANT BROKEN: expected Ramp1 @ input:$rampInputAddr1 and '
+        'Ramp2 @ input:$rampInputAddr2, got Ramp1=$ramp1 Ramp2=$ramp2 -- update '
+        'the addresses in both this file and gateway/examples/modbus_probe.rs');
+    exit(1);
+  }
+}
 
 /// Builds the fixture project the E2E probe expects:
 ///   - `Start_PB`   : BOOL,  ReadWrite -> coil address 0
@@ -222,6 +290,7 @@ Future<void> main(List<String> args) async {
 
   final project = _fixtureProject();
   project.protocols!.modbus!.port = port;
+  _appendGeneratedRampTestSet(project);
 
   ServerSocket serverSocket;
   try {
@@ -272,6 +341,18 @@ Future<void> main(List<String> args) async {
     writePath(project, 'Speed', _mutatedSpeedValue);
     // ignore: avoid_print
     print('[fixture host] mutated Speed -> $_mutatedSpeedValue at T+3s');
+  });
+
+  // Simulated-test-tags workstream, Task 8 E2E: drive the generated ramp
+  // tags' `SignalGen`s every tick, exactly as `scan_tick.dart`'s
+  // `runScanTick` drives `p.signalGens` every real scan (same function,
+  // same per-tick `dtMs` accounting via `SignalRuntime`). This is what makes
+  // `Ramp1`/`Ramp2`'s input-register values actually move over wall-clock
+  // time for the Rust probe to observe.
+  const signalTickMs = 100;
+  final signalRuntime = SignalRuntime();
+  Timer.periodic(const Duration(milliseconds: signalTickMs), (_) {
+    applySignalGens(project, project.signalGens, signalTickMs, signalRuntime);
   });
 
   // Serve until killed. SIGINT is watched for a graceful Ctrl+C exit;

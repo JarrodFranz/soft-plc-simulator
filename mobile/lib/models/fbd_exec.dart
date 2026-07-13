@@ -168,6 +168,7 @@ Map<String, dynamic> _evalBlock(
   List<dynamic> inputs,
   int dtMs,
   FbdRuntime rt,
+  Set<String>? readOnly,
 ) {
   switch (b.type) {
     case 'TAG_INPUT':
@@ -445,7 +446,9 @@ Map<String, dynamic> _evalBlock(
       }
       final v = inputs.first;
       if (v != null && b.tagBinding.isNotEmpty) {
-        _forceAwareWrite(p, b.tagBinding, v);
+        if (readOnly == null || !readOnly.contains(b.tagBinding)) {
+          _forceAwareWrite(p, b.tagBinding, v);
+        }
       }
       return {};
     default:
@@ -489,7 +492,7 @@ String _resolvedToPin(FbdWire w, FbdBlock? toBlock) {
 /// TON/TOF are executed statefully (per-block state in [rt]), producing both
 /// `Q` and `ET` outputs. TAG_OUTPUT writes its `IN` force-aware. Cycles
 /// terminate deterministically without hanging. Never throws.
-void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? only}) {
+void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? only, Set<String>? readOnly}) {
   for (final prog in p.programs) {
     if (prog.language != 'FunctionBlockDiagram' || prog.fbdBlocks.isEmpty) {
       continue;
@@ -568,7 +571,7 @@ void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? onl
         if (!deps.every(done.contains)) {
           continue;
         }
-        cache[b.id] = _evalBlock(p, b, orderedInputs(b), dtMs, rt);
+        cache[b.id] = _evalBlock(p, b, orderedInputs(b), dtMs, rt, readOnly);
         done.add(b.id);
         progressed = true;
       }
@@ -579,7 +582,7 @@ void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? onl
       if (done.contains(b.id)) {
         continue;
       }
-      cache[b.id] = _evalBlock(p, b, orderedInputs(b), dtMs, rt);
+      cache[b.id] = _evalBlock(p, b, orderedInputs(b), dtMs, rt, readOnly);
       done.add(b.id);
     }
   }

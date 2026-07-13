@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'opcua_map.dart';
 import 'protocol_settings.dart';
+import 'signal_gen.dart';
 
 class PlcTag {
   String name;
@@ -17,6 +18,7 @@ class PlcTag {
   String ioType; // 'SimulatedInput', 'SimulatedOutput', 'Internal'
   bool isForced;
   dynamic forcedValue;
+  String folder;
 
   PlcTag({
     required this.name,
@@ -32,6 +34,7 @@ class PlcTag {
     required this.ioType,
     this.isForced = false,
     this.forcedValue,
+    this.folder = '',
   });
 
   factory PlcTag.fromJson(Map<String, dynamic> json) {
@@ -49,6 +52,7 @@ class PlcTag {
       ioType: json['io_type'] ?? 'Internal',
       isForced: json['is_forced'] ?? false,
       forcedValue: json['forced_value'],
+      folder: json['folder'] ?? '',
     );
   }
 
@@ -66,6 +70,7 @@ class PlcTag {
     'io_type': ioType,
     'is_forced': isForced,
     'forced_value': forcedValue,
+    'folder': folder,
   };
 }
 
@@ -697,6 +702,7 @@ class PlcProject {
   List<PlcTask> tasks;
   List<HmiScreenDef> hmis;
   List<SimRule> simRules;
+  List<SignalGen> signalGens;
   ProtocolSettings? protocols;
 
   PlcProject({
@@ -712,8 +718,10 @@ class PlcProject {
     required this.tasks,
     required this.hmis,
     List<SimRule>? simRules,
+    List<SignalGen>? signalGens,
     this.protocols,
-  }) : simRules = simRules ?? [];
+  }) : simRules = simRules ?? [],
+       signalGens = signalGens ?? [];
 
   factory PlcProject.fromJson(Map<String, dynamic> json) {
     final proj = json['project'] ?? json;
@@ -731,6 +739,7 @@ class PlcProject {
       tasks: (proj['tasks'] as List? ?? []).map((tk) => PlcTask.fromJson(tk)).toList(),
       hmis: (proj['hmis'] as List? ?? []).map((h) => HmiScreenDef.fromJson(h)).toList(),
       simRules: (proj['sim_rules'] as List? ?? []).map((r) => SimRule.fromJson(r)).toList(),
+      signalGens: (proj['signal_gens'] as List? ?? []).map((g) => SignalGen.fromJson(g)).toList(),
       protocols: proj['protocols'] != null
           ? ProtocolSettings.fromJson(proj['protocols'] as Map<String, dynamic>)
           : (proj['opcua_map'] != null
@@ -764,6 +773,7 @@ class PlcProject {
       'tasks': tasks.map((tk) => tk.toJson()).toList(),
       'hmis': hmis.map((h) => h.toJson()).toList(),
       'sim_rules': simRules.map((r) => r.toJson()).toList(),
+      'signal_gens': signalGens.map((g) => g.toJson()).toList(),
       if (protocols != null) 'protocols': protocols!.toJson(),
     }
   };
