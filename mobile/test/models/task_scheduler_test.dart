@@ -39,6 +39,26 @@ void main() {
     expect(_names(scheduleTick(tasks, 100, rt, noTags)), ['c']); // carry 50, 150 < 250
   });
 
+  test('periodic remainder is clamped: a large dt does not cause burst catch-up', () {
+    final rt = TaskSchedulerRuntime();
+    final tasks = [_t('P', 'Periodic', period: 100, progs: ['p']), _t('C', 'Continuous', progs: ['c'])];
+
+    // A single tick 10x the period fires the task exactly once this tick (a
+    // task can appear at most once per tick), and the accumulator is CLAMPED
+    // to periodMs (100) rather than left at the true remainder (900).
+    expect(_names(scheduleTick(tasks, 1000, rt, noTags)), ['p']);
+
+    // Because the remainder was clamped to 100 (not 900), the next tick only
+    // needs to cross the boundary once: 100 + 1 = 101 >= 100 -> fires once.
+    expect(_names(scheduleTick(tasks, 1, rt, noTags)), ['p']);
+
+    // And then it falls straight back to the normal cadence: 1 + 1 = 2 < 100,
+    // so Continuous runs. WITHOUT the clamp the accumulator would still hold
+    // ~800 ms here and the task would keep burst-firing every tick to "catch
+    // up" — this assertion is what proves the clamp.
+    expect(_names(scheduleTick(tasks, 1, rt, noTags)), ['c']);
+  });
+
   test('event fires only on rising edge of its BOOL tag', () {
     final rt = TaskSchedulerRuntime();
     var trig = false;
