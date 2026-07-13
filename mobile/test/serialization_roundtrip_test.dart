@@ -5,6 +5,7 @@ import 'package:soft_plc_mobile/models/modbus_map.dart';
 import 'package:soft_plc_mobile/models/opcua_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
+import 'package:soft_plc_mobile/models/signal_gen.dart';
 import 'package:soft_plc_mobile/models/ld_graph.dart';
 import 'package:soft_plc_mobile/models/sim_engine.dart';
 import 'package:soft_plc_mobile/models/ld_exec.dart';
@@ -458,6 +459,59 @@ void main() {
     expect(readPath(restored, 'System.Second'), 15);
     expect(readPath(restored, 'System.DateTime'), '2026-07-12T09:30:15');
     expect(readPath(restored, 'System.AlarmReset'), true);
+
+    // Strongest check: byte-identical after round-trip.
+    expect(jsonEncode(restored.toJson()), jsonEncode(original.toJson()));
+  });
+
+  test('WS26: PlcTag.folder + PlcProject.signalGens round-trip', () {
+    final tag = PlcTag(
+      name: 'Ramp01',
+      path: 'SimSet/Ramp01',
+      dataType: 'FLOAT64',
+      value: 12.5,
+      ioType: 'SimulatedOutput',
+      folder: 'SimSet',
+    );
+    final gen = SignalGen(
+      id: 'SimSet/Ramp01',
+      targetPath: 'Ramp01',
+      type: 'sine',
+      minValue: 0,
+      maxValue: 100,
+      periodMs: 4000,
+      phase: 0.25,
+      enabled: true,
+    );
+    final original = PlcProject(
+      id: 'ws26_folder_signalgen_roundtrip',
+      name: 'WS26 Folder + SignalGen Round-Trip Fixture',
+      controllerName: 'PLC_TEST',
+      tags: [tag],
+      structDefs: [],
+      programs: [],
+      tasks: [],
+      hmis: [],
+      signalGens: [gen],
+    );
+
+    final restored = _roundTrip(original);
+
+    final tagB = restored.tags.singleWhere((t) => t.name == 'Ramp01');
+    expect(tagB.folder, 'SimSet',
+        reason: 'PlcTag.folder must survive toJson/fromJson');
+
+    expect(restored.signalGens.length, 1,
+        reason: 'PlcProject.signalGens must survive toJson/fromJson');
+    final genB = restored.signalGens.single;
+    expect(genB.id, gen.id);
+    expect(genB.targetPath, gen.targetPath);
+    expect(genB.type, gen.type);
+    expect(genB.minValue, gen.minValue);
+    expect(genB.maxValue, gen.maxValue);
+    expect(genB.periodMs, gen.periodMs);
+    expect(genB.phase, gen.phase);
+    expect(genB.enabled, gen.enabled);
 
     // Strongest check: byte-identical after round-trip.
     expect(jsonEncode(restored.toJson()), jsonEncode(original.toJson()));
