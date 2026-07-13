@@ -1,5 +1,6 @@
 import '../models/project_model.dart';
 import '../models/sim_engine.dart';
+import '../models/signal_engine.dart';
 import '../models/ld_exec.dart';
 import '../models/fbd_exec.dart';
 import '../models/sfc_exec.dart';
@@ -15,6 +16,7 @@ class ScanTickRuntime {
   final SfcRuntime sfc = SfcRuntime();
   final StRuntime st = StRuntime();
   final TaskSchedulerRuntime scheduler = TaskSchedulerRuntime();
+  final SignalRuntime signal = SignalRuntime();
 
   /// When >= 0, used instead of a real Stopwatch as the measured per-task
   /// execution time (ms). Test-only; production leaves it at -1.
@@ -27,6 +29,7 @@ class ScanTickRuntime {
     sfc.clear();
     st.clear();
     scheduler.reset();
+    signal.reset();
   }
 }
 
@@ -51,6 +54,9 @@ ScanTickResult runScanTick(PlcProject p, int dtMs, ScanTickRuntime rt) {
   final firstScan = !rt.scheduler.startupFired;
   applySimRules(p, p.simRules, dtMs, rt.sim);
 
+  applySignalGens(p, p.signalGens, dtMs, rt.signal);
+  final readOnly = generatedPaths(p.signalGens);
+
   final due = scheduleTick(
     p.tasks,
     dtMs,
@@ -61,10 +67,10 @@ ScanTickResult runScanTick(PlcProject p, int dtMs, ScanTickRuntime rt) {
   for (final task in due) {
     final only = task.programs.toSet();
     final sw = Stopwatch()..start();
-    executeLdPrograms(p, dtMs, rt.ld, only: only);
-    executeFbdPrograms(p, dtMs, rt.fbd, only: only);
-    executeSfcPrograms(p, dtMs, rt.sfc, only: only);
-    executeStPrograms(p, dtMs, rt.st, only: only);
+    executeLdPrograms(p, dtMs, rt.ld, only: only, readOnly: readOnly);
+    executeFbdPrograms(p, dtMs, rt.fbd, only: only, readOnly: readOnly);
+    executeSfcPrograms(p, dtMs, rt.sfc, only: only, readOnly: readOnly);
+    executeStPrograms(p, dtMs, rt.st, only: only, readOnly: readOnly);
     sw.stop();
     final elapsed = rt.elapsedForTest >= 0 ? rt.elapsedForTest : sw.elapsedMilliseconds;
     if (task.watchdogMs > 0 && elapsed > task.watchdogMs) {
