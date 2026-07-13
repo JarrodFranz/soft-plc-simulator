@@ -7,21 +7,26 @@
 //! Usage:
 //!   cargo run --manifest-path gateway/Cargo.toml --example opcua_probe -- opc.tcp://127.0.0.1:<port>
 //!
-//! Talks to a server hosting a small fixture project with three mapped
-//! tags (see `mobile/tool/opcua_host_probe.dart`, which this probe is
-//! designed to run against via `tool/opcua_e2e.sh`):
+//! Talks to a server hosting a small fixture project with mapped tags (see
+//! `mobile/tool/opcua_host_probe.dart`, which this probe is designed to run
+//! against via `tool/opcua_e2e.sh`):
 //!   - `Start_PB` : BOOL, ReadWrite  -> ns=1;s=Start_PB
 //!   - `Temp`     : FLOAT64, ReadOnly -> ns=1;s=Temp
 //!   - `Counter`  : INT32, ReadWrite  -> ns=1;s=Counter
+//!   - `Ramp1_A`, `Ramp1_B` : FLOAT64, ReadOnly, folder 'Ramp1' ->
+//!     ns=1;s=Ramp1_A / ns=1;s=Ramp1_B (Task 2: served folder nodes)
 //!
 //! Steps (None/Anonymous leg): connect (SecurityPolicy::None, anonymous) ->
 //! GetEndpoints -> Read `NamespaceArray` (ns=0;i=2255) and verify index 1 is
 //! the project namespace URI -> Browse top-down from `RootFolder` (i=84)
 //! through the discovered `Objects` node and verify the fixture's tags are
 //! reachable that way (not by addressing Objects directly) -> Browse the
-//! Objects folder (i=85) -> Read `Temp`'s Value -> Write `Counter`'s Value ->
-//! Read `Counter` back and verify the write landed -> Subscribe and observe a
-//! pushed DataChangeNotification. Prints `SUBSCRIPTION PASS` then `PROBE PASS`.
+//! Objects folder (i=85) -> find the 'Ramp1' FolderType Object reference
+//! among Objects' children, Browse INTO it, and verify its two tags are
+//! reachable there (Task 2 machine-proof) -> Read `Temp`'s Value -> Write
+//! `Counter`'s Value -> Read `Counter` back and verify the write landed ->
+//! Subscribe and observe a pushed DataChangeNotification. Prints
+//! `SUBSCRIPTION PASS` then `PROBE PASS`.
 //!
 //! Steps (SECURE leg — the WS-security machine-proof, Task 7): after the None
 //! leg, open a SECOND session at `SecurityPolicy::Basic256Sha256` +
@@ -53,7 +58,7 @@ use opcua::client::prelude::{
 };
 use opcua::types::{
     AttributeId, BrowseDescription, BrowseDirection, DataValue, ExtensionObject,
-    MonitoredItemCreateRequest, MonitoringMode, MonitoringParameters, NodeId, ObjectId,
+    MonitoredItemCreateRequest, MonitoringMode, MonitoringParameters, NodeClass, NodeId, ObjectId,
     ReferenceTypeId, ReadValueId, TimestampsToReturn, Variant, WriteValue,
 };
 
@@ -309,6 +314,91 @@ fn run(endpoint_url: &str) -> Result<(), String> {
     for r in &references {
         println!("[probe]   -> {} ({})", r.browse_name.name.as_ref(), r.node_id.node_id);
     }
+
+    // --- Step 2b: Locate the 'Ramp1' folder reference and browse into it --
+    //
+    // Machine-proof for Task 2 (serve folder nodes): the fixture maps
+    // `Ramp1_A`/`Ramp1_B` (both FLOAT64) into a folder named "Ramp1". A
+    // strict client Browsing Objects must see a FolderType Object reference
+    // named "Ramp1" (NOT the two tags flat under Objects — they must be
+    // absent from `references` above, only reachable by browsing INTO the
+    // folder), then Browsing that folder node must surface the two tags.
+    println!("[probe] locating the 'Ramp1' folder reference under Objects...");
+    let ramp1_ref = references
+        .iter()
+        .find(|r| r.browse_name.name.as_ref() == "Ramp1")
+        .ok_or_else(|| {
+            format!(
+                "Browse(Objects) did not surface a 'Ramp1' folder reference; found {:?}",
+                references
+                    .iter()
+                    .map(|r| r.browse_name.name.as_ref().to_string())
+                    .collect::<Vec<_>>()
+            )
+        })?;
+    if ramp1_ref.node_class != NodeClass::Object {
+        return Err(format!(
+            "'Ramp1' reference has NodeClass {:?}, expected Object",
+            ramp1_ref.node_class
+        ));
+    }
+    let ramp1_node_id = ramp1_ref.node_id.node_id.clone();
+    println!("[probe] found 'Ramp1' folder at {ramp1_node_id} (NodeClass Object)");
+
+    println!("[probe] Browse the 'Ramp1' folder node for its tags...");
+    let ramp1_browse_description = BrowseDescription {
+        node_id: ramp1_node_id.clone(),
+        browse_direction: BrowseDirection::Forward,
+        reference_type_id: ReferenceTypeId::Organizes.into(),
+        include_subtypes: true,
+        node_class_mask: 0,
+        result_mask: 0x3F,
+    };
+    let ramp1_browse_results = session
+        .browse(&[ramp1_browse_description])
+        .map_err(|e| format!("Browse(Ramp1 folder) failed: {e}"))?
+        .ok_or_else(|| "Browse(Ramp1 folder) returned no results at all".to_string())?;
+    let ramp1_references = ramp1_browse_results
+        .first()
+        .and_then(|r| r.references.clone())
+        .unwrap_or_default();
+    let ramp1_names: std::collections::HashSet<String> = ramp1_references
+        .iter()
+        .map(|r| r.browse_name.name.as_ref().to_string())
+        .collect();
+    for expected_tag in ["Ramp1_A", "Ramp1_B"] {
+        if !ramp1_names.contains(expected_tag) {
+            return Err(format!(
+                "Browse(Ramp1 folder) did not surface tag {expected_tag:?}; found {ramp1_names:?}"
+            ));
+        }
+    }
+    println!("[probe] Browse(Ramp1 folder) OK: found {ramp1_names:?}");
+
+    // --- Step 2c: Read one of the folder's tags through its NodeId --------
+    println!("[probe] Read ns=1;s=Ramp1_A.Value (a tag reached only via the Ramp1 folder)...");
+    let ramp1_a_node = NodeId::from_str("ns=1;s=Ramp1_A")
+        .map_err(|_| "bad NodeId literal ns=1;s=Ramp1_A".to_string())?;
+    let read_ramp1_a = ReadValueId {
+        node_id: ramp1_a_node,
+        attribute_id: AttributeId::Value as u32,
+        index_range: opcua::types::UAString::null(),
+        data_encoding: opcua::types::QualifiedName::null(),
+    };
+    let ramp1_a_results = session
+        .read(&[read_ramp1_a], TimestampsToReturn::Neither, 0.0)
+        .map_err(|e| format!("Read(Ramp1_A) failed: {e}"))?;
+    let ramp1_a_value = ramp1_a_results
+        .first()
+        .ok_or_else(|| "Read(Ramp1_A) returned zero results".to_string())?
+        .value
+        .clone();
+    println!("[probe] Read Ramp1_A -> {ramp1_a_value:?}");
+    match ramp1_a_value {
+        Some(Variant::Double(_)) => {}
+        other => return Err(format!("expected a Double Variant reading Ramp1_A, got {other:?}")),
+    }
+    println!("[probe] folder browse/read machine-proof OK.");
 
     // --- Step 3: Read a named ReadOnly variable's Value ---------------
     println!("[probe] Read {NODE_TEMP}.Value...");
