@@ -255,24 +255,26 @@ class _Parser {
 }
 
 // ── Executor ────────────────────────────────────────────────────────────────
-void _execBlock(PlcProject p, String src, List<_Stmt> stmts) {
+void _execBlock(PlcProject p, String src, List<_Stmt> stmts, Set<String>? readOnly) {
   for (final s in stmts) {
     if (s is _Assign) {
       final v = evalExpr(p, src.substring(s.rhsStart, s.rhsEnd));
       if (v != null) {
-        _forceAwareWrite(p, s.path, v);
+        if (readOnly == null || !readOnly.contains(s.path)) {
+          _forceAwareWrite(p, s.path, v);
+        }
       }
     } else if (s is _If) {
       bool taken = false;
       for (final b in s.branches) {
         if (evalStCondition(p, src.substring(b.condStart, b.condEnd))) {
-          _execBlock(p, src, b.body);
+          _execBlock(p, src, b.body, readOnly);
           taken = true;
           break;
         }
       }
       if (!taken && s.elseBody != null) {
-        _execBlock(p, src, s.elseBody!);
+        _execBlock(p, src, s.elseBody!, readOnly);
       }
     }
   }
@@ -281,7 +283,7 @@ void _execBlock(PlcProject p, String src, List<_Stmt> stmts) {
 /// Executes every StructuredText program's `stSource` each scan: IF/ELSIF/ELSE
 /// control flow plus `path := expr;` assignments, with all expressions
 /// evaluated by `st_expr` and writes made force-aware. Never throws.
-void executeStPrograms(PlcProject p, int dtMs, StRuntime rt, {Set<String>? only}) {
+void executeStPrograms(PlcProject p, int dtMs, StRuntime rt, {Set<String>? only, Set<String>? readOnly}) {
   for (final prog in p.programs) {
     if (prog.language != 'StructuredText' || prog.stSource.trim().isEmpty) {
       continue;
@@ -295,6 +297,6 @@ void executeStPrograms(PlcProject p, int dtMs, StRuntime rt, {Set<String>? only}
       continue;
     }
     final stmts = _Parser(toks).parseBlock();
-    _execBlock(p, src, stmts);
+    _execBlock(p, src, stmts, readOnly);
   }
 }
