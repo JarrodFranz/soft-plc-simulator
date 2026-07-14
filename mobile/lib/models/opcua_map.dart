@@ -8,6 +8,7 @@
 // "OPC UA mapping". No Flutter dependency.
 
 import 'project_model.dart';
+import 'tag_resolver.dart';
 
 /// One OPC UA `Variable` node, bound to a project tag by name.
 ///
@@ -70,20 +71,24 @@ class OpcuaMap {
         },
       };
 
-  /// Builds a default map from a project's scalar leaf tags: one node per
-  /// tag whose value is neither a Map nor a List (struct/array tags are
-  /// skipped in v1). Outputs (`SimulatedOutput`) are `ReadOnly`; everything
-  /// else (`SimulatedInput`, `Internal`) is `ReadWrite`.
+  /// Builds a default map from a project's scalar leaf tags (`scalarLeaves`):
+  /// composite/array tags are expanded into one node per scalar leaf, keyed
+  /// by its dotted path (e.g. `System.Fault`, `DB_Motor1.Setpoint`,
+  /// `Arr[0]`) — a bare scalar tag yields itself, unchanged from before.
+  /// STRING leaves are allowed. Access is inherited from the ROOT tag (the
+  /// tag whose name is the leaf path's first segment): `SimulatedOutput` or
+  /// an explicit `ReadOnly` tag `access` (e.g. the reserved `System` tag)
+  /// yields `ReadOnly`; everything else (`SimulatedInput`, `Internal`) is
+  /// `ReadWrite`.
   static OpcuaMap autoGenerate(PlcProject p) {
     final nodes = <OpcuaNode>[];
-    for (final tag in p.tags) {
-      if (tag.value is Map || tag.value is List) {
-        continue;
-      }
-      final access = tag.ioType == 'SimulatedOutput' ? 'ReadOnly' : 'ReadWrite';
+    for (final leaf in scalarLeaves(p)) {
+      final root = rootTagOf(p, leaf.path);
+      final readOnly = root?.ioType == 'SimulatedOutput' || root?.access == 'ReadOnly';
+      final access = readOnly ? 'ReadOnly' : 'ReadWrite';
       nodes.add(OpcuaNode(
-        nodeId: 'ns=1;s=${tag.path}',
-        tag: tag.name,
+        nodeId: 'ns=1;s=${leaf.path}',
+        tag: leaf.path,
         access: access,
       ));
     }

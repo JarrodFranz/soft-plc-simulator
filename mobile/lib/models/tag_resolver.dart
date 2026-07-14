@@ -491,6 +491,19 @@ class TagLeaf {
   const TagLeaf(this.path, this.dataType);
 }
 
+/// The root [PlcTag] owning a scalar leaf's dotted/indexed [leafPath] — the
+/// tag whose `name` equals the path's first segment (before the first `.` or
+/// `[`) — or null if no such tag exists. Used by the protocol maps'
+/// `autoGenerate` to inherit `ioType`/`access`/`folder` from the tag that
+/// owns an expanded leaf (a bare scalar leaf resolves to itself).
+PlcTag? rootTagOf(PlcProject p, String leafPath) {
+  final segs = _segments(leafPath);
+  if (segs.isEmpty) {
+    return null;
+  }
+  return _rootTag(p, segs.first.raw);
+}
+
 /// Every scalar leaf across all of [p]'s tags. A scalar tag yields itself; a
 /// composite yields its scalar struct members (recursively); an array yields
 /// its scalar elements. Composite/array container nodes are not emitted;

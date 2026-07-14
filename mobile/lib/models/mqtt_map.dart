@@ -9,6 +9,7 @@
 // from services and widgets alike without pulling Flutter into model code.
 
 import 'project_model.dart';
+import 'tag_resolver.dart';
 
 /// One MQTT tag<->metric map entry, binding a project tag to a published
 /// metric name.
@@ -64,31 +65,32 @@ class MqttMap {
         'entries': entries.map((e) => e.toJson()).toList(),
       };
 
-  /// Builds a default map from a project's scalar leaf tags: one entry per
-  /// tag whose type is `BOOL`, `INT16`, `INT32`, or `FLOAT64` — composite
-  /// tags (structs/arrays) and `TIMER`/`COUNTER`/`STRING` types are skipped,
-  /// exactly like `ModbusMap.autoGenerate`.
+  /// Builds a default map from a project's scalar leaf tags (`scalarLeaves`):
+  /// composite/array tags are expanded into one entry per scalar leaf whose
+  /// type is `BOOL`, `INT16`, `INT32`, `FLOAT64`, or `STRING` (STRING is
+  /// allowed on MQTT, unlike Modbus/DNP3). Leaves are keyed by their dotted
+  /// path (e.g. `System.DateTime`); a bare scalar tag yields itself,
+  /// unchanged from before.
   ///
-  /// Metric name defaults to the tag name; `SimulatedOutput` tags are
-  /// read-only (matching the OPC UA/Modbus auto-map convention), everything
-  /// else (`SimulatedInput`, `Internal`) is writable.
+  /// Metric name defaults to the leaf's dotted path, prefixed with the ROOT
+  /// tag's folder (the tag whose name is the leaf path's first segment);
+  /// `SimulatedOutput` tags or an explicit `ReadOnly` root tag `access`
+  /// (e.g. the reserved `System` tag) are read-only, everything else
+  /// (`SimulatedInput`, `Internal`) is writable.
   static MqttMap autoGenerate(PlcProject p) {
-    const skipTypes = {'TIMER', 'COUNTER', 'STRING'};
-    const scalarTypes = {'BOOL', 'INT16', 'INT32', 'FLOAT64'};
+    const scalarTypes = {'BOOL', 'INT16', 'INT32', 'FLOAT64', 'STRING'};
     final entries = <MqttMapEntry>[];
-    for (final tag in p.tags) {
-      final dataType = tag.dataType;
-      if (skipTypes.contains(dataType) || !scalarTypes.contains(dataType)) {
+    for (final leaf in scalarLeaves(p)) {
+      if (!scalarTypes.contains(leaf.dataType)) {
         continue;
       }
-      final value = tag.value;
-      if (value is Map || value is List) {
-        continue;
-      }
+      final root = rootTagOf(p, leaf.path);
+      final rootFolder = root?.folder ?? '';
+      final writable = root?.ioType != 'SimulatedOutput' && root?.access != 'ReadOnly';
       entries.add(MqttMapEntry(
-        tag: tag.name,
-        metric: tag.folder.isEmpty ? tag.name : '${tag.folder}/${tag.name}',
-        writable: tag.ioType != 'SimulatedOutput',
+        tag: leaf.path,
+        metric: rootFolder.isEmpty ? leaf.path : '$rootFolder/${leaf.path}',
+        writable: writable,
       ));
     }
     return MqttMap(entries: entries);

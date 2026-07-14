@@ -9,6 +9,7 @@
 // from services and widgets alike without pulling Flutter into model code.
 
 import 'project_model.dart';
+import 'tag_resolver.dart';
 
 /// One Modbus register-map entry, binding a project tag to an address in one
 /// of the four Modbus data tables.
@@ -83,36 +84,34 @@ class ModbusMap {
     }
   }
 
-  /// Builds a default map from a project's scalar leaf tags: one entry per
-  /// tag whose type is `BOOL`, `INT16`, `INT32`, or `FLOAT64` — composite
-  /// tags (structs/arrays) and `TIMER`/`COUNTER`/`STRING` types are skipped
-  /// (v1 doesn't support them over Modbus).
+  /// Builds a default map from a project's scalar leaf tags (`scalarLeaves`):
+  /// composite/array tags are expanded into one entry per scalar leaf whose
+  /// type is `BOOL`, `INT16`, `INT32`, or `FLOAT64` — `STRING` leaves (and
+  /// any other non-scalar-table type) are skipped (v1 doesn't support them
+  /// over Modbus). Leaves are keyed by their dotted path (e.g.
+  /// `System.ScanTimeMs`); a bare scalar tag yields itself, unchanged from
+  /// before.
   ///
-  /// `SimulatedOutput` tags are read-only (matching the OPC UA auto-map
-  /// convention); everything else (`SimulatedInput`, `Internal`) is
+  /// Access/table selection is inherited from the ROOT tag (the tag whose
+  /// name is the leaf path's first segment): `SimulatedOutput` or an
+  /// explicit `ReadOnly` tag `access` (e.g. the reserved `System` tag) is
+  /// read-only; everything else (`SimulatedInput`, `Internal`) is
   /// read-write. Table selection: `BOOL` -> `coil` (RW) / `discrete` (RO);
   /// numeric -> `holding` (RW) / `input` (RO). Addresses are assigned
-  /// sequentially per table in tag order, advancing by 1 for bit tables or
+  /// sequentially per table in leaf order, advancing by 1 for bit tables or
   /// by [regsForType] for register tables.
   static ModbusMap autoGenerate(PlcProject p) {
     const skipTypes = {'TIMER', 'COUNTER', 'STRING'};
     const scalarTypes = {'BOOL', 'INT16', 'INT32', 'FLOAT64'};
     final nextAddr = <String, int>{'coil': 0, 'discrete': 0, 'holding': 0, 'input': 0};
     final entries = <ModbusMapEntry>[];
-    for (final tag in p.tags) {
-      final dataType = tag.dataType;
-      // Skip composite tags by VALUE SHAPE, not just dataType. A struct's
-      // dataType already fails `scalarTypes`, but an ARRAY of a scalar (e.g.
-      // `INT32[10]`) keeps its scalar `dataType` while carrying a List value —
-      // without this guard it would be mapped as a single register. Matches
-      // OpcuaMap.autoGenerate / DnpMap.autoGenerate.
-      if (tag.value is Map || tag.value is List) {
-        continue;
-      }
+    for (final leaf in scalarLeaves(p)) {
+      final dataType = leaf.dataType;
       if (skipTypes.contains(dataType) || !scalarTypes.contains(dataType)) {
         continue;
       }
-      final rw = tag.ioType != 'SimulatedOutput';
+      final root = rootTagOf(p, leaf.path);
+      final rw = root?.ioType != 'SimulatedOutput' && root?.access != 'ReadOnly';
       final access = rw ? 'ReadWrite' : 'ReadOnly';
       final String table;
       final int advance;
@@ -126,7 +125,7 @@ class ModbusMap {
       final address = nextAddr[table]!;
       nextAddr[table] = address + advance;
       entries.add(ModbusMapEntry(
-        tag: tag.name,
+        tag: leaf.path,
         table: table,
         address: address,
         access: access,
