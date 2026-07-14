@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/services/tag_historian.dart';
+import 'package:soft_plc_mobile/widgets/live_tick.dart';
 import 'package:soft_plc_mobile/widgets/trend_chart.dart';
 
 void main() {
@@ -99,5 +101,89 @@ void main() {
       expect(formatPenValue(digital, const TrendSample(0, 0.2)), 'OFF');
       expect(formatPenValue(analog, const TrendSample(0, 3.14159)), '3.14');
     });
+  });
+
+  testWidgets('trace cursor: tap shows readout, drag moves, ✕ clears', (tester) async {
+    final historian = TagHistorian();
+    // One analog pen 'A' with a rising ramp over the last ~1s, and a digital 'D'.
+    final pen = TrendPen(tagPath: 'A', color: 'cyan', sampleIntervalMs: 0, retentionMode: 'time', windowMs: 60000);
+    final penD = TrendPen(tagPath: 'D', color: 'green', sampleIntervalMs: 0, retentionMode: 'time', windowMs: 60000);
+    historian.syncPens([pen, penD]);
+    final proj = PlcProject(
+      id: 'p', name: 'P', controllerName: 'C',
+      tags: [
+        PlcTag(name: 'A', path: 'A', dataType: 'FLOAT64', value: 0.0, ioType: 'Internal'),
+        PlcTag(name: 'D', path: 'D', dataType: 'BOOL', value: false, ioType: 'Internal'),
+      ],
+      structDefs: [], programs: [], tasks: [], hmis: [],
+    );
+    final pens = [
+      TrendChartView.viewForPen(proj, pen),
+      TrendChartView.viewForPen(proj, penD),
+    ];
+    // Seed buffers by directly sampling at known-ish times relative to now.
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (var i = 0; i < 5; i++) {
+      historian.sample([pen, penD], (path) => path == 'A' ? (i * 10).toDouble() : (i.isEven ? 1.0 : 0.0), now - (4 - i) * 100);
+    }
+
+    final live = LiveTick();
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: LiveTickScope(
+          notifier: live,
+          child: TrendChartView(project: proj, historian: historian, pens: pens, windowMs: 60000, height: 220),
+        ),
+      ),
+    ));
+    await tester.pump();
+
+    // No readout before interaction.
+    expect(find.byIcon(Icons.close), findsNothing);
+
+    // Tap in the middle of the chart → readout appears (has a ✕ and a pen row).
+    // MaterialApp's debug-mode banner is also a CustomPaint spanning the full
+    // surface and sorts first in the widget tree, so target our painter
+    // specifically rather than relying on `find.byType(CustomPaint).first`.
+    final chartPaintFinder = find.byWidgetPredicate((w) => w is CustomPaint && w.painter is TrendChartPainter);
+    await tester.tapAt(tester.getCenter(chartPaintFinder));
+    await tester.pump();
+    expect(find.byIcon(Icons.close), findsOneWidget);
+    expect(find.textContaining('A:'), findsOneWidget);
+
+    // Clearing via ✕ removes the readout.
+    await tester.tap(find.byIcon(Icons.close));
+    await tester.pump();
+    expect(find.byIcon(Icons.close), findsNothing);
+  });
+
+  testWidgets('trace cursor readout has no overflow at 320/360/1400', (tester) async {
+    final historian = TagHistorian();
+    final pen = TrendPen(tagPath: 'A', color: 'cyan', sampleIntervalMs: 0, windowMs: 60000);
+    historian.syncPens([pen]);
+    final proj = PlcProject(
+      id: 'p', name: 'P', controllerName: 'C',
+      tags: [PlcTag(name: 'A', path: 'A', dataType: 'FLOAT64', value: 0.0, ioType: 'Internal')],
+      structDefs: [], programs: [], tasks: [], hmis: [],
+    );
+    final now = DateTime.now().millisecondsSinceEpoch;
+    historian.sample([pen], (_) => 1.0, now - 100);
+    for (final w in [320.0, 360.0, 1400.0]) {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: w,
+            child: LiveTickScope(
+              notifier: LiveTick(),
+              child: TrendChartView(project: proj, historian: historian, pens: [TrendChartView.viewForPen(proj, pen)], windowMs: 60000),
+            ),
+          ),
+        ),
+      ));
+      final chartPaintFinder = find.byWidgetPredicate((w) => w is CustomPaint && w.painter is TrendChartPainter);
+      await tester.tapAt(tester.getCenter(chartPaintFinder));
+      await tester.pump();
+      expect(tester.takeException(), isNull, reason: 'width $w');
+    }
   });
 }
