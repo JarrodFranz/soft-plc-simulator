@@ -6,6 +6,7 @@ import 'package:soft_plc_mobile/screens/fbd_editor_screen.dart';
 import 'package:soft_plc_mobile/screens/hmi_dashboard_builder_screen.dart';
 import 'package:soft_plc_mobile/screens/ld_editor_screen.dart';
 import 'package:soft_plc_mobile/screens/sfc_editor_screen.dart';
+import 'package:soft_plc_mobile/services/tag_historian.dart';
 import 'package:soft_plc_mobile/widgets/live_tick.dart';
 import 'support/responsive_test_utils.dart';
 
@@ -149,6 +150,7 @@ void main() {
             hmiScreen: hmi,
             onScanTriggered: () {},
             onProjectUpdated: () {},
+            historian: TagHistorian(),
           ),
         ),
       );

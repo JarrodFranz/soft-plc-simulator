@@ -19,6 +19,7 @@ import '../services/modbus_host.dart';
 import '../services/mqtt_host.dart';
 import '../services/opcua_host.dart';
 import '../services/notify_throttle.dart';
+import '../services/tag_historian.dart';
 import '../ui/responsive.dart';
 import '../widgets/live_tick.dart';
 import '../widgets/tag_autocomplete_field.dart';
@@ -107,6 +108,12 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   final LiveTick _liveTick = LiveTick();
   int _refreshHz = kDefaultRefreshHz;
   late NotifyThrottle _repaintThrottle;
+
+  /// Memory-only trend historian, sampled once per scan tick in
+  /// `_executeScan` and re-synced/cleared on every project switch (see
+  /// `_switchActiveProject` and the other project-CRUD paths below) — its
+  /// buffers must never straddle two different projects.
+  final TagHistorian _historian = TagHistorian();
 
   /// Counts this State's `build()` invocations — test-only instrumentation
   /// (see [debugBuildCount]) so a widget test can assert the per-scan
@@ -274,6 +281,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _repo = repo;
       _allProjects = loadedProjects;
       _activeProject = active ?? loadedProjects.first;
+      _historian.syncPens(_activeProject.trends);
       if (_activeProject.hmis.isNotEmpty) {
         _activeViewId = 'HMI:${_activeProject.hmis.first.id}';
       } else if (_activeProject.programs.isNotEmpty) {
@@ -432,6 +440,18 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   @visibleForTesting
   void debugRunScan() => _executeScan();
 
+  /// Test-only hook: the shell's [TagHistorian], so a widget test can assert
+  /// on captured samples directly without driving a trend chart HMI widget.
+  @visibleForTesting
+  TagHistorian get historianForTest => _historian;
+
+  /// Test-only hook: re-syncs the historian's buffers to the active
+  /// project's current pens, mirroring what every project-switch site (and
+  /// the initial load) does — needed after a test mutates
+  /// `debugActiveProject.trends` directly (bypassing the switch/load paths).
+  @visibleForTesting
+  void syncHistorianForTest() => _historian.syncPens(_activeProject.trends);
+
   /// Test-only hook: overrides the per-task measured execution time used by
   /// `runScanTick`'s watchdog check (see `ScanTickRuntime.elapsedForTest`),
   /// so a test can deterministically trip a task's watchdog fault on the
@@ -584,6 +604,20 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       hour: now.hour, minute: now.minute, second: now.second,
       dateTime: _formatClock(now),
     ));
+    _historian.sample(
+      _activeProject.trends,
+      (path) {
+        final v = readPath(_activeProject, path);
+        if (v is bool) {
+          return v ? 1.0 : 0.0;
+        }
+        if (v is num) {
+          return v.toDouble();
+        }
+        return null; // non-numeric (e.g. STRING) is skipped
+      },
+      DateTime.now().millisecondsSinceEpoch,
+    );
     if (consumeAlarmReset(_activeProject)) {
       // An AlarmReset-driven clear is also a rare structural transition
       // (drops the fault banner) — keep it under a targeted setState.
@@ -617,6 +651,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     ensureSystemTag(proj);
     setState(() {
       _activeProject = proj;
+      _historian.clear();
+      _historian.syncPens(_activeProject.trends);
       if (proj.hmis.isNotEmpty) {
         _activeViewId = 'HMI:${proj.hmis.first.id}';
       } else if (proj.programs.isNotEmpty) {
@@ -724,6 +760,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         _allProjects[i] = proj;
       }
       _activeProject = proj;
+      _historian.clear();
+      _historian.syncPens(_activeProject.trends);
       _editorRevision++;
       _beginProjectSession();
       _ensureValidView();
@@ -849,6 +887,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     setState(() {
       _allProjects.add(blank);
       _activeProject = blank;
+      _historian.clear();
+      _historian.syncPens(_activeProject.trends);
       _activeViewId = 'MEMORY';
       scanCount = 0;
       _beginProjectSession();
@@ -875,6 +915,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     setState(() {
       _allProjects.add(copy);
       _activeProject = copy;
+      _historian.clear();
+      _historian.syncPens(_activeProject.trends);
       if (copy.hmis.isNotEmpty) {
         _activeViewId = 'HMI:${copy.hmis.first.id}';
       } else if (copy.programs.isNotEmpty) {
@@ -955,6 +997,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     setState(() {
       _allProjects = remaining;
       _activeProject = next;
+      _historian.clear();
+      _historian.syncPens(_activeProject.trends);
       if (next.hmis.isNotEmpty) {
         _activeViewId = 'HMI:${next.hmis.first.id}';
       } else if (next.programs.isNotEmpty) {
@@ -1005,6 +1049,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     setState(() {
       _allProjects = loaded;
       _activeProject = first;
+      _historian.clear();
+      _historian.syncPens(_activeProject.trends);
       if (first.hmis.isNotEmpty) {
         _activeViewId = 'HMI:${first.hmis.first.id}';
       } else if (first.programs.isNotEmpty) {
@@ -1122,6 +1168,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     setState(() {
       _allProjects.add(imported);
       _activeProject = imported;
+      _historian.clear();
+      _historian.syncPens(_activeProject.trends);
       if (imported.hmis.isNotEmpty) {
         _activeViewId = 'HMI:${imported.hmis.first.id}';
       } else if (imported.programs.isNotEmpty) {
@@ -2508,11 +2556,13 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         hmiScreen: hmi,
         onScanTriggered: () => setState(() => _executeScan()),
         onProjectUpdated: _markDirtyAndAutosave,
+        historian: _historian,
       );
     } else if (_activeViewId == 'MEMORY') {
       return MemoryManagerScreen(
         currentProject: _activeProject,
         onProjectUpdated: _markDirtyAndAutosave,
+        historian: _historian,
       );
     } else if (_activeViewId.startsWith('PROGRAM:')) {
       final progName = _activeViewId.replaceFirst('PROGRAM:', '');

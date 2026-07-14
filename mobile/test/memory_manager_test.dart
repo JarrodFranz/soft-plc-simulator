@@ -4,6 +4,7 @@ import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/system_tags.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 import 'package:soft_plc_mobile/screens/memory_manager_screen.dart';
+import 'package:soft_plc_mobile/services/tag_historian.dart';
 import 'package:soft_plc_mobile/widgets/live_tick.dart';
 
 // A small project with one in-use DUT (PumpStatusDUT, referenced by tag P1)
@@ -44,6 +45,7 @@ void main() {
           home: MemoryManagerScreen(
             currentProject: project,
             onProjectUpdated: onUpdated ?? () {},
+            historian: TagHistorian(),
           ),
         ),
       );

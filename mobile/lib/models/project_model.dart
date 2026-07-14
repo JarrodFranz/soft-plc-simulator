@@ -1,8 +1,12 @@
 import 'dart:convert';
 
+import '../services/tag_historian.dart';
 import 'opcua_map.dart';
 import 'protocol_settings.dart';
 import 'signal_gen.dart';
+
+/// HMI component type id for the multi-pen trend chart.
+const String kTrendChartDisplay = 'TrendChartDisplay';
 
 class PlcTag {
   String name;
@@ -621,6 +625,69 @@ class SimRule {
       };
 }
 
+/// A historized pen: which tag to record, its color, sample cadence, and
+/// retention. Persisted on the project; the captured samples are NOT persisted
+/// (they live only in the in-memory TagHistorian).
+class TrendPen implements TrendPenLike {
+  @override
+  String tagPath;
+  String color;
+  @override
+  int sampleIntervalMs;
+  @override
+  String retentionMode; // 'points' | 'time'
+  @override
+  int maxPoints;
+  @override
+  int windowMs;
+
+  TrendPen({
+    required this.tagPath,
+    this.color = 'cyan',
+    this.sampleIntervalMs = 250,
+    this.retentionMode = 'time',
+    this.maxPoints = 1200,
+    this.windowMs = 300000,
+  });
+
+  factory TrendPen.fromJson(Map<String, dynamic> json) => TrendPen(
+        tagPath: json['tag_path'] ?? '',
+        color: json['color'] ?? 'cyan',
+        sampleIntervalMs: json['sample_interval_ms'] ?? 250,
+        retentionMode: json['retention_mode'] ?? 'time',
+        maxPoints: json['max_points'] ?? 1200,
+        windowMs: json['window_ms'] ?? 300000,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'tag_path': tagPath,
+        'color': color,
+        'sample_interval_ms': sampleIntervalMs,
+        'retention_mode': retentionMode,
+        'max_points': maxPoints,
+        'window_ms': windowMs,
+      };
+}
+
+/// An HMI trend component's reference to a project pen, with an optional
+/// per-component color override.
+class TrendPenRef {
+  String penTagPath;
+  String? colorOverride;
+
+  TrendPenRef({required this.penTagPath, this.colorOverride});
+
+  factory TrendPenRef.fromJson(Map<String, dynamic> json) => TrendPenRef(
+        penTagPath: json['pen_tag_path'] ?? '',
+        colorOverride: json['color_override'],
+      );
+
+  Map<String, dynamic> toJson() => {
+        'pen_tag_path': penTagPath,
+        if (colorOverride != null) 'color_override': colorOverride,
+      };
+}
+
 class HmiComponent {
   String id;
   String title;
@@ -628,6 +695,8 @@ class HmiComponent {
   String tagBinding;
   int gridSpanWidth;
   String accentColor;
+  List<TrendPenRef> trendPens;
+  int? windowMs;
 
   HmiComponent({
     required this.id,
@@ -636,7 +705,9 @@ class HmiComponent {
     required this.tagBinding,
     this.gridSpanWidth = 1,
     this.accentColor = 'cyan',
-  });
+    List<TrendPenRef>? trendPens,
+    this.windowMs,
+  }) : trendPens = trendPens ?? [];
 
   factory HmiComponent.fromJson(Map<String, dynamic> json) {
     return HmiComponent(
@@ -646,6 +717,10 @@ class HmiComponent {
       tagBinding: json['tag_binding'] ?? '',
       gridSpanWidth: json['grid_span_width'] ?? 1,
       accentColor: json['accent_color'] ?? 'cyan',
+      trendPens: (json['trend_pens'] as List? ?? [])
+          .map((e) => TrendPenRef.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      windowMs: json['window_ms'],
     );
   }
 
@@ -656,6 +731,8 @@ class HmiComponent {
     'tag_binding': tagBinding,
     'grid_span_width': gridSpanWidth,
     'accent_color': accentColor,
+    'trend_pens': trendPens.map((e) => e.toJson()).toList(),
+    if (windowMs != null) 'window_ms': windowMs,
   };
 }
 
@@ -703,6 +780,7 @@ class PlcProject {
   List<HmiScreenDef> hmis;
   List<SimRule> simRules;
   List<SignalGen> signalGens;
+  List<TrendPen> trends;
   ProtocolSettings? protocols;
 
   PlcProject({
@@ -719,9 +797,11 @@ class PlcProject {
     required this.hmis,
     List<SimRule>? simRules,
     List<SignalGen>? signalGens,
+    List<TrendPen>? trends,
     this.protocols,
   }) : simRules = simRules ?? [],
-       signalGens = signalGens ?? [];
+       signalGens = signalGens ?? [],
+       trends = trends ?? [];
 
   factory PlcProject.fromJson(Map<String, dynamic> json) {
     final proj = json['project'] ?? json;
@@ -740,6 +820,9 @@ class PlcProject {
       hmis: (proj['hmis'] as List? ?? []).map((h) => HmiScreenDef.fromJson(h)).toList(),
       simRules: (proj['sim_rules'] as List? ?? []).map((r) => SimRule.fromJson(r)).toList(),
       signalGens: (proj['signal_gens'] as List? ?? []).map((g) => SignalGen.fromJson(g)).toList(),
+      trends: (proj['trends'] as List? ?? [])
+          .map((e) => TrendPen.fromJson(e as Map<String, dynamic>))
+          .toList(),
       protocols: proj['protocols'] != null
           ? ProtocolSettings.fromJson(proj['protocols'] as Map<String, dynamic>)
           : (proj['opcua_map'] != null
@@ -774,6 +857,7 @@ class PlcProject {
       'hmis': hmis.map((h) => h.toJson()).toList(),
       'sim_rules': simRules.map((r) => r.toJson()).toList(),
       'signal_gens': signalGens.map((g) => g.toJson()).toList(),
+      'trends': trends.map((e) => e.toJson()).toList(),
       if (protocols != null) 'protocols': protocols!.toJson(),
     }
   };

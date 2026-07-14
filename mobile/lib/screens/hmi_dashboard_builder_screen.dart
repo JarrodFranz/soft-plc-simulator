@@ -1,14 +1,17 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
+import '../services/tag_historian.dart';
 import '../ui/responsive.dart';
 import '../widgets/live_tick.dart';
 import '../widgets/tag_autocomplete_field.dart';
+import '../widgets/trend_chart.dart';
 
 class HmiDashboardBuilderScreen extends StatefulWidget {
   final PlcProject currentProject;
   final HmiScreenDef hmiScreen;
   final VoidCallback onScanTriggered;
   final VoidCallback onProjectUpdated;
+  final TagHistorian historian;
 
   const HmiDashboardBuilderScreen({
     super.key,
@@ -16,6 +19,7 @@ class HmiDashboardBuilderScreen extends StatefulWidget {
     required this.hmiScreen,
     required this.onScanTriggered,
     required this.onProjectUpdated,
+    required this.historian,
   });
 
   @override
@@ -37,6 +41,7 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
     HmiComponent(id: 'tmpl_gauge', title: 'Digital Gauge Bar', type: 'DigitalGaugeDisplay', tagBinding: '', gridSpanWidth: 2, accentColor: 'cyan'),
     HmiComponent(id: 'tmpl_pill', title: 'Status Value Pill', type: 'StatusPillDisplay', tagBinding: '', gridSpanWidth: 2, accentColor: 'amber'),
     HmiComponent(id: 'tmpl_tank', title: 'Process Vessel Graphic', type: 'TankGraphicDisplay', tagBinding: '', gridSpanWidth: 2, accentColor: 'cyan'),
+    HmiComponent(id: 'tmpl_trend', title: 'Trend Chart', type: kTrendChartDisplay, tagBinding: '', gridSpanWidth: 4, accentColor: 'cyan'),
   ];
 
   void _showAddComponentDialog([HmiComponent? existingComp]) {
@@ -45,6 +50,9 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
     String selectedTag = existingComp?.tagBinding ?? (widget.currentProject.tags.isNotEmpty ? widget.currentProject.tags.first.name : '');
     int gridSpanWidth = existingComp?.gridSpanWidth ?? 1;
     String accentColor = existingComp?.accentColor ?? 'cyan';
+    final selectedPens = <TrendPenRef>[...(existingComp?.trendPens ?? const [])];
+    int? windowSecs = existingComp?.windowMs == null ? null : existingComp!.windowMs! ~/ 1000;
+    final windowCtrl = TextEditingController(text: windowSecs?.toString() ?? '');
 
     final availableTypes = [
       {'type': 'PushbuttonSwitch', 'label': 'Pushbutton Switch (BOOL Input)'},
@@ -55,6 +63,7 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
       {'type': 'DigitalGaugeDisplay', 'label': 'Digital Gauge Display (NUMERIC Display)'},
       {'type': 'StatusPillDisplay', 'label': 'Status Value Pill (ANY Display)'},
       {'type': 'TankGraphicDisplay', 'label': 'Process Vessel Graphic (NUMERIC Display)'},
+      {'type': kTrendChartDisplay, 'label': 'Trend Chart (Multi-Pen)'},
     ];
 
     showAdaptiveWidthDialog(
@@ -124,6 +133,38 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
                       ),
                     ],
                   ),
+
+                  if (selectedType == kTrendChartDisplay) ...[
+                    const SizedBox(height: 12),
+                    Align(alignment: Alignment.centerLeft, child: Text('Pens to plot', style: TextStyle(color: Colors.grey.shade400, fontSize: 12))),
+                    ...widget.currentProject.trends.map((pen) {
+                      final ref = selectedPens.where((r) => r.penTagPath == pen.tagPath).toList();
+                      final checked = ref.isNotEmpty;
+                      return CheckboxListTile(
+                        dense: true,
+                        value: checked,
+                        title: Text(pen.tagPath, style: const TextStyle(fontSize: 12, fontFamily: 'monospace')),
+                        onChanged: (v) => setDlgState(() {
+                          if (v == true) {
+                            selectedPens.add(TrendPenRef(penTagPath: pen.tagPath));
+                          } else {
+                            selectedPens.removeWhere((r) => r.penTagPath == pen.tagPath);
+                          }
+                        }),
+                      );
+                    }),
+                    if (widget.currentProject.trends.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Text('No pens defined. Create pens in Memory → Trends.', style: TextStyle(color: Colors.grey.shade500, fontSize: 11)),
+                      ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: windowCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'Window (seconds, blank = pens\' own)'),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -132,12 +173,15 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
               ElevatedButton(
                 onPressed: () {
                   setState(() {
+                    final ws = int.tryParse(windowCtrl.text);
                     if (existingComp != null) {
                       existingComp.title = titleCtrl.text;
                       existingComp.type = selectedType;
                       existingComp.tagBinding = selectedTag;
                       existingComp.gridSpanWidth = gridSpanWidth;
                       existingComp.accentColor = accentColor;
+                      existingComp.trendPens = selectedPens;
+                      existingComp.windowMs = ws == null ? null : ws * 1000;
                     } else {
                       final comp = HmiComponent(
                         id: 'comp_${DateTime.now().millisecondsSinceEpoch}',
@@ -146,6 +190,8 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
                         tagBinding: selectedTag,
                         gridSpanWidth: gridSpanWidth,
                         accentColor: accentColor,
+                        trendPens: selectedPens,
+                        windowMs: ws == null ? null : ws * 1000,
                       );
                       widget.hmiScreen.components.add(comp);
                     }
@@ -734,6 +780,35 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
   }
 
   Widget _renderComponentWidget(HmiComponent comp, PlcTag? tag) {
+    if (comp.type == kTrendChartDisplay) {
+      final pens = comp.trendPens
+          .map((ref) {
+            final pen = widget.currentProject.trends
+                .where((p) => p.tagPath == ref.penTagPath)
+                .toList();
+            if (pen.isEmpty) {
+              return null;
+            }
+            return TrendChartView.viewForPen(widget.currentProject, pen.first,
+                colorOverride: ref.colorOverride);
+          })
+          .whereType<TrendPenView>()
+          .toList();
+      final win = comp.windowMs ??
+          (widget.currentProject.trends.isEmpty
+              ? 300000
+              : widget.currentProject.trends
+                  .map((p) => p.retentionMode == 'time' ? p.windowMs : p.maxPoints * p.sampleIntervalMs)
+                  .reduce((a, b) => a > b ? a : b));
+      return TrendChartView(
+        project: widget.currentProject,
+        historian: widget.historian,
+        pens: pens,
+        windowMs: win,
+        height: 200,
+      );
+    }
+
     if (tag == null) {
       return const Text('(No tag linked - click ⚙ to bind tag)', style: TextStyle(color: Colors.amber, fontSize: 11, fontStyle: FontStyle.italic));
     }
@@ -963,6 +1038,7 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
       case 'DigitalGaugeDisplay': return Icons.speed;
       case 'StatusPillDisplay': return Icons.label;
       case 'TankGraphicDisplay': return Icons.water_drop;
+      case kTrendChartDisplay: return Icons.show_chart;
       default: return Icons.widgets;
     }
   }
