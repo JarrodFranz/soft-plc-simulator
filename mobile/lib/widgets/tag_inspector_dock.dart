@@ -4,6 +4,7 @@ import '../models/project_model.dart';
 import '../models/system_tags.dart';
 import '../models/tag_resolver.dart';
 import '../ui/responsive.dart';
+import 'live_tick.dart';
 
 class TagInspectorDock extends StatefulWidget {
   final PlcProject project;
@@ -121,7 +122,6 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                     itemBuilder: (context, index) {
                       final tag = filteredTags[index];
                       final isBool = tag.dataType == 'BOOL';
-                      final effectiveVal = tag.isForced ? tag.forcedValue : tag.value;
                       final kids = childrenOf(widget.project, tag.name);
                       final isExpanded = _expandedTags.contains(tag.name);
 
@@ -209,41 +209,47 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                                   // this UI-level name guard is what actually
                                   // keeps the System root un-editable.
                                   Flexible(
-                                    child: InkWell(
-                                      onTap: () {
-                                        if (isBool && tag.name != kSystemTagName) {
-                                          setState(() {
-                                            if (tag.isForced) {
-                                              tag.forcedValue = !(tag.forcedValue == true);
-                                            } else {
-                                              tag.value = !(tag.value == true);
+                                    child: ListenableBuilder(
+                                      listenable: LiveTickScope.of(context),
+                                      builder: (context, _) {
+                                        final effectiveVal = tag.isForced ? tag.forcedValue : tag.value;
+                                        return InkWell(
+                                          onTap: () {
+                                            if (isBool && tag.name != kSystemTagName) {
+                                              setState(() {
+                                                if (tag.isForced) {
+                                                  tag.forcedValue = !(tag.forcedValue == true);
+                                                } else {
+                                                  tag.value = !(tag.value == true);
+                                                }
+                                              });
+                                              widget.onTagStateChanged();
                                             }
-                                          });
-                                          widget.onTagStateChanged();
-                                        }
+                                          },
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                            decoration: BoxDecoration(
+                                              color: effectiveVal == true
+                                                  ? Colors.green.withValues(alpha: 0.2)
+                                                  : (effectiveVal == false ? Colors.red.withValues(alpha: 0.1) : Colors.cyan.withValues(alpha: 0.1)),
+                                              borderRadius: BorderRadius.circular(4),
+                                              border: Border.all(
+                                                color: effectiveVal == true ? Colors.green : (effectiveVal == false ? Colors.red.shade700 : Colors.cyan),
+                                              ),
+                                            ),
+                                            child: Text(
+                                              '$effectiveVal ${tag.engineeringUnits}',
+                                              overflow: TextOverflow.ellipsis,
+                                              maxLines: 1,
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 12,
+                                                color: effectiveVal == true ? Colors.greenAccent : (effectiveVal == false ? Colors.redAccent : Colors.cyanAccent),
+                                              ),
+                                            ),
+                                          ),
+                                        );
                                       },
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                        decoration: BoxDecoration(
-                                          color: effectiveVal == true
-                                              ? Colors.green.withValues(alpha: 0.2)
-                                              : (effectiveVal == false ? Colors.red.withValues(alpha: 0.1) : Colors.cyan.withValues(alpha: 0.1)),
-                                          borderRadius: BorderRadius.circular(4),
-                                          border: Border.all(
-                                            color: effectiveVal == true ? Colors.green : (effectiveVal == false ? Colors.red.shade700 : Colors.cyan),
-                                          ),
-                                        ),
-                                        child: Text(
-                                          '$effectiveVal ${tag.engineeringUnits}',
-                                          overflow: TextOverflow.ellipsis,
-                                          maxLines: 1,
-                                          style: TextStyle(
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 12,
-                                            color: effectiveVal == true ? Colors.greenAccent : (effectiveVal == false ? Colors.redAccent : Colors.cyanAccent),
-                                          ),
-                                        ),
-                                      ),
                                     ),
                                   ),
 
@@ -317,7 +323,6 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
 
   Widget _buildChildRow(TagChild child, int depth) {
     final isExpanded = _expandedTags.contains(child.path);
-    final value = readPath(widget.project, child.path);
     final isWritable = child.path == _writableSystemChildPath && child.dataType == 'BOOL';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -358,43 +363,49 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                 ),
               ),
               const SizedBox(width: 8),
-              if (isWritable)
-                touchable(
-                  Container(
-                    key: const ValueKey('inspector-write-System.AlarmReset'),
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: (value == true ? Colors.amber : Colors.grey).withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(4),
-                      border: Border.all(color: value == true ? Colors.amber : Colors.white24),
-                    ),
+              ListenableBuilder(
+                listenable: LiveTickScope.of(context),
+                builder: (context, _) {
+                  final value = readPath(widget.project, child.path);
+                  if (isWritable) {
+                    return touchable(
+                      Container(
+                        key: const ValueKey('inspector-write-System.AlarmReset'),
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: (value == true ? Colors.amber : Colors.grey).withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(color: value == true ? Colors.amber : Colors.white24),
+                        ),
+                        child: Text(
+                          '$value',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: value == true ? Colors.amberAccent : Colors.grey,
+                          ),
+                        ),
+                      ),
+                      onTap: () {
+                        writePath(widget.project, child.path, !(value == true));
+                        setState(() {});
+                        widget.onTagStateChanged();
+                      },
+                    );
+                  }
+                  return Flexible(
                     child: Text(
                       '$value',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: value == true ? Colors.amberAccent : Colors.grey,
-                      ),
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.cyanAccent),
                     ),
-                  ),
-                  onTap: () {
-                    writePath(widget.project, child.path, !(value == true));
-                    setState(() {});
-                    widget.onTagStateChanged();
-                  },
-                )
-              else
-                Flexible(
-                  child: Text(
-                    '$value',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.right,
-                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.cyanAccent),
-                  ),
-                ),
+                  );
+                },
+              ),
             ],
           ),
         ),
