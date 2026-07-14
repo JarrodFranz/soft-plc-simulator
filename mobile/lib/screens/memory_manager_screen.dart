@@ -3,8 +3,11 @@ import '../models/project_model.dart';
 import '../models/system_tags.dart';
 import '../models/tag_resolver.dart';
 import '../models/test_tag_set.dart';
+import '../services/tag_historian.dart';
 import '../ui/responsive.dart';
 import '../widgets/live_tick.dart';
+import '../widgets/tag_autocomplete_field.dart';
+import '../widgets/trend_chart.dart';
 
 /// Resolved, display-ready data for one row of the hierarchical tag tree —
 /// shared by both the desktop [DataTable] and the compact card list so the
@@ -62,11 +65,13 @@ class _TagRowData {
 class MemoryManagerScreen extends StatefulWidget {
   final PlcProject currentProject;
   final VoidCallback onProjectUpdated;
+  final TagHistorian historian;
 
   const MemoryManagerScreen({
     super.key,
     required this.currentProject,
     required this.onProjectUpdated,
+    required this.historian,
   });
 
   @override
@@ -90,7 +95,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
   }
 
   @override
@@ -478,6 +483,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
           tabs: const [
             Tab(icon: Icon(Icons.account_tree), text: 'Global Tags & Struct Hierarchy'),
             Tab(icon: Icon(Icons.dataset), text: 'Struct Definitions (DUT)'),
+            Tab(icon: Icon(Icons.show_chart), text: 'Trends'),
           ],
         ),
       ),
@@ -486,6 +492,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
         children: [
           _buildGlobalTagsHierarchicalTab(),
           _buildStructDefsTab(),
+          _buildTrendsTab(),
         ],
       ),
     );
@@ -1277,6 +1284,170 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
           ),
         );
       },
+    );
+  }
+
+  Widget _buildTrendsTab() {
+    final pens = widget.currentProject.trends;
+    final penViews = pens
+        .map((p) => TrendChartView.viewForPen(widget.currentProject, p))
+        .toList();
+    // Preview shows the widest configured window across pens (fallback 5 min).
+    final windowMs = pens.isEmpty
+        ? 300000
+        : pens.map((p) => p.retentionMode == 'time' ? p.windowMs : p.maxPoints * p.sampleIntervalMs)
+              .reduce((a, b) => a > b ? a : b);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(8),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: ElevatedButton.icon(
+              icon: const Icon(Icons.add),
+              label: const Text('Add Pen'),
+              onPressed: () => _showPenDialog(null),
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: TrendChartView(
+            project: widget.currentProject,
+            historian: widget.historian,
+            pens: penViews,
+            windowMs: windowMs,
+            height: 220,
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: pens.isEmpty
+              ? Center(child: Text('No pens yet — add one to start recording.', style: TextStyle(color: Colors.grey.shade500)))
+              : ListView.builder(
+                  itemCount: pens.length,
+                  itemBuilder: (context, i) {
+                    final p = pens[i];
+                    final retention = p.retentionMode == 'time'
+                        ? '${(p.windowMs / 1000).toStringAsFixed(0)}s'
+                        : '${p.maxPoints} pts';
+                    return ListTile(
+                      dense: true,
+                      leading: Container(width: 14, height: 14, color: trendColorFromName(p.color)),
+                      title: Text(p.tagPath, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                      subtitle: Text('${p.sampleIntervalMs} ms • $retention'),
+                      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                        IconButton(icon: const Icon(Icons.settings, size: 18), onPressed: () => _showPenDialog(p)),
+                        IconButton(icon: const Icon(Icons.delete, size: 18, color: Colors.redAccent), onPressed: () {
+                          setState(() => widget.currentProject.trends.remove(p));
+                          widget.historian.syncPens(widget.currentProject.trends);
+                          widget.onProjectUpdated();
+                        }),
+                      ]),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  void _showPenDialog(TrendPen? existing) {
+    final options = scalarLeaves(widget.currentProject).map((l) => l.path).toList();
+    String tagPath = existing?.tagPath ?? '';
+    String color = existing?.color ?? 'cyan';
+    int intervalMs = existing?.sampleIntervalMs ?? 250;
+    String mode = existing?.retentionMode ?? 'time';
+    int maxPoints = existing?.maxPoints ?? 1200;
+    int windowMs = existing?.windowMs ?? 300000;
+    final intervalCtrl = TextEditingController(text: intervalMs.toString());
+    final valueCtrl = TextEditingController(text: mode == 'time' ? (windowMs ~/ 1000).toString() : maxPoints.toString());
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) => AlertDialog(
+          title: Text(existing == null ? 'Add Pen' : 'Configure Pen'),
+          content: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              TagAutocompleteField(
+                options: options,
+                initialValue: tagPath,
+                label: 'Tag to historize',
+                onChanged: (v) => tagPath = v,
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: color,
+                decoration: const InputDecoration(labelText: 'Color'),
+                items: const [
+                  DropdownMenuItem(value: 'cyan', child: Text('Cyan')),
+                  DropdownMenuItem(value: 'green', child: Text('Green')),
+                  DropdownMenuItem(value: 'red', child: Text('Red')),
+                  DropdownMenuItem(value: 'amber', child: Text('Amber')),
+                  DropdownMenuItem(value: 'teal', child: Text('Teal')),
+                  DropdownMenuItem(value: 'blue', child: Text('Blue')),
+                ],
+                onChanged: (v) => setDlg(() => color = v!),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: intervalCtrl,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Sample interval (ms)'),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: mode,
+                decoration: const InputDecoration(labelText: 'Retention'),
+                items: const [
+                  DropdownMenuItem(value: 'time', child: Text('By time (seconds)')),
+                  DropdownMenuItem(value: 'points', child: Text('By point count')),
+                ],
+                onChanged: (v) => setDlg(() {
+                  mode = v!;
+                  valueCtrl.text = mode == 'time' ? (windowMs ~/ 1000).toString() : maxPoints.toString();
+                }),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: valueCtrl,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(labelText: mode == 'time' ? 'Window (seconds)' : 'Max points'),
+              ),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () {
+                final iv = int.tryParse(intervalCtrl.text) ?? 250;
+                final val = int.tryParse(valueCtrl.text) ?? 0;
+                setState(() {
+                  final target = existing ?? TrendPen(tagPath: tagPath);
+                  target.tagPath = tagPath;
+                  target.color = color;
+                  target.sampleIntervalMs = iv < 50 ? 50 : iv;
+                  target.retentionMode = mode;
+                  if (mode == 'time') {
+                    target.windowMs = (val < 1 ? 1 : val) * 1000;
+                  } else {
+                    target.maxPoints = val < 2 ? 2 : val;
+                  }
+                  if (existing == null) {
+                    widget.currentProject.trends.add(target);
+                  }
+                });
+                widget.historian.syncPens(widget.currentProject.trends);
+                widget.onProjectUpdated();
+                Navigator.pop(ctx);
+              },
+              child: Text(existing == null ? 'Add' : 'Save'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

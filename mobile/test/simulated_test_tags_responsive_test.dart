@@ -16,6 +16,7 @@ import 'package:soft_plc_mobile/services/dnp3_host.dart';
 import 'package:soft_plc_mobile/services/modbus_host.dart';
 import 'package:soft_plc_mobile/services/mqtt_host.dart';
 import 'package:soft_plc_mobile/services/opcua_host.dart';
+import 'package:soft_plc_mobile/services/tag_historian.dart';
 import 'package:soft_plc_mobile/widgets/live_tick.dart';
 import 'support/responsive_test_utils.dart';
 
@@ -72,7 +73,7 @@ Widget _memoryManagerApp(PlcProject project) {
   return LiveTickScope(
     notifier: LiveTick(),
     child: MaterialApp(
-      home: MemoryManagerScreen(currentProject: project, onProjectUpdated: () {}),
+      home: MemoryManagerScreen(currentProject: project, onProjectUpdated: () {}, historian: TagHistorian()),
     ),
   );
 }

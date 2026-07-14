@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/data/default_projects.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/screens/memory_manager_screen.dart';
+import 'package:soft_plc_mobile/services/tag_historian.dart';
 import 'package:soft_plc_mobile/widgets/live_tick.dart';
 import 'support/responsive_test_utils.dart';
 
@@ -18,6 +19,7 @@ void main() {
           home: MemoryManagerScreen(
             currentProject: project,
             onProjectUpdated: () {},
+            historian: TagHistorian(),
           ),
         ),
       );

@@ -2561,6 +2561,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       return MemoryManagerScreen(
         currentProject: _activeProject,
         onProjectUpdated: _markDirtyAndAutosave,
+        historian: _historian,
       );
     } else if (_activeViewId.startsWith('PROGRAM:')) {
       final progName = _activeViewId.replaceFirst('PROGRAM:', '');
