@@ -48,4 +48,33 @@ void main() {
     expect(MqttMap.autoGenerate(p).entries.map((e) => e.tag), ['A']);
     expect(OpcuaMap.autoGenerate(p).nodes.map((n) => n.tag), ['A']);
   });
+
+  test(
+      'OPC UA nodeId preserves tag.path (folder-qualified browse path) for '
+      'scalar tags, even when it differs from the resolver-key name '
+      '(regression)', () {
+    final p = PlcProject(id: 'x', name: 'x', controllerName: 'c',
+        tags: [
+          PlcTag(
+              name: 'Start_PB',
+              path: 'Inputs/Start_PB',
+              dataType: 'BOOL',
+              value: false,
+              ioType: 'Internal'),
+        ],
+        structDefs: [], programs: [], tasks: [], hmis: []);
+    final node = OpcuaMap.autoGenerate(p).nodes.single;
+    // Old/shipped nodeId — must NOT change even though tag.name != tag.path.
+    expect(node.nodeId, 'ns=1;s=Inputs/Start_PB');
+    // Resolver key stays the dotted leaf path (== tag.name for a bare scalar).
+    expect(node.tag, 'Start_PB');
+  });
+
+  test('OPC UA composite leaf System.Fault still resolves via dotted path '
+      '(regression)', () {
+    final map = OpcuaMap.autoGenerate(_projWithSystem());
+    final fault = map.nodes.firstWhere((n) => n.tag == 'System.Fault');
+    expect(fault.nodeId, 'ns=1;s=System.Fault');
+    expect(fault.tag, 'System.Fault');
+  });
 }

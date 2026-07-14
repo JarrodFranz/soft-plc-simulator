@@ -86,22 +86,25 @@ void main() {
       final map = OpcuaMap.autoGenerate(project);
 
       expect(map.namespaceUri, 'urn:softplc:test_proj');
-      // Leaf paths (used for both nodeId and tag) are keyed on the tag's
-      // addressable `name`, not its folder-display `path`. `PumpStatusDUT`
-      // isn't a registered struct def, so `scalarLeaves` doesn't expand it —
-      // it's exposed as its own (opaque) leaf, same as any other tag.
+      // `tag` (the resolver key) is keyed on the leaf's dotted/indexed path,
+      // which for a bare scalar is the tag's addressable `name`. `nodeId`,
+      // however, must preserve the root tag's folder-qualified `path` (its
+      // browse-path identity) so external OPC UA clients bound to the
+      // shipped node ids don't break. `PumpStatusDUT` isn't a registered
+      // struct def, so `scalarLeaves` doesn't expand it — it's exposed as
+      // its own (opaque) leaf, same as any other tag.
       expect(map.nodes.length, 3);
 
       final start = map.nodes.firstWhere((n) => n.tag == 'Start_PB');
-      expect(start.nodeId, 'ns=1;s=Start_PB');
+      expect(start.nodeId, 'ns=1;s=Inputs/Start_PB');
       expect(start.access, 'ReadWrite');
 
       final motor = map.nodes.firstWhere((n) => n.tag == 'Motor_Run');
-      expect(motor.nodeId, 'ns=1;s=Motor_Run');
+      expect(motor.nodeId, 'ns=1;s=Outputs/Motor_Run');
       expect(motor.access, 'ReadOnly');
 
       final pump = map.nodes.firstWhere((n) => n.tag == 'Pump1_Status');
-      expect(pump.nodeId, 'ns=1;s=Pump1_Status');
+      expect(pump.nodeId, 'ns=1;s=Status/Pump1');
       expect(pump.access, 'ReadWrite');
     });
 
@@ -129,6 +132,10 @@ void main() {
       final map = OpcuaMap.autoGenerate(project);
       expect(map.nodes.map((n) => n.tag).toList(),
           [for (var i = 0; i < 8; i++) 'Recipe_Steps[$i]']);
+      // nodeId keeps the root tag's folder-qualified path with the array
+      // index suffix appended (not the resolver-key name).
+      expect(map.nodes.map((n) => n.nodeId).toList(),
+          [for (var i = 0; i < 8; i++) 'ns=1;s=Recipe/Steps[$i]']);
       expect(map.nodes.every((n) => n.access == 'ReadWrite'), isTrue);
     });
   });

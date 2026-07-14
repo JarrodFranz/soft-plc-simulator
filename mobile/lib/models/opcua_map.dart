@@ -80,14 +80,27 @@ class OpcuaMap {
   /// an explicit `ReadOnly` tag `access` (e.g. the reserved `System` tag)
   /// yields `ReadOnly`; everything else (`SimulatedInput`, `Internal`) is
   /// `ReadWrite`.
+  ///
+  /// The OPC UA `nodeId` string and the `tag` resolver key are intentionally
+  /// decoupled: `tag` is always the leaf's dotted/indexed resolver path (e.g.
+  /// `System.Fault`), so `readPath` can resolve composite/array leaves. The
+  /// `nodeId`, however, must preserve the ROOT tag's folder-qualified `path`
+  /// field (its browse-path identity) for the root portion, with only the
+  /// leaf's suffix beyond the root name appended — otherwise a bare scalar
+  /// tag whose `name` differs from its `path` (e.g. `name: 'Start_PB'`,
+  /// `path: 'Inputs/Start_PB'`) would silently change node id and break any
+  /// external client already bound to the old id.
   static OpcuaMap autoGenerate(PlcProject p) {
     final nodes = <OpcuaNode>[];
     for (final leaf in scalarLeaves(p)) {
       final root = rootTagOf(p, leaf.path);
       final readOnly = root?.ioType == 'SimulatedOutput' || root?.access == 'ReadOnly';
       final access = readOnly ? 'ReadOnly' : 'ReadWrite';
+      final rootName = leaf.path.split(RegExp(r'[.\[]')).first;
+      final suffix = leaf.path.substring(rootName.length);
+      final nodeIdString = (root?.path ?? rootName) + suffix;
       nodes.add(OpcuaNode(
-        nodeId: 'ns=1;s=${leaf.path}',
+        nodeId: 'ns=1;s=$nodeIdString',
         tag: leaf.path,
         access: access,
       ));
