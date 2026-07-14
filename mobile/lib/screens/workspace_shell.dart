@@ -18,7 +18,9 @@ import '../services/dnp3_host.dart';
 import '../services/modbus_host.dart';
 import '../services/mqtt_host.dart';
 import '../services/opcua_host.dart';
+import '../services/notify_throttle.dart';
 import '../ui/responsive.dart';
+import '../widgets/live_tick.dart';
 import '../widgets/tag_autocomplete_field.dart';
 import '../widgets/tag_inspector_dock.dart';
 import 'scan_tick.dart';
@@ -75,6 +77,14 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   final MqttHost _mqttHost = MqttHost();
   final DnpHost _dnpHost = DnpHost();
 
+  // Repaint-pulse infrastructure (additive this task — see live_tick.dart).
+  // The shell still setStates the whole tree each scan below; `_liveTick`
+  // merely also pulses, throttled to `_refreshHz`, so later tasks can move
+  // individual value leaves onto it without a behavior change here.
+  final LiveTick _liveTick = LiveTick();
+  final int _refreshHz = 10;
+  late NotifyThrottle _repaintThrottle;
+
   // Scheduler-driven scan-tick status (fault latch + scan-time stats),
   // surfaced via the reserved `System` tag each scan (see `system_tags.dart`).
   bool _freeRun = false;
@@ -128,6 +138,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   @override
   void initState() {
     super.initState();
+    _repaintThrottle = NotifyThrottle(_liveTick.pulse, window: Duration(milliseconds: (1000 / _refreshHz).round()));
     _boot();
   }
 
@@ -140,6 +151,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     _modbusHost.dispose();
     _mqttHost.dispose();
     _dnpHost.dispose();
+    _repaintThrottle.dispose();
+    _liveTick.dispose();
     super.dispose();
   }
 
@@ -437,6 +450,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         _clearFault();
       }
     });
+    _repaintThrottle.request();
   }
 
   String _two(int v) => v.toString().padLeft(2, '0');
@@ -1166,18 +1180,21 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     final expanded = context.isExpanded;
     final compact = context.isCompact;
 
-    return CallbackShortcuts(
-      bindings: <ShortcutActivator, VoidCallback>{
-        const SingleActivator(LogicalKeyboardKey.keyZ, control: true): _undo,
-        const SingleActivator(LogicalKeyboardKey.keyY, control: true): _redo,
-        const SingleActivator(LogicalKeyboardKey.keyZ, control: true, shift: true): _redo,
-        const SingleActivator(LogicalKeyboardKey.keyZ, meta: true): _undo,
-        const SingleActivator(LogicalKeyboardKey.keyY, meta: true): _redo,
-        const SingleActivator(LogicalKeyboardKey.keyZ, meta: true, shift: true): _redo,
-      },
-      child: Focus(
-        autofocus: true,
-        child: _buildScaffold(context, expanded: expanded, compact: compact),
+    return LiveTickScope(
+      notifier: _liveTick,
+      child: CallbackShortcuts(
+        bindings: <ShortcutActivator, VoidCallback>{
+          const SingleActivator(LogicalKeyboardKey.keyZ, control: true): _undo,
+          const SingleActivator(LogicalKeyboardKey.keyY, control: true): _redo,
+          const SingleActivator(LogicalKeyboardKey.keyZ, control: true, shift: true): _redo,
+          const SingleActivator(LogicalKeyboardKey.keyZ, meta: true): _undo,
+          const SingleActivator(LogicalKeyboardKey.keyY, meta: true): _redo,
+          const SingleActivator(LogicalKeyboardKey.keyZ, meta: true, shift: true): _redo,
+        },
+        child: Focus(
+          autofocus: true,
+          child: _buildScaffold(context, expanded: expanded, compact: compact),
+        ),
       ),
     );
   }
