@@ -42,7 +42,21 @@
 //     writable, the remote-write round-trip target (JSON `/set` and
 //     Sparkplug NCMD).
 //
-// Usage: dart run tool/mqtt_host_probe.dart <broker_port> <json|sparkplug>
+// Usage: dart run tool/mqtt_host_probe.dart <broker_port> <json|sparkplug> [clean_disconnect_after_ms]
+//
+// The optional third argument (`clean_disconnect_after_ms`) is the
+// WS-mqtt-ndeath-on-disconnect E2E machine-proof: when present, this fixture
+// self-initiates a CLEAN stop that many milliseconds after CONNACK, mirroring
+// `MqttHost.disconnect()` (`mobile/lib/services/mqtt_host.dart`) step for
+// step -- publish the Sparkplug B NDEATH death certificate (current session
+// bdSeq, via `MqttPublisher.deathMessage`), flush, THEN send the MQTT
+// DISCONNECT packet, flush, close the socket, and exit(0) on its own. This is
+// deliberately NOT the same shutdown path as the bottom of `main` (SIGINT /
+// being killed by `gateway/examples/mqtt_probe.rs`'s `kill_dart_fixture`,
+// which sends no NDEATH at all) -- the whole point of this argument is to
+// prove the fixture reaches a genuine clean stop under its own steam, so
+// `mqtt_probe.rs` can assert a real subscriber sees the NDEATH arrive BEFORE
+// the DISCONNECT, with the same bdSeq the NBIRTH carried.
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
@@ -120,12 +134,17 @@ PlcProject _fixtureProject(int brokerPort, String format) {
 
 Future<void> main(List<String> args) async {
   if (args.length < 2) {
-    stderr.writeln('usage: dart run tool/mqtt_host_probe.dart <broker_port> <json|sparkplug>');
+    stderr.writeln('usage: dart run tool/mqtt_host_probe.dart <broker_port> <json|sparkplug> [clean_disconnect_after_ms]');
     exit(64);
   }
   final brokerPort = int.tryParse(args[0]);
   final format = args[1];
-  if (brokerPort == null || brokerPort <= 0 || brokerPort > 65535 || (format != 'json' && format != 'sparkplug')) {
+  final cleanDisconnectAfterMs = args.length >= 3 ? int.tryParse(args[2]) : null;
+  if (brokerPort == null ||
+      brokerPort <= 0 ||
+      brokerPort > 65535 ||
+      (format != 'json' && format != 'sparkplug') ||
+      (args.length >= 3 && cleanDisconnectAfterMs == null)) {
     stderr.writeln('invalid arguments: ${args.join(' ')}');
     exit(64);
   }
@@ -209,6 +228,40 @@ Future<void> main(List<String> args) async {
             }
             // ignore: avoid_print
             print('READY MQTT_E2E_FIXTURE $format');
+
+            if (cleanDisconnectAfterMs != null) {
+              Timer(Duration(milliseconds: cleanDisconnectAfterMs), () async {
+                // Mirrors `MqttHost.disconnect()` exactly: NDEATH (current
+                // session bdSeq, via `deathMessage` -- does NOT re-advance
+                // bdSeq) published and flushed BEFORE the MQTT DISCONNECT,
+                // because a clean DISCONNECT tells the broker to suppress
+                // the registered Will. Best-effort, like the real host.
+                try {
+                  final death = publisher.deathMessage(project, clock.elapsedMilliseconds);
+                  if (death != null) {
+                    socket.add(encodePublish(
+                      topic: death.topic,
+                      payload: death.payload,
+                      qos: death.qos,
+                      retain: death.retain,
+                    ));
+                    await socket.flush();
+                  }
+                } catch (_) {
+                  // Ignore -- best-effort death notice only.
+                }
+                try {
+                  socket.add(encodeDisconnect());
+                  await socket.flush();
+                } catch (_) {
+                  // Ignore -- best-effort graceful notice only.
+                }
+                // ignore: avoid_print
+                print('CLEAN_DISCONNECT_DONE');
+                await socket.close();
+                exit(0);
+              });
+            }
           } else if (type == MqttPacketType.publish) {
             final pub = parsePublish(packet);
             if (pub == null) continue;

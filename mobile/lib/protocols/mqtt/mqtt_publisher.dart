@@ -321,6 +321,40 @@ class MqttPublisher {
     );
   }
 
+  /// The death certificate to publish on an INTENTIONAL disconnect, using the
+  /// CURRENT session `bdSeq` (the one the active NBIRTH used) — it does NOT
+  /// advance `_bdSeq` (that is [willMessage]'s job, once per new connection).
+  /// A clean MQTT DISCONNECT suppresses the registered Will, so the host would
+  /// otherwise never see the node die; the host publishes this explicitly
+  /// before disconnecting. Returns null if MQTT isn't configured.
+  MqttPublishDescriptor? deathMessage(PlcProject project, int nowMs) {
+    final cfg = project.protocols?.mqtt;
+    if (cfg == null) {
+      return null;
+    }
+    if (_isJson(cfg)) {
+      return MqttPublishDescriptor(
+        topic: _statusTopic(cfg, project),
+        payload: Uint8List.fromList(utf8.encode('OFFLINE')),
+        qos: cfg.qos,
+        retain: true,
+      );
+    }
+    final payload = SparkplugPayload(
+      timestampMs: nowMs,
+      seq: 0,
+      metrics: [
+        SparkplugMetric(name: 'bdSeq', datatype: SparkplugDatatype.uint64, value: _bdSeq.value),
+      ],
+    );
+    return MqttPublishDescriptor(
+      topic: _ndeathTopic(cfg, project),
+      payload: encodePayload(payload),
+      qos: cfg.qos,
+      retain: false,
+    );
+  }
+
   /// Report-by-exception telemetry: only tags whose `readPath` value has
   /// changed since the last [birthMessages]/[changedPublishes]/
   /// [heartbeatPublishes] call. JSON emits one publish per changed tag;

@@ -107,6 +107,8 @@
   - Command topic (`/set`)/NCMD handling for remote writes (opt-in, default **off**). ✅
 - **Status**: ✅ **SHIPPED — in-app pure-Dart MQTT 3.1.1 + Sparkplug B publisher CLIENT v1 (`MqttHost`, `mobile/lib/services/mqtt_host.dart`), machine-verified end-to-end against a real embedded `rumqttd` broker + a real `rumqttc` subscriber, in BOTH payload formats (`tool/mqtt_e2e.sh`; see `docs/protocols/MQTT.md`)**
 
+**NDEATH on graceful disconnect (post-ship)** ✅ — a registered MQTT Will only fires on a *dead* connection; a clean MQTT `DISCONNECT` (the **Disconnect** button, or a normal app stop) tells the broker to *suppress* its own Will, so an intentional stop previously left a host/SCADA subscriber believing the node was still `ONLINE` forever. `MqttHost.disconnect()` now publishes an explicit death message first — an NDEATH (Sparkplug B) or retained `"OFFLINE"` (JSON) carrying the *current* session's bdSeq, best-effort, before the graceful `DISCONNECT` — while the registered Will remains exactly the safety net for an *ungraceful* drop it always was. **Machine-verified end-to-end** by a third phase added to `tool/mqtt_e2e.sh`/`gateway/examples/mqtt_probe.rs`: a real `rumqttc` subscriber watches a fresh Dart fixture connect, birth, then self-initiate (never killed by the probe) a clean stop mirroring `MqttHost.disconnect()` exactly, and asserts the NDEATH that arrives carries the *same* bdSeq the NBIRTH did — proof the app-level publish, not the broker's Will, is what put it there (the previous phase's forced-kill Will-triggered NDEATH is drained from the channel first so it can't be mistaken for this one). Documented in `docs/protocols/MQTT.md`.
+
 ---
 
 ## Phase 7: Touch HMI Controls & Mobile UI Polish

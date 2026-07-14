@@ -43,9 +43,10 @@ the app itself  --MQTT 3.1.1 TCP/1883 (or TLS/8883)-->  your broker  --> any sub
    commands from the broker side — see "Remote writes are opt-in" below.
 7. Tap **Connect**. The card shows live status (Stopped / Connecting /
    Running / Error), the endpoint, and a running publish count.
-8. Tap **Disconnect** to send a clean MQTT `DISCONNECT` and tear the
-   connection down; the app is otherwise byte-identical to a build with
-   MQTT never enabled.
+8. Tap **Disconnect** to publish an explicit death notice (see "NDEATH/
+   OFFLINE on an intentional stop" below), then send a clean MQTT
+   `DISCONNECT` and tear the connection down; the app is otherwise
+   byte-identical to a build with MQTT never enabled.
 
 The tag<->metric map (which tags are published, under what metric name, and
 whether they accept a remote write) is **hand-editable** from the MQTT
@@ -109,6 +110,37 @@ traceability) lives at `gateway/proto/sparkplug_b.proto`.
   scan engine, OPC UA server, and Modbus register handler all share — a
   forced tag's telemetry (JSON or Sparkplug alike) always reflects its
   forced value, never its live underlying value.
+
+## NDEATH/OFFLINE on an intentional stop
+
+A registered MQTT Will only fires when the broker detects a **dead**
+connection (keep-alive timeout, TCP reset, or any other ungraceful drop) —
+by design, a **clean** MQTT `DISCONNECT` tells the broker to **suppress**
+the Will entirely (MQTT 3.1.1 §3.1.2.5). That means an intentional stop
+(the **Disconnect** button, or the app closing down normally) would
+otherwise leave a host/SCADA subscriber believing the node is still
+`ONLINE`/birthed indefinitely, since the Will/NDEATH that would normally
+mark it dead never gets sent.
+
+To avoid that, `MqttHost.disconnect()` publishes an explicit death
+message itself, **before** the graceful `DISCONNECT` packet, best-effort
+(a broken socket at this point must not block teardown):
+
+- **Sparkplug B**: an NDEATH on `spBv1.0/{group_id}/NDEATH/{edge_node_id}`
+  carrying the bdSeq metric at its **current session value** — the same
+  value the active NBIRTH used (`MqttPublisher.deathMessage` deliberately
+  does **not** advance `bdSeq`; only `willMessage`, once per new connection,
+  does that) — so a subscriber's NBIRTH/NDEATH bdSeq-pairing convention
+  sees a death that matches the session it's actually ending, not a stale
+  or future one.
+- **JSON**: a retained `"OFFLINE"` republish of the same `status` topic the
+  birth used.
+
+The registered Will remains exactly what it was: the safety net for an
+**ungraceful** drop (crash, lost network, killed process) — this explicit
+message only covers the **graceful** stop path the Will structurally cannot
+cover. Machine-proved end-to-end in `tool/mqtt_e2e.sh`'s Phase 3 — see
+"What is machine-verified vs. manual" below.
 
 ## Composite/struct tag exposure (dotted leaf paths, incl. STRING)
 
@@ -270,11 +302,14 @@ described above.
   test-only decoder — `mobile/test/mqtt_sparkplug_test.dart`.
 - The publisher session logic (birth/will/telemetry descriptors for both
   payload formats, report-by-exception change detection, heartbeat,
-  command decoding, bdSeq pairing/monotonicity, force-awareness) —
-  `mobile/test/mqtt_publisher_test.dart`.
+  command decoding, bdSeq pairing/monotonicity, force-awareness, and the
+  `deathMessage` NDEATH/OFFLINE descriptor carrying the current — not
+  advanced — session bdSeq) — `mobile/test/mqtt_publisher_test.dart`.
 - The `dart:io` socket host (connect/reconnect lifecycle with exponential
   backoff, keep-alive PINGREQ, oversized/hostile-frame connection
-  isolation, force-aware remote-write gating, graceful DISCONNECT) —
+  isolation, force-aware remote-write gating, graceful DISCONNECT
+  publishing the NDEATH death message first with the matching bdSeq, and
+  never doing so before CONNACK or on a never-connected host) —
   `mobile/test/mqtt_host_test.dart`.
 - Additive persistence: the new `protocols.mqtt` key round-trips
   end-to-end alongside the unchanged `opcua`/`modbus`/`gatewayUrl` keys —
@@ -312,6 +347,19 @@ extends Flutter's `ChangeNotifier`, which transitively needs `dart:ui`) in
   same server-side `Counter` mutation as above at its Sparkplug alias; then
   a Sparkplug NCMD write and observing the *next* NDATA reflects the
   written value at its alias (the Sparkplug remote-write round-trip proof).
+- **NDEATH on a clean disconnect** (Phase 3 — the "NDEATH/OFFLINE on an
+  intentional stop" fix above): a THIRD, fresh Dart fixture run connects and
+  births normally, then — entirely on its own, never killed by the Rust
+  probe — self-initiates a clean stop mirroring `MqttHost.disconnect()`
+  exactly: publish the NDEATH (current session bdSeq), flush, **then** send
+  the MQTT `DISCONNECT` packet, then exit. The probe asserts an NDEATH
+  carrying that *same* bdSeq arrives on `spBv1.0/{group_id}/NDEATH/
+  {edge_node_id}` — proof the app-level death publish is what put it there,
+  since a clean `DISCONNECT` suppresses the broker's own registered Will (so
+  before this fix, nothing would ever arrive on this topic here). The
+  channel is drained of the *previous* phase's forced-kill Will-triggered
+  NDEATH first, so a stale message can never be mistaken for this phase's
+  own explicit publish.
 
 Run it from the repo root (bash/Git Bash):
 
@@ -324,8 +372,9 @@ fixture — a *server* there — first and wait for its own `READY` line before
 running the Rust probe as a client), the orchestration direction here is
 inverted: the app is an outbound MQTT *client*, so the Rust binary itself
 starts the embedded broker, then spawns the Dart fixture as a client
-dialing into it (twice — once per payload format), and kills it when each
-phase's assertions are done. A successful run ends with:
+dialing into it (three times — JSON, Sparkplug B, then the clean-disconnect
+NDEATH proof above), killing the fixture itself only for the first two
+phases (the third self-terminates). A successful run ends with:
 
 ```
 MQTT PROBE PASS
