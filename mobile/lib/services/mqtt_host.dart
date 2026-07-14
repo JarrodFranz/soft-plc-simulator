@@ -117,6 +117,7 @@ import '../models/protocol_settings.dart';
 import '../models/tag_resolver.dart';
 import '../protocols/mqtt/mqtt_codec.dart';
 import '../protocols/mqtt/mqtt_publisher.dart';
+import 'notify_throttle.dart';
 
 /// Lifecycle status of the [MqttHost]. `connecting` (absent from the
 /// listen-only hosts, which bind synchronously) covers the time between
@@ -251,7 +252,17 @@ class MqttHost extends ChangeNotifier {
   @visibleForTesting
   final int Function()? nowMsOverride;
 
-  MqttHost({this.pingIntervalOverride, this.nowMsOverride});
+  MqttHost({this.pingIntervalOverride, this.nowMsOverride}) {
+    _throttle = NotifyThrottle(() => notifyListeners(), window: const Duration(milliseconds: 250));
+  }
+
+  /// Coalesces the high-frequency per-tick `notifyListeners()` calls (up to
+  /// 20x/sec at the fastest configurable publish interval) to at most one
+  /// trailing UI rebuild every 250ms — see `notify_throttle.dart`. State
+  /// transitions (connect/connack/disconnect/error/rebirth) instead call
+  /// [NotifyThrottle.immediate] so the UI reflects them without delay (and
+  /// coalesces away any pending trailing tick-driven fire).
+  late final NotifyThrottle _throttle;
 
   /// The current wall-clock time in UTC epoch milliseconds — what Sparkplug B
   /// (and the JSON payload) require for a message timestamp. Defers to
@@ -293,7 +304,7 @@ class MqttHost extends ChangeNotifier {
     _status = s;
     _lastError = error;
     if (!_disposed) {
-      notifyListeners();
+      _throttle.immediate();
     }
   }
 
@@ -569,7 +580,7 @@ class MqttHost extends ChangeNotifier {
       }
       _lastHeartbeatMs = _clock.elapsedMilliseconds;
       if (!_disposed) {
-        notifyListeners();
+        _throttle.immediate();
       }
       return;
     }
@@ -625,7 +636,7 @@ class MqttHost extends ChangeNotifier {
         }
       }
       if (sentAny && !_disposed) {
-        notifyListeners();
+        _throttle.request();
       }
     } catch (_) {
       // A crash driving the publish tick must never take this host down —
@@ -774,7 +785,7 @@ class MqttHost extends ChangeNotifier {
       }
       _lastHeartbeatMs = _clock.elapsedMilliseconds;
       if (!_disposed) {
-        notifyListeners();
+        _throttle.immediate();
       }
     } catch (_) {
       // A manual rebirth request must never throw — it's a best-effort UI
@@ -807,6 +818,7 @@ class MqttHost extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _throttle.dispose();
     unawaited(disconnect());
     super.dispose();
   }
