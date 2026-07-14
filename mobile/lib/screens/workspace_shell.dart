@@ -2556,6 +2556,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         hmiScreen: hmi,
         onScanTriggered: () => setState(() => _executeScan()),
         onProjectUpdated: _markDirtyAndAutosave,
+        historian: _historian,
       );
     } else if (_activeViewId == 'MEMORY') {
       return MemoryManagerScreen(

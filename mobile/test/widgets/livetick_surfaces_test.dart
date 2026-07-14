@@ -11,6 +11,7 @@ import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 import 'package:soft_plc_mobile/screens/hmi_dashboard_builder_screen.dart';
 import 'package:soft_plc_mobile/screens/workspace_shell.dart';
+import 'package:soft_plc_mobile/services/tag_historian.dart';
 import 'package:soft_plc_mobile/widgets/live_tick.dart';
 import '../support/responsive_test_utils.dart';
 
@@ -54,6 +55,7 @@ Widget _hmiHarness(PlcProject project, LiveTick tick) {
         hmiScreen: project.hmis.first,
         onScanTriggered: () {},
         onProjectUpdated: () {},
+        historian: TagHistorian(),
       ),
     ),
   );
