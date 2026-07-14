@@ -69,6 +69,9 @@ void main() {
     await pumpAt(320);
     expect(tester.takeException(), isNull);
 
+    await pumpAt(360);
+    expect(tester.takeException(), isNull);
+
     await pumpAt(1400);
     expect(tester.takeException(), isNull);
   });
