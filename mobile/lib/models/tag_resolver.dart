@@ -483,3 +483,40 @@ List<String> leafAndNodePaths(PlcProject p) {
   }
   return out;
 }
+
+/// One scalar leaf of a tag: its addressable dotted path and base dataType.
+class TagLeaf {
+  final String path;
+  final String dataType;
+  const TagLeaf(this.path, this.dataType);
+}
+
+/// Every scalar leaf across all of [p]'s tags. A scalar tag yields itself; a
+/// composite yields its scalar struct members (recursively); an array yields
+/// its scalar elements. Composite/array container nodes are not emitted;
+/// integers are leaves (bits are not expanded).
+List<TagLeaf> scalarLeaves(PlcProject p) {
+  final out = <TagLeaf>[];
+  void walk(String path, String base, int arrayLength, dynamic value) {
+    if (arrayLength > 0 && value is List) {
+      for (var i = 0; i < value.length; i++) {
+        walk('$path[$i]', base, 0, value[i]);
+      }
+      return;
+    }
+    final comp = lookupComposite(p, base);
+    if (comp != null && value is Map) {
+      for (final f in comp.fields) {
+        walk('$path.${f.name}', f.dataType, f.arrayLength, value[f.name]);
+      }
+      return;
+    }
+    // Scalar leaf.
+    out.add(TagLeaf(path, base));
+  }
+
+  for (final t in p.tags) {
+    walk(t.name, t.dataType, t.arrayLength, t.value);
+  }
+  return out;
+}
