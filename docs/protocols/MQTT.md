@@ -110,6 +110,31 @@ traceability) lives at `gateway/proto/sparkplug_b.proto`.
   forced tag's telemetry (JSON or Sparkplug alike) always reflects its
   forced value, never its live underlying value.
 
+## Composite/struct tag exposure (dotted leaf paths, incl. STRING)
+
+Like the OPC UA/Modbus/DNP3 adapters, a composite tag (a struct, an array,
+or the reserved `System` diagnostics UDT) is never published as one metric —
+**Regenerate** instead walks every tag's scalar leaves (the shared
+`scalarLeaves` resolver) and adds one metric entry per leaf, keyed by its
+dotted/indexed path (`System.Fault`, `Recipe_Steps[0]`, `Motor.Speed`, ...).
+A plain scalar tag is unaffected, so a scalar-only project's map regenerates
+unchanged.
+
+MQTT is the **one adapter of the four that publishes `STRING` leaves** —
+`System.DateTime`, for example, is published as a JSON string value or a
+Sparkplug `string_value` metric. Modbus and DNP3 skip `STRING`/`TIMER`/
+`COUNTER` leaves entirely (no wire representation defined for them there —
+see `docs/protocols/modbus.md`/`docs/protocols/DNP3.md`); OPC UA also
+exposes `STRING` leaves (see `docs/protocols/opcua.md`).
+
+`System.*` is always published **non-writable** (`writable: false`): the
+reserved `System` tag carries an explicit `access: 'ReadOnly'` independent of
+`ioType`, and the auto-map's writable/read-only rule checks both signals
+(`root.ioType == 'SimulatedOutput' || root.access == 'ReadOnly'`) — so even
+with **Allow remote writes** enabled, a `.../System.Fault/set` (JSON) or
+NCMD write targeting a `System.*` metric is rejected by the map's `writable`
+check the same way any other read-only tag's remote write is.
+
 ## Password handling
 
 The broker **password** is supplied fresh to `MqttHost.connect(...,
@@ -154,6 +179,52 @@ to every mapped tag's current value at each birth (fresh connection) — so
 the very first tick after a (re)connect reports nothing until something
 actually changes past that snapshot.
 
+## Publish interval + analog deadband (perf tuning)
+
+Two additive, per-project `protocols.mqtt` fields tune how much load the
+report-by-exception tick above puts on the broker/network, useful once a
+map has many tags or many connected instances:
+
+- **Publish interval** (`publishIntervalMs`, default **250 ms**, floor
+  **20 ms**) — how often the internal tick fires and compares mapped tags
+  against their last-published baseline. It only takes effect on the next
+  (re)connect (like the existing heartbeat field), so the interval field on
+  the MQTT card is disabled while connected/connecting.
+- **Analog deadband** (`deadband`, default **0.0**, meaning **off**) — a
+  numeric tag's report-by-exception publish is suppressed while its value
+  stays within `deadband` of the last value this session actually
+  published, exactly like the OPC UA subscription deadband (see
+  `docs/protocols/opcua.md`'s "Subscriptions (v2)"). The suppressed baseline
+  does **not** drift — it stays pinned at the last **published** value, so
+  several small sub-deadband moves don't silently accumulate into a large
+  unreported change. Only applies to numeric (`num`) values; `BOOL`/`STRING`
+  tags always publish on any change regardless of `deadband`. This field is
+  read live on every tick (no reconnect needed), so it's editable on the MQTT
+  card while connected.
+
+Both fields round-trip through project serialization (missing keys back-fill
+their defaults, so an older saved project loads unaffected) —
+`mobile/test/protocol_settings_test.dart`. The deadband gate itself is
+verified against the real publisher/birth/report-by-exception path (baseline
+seeding, suppression, and baseline advancement on a publish) —
+`mobile/test/models/mqtt_deadband_test.dart`.
+
+### UI notification throttling
+
+Independent of the wire-level interval/deadband above, `MqttHost`'s
+`notifyListeners()` calls (which drive the Outbound Protocols card's live
+publish-count/status display) are coalesced through a small shared
+`NotifyThrottle` (`mobile/lib/services/notify_throttle.dart`) to a trailing
+~250 ms window on the per-tick "published N tags" notification — a fast
+tick interval no longer means the UI repaints every single tick. Status
+transitions (connecting/running/error/stopped), an inbound Sparkplug
+rebirth, and the manual **Rebirth** button all still notify **immediately**
+(no throttling), so the card never looks stale on anything the user would
+consider a state change — only the high-frequency "did we publish anything
+this tick" signal is throttled. Verified in isolation (`mobile/test/
+services/notify_throttle_test.dart`, using `fake_async`) and does not
+change any publish/interval/deadband behavior itself.
+
 ## Transport: TCP native + TLS
 
 Connections are plain TCP (`Socket.connect`) by default, or TLS
@@ -179,12 +250,10 @@ described above.
 - **Broker-side retained-message inspection/clearing from the UI** — the
   app publishes retained birth/will messages but has no UI to browse or
   clear what a broker is currently retaining.
-- **STRING-typed tag telemetry** — the Sparkplug encoder supports a
-  `string_value` field on the wire, but this app's tag<->metric auto-map
-  only ever maps `BOOL`/`INT16`/`INT32`/`FLOAT64` scalar tags (matching the
-  Modbus/OPC UA auto-map's scalar-only scope); `STRING`/`TIMER`/`COUNTER`
-  tags and composite (struct/array) tags are skipped, same restriction the
-  other two adapters have today.
+- **`TIMER`/`COUNTER`-typed tag telemetry** — the auto-map still skips these
+  two data types entirely (no Sparkplug/JSON value shape is defined for
+  them). `STRING` is **not** in this list any more — see "Composite/struct
+  tag exposure" below.
 
 ## What is machine-verified vs. manual
 

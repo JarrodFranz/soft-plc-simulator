@@ -98,6 +98,54 @@ Basic256Sha256 interop, included) is expected to render the same
 standard Organizes reference and `FolderType` type definition every OPC UA
 client already understands.
 
+## Composite/struct tag exposure (dotted leaf paths)
+
+A composite tag (a struct-typed tag, an array, or the reserved `System`
+diagnostics UDT — see `docs/task-scheduling.md`) is never exposed as one
+node; **Regenerate** instead walks every tag's scalar leaves (the shared
+`scalarLeaves` resolver in `mobile/lib/models/tag_resolver.dart`) and adds
+one `Variable` node per leaf, addressed by its **dotted/indexed path** —
+`System.Fault`, `System.ScanTimeMs`, `Recipe_Steps[0]`, `Motor.Speed`, and so
+on. The address space's `Browse`/`Read`/`Write` handlers (`mobile/lib/
+protocols/opcua/opcua_address_space.dart`) resolve that dotted path through
+the same force-aware `readPath`/`writePath` resolver every other adapter and
+the scan engine share, so a leaf node reads/writes exactly like a top-level
+scalar tag — the only difference is the node id's path segment. A plain
+scalar tag is unaffected (its "leaf path" is just its own name), so a
+project with no composite tags regenerates byte-identically to before this
+feature existed.
+
+The node id's addressable prefix still comes from the **root** tag's
+folder-qualified `path` (not the resolver-key name) — e.g. a `Start_PB` tag
+living in the `Inputs` folder keeps `ns=1;s=Inputs/Start_PB` even though its
+dotted resolver key is `Start_PB`; a `System.Fault` leaf becomes
+`ns=1;s=System.Fault` because the `System` tag's own `path` is `System`.
+This preserves every previously-shipped scalar node id (see "Out of scope"
+below) while making composite leaves addressable at all.
+
+**STRING leaves are exposed here** (unlike Modbus/DNP3, which skip
+`STRING`/`TIMER`/`COUNTER` leaves entirely — see `docs/protocols/modbus.md`/
+`docs/protocols/DNP3.md`): `System.DateTime`, for example, appears as a
+readable `String` node. `TIMER`/`COUNTER`-typed leaves are still skipped
+(no OPC UA `Variant` mapping is defined for them).
+
+**`System.*` is read-only on the wire, always.** The reserved `System` tag
+carries an explicit `access: 'ReadOnly'` on the `PlcTag` itself (independent
+of `ioType`), and every map's leaf-expansion checks both signals
+(`root.ioType == 'SimulatedOutput' || root.access == 'ReadOnly'`) — so every
+`System.*` leaf node (`System.Fault`, `System.ScanTimeMs`, ...) is generated
+`ReadOnly` and a write attempt gets the same `Bad_NotWritable` any other
+`ReadOnly` node returns. The one exception is `System.AlarmReset`, which
+stays outside `scalarLeaves`'s composite expansion of the diagnostics fields
+an operator can legitimately write (see `docs/task-scheduling.md`) — it is
+not part of this dotted-leaf mechanism.
+
+This is machine-verified end-to-end against the real Rust `opcua` client
+(`tool/opcua_e2e.sh`): the probe reads the auto-generated `System.Fault`
+(`Boolean`) and `System.ScanTimeMs` (`Double`) nodes live off the running
+fixture host — proof the dotted-path resolution works over the real wire,
+not just in a unit test (`mobile/test/opcua_address_space_leaf_test.dart`).
+
 ## v1 scope (and what's deferred to v2+)
 
 **v1 delivers:** `opc.tcp` transport (Hello/Acknowledge/Error framing),
@@ -356,6 +404,14 @@ client-signature verification) are now **CLOSED**:
   references (a node whose `tag` no longer exists in the project is skipped
   from Browse and answers `Bad_NodeIdUnknown` on Read/Write) —
   `mobile/test/opcua_services_test.dart`.
+- Dotted-path leaf resolution for composite/`System` tags (`System.Fault`
+  resolves to `BOOL`, live `readVariant` returns the current value; a bare
+  scalar tag's root-path node id is unchanged) —
+  `mobile/test/opcua_address_space_leaf_test.dart`. The scalar-only
+  regression (a folder-qualified tag keeps its pre-existing
+  `ns=1;s=Inputs/Start_PB`-style node id rather than being renamed to the
+  resolver-key name) is covered by `mobile/test/opcua_map_test.dart` and
+  `mobile/test/models/composite_map_expansion_test.dart`.
 - The hosting UI (Start/Stop, port field, status, endpoint display, the
   port-field refresh on a project switch): `mobile/test/gateway_screen_test.dart`.
 - Additive persistence: the new `port` field round-trips; `protocols`/`opcua`
@@ -443,6 +499,9 @@ KeyUsage/ExtendedKeyUsage extensions a strict client demands (see "Known
 limitations" above), but a strict client still requires a **regenerated**
 cert if the on-device identity predates that change — use the OPC UA
 card's Regenerate action first. Do not use it to control real
-safety-critical equipment. Historical access and method nodes are not implemented;
-scalar leaf tags only (struct/array members are not individually addressable
-as separate nodes in v1).
+safety-critical equipment. Historical access and method nodes are not
+implemented. Struct/array members **are** individually addressable — each
+scalar leaf of a composite tag becomes its own dotted-path node (see
+"Composite/struct tag exposure" above) — but a composite tag is never
+addressable as a single aggregate/structured-value node; there is no
+`Structure`-encoded Variant that reads a whole struct or array in one Read.

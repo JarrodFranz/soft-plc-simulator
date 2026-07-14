@@ -54,9 +54,14 @@ additive `protocols.dnp3` field.
 
 Each point type has its own independently-numbered, 0-based index space (an
 Analog Input at index 0 and a Binary Output at index 0 are unrelated
-points). A tag can appear at most once in the map. Composite (struct/array)
-tags and `TIMER`/`COUNTER`/`STRING` tags are not supported (matching the
-Modbus/OPC UA/MQTT adapters' scalar-only scope).
+points). A tag can appear at most once in the map. A composite (struct/array)
+tag is not mapped as a single unit — **Regenerate** instead expands it into
+its scalar leaf members (the shared `scalarLeaves` resolver; e.g. the
+reserved `System` UDT expands to `System.Fault`, `System.ScanTimeMs`, ...)
+and maps each dotted-path leaf like any other scalar tag. `TIMER`/`COUNTER`/
+`STRING` **leaves** (including `System.DateTime`) are still skipped entirely
+(matching Modbus's scalar-leaf-only scope; OPC UA and MQTT do expose STRING
+leaves — see `docs/protocols/opcua.md`/`docs/protocols/MQTT.md`).
 
 ## Class 0 integrity polling
 
