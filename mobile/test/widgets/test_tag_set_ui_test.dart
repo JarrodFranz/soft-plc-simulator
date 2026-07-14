@@ -3,13 +3,17 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/test_tag_set.dart';
 import 'package:soft_plc_mobile/screens/memory_manager_screen.dart';
+import 'package:soft_plc_mobile/widgets/live_tick.dart';
 
 void main() {
   testWidgets('generate + delete a test set updates tags, gens, and maps', (tester) async {
     final proj = PlcProject(id: 'x', name: 'x', controllerName: 'c',
         tags: [], structDefs: [], programs: [], tasks: [], hmis: []);
-    await tester.pumpWidget(MaterialApp(
-      home: MemoryManagerScreen(currentProject: proj, onProjectUpdated: () {}),
+    await tester.pumpWidget(LiveTickScope(
+      notifier: LiveTick(),
+      child: MaterialApp(
+        home: MemoryManagerScreen(currentProject: proj, onProjectUpdated: () {}),
+      ),
     ));
     await tester.pumpAndSettle();
     final state = tester.state<MemoryManagerScreenState>(find.byType(MemoryManagerScreen));
@@ -29,8 +33,11 @@ void main() {
   testWidgets('debugGenerateTestSet rejects count <= 0 and adds nothing', (tester) async {
     final proj = PlcProject(id: 'x', name: 'x', controllerName: 'c',
         tags: [], structDefs: [], programs: [], tasks: [], hmis: []);
-    await tester.pumpWidget(MaterialApp(
-      home: MemoryManagerScreen(currentProject: proj, onProjectUpdated: () {}),
+    await tester.pumpWidget(LiveTickScope(
+      notifier: LiveTick(),
+      child: MaterialApp(
+        home: MemoryManagerScreen(currentProject: proj, onProjectUpdated: () {}),
+      ),
     ));
     await tester.pumpAndSettle();
     final state = tester.state<MemoryManagerScreenState>(find.byType(MemoryManagerScreen));

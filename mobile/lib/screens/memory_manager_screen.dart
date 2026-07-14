@@ -4,6 +4,7 @@ import '../models/system_tags.dart';
 import '../models/tag_resolver.dart';
 import '../models/test_tag_set.dart';
 import '../ui/responsive.dart';
+import '../widgets/live_tick.dart';
 
 /// Resolved, display-ready data for one row of the hierarchical tag tree —
 /// shared by both the desktop [DataTable] and the compact card list so the
@@ -39,17 +40,23 @@ class _TagRowData {
     required this.hasChildren,
   });
 
-  String get valueText {
+  // Formats an arbitrary value the same way [valueText] formats [rawValue] —
+  // shared so the LiveTick-driven builders can re-read the current value and
+  // format it identically without duplicating the hasChildren/isBoolLeaf
+  // branching logic.
+  String valueTextFor(dynamic value) {
     if (hasChildren) {
-      return rawValue is Map
+      return value is Map
           ? '{...}'
-          : (rawValue is List ? '[${(rawValue as List).length}]' : '$rawValue');
+          : (value is List ? '[${value.length}]' : '$value');
     }
     if (isBoolLeaf) {
-      return (rawValue == true) ? 'TRUE (1)' : 'FALSE (0)';
+      return (value == true) ? 'TRUE (1)' : 'FALSE (0)';
     }
-    return '$rawValue';
+    return '$value';
   }
+
+  String get valueText => valueTextFor(rawValue);
 }
 
 class MemoryManagerScreen extends StatefulWidget {
@@ -716,9 +723,46 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
     );
   }
 
+  // Same label/row layout as [_cardField], but the value slot is a widget
+  // (the LiveTick-driven builder) instead of static text.
+  Widget _cardFieldLive(String label, Widget valueWidget) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 90,
+            child: Text(label, style: const TextStyle(color: Colors.grey, fontSize: 11)),
+          ),
+          Expanded(child: valueWidget),
+        ],
+      ),
+    );
+  }
+
+  // Re-reads the live value for [row], mirroring exactly how `_buildRowData`
+  // populated its `rawValue` in the first place: root rows (depth 0) read
+  // `tag.value` straight off the tag object — force is intentionally not
+  // surfaced here, matching prior behavior; only the Tag Inspector shows a
+  // root's forced value — while nested rows resolve through `readPath`,
+  // which walks the same struct/array/bit chain `childrenOf` used to
+  // populate them. Falls back to the row's original snapshot if the tag has
+  // since been deleted out from under it.
+  dynamic _liveValueFor(_TagRowData row) {
+    if (row.depth == 0) {
+      for (final tag in widget.currentProject.tags) {
+        if (tag.name == row.path) {
+          return tag.value;
+        }
+      }
+      return row.rawValue;
+    }
+    return readPath(widget.currentProject, row.path);
+  }
+
   Widget _cardValueField(_TagRowData row) {
     if (!row.hasChildren && row.isBoolLeaf) {
-      final on = row.rawValue == true;
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 2),
         child: Row(
@@ -727,17 +771,32 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
               width: 90,
               child: Text('Live Value', style: TextStyle(color: Colors.grey, fontSize: 11)),
             ),
-            touchable(
-              Text(row.valueText,
-                  style: TextStyle(
-                      fontWeight: FontWeight.bold, fontSize: 12, color: on ? Colors.greenAccent : Colors.grey)),
-              onTap: () => _toggleBoolValue(row),
+            ListenableBuilder(
+              listenable: LiveTickScope.of(context),
+              builder: (context, _) {
+                final liveValue = _liveValueFor(row);
+                final on = liveValue == true;
+                return touchable(
+                  Text(row.valueTextFor(liveValue),
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 12, color: on ? Colors.greenAccent : Colors.grey)),
+                  onTap: () => _toggleBoolValue(row),
+                );
+              },
             ),
           ],
         ),
       );
     }
-    return _cardField('Live Value', row.valueText);
+    return _cardFieldLive(
+      'Live Value',
+      ListenableBuilder(
+        listenable: LiveTickScope.of(context),
+        builder: (context, _) => Text(row.valueTextFor(_liveValueFor(row)),
+            style: const TextStyle(color: Colors.white, fontSize: 12),
+            overflow: TextOverflow.ellipsis),
+      ),
+    );
   }
 
   // Builds the flat, depth-annotated list of resolved row data for the whole
@@ -899,25 +958,35 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
     }).toList();
   }
 
-  // The Live Value cell for the DataTable: BOOL leaves toggle, others display text.
+  // The Live Value cell for the DataTable: BOOL leaves toggle, others display
+  // text. Wrapped in a LiveTick-driven ListenableBuilder so it repaints on a
+  // tick pulse (re-reading the value fresh each time) rather than only when
+  // an ancestor setStates.
   Widget _valueCellForTable(_TagRowData row) {
-    if (!row.hasChildren && row.isBoolLeaf) {
-      final on = row.rawValue == true;
-      return TextButton(
-        onPressed: () => _toggleBoolValue(row),
-        child: Text(row.valueText,
+    return ListenableBuilder(
+      listenable: LiveTickScope.of(context),
+      builder: (context, _) {
+        final liveValue = _liveValueFor(row);
+        final text = row.valueTextFor(liveValue);
+        if (!row.hasChildren && row.isBoolLeaf) {
+          final on = liveValue == true;
+          return TextButton(
+            onPressed: () => _toggleBoolValue(row),
+            child: Text(text,
+                style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: row.depth == 0 ? 12 : 10,
+                    color: on ? Colors.greenAccent : Colors.grey)),
+          );
+        }
+        return Text(text,
             style: TextStyle(
                 fontWeight: FontWeight.bold,
-                fontSize: row.depth == 0 ? 12 : 10,
-                color: on ? Colors.greenAccent : Colors.grey)),
-      );
-    }
-    return Text(row.valueText,
-        style: TextStyle(
-            fontWeight: FontWeight.bold,
-            color: row.hasChildren ? Colors.grey : (row.depth == 0 ? Colors.greenAccent : Colors.white),
-            fontFamily: row.depth == 0 ? 'monospace' : null,
-            fontSize: row.depth == 0 ? 13 : 11));
+                color: row.hasChildren ? Colors.grey : (row.depth == 0 ? Colors.greenAccent : Colors.white),
+                fontFamily: row.depth == 0 ? 'monospace' : null,
+                fontSize: row.depth == 0 ? 13 : 11));
+      },
+    );
   }
 
   Widget _buildStructDefsTab() {
