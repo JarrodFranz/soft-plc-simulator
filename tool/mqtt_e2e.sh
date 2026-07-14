@@ -3,10 +3,12 @@
 # which (unlike `tool/modbus_e2e.sh`/`tool/opcua_e2e.sh`) does ALL of its own
 # orchestration internally -- it embeds a real `rumqttd` broker, connects a
 # real `rumqttc` subscriber, spawns the Dart fixture host
-# (`mobile/tool/mqtt_host_probe.dart`) as a child process TWICE (once per
-# payload format: JSON, then Sparkplug B), and asserts birth/telemetry/
-# NBIRTH-NDATA/remote-write round-trips against each. This wrapper only adds
-# a bounded timeout and consistent logging, matching the other protocols'
+# (`mobile/tool/mqtt_host_probe.dart`) as a child process THREE TIMES (JSON,
+# then Sparkplug B, then a third Sparkplug B run that self-initiates a clean
+# disconnect to machine-prove the NDEATH-on-disconnect fix), and asserts
+# birth/telemetry/NBIRTH-NDATA/remote-write round-trips plus the
+# clean-disconnect NDEATH against each. This wrapper only adds a bounded
+# timeout and consistent logging, matching the other protocols'
 # `tool/*_e2e.sh` scripts.
 #
 # ROLE REVERSAL vs. modbus/opcua: those Dart fixture hosts are SERVERS this
@@ -24,16 +26,17 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 log() { echo "[e2e] $*"; }
 
 log "repo root: ${REPO_ROOT}"
-log "running the Rust mqtt_probe example (embeds rumqttd + rumqttc, drives the Dart MQTT/Sparkplug B fixture host twice: JSON then Sparkplug)..."
+log "running the Rust mqtt_probe example (embeds rumqttd + rumqttc, drives the Dart MQTT/Sparkplug B fixture host three times: JSON, Sparkplug, then a clean-disconnect NDEATH proof)..."
 
-# Budget: broker bind (~<1s) + two fixture-process starts (~a few s of `dart
-# run` VM startup each) + up to 15s per individual wait_for() inside the
-# probe (several waits per phase, but each resolves in well under a second
-# once the expected message actually arrives -- the 15s bound is a ceiling,
-# not the expected latency) + the fixture's own fixed T+3s server-side
-# mutation, twice (once per phase) = comfortably under 150s; rounded up for
-# slow CI/build machines.
-timeout 180 cargo run --manifest-path "${REPO_ROOT}/gateway/Cargo.toml" --example mqtt_probe
+# Budget: broker bind (~<1s) + three fixture-process starts (~a few s of
+# `dart run` VM startup each) + up to 15s per individual wait_for() inside
+# the probe (several waits per phase, but each resolves in well under a
+# second once the expected message actually arrives -- the 15s bound is a
+# ceiling, not the expected latency) + the fixture's own fixed T+3s
+# server-side mutation (Phases 1-2) + Phase 3's fixed ~1.2s clean-disconnect
+# delay + its up to 5s (ceiling) exit-reap wait = comfortably under 170s;
+# rounded up for slow CI/build machines.
+timeout 200 cargo run --manifest-path "${REPO_ROOT}/gateway/Cargo.toml" --example mqtt_probe
 PROBE_EXIT=$?
 
 log "probe exit code: ${PROBE_EXIT}"

@@ -27,7 +27,7 @@
 //! fixed constants shared between this file and
 //! `mobile/tool/mqtt_host_probe.dart`; see the doc comments below).
 //!
-//! Two sequential phases against ONE embedded broker instance (safe to
+//! Three sequential phases against ONE embedded broker instance (safe to
 //! share: JSON traffic lives under `softplc/...`, Sparkplug B under
 //! `spBv1.0/...` -- disjoint topic trees, so retained state from one phase
 //! can never taint the other's assertions):
@@ -62,9 +62,28 @@
 //!      alias 3 `int_value==999` -- the Sparkplug remote-write round-trip
 //!      proof.
 //!
-//! Prints `MQTT PROBE PASS` and exits 0 only if EVERY assertion above (both
-//! phases) passed; on any failure prints `MQTT PROBE FAIL: <reason>` and
-//! exits 1 -- never panics past the top level.
+//! Phase 3 (mqtt-ndeath-on-disconnect): kill the Phase 2 fixture (a forced,
+//! ungraceful drop -- legitimately fires the broker's registered Will, so
+//! the channel is drained of that stray NDEATH before this phase starts;
+//! see `drain_pending`'s doc comment), then spawn ANOTHER fresh `sparkplug`
+//! Dart fixture, this time with the `clean_disconnect_after_ms` CLI argument
+//! (see `mqtt_host_probe.dart`'s doc comment). That fixture connects, births
+//! normally, then — entirely on its own, never killed by this probe —
+//! self-initiates a clean stop mirroring `MqttHost.disconnect()` exactly:
+//! publish the Sparkplug B NDEATH death certificate (current session bdSeq),
+//! flush, THEN send the MQTT DISCONNECT packet, THEN `exit(0)`. Assert:
+//!   1. the NBIRTH's `bdSeq` metric value (call it N).
+//!   2. an NDEATH arrives on `spBv1.0/SoftPLC/NDEATH/E2ENode` carrying that
+//!      SAME bdSeq == N -- proof the app publishes an explicit death
+//!      certificate before a graceful DISCONNECT (a clean DISCONNECT
+//!      suppresses the broker Will, so before this fix NOTHING would ever
+//!      arrive on this topic here).
+//!   3. (best-effort) the fixture process exits on its own shortly after,
+//!      confirming this was a genuine clean stop and not a severed socket.
+//!
+//! Prints `MQTT PROBE PASS` and exits 0 only if EVERY assertion above (all
+//! three phases) passed; on any failure prints `MQTT PROBE FAIL: <reason>`
+//! and exits 1 -- never panics past the top level.
 #[path = "support/sparkplug_pb.rs"]
 mod sparkplug_pb;
 
@@ -130,6 +149,15 @@ fn ndata_topic() -> String {
 fn ncmd_topic() -> String {
     format!("spBv1.0/{GROUP_ID}/NCMD/{EDGE_NODE}")
 }
+fn ndeath_topic() -> String {
+    format!("spBv1.0/{GROUP_ID}/NDEATH/{EDGE_NODE}")
+}
+
+/// The delay (ms) the Phase 3 Dart fixture waits after its own CONNACK
+/// before self-initiating a clean stop (NDEATH publish, flush, MQTT
+/// DISCONNECT, flush, close, `exit(0)` -- all internal to the Dart process,
+/// never triggered by this Rust probe). Comfortably inside [WAIT_BOUND].
+const CLEAN_DISCONNECT_AFTER_MS: u64 = 1_200;
 
 /// Builds a minimal embedded-broker `Config`: one plain TCP (MQTT 3.1.1)
 /// listener on `127.0.0.1:{port}`, no TLS/v5/websocket/cluster/console/
@@ -188,6 +216,13 @@ fn broker_config(port: u16) -> Config {
 /// need for the same underlying `dart.bat`-wrapper reason, just from Rust
 /// instead of Bash).
 fn spawn_dart_fixture(format: &str) -> Result<Child, String> {
+    spawn_dart_fixture_with_arg(format, None)
+}
+
+/// As [spawn_dart_fixture], but with an optional extra positional CLI
+/// argument -- used by Phase 3 to pass `clean_disconnect_after_ms` (see
+/// `mobile/tool/mqtt_host_probe.dart`'s doc comment on that argument).
+fn spawn_dart_fixture_with_arg(format: &str, extra_arg: Option<&str>) -> Result<Child, String> {
     let mobile_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mobile");
     let mut cmd = if cfg!(windows) {
         let mut c = Command::new("cmd");
@@ -204,8 +239,30 @@ fn spawn_dart_fixture(format: &str) -> Result<Child, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    if let Some(extra) = extra_arg {
+        cmd.arg(extra);
+    }
     cmd.spawn()
         .map_err(|e| format!("failed to spawn Dart fixture ({format}): {e}"))
+}
+
+/// Discards every message currently queued in `rx` without blocking --
+/// used between phases so a stray broker-Will-triggered NDEATH from the
+/// PREVIOUS phase's forced `kill_dart_fixture` (an ungraceful TCP drop,
+/// which legitimately fires the Will/NDEATH) can never be mistaken for the
+/// NEXT phase's own explicit clean-disconnect NDEATH -- both would otherwise
+/// carry the same bdSeq (every fresh fixture process starts a brand-new
+/// `MqttPublisher` whose bdSeq begins at 0 and becomes 1 at its first
+/// `willMessage()` call), so without draining, a stale message could produce
+/// a false pass that never actually exercised the fix under test.
+fn drain_pending(rx: &mut mpsc::UnboundedReceiver<Publish>) {
+    while let Ok(p) = rx.try_recv() {
+        println!(
+            "[probe] (draining stale {} bytes on {:?} before next phase)",
+            p.payload.len(),
+            p.topic
+        );
+    }
 }
 
 /// Kills `child` and (on Windows) its whole process subtree via
@@ -603,6 +660,108 @@ async fn run() -> Result<(), String> {
         return Err(e);
     }
     println!("[probe] Sparkplug remote-write round-trip OK: alias 3 (Speed) = {SPARKPLUG_WRITTEN_SPEED_VALUE}");
+
+    // ======================================================================
+    // Phase 3: Sparkplug B NDEATH on a CLEAN disconnect (mqtt-ndeath-on-
+    // disconnect machine-proof)
+    // ======================================================================
+    // The kill above was an ungraceful TCP drop (taskkill/SIGKILL), which
+    // legitimately fires the broker's registered Will -- give that up to
+    // ~500ms to land, then drain it, so Phase 3 starts with a clean channel
+    // (see `drain_pending`'s doc comment for why this matters).
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    drain_pending(&mut rx);
+
+    println!("[probe] === Phase 3: Sparkplug B NDEATH on a CLEAN disconnect ===");
+    let mut death_child = spawn_dart_fixture_with_arg("sparkplug", Some(&CLEAN_DISCONNECT_AFTER_MS.to_string()))?;
+
+    let nbirth3_pub = wait_for(&mut rx, "Sparkplug NBIRTH (clean-disconnect phase)", |p| p.topic == nbirth_topic()).await;
+    let nbirth3_pub = match nbirth3_pub {
+        Ok(p) => p,
+        Err(e) => {
+            kill_dart_fixture(&mut death_child);
+            return Err(e);
+        }
+    };
+    let nbirth3 = match decode_sparkplug(&nbirth3_pub) {
+        Ok(v) => v,
+        Err(e) => {
+            kill_dart_fixture(&mut death_child);
+            return Err(e);
+        }
+    };
+    let birth_bdseq = match nbirth3.metrics.iter().find(|m| m.name.as_deref() == Some("bdSeq")).and_then(|m| m.long_value) {
+        Some(v) => v,
+        None => {
+            kill_dart_fixture(&mut death_child);
+            return Err("clean-disconnect-phase NBIRTH missing a bdSeq metric".to_string());
+        }
+    };
+    println!("[probe] clean-disconnect-phase NBIRTH bdSeq = {birth_bdseq}");
+
+    // The fixture self-initiates its own clean stop CLEAN_DISCONNECT_AFTER_MS
+    // after CONNACK, mirroring `MqttHost.disconnect()` exactly: NDEATH
+    // (current session bdSeq) published and flushed, THEN an MQTT DISCONNECT
+    // packet, THEN it exits(0) entirely on its own -- this probe never kills
+    // it before this point. A clean DISCONNECT tells the broker to suppress
+    // the registered Will, so the ONLY way an NDEATH can arrive here is the
+    // fixture's own explicit publish -- exactly the fix under test (before
+    // the fix, a graceful DISCONNECT would leave the host silently "Online"
+    // forever).
+    let ndeath_pub = wait_for(&mut rx, "Sparkplug NDEATH on clean disconnect", |p| p.topic == ndeath_topic()).await;
+    let ndeath_pub = match ndeath_pub {
+        Ok(p) => p,
+        Err(e) => {
+            kill_dart_fixture(&mut death_child);
+            return Err(e);
+        }
+    };
+    let ndeath_payload = match decode_sparkplug(&ndeath_pub) {
+        Ok(v) => v,
+        Err(e) => {
+            kill_dart_fixture(&mut death_child);
+            return Err(e);
+        }
+    };
+    let death_bdseq = ndeath_payload.metrics.iter().find(|m| m.name.as_deref() == Some("bdSeq")).and_then(|m| m.long_value);
+    if death_bdseq != Some(birth_bdseq) {
+        kill_dart_fixture(&mut death_child);
+        return Err(format!(
+            "NDEATH bdSeq mismatch: NBIRTH carried bdSeq={birth_bdseq}, but NDEATH carried {death_bdseq:?} (expected Some({birth_bdseq}))"
+        ));
+    }
+    println!(
+        "[probe] NDEATH-on-clean-disconnect OK: bdSeq {birth_bdseq} matches the NBIRTH -- the app published an explicit death certificate before its own graceful DISCONNECT."
+    );
+
+    // The fixture is expected to have exited on its own already (a genuine
+    // self-initiated clean stop, never killed) -- wait briefly for the OS to
+    // reap it and report which happened; either way, kill it as a
+    // belt-and-suspenders safety net so nothing leaks past this probe's own
+    // exit (the NDEATH assertion above already stands regardless).
+    let exited_deadline = Instant::now() + Duration::from_secs(5);
+    let mut exited_on_its_own = false;
+    loop {
+        match death_child.try_wait() {
+            Ok(Some(_)) => {
+                exited_on_its_own = true;
+                break;
+            }
+            Ok(None) => {
+                if Instant::now() >= exited_deadline {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(_) => break,
+        }
+    }
+    if exited_on_its_own {
+        println!("[probe] fixture exited on its own after the clean disconnect (not killed) -- confirms a genuine clean stop, not a severed socket.");
+    } else {
+        println!("[probe] (warning) fixture did not exit on its own within 5s after NDEATH; killing as a safety net -- the NDEATH assertion above already passed regardless.");
+    }
+    kill_dart_fixture(&mut death_child);
 
     Ok(())
 }
