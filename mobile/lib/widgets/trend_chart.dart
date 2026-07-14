@@ -38,6 +38,98 @@ Color trendColorFromName(String name) {
   }
 }
 
+/// Pure horizontal mapping for the strip chart: converts between a timestamp
+/// and a pixel x, using the same padding the painter draws with. Shared by the
+/// painter and the trace-cursor hit-testing so the two never drift.
+class TrendChartGeometry {
+  final double width;
+  final int nowMs;
+  final int windowMs;
+  const TrendChartGeometry({
+    required this.width,
+    required this.nowMs,
+    required this.windowMs,
+  });
+
+  static const double leftPad = 36;
+  static const double rightPad = 8;
+
+  double get plotLeft => leftPad;
+  double get plotRight => width - rightPad;
+  double get plotW {
+    final w = plotRight - plotLeft;
+    return w < 1.0 ? 1.0 : w;
+  }
+
+  int get _win => windowMs <= 0 ? 1 : windowMs;
+
+  /// Pixel x for a timestamp (newest sample sits at the right edge).
+  double xOfTime(int tMs) => plotLeft + plotW * (1 - (nowMs - tMs) / _win);
+
+  /// Timestamp for a pixel x, clamped to the visible window.
+  int timeAtX(double x) {
+    final frac = ((x - plotLeft) / plotW).clamp(0.0, 1.0);
+    final t = nowMs - ((1 - frac) * _win).round();
+    if (t < nowMs - _win) {
+      return nowMs - _win;
+    }
+    if (t > nowMs) {
+      return nowMs;
+    }
+    return t;
+  }
+}
+
+/// The sample in [buf] whose time is closest to [tMs], or null if empty.
+TrendSample? nearestSample(List<TrendSample> buf, int tMs) {
+  if (buf.isEmpty) {
+    return null;
+  }
+  var best = buf.first;
+  var bestD = (best.t - tMs).abs();
+  for (final s in buf) {
+    final d = (s.t - tMs).abs();
+    if (d < bestD) {
+      best = s;
+      bestD = d;
+    }
+  }
+  return best;
+}
+
+/// Relative age of [cursorMs] vs [nowMs] as '-1m 12s' / '-45s' / 'now'.
+String relativeAgo(int cursorMs, int nowMs) {
+  final secs = ((nowMs - cursorMs) / 1000).round();
+  if (secs <= 0) {
+    return 'now';
+  }
+  final m = secs ~/ 60;
+  final s = secs % 60;
+  if (m > 0) {
+    return '-${m}m ${s}s';
+  }
+  return '-${s}s';
+}
+
+/// Wall-clock time of [cursorMs] as 'HH:mm:ss'.
+String clockHms(int cursorMs) {
+  final dt = DateTime.fromMillisecondsSinceEpoch(cursorMs);
+  String two(int v) => v.toString().padLeft(2, '0');
+  return '${two(dt.hour)}:${two(dt.minute)}:${two(dt.second)}';
+}
+
+/// A pen's value at a cursor sample: '—' if none, 'ON'/'OFF' for digital,
+/// else a 2-dp number.
+String formatPenValue(TrendPenView pen, TrendSample? s) {
+  if (s == null) {
+    return '—';
+  }
+  if (pen.isDigital) {
+    return s.v >= 0.5 ? 'ON' : 'OFF';
+  }
+  return s.v.toStringAsFixed(2);
+}
+
 /// Hand-painted strip chart. Analog pens share an auto-scaled left value axis
 /// and draw as connected polylines; BOOL pens draw as stacked 0/1 square-wave
 /// lanes along the bottom. Time axis: [nowMs-windowMs, nowMs], newest on the
@@ -59,6 +151,7 @@ class TrendChartPainter extends CustomPainter {
     required this.gridColor,
   });
 
+  // Mirror TrendChartGeometry's padding so the two never drift (checked below).
   static const double _leftPad = 36;
   static const double _rightPad = 8;
   static const double _topPad = 8;
@@ -67,17 +160,19 @@ class TrendChartPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    assert(_leftPad == TrendChartGeometry.leftPad, 'left padding must match TrendChartGeometry');
+    assert(_rightPad == TrendChartGeometry.rightPad, 'right padding must match TrendChartGeometry');
     final digital = pens.where((p) => p.isDigital).toList();
     final analog = pens.where((p) => !p.isDigital).toList();
 
     final digitalBandH = digital.isEmpty
         ? 0.0
         : digital.length * (_laneHeight + _laneGap) + _laneGap;
-    const plotLeft = _leftPad;
-    final plotRight = size.width - _rightPad;
+    final geo = TrendChartGeometry(width: size.width, nowMs: nowMs, windowMs: windowMs);
+    final plotLeft = geo.plotLeft;
+    final plotRight = geo.plotRight;
     const plotTop = _topPad;
     final plotBottom = size.height - digitalBandH - 4;
-    final plotW = (plotRight - plotLeft).clamp(1.0, double.infinity);
     final plotH = (plotBottom - plotTop).clamp(1.0, double.infinity);
     final win = windowMs <= 0 ? 1 : windowMs;
 
@@ -90,7 +185,7 @@ class TrendChartPainter extends CustomPainter {
       gridPaint..style = PaintingStyle.stroke,
     );
 
-    double xOf(int t) => plotLeft + plotW * (1 - (nowMs - t) / win);
+    double xOf(int t) => geo.xOfTime(t);
 
     // --- Analog auto-scale across all visible analog samples ---
     double? lo, hi;
