@@ -6,6 +6,7 @@ import 'package:soft_plc_mobile/screens/fbd_editor_screen.dart';
 import 'package:soft_plc_mobile/screens/hmi_dashboard_builder_screen.dart';
 import 'package:soft_plc_mobile/screens/ld_editor_screen.dart';
 import 'package:soft_plc_mobile/screens/sfc_editor_screen.dart';
+import 'package:soft_plc_mobile/widgets/live_tick.dart';
 import 'support/responsive_test_utils.dart';
 
 PlcProject _projectById(String id) => DefaultProjects.all().firstWhere((p) => p.id == id);
@@ -140,12 +141,15 @@ void main() {
     Widget app() {
       final project = _projectById('proj_fbd_hvac');
       final hmi = project.hmis.first;
-      return MaterialApp(
-        home: HmiDashboardBuilderScreen(
-          currentProject: project,
-          hmiScreen: hmi,
-          onScanTriggered: () {},
-          onProjectUpdated: () {},
+      return LiveTickScope(
+        notifier: LiveTick(),
+        child: MaterialApp(
+          home: HmiDashboardBuilderScreen(
+            currentProject: project,
+            hmiScreen: hmi,
+            onScanTriggered: () {},
+            onProjectUpdated: () {},
+          ),
         ),
       );
     }

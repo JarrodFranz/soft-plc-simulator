@@ -314,6 +314,12 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   @visibleForTesting
   bool get debugFaulted => _faulted;
 
+  /// Test-only hook: the shell's [LiveTick], so widget tests can pulse it
+  /// directly (mirroring what `_repaintThrottle` does each scan) without
+  /// needing a full scan-timer tick to elapse.
+  @visibleForTesting
+  LiveTick get debugLiveTick => _liveTick;
+
   /// Test-only hook: adds [proj] to the in-memory project catalog (mirrors
   /// what `_createNewProject`/`_importProject` do) so it's a valid target
   /// for `debugSwitchToProject` — the project switcher UI only ever offers
@@ -1317,7 +1323,23 @@ class WorkspaceShellState extends State<WorkspaceShell> {
                 ),
                 if (!compact) ...[
                   const Spacer(),
-                  Text('Scan Count: $scanCount', style: const TextStyle(fontSize: 12, color: Colors.grey, fontFamily: 'monospace')),
+                  // Reads the reserved `System.ScanCount` tag (written every
+                  // scan by `updateSystemStatus`) inside a LiveTick-driven
+                  // ListenableBuilder, so this counter keeps repainting once
+                  // a later phase removes the shell's per-scan setState. A
+                  // `Builder` gets a BuildContext BELOW the `LiveTickScope`
+                  // this same `build()` method creates — the outer `context`
+                  // parameter is the shell's own element, an ANCESTOR of
+                  // that scope, so `LiveTickScope.of` would fail to find it.
+                  Builder(
+                    builder: (context) => ListenableBuilder(
+                      listenable: LiveTickScope.of(context),
+                      builder: (context, child) {
+                        final count = readPath(_activeProject, 'System.ScanCount');
+                        return Text('Scan Count: $count', style: const TextStyle(fontSize: 12, color: Colors.grey, fontFamily: 'monospace'));
+                      },
+                    ),
+                  ),
                 ],
               ],
             ),
