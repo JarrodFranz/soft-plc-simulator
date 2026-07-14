@@ -531,7 +531,7 @@ class MqttHost extends ChangeNotifier {
     }
 
     _startKeepAliveTimer();
-    _startTickTimer();
+    _startTickTimer(project);
     _setStatus(MqttHostStatus.running);
   }
 
@@ -669,9 +669,17 @@ class MqttHost extends ChangeNotifier {
     });
   }
 
-  void _startTickTimer() {
+  void _startTickTimer(PlcProject project) {
     _tickTimer?.cancel();
-    _tickTimer = Timer.periodic(const Duration(milliseconds: 50), _onTick);
+    // Configurable publish interval (default 250ms; was hardcoded 50ms) —
+    // event-loop-flood fix: 100 tags at 20Hz re-evaluated `changedPublishes`
+    // every 50ms regardless of how many tags actually changed. Clamped to a
+    // floor of 20ms so a misconfigured/zero/negative value can't spin the
+    // event loop. Re-armed on every (re)connect (this method's only caller),
+    // so a config change takes effect on the NEXT connect.
+    final configuredMs = project.protocols?.mqtt?.publishIntervalMs ?? 250;
+    final clampedMs = configuredMs < 20 ? 20 : configuredMs;
+    _tickTimer = Timer.periodic(Duration(milliseconds: clampedMs), _onTick);
   }
 
   void _onSocketProblem(Object? error) {

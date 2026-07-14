@@ -356,6 +356,8 @@ void main() {
         allowRemoteWrites: true,
         username: 'plc_user',
         map: MqttMap(entries: [MqttMapEntry(tag: 'Run', metric: 'Run', writable: true)]),
+        publishIntervalMs: 500,
+        deadband: 1.5,
       );
 
       final rt = MqttProtocolConfig.fromJson(cfg.toJson());
@@ -373,6 +375,8 @@ void main() {
       expect(rt.allowRemoteWrites, isTrue);
       expect(rt.username, 'plc_user');
       expect(rt.map.entries.single.tag, 'Run');
+      expect(rt.publishIntervalMs, 500);
+      expect(rt.deadband, 1.5);
     });
 
     test('MqttProtocolConfig.fromJson tolerates missing keys with sane defaults', () {
@@ -388,6 +392,12 @@ void main() {
       expect(cfg.heartbeatSeconds, 5);
       expect(cfg.allowRemoteWrites, isFalse);
       expect(cfg.map.entries, isEmpty);
+      // Additive fields (configurable publish interval + analog deadband,
+      // WS-perf event-loop-flood fix): older saved projects have neither key
+      // and must fall back to defaults that preserve the ORIGINAL behavior
+      // (a fixed ~50ms host tick, no deadband suppression).
+      expect(cfg.publishIntervalMs, 250);
+      expect(cfg.deadband, 0.0);
     });
 
     test('ProtocolSettings carrying an MqttProtocolConfig round-trips losslessly', () {
