@@ -32,6 +32,7 @@ import 'memory_manager_screen.dart';
 import 'hmi_dashboard_builder_screen.dart';
 import 'simulated_io_screen.dart';
 import 'gateway_screen.dart';
+import 'softplc_settings_dialog.dart';
 
 /// Debounce window between the last project mutation and the autosave write.
 const Duration _autosaveDebounce = Duration(milliseconds: 800);
@@ -39,6 +40,26 @@ const Duration _autosaveDebounce = Duration(milliseconds: 800);
 /// Sentinel item appended to the Add-Program dialog's task dropdown; picking
 /// it reveals inline task-creation fields instead of an existing task.
 const String _kNewTaskSentinel = '＋ New task…';
+
+/// Global (not per-project) SharedPreferences key for the UI refresh rate,
+/// in Hz, that tunes `_repaintThrottle`'s coalescing window.
+const String _kUiRefreshHzKey = 'ui_refresh_hz';
+
+/// Default UI refresh rate, in Hz, used when `ui_refresh_hz` has never been
+/// persisted (fresh install) or when reading it fails.
+const int kDefaultRefreshHz = 10;
+
+/// Clamps a requested UI refresh rate to the supported 1-30 Hz range. Pure
+/// and `@visibleForTesting` so the clamp logic is testable without pumping
+/// the shell or its settings dialog.
+@visibleForTesting
+int clampRefreshHz(int hz) => hz.clamp(1, 30);
+
+/// Maps a (clamped) refresh rate in Hz to the `NotifyThrottle` coalescing
+/// window that achieves it. Pure and `@visibleForTesting` alongside
+/// [clampRefreshHz].
+@visibleForTesting
+Duration refreshWindow(int hz) => Duration(milliseconds: (1000 / clampRefreshHz(hz)).round());
 
 class WorkspaceShell extends StatefulWidget {
   /// Optional injection seam so tests (and callers that already own a
@@ -84,7 +105,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   // repaint. A targeted `setState` remains for the rare structural
   // transitions (a fault first tripping, an AlarmReset-driven clear).
   final LiveTick _liveTick = LiveTick();
-  final int _refreshHz = 10;
+  int _refreshHz = kDefaultRefreshHz;
   late NotifyThrottle _repaintThrottle;
 
   /// Counts this State's `build()` invocations — test-only instrumentation
@@ -145,7 +166,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   @override
   void initState() {
     super.initState();
-    _repaintThrottle = NotifyThrottle(_liveTick.pulse, window: Duration(milliseconds: (1000 / _refreshHz).round()));
+    _repaintThrottle = NotifyThrottle(_liveTick.pulse, window: refreshWindow(_refreshHz));
     _boot();
   }
 
@@ -167,6 +188,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     ProjectRepository? repo;
     List<PlcProject> loadedProjects = [];
     PlcProject? active;
+    SharedPreferences? prefs;
 
     if (widget.repository != null) {
       // Test/caller-supplied seam: use it directly, never touch
@@ -179,13 +201,27 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       // back to the in-memory defaults below. A slow-but-working device
       // just awaits longer and ALWAYS gets a real, persistent repository —
       // there is no arbitrary timeout that can cause a false fallback.
-      SharedPreferences? prefs;
       try {
         prefs = await SharedPreferences.getInstance();
       } catch (_) {
         prefs = null;
       }
       repo = prefs != null ? ProjectRepository(prefs) : null;
+    }
+
+    // The UI refresh rate is a GLOBAL setting (not per-project), so it lives
+    // under its own top-level key rather than inside `repo`/`ProjectRepository`
+    // (which only knows about per-project catalog/project/active-id blobs).
+    // Reuse `prefs` when the non-injected path above already fetched it;
+    // otherwise (an injected `widget.repository`, e.g. in tests) fall back to
+    // a fresh `SharedPreferences.getInstance()` call of our own. Either way
+    // this is best-effort: any failure just keeps the compile-time default.
+    int loadedRefreshHz = kDefaultRefreshHz;
+    try {
+      final settingsPrefs = prefs ?? await SharedPreferences.getInstance();
+      loadedRefreshHz = clampRefreshHz(settingsPrefs.getInt(_kUiRefreshHzKey) ?? kDefaultRefreshHz);
+    } catch (_) {
+      loadedRefreshHz = kDefaultRefreshHz;
     }
 
     if (repo != null) {
@@ -247,6 +283,11 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       }
       _booting = false;
       _history.reset(_snapshot());
+      if (loadedRefreshHz != _refreshHz) {
+        _refreshHz = loadedRefreshHz;
+        _repaintThrottle.dispose();
+        _repaintThrottle = NotifyThrottle(_liveTick.pulse, window: refreshWindow(_refreshHz));
+      }
     });
     await repo?.setActiveProjectId(_activeProject.id);
     _startRunSession();
@@ -326,6 +367,57 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// needing a full scan-timer tick to elapse.
   @visibleForTesting
   LiveTick get debugLiveTick => _liveTick;
+
+  /// Test-only hook: the shell's current UI refresh rate (Hz), so a widget
+  /// test can assert on it directly instead of poking at `_repaintThrottle`'s
+  /// private window.
+  @visibleForTesting
+  int get debugRefreshHz => _refreshHz;
+
+  /// Re-tunes the UI refresh rate: clamps [hz] to 1-30, swaps in a freshly
+  /// windowed `_repaintThrottle` (disposing the old one first — its
+  /// coalescing window is fixed at construction, see `NotifyThrottle`), and
+  /// best-effort persists the clamped value to the global `ui_refresh_hz`
+  /// SharedPreferences key so it survives the next boot. Called by the
+  /// SoftPLC Settings dialog's Save button; also `@visibleForTesting` so the
+  /// clamp/apply/persist path is directly testable without driving the
+  /// dialog UI.
+  @visibleForTesting
+  Future<void> applyRefreshHz(int hz) async {
+    final clamped = clampRefreshHz(hz);
+    if (mounted) {
+      setState(() {
+        _refreshHz = clamped;
+        _repaintThrottle.dispose();
+        _repaintThrottle = NotifyThrottle(_liveTick.pulse, window: refreshWindow(clamped));
+      });
+    } else {
+      _refreshHz = clamped;
+      _repaintThrottle.dispose();
+      _repaintThrottle = NotifyThrottle(_liveTick.pulse, window: refreshWindow(clamped));
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_kUiRefreshHzKey, clamped);
+    } catch (_) {
+      // Best-effort persistence: `_refreshHz` still applies for this
+      // session even if the write fails (e.g. platform channel unavailable).
+    }
+  }
+
+  /// Opens the SoftPLC Settings dialog (currently: the UI refresh-rate
+  /// field), prefilled with the shell's current `_refreshHz`. A non-null
+  /// result (Save was pressed with a parseable value) is applied via
+  /// [applyRefreshHz], which clamps + re-tunes + persists.
+  Future<void> _openSoftPlcSettings(BuildContext context) async {
+    final result = await showAdaptiveWidthDialog<int>(
+      context,
+      child: SoftPlcSettingsDialog(initialRefreshHz: _refreshHz),
+    );
+    if (result != null) {
+      await applyRefreshHz(result);
+    }
+  }
 
   /// Test-only hook: how many times this State's `build()` has run, so a
   /// widget test can assert that driving scans via [debugRunScan] does NOT
@@ -1491,6 +1583,16 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       onPressed: () => _openTagDock(context),
     );
 
+    // Opens the SoftPLC Settings dialog (UI refresh rate, etc.). Only used
+    // inline on expanded/medium widths — the compact layout instead surfaces
+    // it as a menu entry in the overflow `PopupMenuButton` below, to avoid
+    // adding another inline tap target to the already-tight compact row.
+    final settingsButton = IconButton(
+      icon: const Icon(Icons.settings, color: Colors.grey),
+      tooltip: 'SoftPLC Settings',
+      onPressed: () => _openSoftPlcSettings(context),
+    );
+
     // Undo / Redo project history. On compact widths the AppBar is already
     // tight (run/pause + tag toggle + these two + overflow menu all have to
     // fit at 360px), so trim the tap-target padding down from the default
@@ -1547,6 +1649,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         const SizedBox(width: 16),
 
         tagToggle,
+        settingsButton,
 
         const SizedBox(width: 12),
       ];
@@ -1581,6 +1684,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
           } else if (value == 'freerun') {
             setState(() => _freeRun = !_freeRun);
             _startScanLoop();
+          } else if (value == 'settings') {
+            _openSoftPlcSettings(context);
           }
         },
         itemBuilder: (ctx) => [
@@ -1596,6 +1701,14 @@ class WorkspaceShellState extends State<WorkspaceShell> {
             child: ListTile(
               leading: Icon(_freeRun ? Icons.fast_forward : Icons.timer_outlined, color: _freeRun ? Colors.orangeAccent : Colors.grey),
               title: Text(_freeRun ? 'Free-run (as fast as allowed)' : 'Fixed scan (${scanSpeedMs}ms)'),
+            ),
+          ),
+          const PopupMenuDivider(),
+          const PopupMenuItem(
+            value: 'settings',
+            child: ListTile(
+              leading: Icon(Icons.settings),
+              title: Text('Settings'),
             ),
           ),
           PopupMenuItem(
