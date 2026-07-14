@@ -130,6 +130,57 @@ void main() {
     });
   });
 
+  group('deathMessage', () {
+    test('Sparkplug: NDEATH carries the CURRENT session bdSeq and does not advance it', () {
+      final p = _fixtureProject(format: 'sparkplug');
+      final publisher = MqttPublisher();
+
+      publisher.willMessage(p); // advances bdSeq to 1
+      final n = publisher.bdSeq;
+
+      final death = publisher.deathMessage(p, 12345)!;
+      expect(death.topic, 'spBv1.0/SoftPLC/NDEATH/Node1');
+      expect(death.retain, isFalse);
+      expect(death.qos, 0);
+
+      final decoded = _decodePayload(death.payload);
+      expect(decoded.seq, 0);
+      expect(decoded.timestampMs, 12345);
+      expect(decoded.metrics, hasLength(1));
+      final bdSeqMetric = decoded.metrics.single;
+      expect(bdSeqMetric.name, 'bdSeq');
+      expect(bdSeqMetric.datatype, _SparkplugDatatype.uint64);
+      expect(bdSeqMetric.value, n);
+
+      expect(publisher.bdSeq, n); // unchanged by deathMessage
+    });
+
+    test('JSON: retained status=OFFLINE on the same topic willMessage uses', () {
+      final p = _fixtureProject(format: 'json');
+      final publisher = MqttPublisher();
+      final death = publisher.deathMessage(p, 12345)!;
+      expect(death.topic, 'softplc/PLC_01/status');
+      expect(utf8.decode(death.payload), 'OFFLINE');
+      expect(death.retain, isTrue);
+    });
+
+    test('no MQTT config -> null', () {
+      final p = PlcProject(
+        id: 'p2',
+        name: 'No MQTT',
+        controllerName: 'PLC_02',
+        structDefs: const [],
+        programs: const [],
+        tasks: const [],
+        hmis: const [],
+        tags: const [],
+        protocols: ProtocolSettings(),
+      );
+      final publisher = MqttPublisher();
+      expect(publisher.deathMessage(p, 12345), isNull);
+    });
+  });
+
   group('changedPublishes — report-by-exception', () {
     test('JSON: unchanged tag -> no publish; changed tag -> exactly one publish', () {
       final p = _fixtureProject(format: 'json');
