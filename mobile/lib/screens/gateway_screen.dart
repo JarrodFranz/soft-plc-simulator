@@ -12,7 +12,7 @@
 
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/material.dart';
 
 import '../models/dnp3_map.dart';
@@ -68,6 +68,36 @@ Map<String, List<T>> groupEntriesByFolder<T>(
     result[folder] = buckets[folder]!;
   }
   return result;
+}
+
+/// Test-only hook (see `test/widgets/gateway_panel_perf_test.dart`):
+/// incremented once per `_mqttRow` build. A host's `notifyListeners()`
+/// (the MQTT host fires ~4Hz while publishing) must repaint only the
+/// connection/status subtree of the MQTT card — never the (virtualized)
+/// map rows below it — so a test can assert this counter does not advance
+/// across a `mqttHost.notifyListeners()` call. Never read by production
+/// code.
+@visibleForTesting
+int mqttRowBuildCount = 0;
+
+/// One flattened item in a virtualized outbound-protocol map list: either a
+/// folder subheader or a single mapped entry. Keeping this as plain data
+/// (rather than already-built `Widget`s, as the old `_groupedMapRows`
+/// helper returned) is what makes the list lazy — `ListView.builder` only
+/// converts the items currently on/near screen into widgets, instead of
+/// eagerly building every row up front (as the old `Column` of all rows
+/// did, even for a 100+-entry map).
+sealed class _MapListItem<T> {}
+
+class _FolderHeaderItem<T> extends _MapListItem<T> {
+  _FolderHeaderItem(this.folder, this.count);
+  final String folder;
+  final int count;
+}
+
+class _EntryItem<T> extends _MapListItem<T> {
+  _EntryItem(this.entry);
+  final T entry;
 }
 
 class GatewayScreen extends StatefulWidget {
@@ -812,44 +842,43 @@ class _GatewayScreenState extends State<GatewayScreen> {
             tabs: _protocolTabs,
           ),
         ),
-        body: ListenableBuilder(
-          listenable: Listenable.merge([widget.host, widget.modbusHost, widget.mqttHost, widget.dnpHost]),
-          builder: (context, _) {
-            // Each tab body scrolls independently (a card can be tall — e.g.
-            // MQTT with its map editor) and is wrapped in
-            // `_KeepAliveTabBody` so switching tabs never disposes/rebuilds
-            // the host-status/notifier wiring those cards depend on — the
-            // hosts themselves stay owned by whoever passed them in (the
-            // workspace shell), never created/disposed here.
-            return TabBarView(
-              children: [
-                _KeepAliveTabBody(
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.all(12),
-                    child: _buildOpcUaCard(context, tagOptions),
-                  ),
-                ),
-                _KeepAliveTabBody(
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.all(12),
-                    child: _buildModbusCard(context, tagOptions),
-                  ),
-                ),
-                _KeepAliveTabBody(
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.all(12),
-                    child: _buildMqttCard(context, tagOptions),
-                  ),
-                ),
-                _KeepAliveTabBody(
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.all(12),
-                    child: _buildDnpCard(context, tagOptions),
-                  ),
-                ),
-              ],
-            );
-          },
+        // No body-wide host listener here (deliberately — see WS-perf task
+        // 1): the old `ListenableBuilder(listenable: Listenable.merge([...
+        // four hosts]))` around the whole `TabBarView` meant ANY host's
+        // `notifyListeners()` (the MQTT host fires ~4Hz while publishing)
+        // rebuilt every protocol card, including the (100+-row) map
+        // editors. Each card now owns its own narrowly-scoped
+        // `ListenableBuilder` around just its status/connection subtree —
+        // see `_buildOpcUaCard`/`_buildModbusCard`/`_buildMqttCard`/
+        // `_buildDnpCard` — so the map rows are never touched by a host
+        // notify.
+        body: TabBarView(
+          children: [
+            _KeepAliveTabBody(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(12),
+                child: _buildOpcUaCard(context, tagOptions),
+              ),
+            ),
+            _KeepAliveTabBody(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(12),
+                child: _buildModbusCard(context, tagOptions),
+              ),
+            ),
+            _KeepAliveTabBody(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(12),
+                child: _buildMqttCard(context, tagOptions),
+              ),
+            ),
+            _KeepAliveTabBody(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(12),
+                child: _buildDnpCard(context, tagOptions),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -861,8 +890,6 @@ class _GatewayScreenState extends State<GatewayScreen> {
   /// `_buildXCard(...)` alongside this one in `build`'s protocol list.
   Widget _buildOpcUaCard(BuildContext context, List<String> tagOptions) {
     final opcua = widget.currentProject.protocols!.opcua!;
-    final status = widget.host.status;
-    final running = status == OpcUaHostStatus.running;
     final isCompact = context.isCompact;
 
     return Card(
@@ -898,104 +925,125 @@ class _GatewayScreenState extends State<GatewayScreen> {
             else ...[
               const SizedBox(height: 12),
               // ── Hosting controls ────────────────────────────────────
-              Wrap(
-                spacing: 8,
-                runSpacing: 4,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
+              // Scoped to `widget.host` alone (WS-perf task 1) — the status
+              // chip, exposed/client/subscription counts, port field's
+              // enabled state, Start/Stop buttons, endpoint, and last error
+              // are the only things here driven by host notifies, so only
+              // this subtree listens. The namespace/security/credentials/
+              // cert sections and the (virtualized) node map below are
+              // untouched by a host `notifyListeners()`.
+              ListenableBuilder(
+                listenable: widget.host,
+                builder: (context, _) {
+                  final status = widget.host.status;
+                  final running = status == OpcUaHostStatus.running;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Container(
-                        width: 10,
-                        height: 10,
-                        decoration: BoxDecoration(color: _statusColor(status), shape: BoxShape.circle),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 10,
+                                height: 10,
+                                decoration:
+                                    BoxDecoration(color: _statusColor(status), shape: BoxShape.circle),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                _statusLabel(status),
+                                style: const TextStyle(
+                                    color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                            ],
+                          ),
+                          Text(
+                            'Exposed tags: $_displayedExposedCount',
+                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                          ),
+                          if (widget.host.clientCount > 0)
+                            Text(
+                              'Clients: ${widget.host.clientCount}',
+                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            ),
+                          if (running)
+                            Text(
+                              'Subscriptions: ${widget.host.subscriptionCount} · Monitored items: ${widget.host.monitoredItemCount}',
+                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            ),
+                        ],
                       ),
-                      const SizedBox(width: 8),
-                      Text(
-                        _statusLabel(status),
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _portController,
+                        enabled: !running,
+                        keyboardType: TextInputType.number,
+                        style: const TextStyle(fontSize: 12, color: Colors.white),
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          labelText: 'Port',
+                          helperText: 'Default: 4840',
+                          filled: true,
+                          fillColor: Color(0xFF0F172A),
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: _setOpcuaPort,
                       ),
+                      const SizedBox(height: 12),
+                      Flex(
+                        direction: isCompact ? Axis.vertical : Axis.horizontal,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(
+                            width: isCompact ? double.infinity : null,
+                            child: ElevatedButton(
+                              onPressed: (running || !widget.hostingSupported) ? null : _startHosting,
+                              child: const Text('Start hosting'),
+                            ),
+                          ),
+                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                            width: isCompact ? double.infinity : null,
+                            child: OutlinedButton(
+                              onPressed: running ? _stopHosting : null,
+                              child: const Text('Stop hosting'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (!widget.hostingSupported) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Hosting runs the OPC UA server inside the app on a TCP socket, '
+                          'which web browsers do not allow. Run the desktop '
+                          '(Windows/macOS/Linux) or mobile (Android/iOS) app to host — '
+                          'you can still design the tag map here.',
+                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                        ),
+                      ],
+                      if (running && widget.host.endpointUrl != null) ...[
+                        const SizedBox(height: 8),
+                        SelectableText(
+                          widget.host.endpointUrl!,
+                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                        ),
+                      ],
+                      if (widget.host.lastError != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Last error: ${widget.host.lastError}',
+                          style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                        ),
+                      ],
                     ],
-                  ),
-                  Text(
-                    'Exposed tags: $_displayedExposedCount',
-                    style: const TextStyle(color: Colors.grey, fontSize: 12),
-                  ),
-                  if (widget.host.clientCount > 0)
-                    Text(
-                      'Clients: ${widget.host.clientCount}',
-                      style: const TextStyle(color: Colors.grey, fontSize: 12),
-                    ),
-                  if (running)
-                    Text(
-                      'Subscriptions: ${widget.host.subscriptionCount} · Monitored items: ${widget.host.monitoredItemCount}',
-                      style: const TextStyle(color: Colors.grey, fontSize: 12),
-                    ),
-                ],
+                  );
+                },
               ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _portController,
-                enabled: !running,
-                keyboardType: TextInputType.number,
-                style: const TextStyle(fontSize: 12, color: Colors.white),
-                decoration: const InputDecoration(
-                  isDense: true,
-                  labelText: 'Port',
-                  helperText: 'Default: 4840',
-                  filled: true,
-                  fillColor: Color(0xFF0F172A),
-                  border: OutlineInputBorder(),
-                ),
-                onChanged: _setOpcuaPort,
-              ),
-              const SizedBox(height: 12),
-              Flex(
-                direction: isCompact ? Axis.vertical : Axis.horizontal,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(
-                    width: isCompact ? double.infinity : null,
-                    child: ElevatedButton(
-                      onPressed: (running || !widget.hostingSupported) ? null : _startHosting,
-                      child: const Text('Start hosting'),
-                    ),
-                  ),
-                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
-                  SizedBox(
-                    width: isCompact ? double.infinity : null,
-                    child: OutlinedButton(
-                      onPressed: running ? _stopHosting : null,
-                      child: const Text('Stop hosting'),
-                    ),
-                  ),
-                ],
-              ),
-              if (!widget.hostingSupported) ...[
-                const SizedBox(height: 8),
-                Text(
-                  'Hosting runs the OPC UA server inside the app on a TCP socket, '
-                  'which web browsers do not allow. Run the desktop '
-                  '(Windows/macOS/Linux) or mobile (Android/iOS) app to host — '
-                  'you can still design the tag map here.',
-                  style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
-                ),
-              ],
-              if (running && widget.host.endpointUrl != null) ...[
-                const SizedBox(height: 8),
-                SelectableText(
-                  widget.host.endpointUrl!,
-                  style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
-                ),
-              ],
-              if (widget.host.lastError != null) ...[
-                const SizedBox(height: 8),
-                Text(
-                  'Last error: ${widget.host.lastError}',
-                  style: const TextStyle(color: Colors.redAccent, fontSize: 11),
-                ),
-              ],
               const SizedBox(height: 12),
               TextFormField(
                 initialValue: opcua.namespaceUri,
@@ -1261,25 +1309,47 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
   }
 
-  /// Builds the flattened list of row/subheader widgets for an outbound
-  /// protocol's map, grouped by the mapped tag's folder (root rows first,
-  /// via [groupEntriesByFolder]). Root-folder entries get no header — they
-  /// just come first — while each named folder gets a small subheader
-  /// showing the folder name and its entry count before its rows.
-  List<Widget> _groupedMapRows<T>(
+  /// Bounded height for a protocol's virtualized map list (WS-perf task 1):
+  /// generous enough to show several rows before its own internal scroll
+  /// kicks in, but capped so a `ListView.builder` never demands unbounded
+  /// height from the card's `Column`/`SingleChildScrollView` ancestor.
+  static const double _mapListHeight = 420;
+
+  /// Renders [entries] — grouped by the mapped tag's folder, root bucket
+  /// first with no header, via [groupEntriesByFolder] — as a lazy, bounded
+  /// `ListView.builder`. Only the on/near-screen rows are ever built, unlike
+  /// the old `Column(children: _groupedMapRows(...))`, which eagerly built
+  /// every row (100+ for a large map) and kept them all mounted regardless
+  /// of scroll position.
+  Widget _virtualizedMapList<T>(
     List<T> entries,
     String Function(T) tagOf,
-    Widget Function(T) rowBuilder,
-  ) {
+    Widget Function(T) rowBuilder, {
+    Key? listKey,
+  }) {
     final grouped = groupEntriesByFolder<T>(entries, tagOf, widget.currentProject);
-    final rows = <Widget>[];
+    final items = <_MapListItem<T>>[];
     grouped.forEach((folder, bucket) {
       if (folder.isNotEmpty) {
-        rows.add(_folderSubheader(folder, bucket.length));
+        items.add(_FolderHeaderItem<T>(folder, bucket.length));
       }
-      rows.addAll(bucket.map(rowBuilder));
+      items.addAll(bucket.map((e) => _EntryItem<T>(e)));
     });
-    return rows;
+
+    return SizedBox(
+      height: _mapListHeight,
+      child: ListView.builder(
+        key: listKey,
+        itemCount: items.length,
+        itemBuilder: (context, index) {
+          final item = items[index];
+          return switch (item) {
+            _FolderHeaderItem<T>() => _folderSubheader(item.folder, item.count),
+            _EntryItem<T>() => rowBuilder(item.entry),
+          };
+        },
+      ),
+    );
   }
 
   /// A small subheader row identifying a folder + its entry count within a
@@ -1346,13 +1416,11 @@ class _GatewayScreenState extends State<GatewayScreen> {
               ),
             )
           else
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: _groupedMapRows<OpcuaNode>(
-                map.nodes,
-                (n) => n.tag,
-                (n) => _nodeRow(n, tagOptions),
-              ),
+            _virtualizedMapList<OpcuaNode>(
+              map.nodes,
+              (n) => n.tag,
+              (n) => _nodeRow(n, tagOptions),
+              listKey: const Key('opcua_map_list'),
             ),
         ],
       ),
@@ -1427,8 +1495,6 @@ class _GatewayScreenState extends State<GatewayScreen> {
   /// map editor. Mirrors `_buildOpcUaCard`.
   Widget _buildModbusCard(BuildContext context, List<String> tagOptions) {
     final modbus = widget.currentProject.protocols!.modbus!;
-    final status = widget.modbusHost.status;
-    final running = status == ModbusHostStatus.running;
     final isCompact = context.isCompact;
 
     return Card(
@@ -1464,160 +1530,181 @@ class _GatewayScreenState extends State<GatewayScreen> {
             else ...[
               const SizedBox(height: 12),
               // ── Hosting controls ────────────────────────────────────
-              Wrap(
-                spacing: 8,
-                runSpacing: 4,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
+              // Scoped to `widget.modbusHost` alone (WS-perf task 1): the
+              // status chip, client count, port/unit-id fields' enabled
+              // state, word/byte-swap switches, Start/Stop buttons,
+              // endpoint, and last error are the only things here driven
+              // by host notifies. The (virtualized) register map below is
+              // untouched by a host `notifyListeners()`.
+              ListenableBuilder(
+                listenable: widget.modbusHost,
+                builder: (context, _) {
+                  final status = widget.modbusHost.status;
+                  final running = status == ModbusHostStatus.running;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Container(
-                        width: 10,
-                        height: 10,
-                        decoration: BoxDecoration(color: _modbusStatusColor(status), shape: BoxShape.circle),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 10,
+                                height: 10,
+                                decoration: BoxDecoration(
+                                    color: _modbusStatusColor(status), shape: BoxShape.circle),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                _modbusStatusLabel(status),
+                                style: const TextStyle(
+                                    color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                            ],
+                          ),
+                          Text(
+                            'Mapped tags: ${modbus.map.entries.length}',
+                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                          ),
+                          if (widget.modbusHost.clientCount > 0)
+                            Text(
+                              'Clients: ${widget.modbusHost.clientCount}',
+                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            ),
+                        ],
                       ),
-                      const SizedBox(width: 8),
-                      Text(
-                        _modbusStatusLabel(status),
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                      const SizedBox(height: 12),
+                      Flex(
+                        direction: isCompact ? Axis.vertical : Axis.horizontal,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _mqttFlexField(
+                            isCompact: isCompact,
+                            child: TextField(
+                              controller: _modbusPortController,
+                              enabled: !running,
+                              keyboardType: TextInputType.number,
+                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              decoration: const InputDecoration(
+                                isDense: true,
+                                labelText: 'Port',
+                                helperText: 'Default: 502',
+                                filled: true,
+                                fillColor: Color(0xFF0F172A),
+                                border: OutlineInputBorder(),
+                              ),
+                              onChanged: _setModbusPort,
+                            ),
+                          ),
+                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          _mqttFlexField(
+                            isCompact: isCompact,
+                            child: TextField(
+                              key: const Key('modbus_unit_id_field'),
+                              controller: _modbusUnitIdController,
+                              enabled: !running,
+                              keyboardType: TextInputType.number,
+                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              decoration: const InputDecoration(
+                                isDense: true,
+                                labelText: 'Unit ID',
+                                helperText: '0-255. Default: 255 (any)',
+                                filled: true,
+                                fillColor: Color(0xFF0F172A),
+                                border: OutlineInputBorder(),
+                              ),
+                              onChanged: _setModbusUnitId,
+                            ),
+                          ),
+                        ],
                       ),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Reverse word order (word swap) for INT32/FLOAT64 registers',
+                              style: TextStyle(color: Colors.white70, fontSize: 12),
+                            ),
+                          ),
+                          Switch(
+                            key: const Key('modbus_word_swap_switch'),
+                            value: modbus.wordSwap,
+                            onChanged: running ? null : _setModbusWordSwap,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Reverse byte order (byte swap) within registers',
+                              style: TextStyle(color: Colors.white70, fontSize: 12),
+                            ),
+                          ),
+                          Switch(
+                            key: const Key('modbus_byte_swap_switch'),
+                            value: modbus.byteSwap,
+                            onChanged: running ? null : _setModbusByteSwap,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Flex(
+                        direction: isCompact ? Axis.vertical : Axis.horizontal,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(
+                            width: isCompact ? double.infinity : null,
+                            child: ElevatedButton(
+                              onPressed:
+                                  (running || !widget.hostingSupported) ? null : _startModbusHosting,
+                              child: const Text('Start hosting'),
+                            ),
+                          ),
+                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                            width: isCompact ? double.infinity : null,
+                            child: OutlinedButton(
+                              onPressed: running ? _stopModbusHosting : null,
+                              child: const Text('Stop hosting'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (!widget.hostingSupported) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Hosting runs the Modbus TCP server inside the app on a TCP '
+                          'socket, which web browsers do not allow. Run the desktop '
+                          '(Windows/macOS/Linux) or mobile (Android/iOS) app to host — '
+                          'you can still design the register map here.',
+                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                        ),
+                      ],
+                      if (running && widget.modbusHost.endpointUrl != null) ...[
+                        const SizedBox(height: 8),
+                        SelectableText(
+                          widget.modbusHost.endpointUrl!,
+                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                        ),
+                      ],
+                      if (widget.modbusHost.lastError != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Last error: ${widget.modbusHost.lastError}',
+                          style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                        ),
+                      ],
                     ],
-                  ),
-                  Text(
-                    'Mapped tags: ${modbus.map.entries.length}',
-                    style: const TextStyle(color: Colors.grey, fontSize: 12),
-                  ),
-                  if (widget.modbusHost.clientCount > 0)
-                    Text(
-                      'Clients: ${widget.modbusHost.clientCount}',
-                      style: const TextStyle(color: Colors.grey, fontSize: 12),
-                    ),
-                ],
+                  );
+                },
               ),
-              const SizedBox(height: 12),
-              Flex(
-                direction: isCompact ? Axis.vertical : Axis.horizontal,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _mqttFlexField(
-                    isCompact: isCompact,
-                    child: TextField(
-                      controller: _modbusPortController,
-                      enabled: !running,
-                      keyboardType: TextInputType.number,
-                      style: const TextStyle(fontSize: 12, color: Colors.white),
-                      decoration: const InputDecoration(
-                        isDense: true,
-                        labelText: 'Port',
-                        helperText: 'Default: 502',
-                        filled: true,
-                        fillColor: Color(0xFF0F172A),
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: _setModbusPort,
-                    ),
-                  ),
-                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
-                  _mqttFlexField(
-                    isCompact: isCompact,
-                    child: TextField(
-                      key: const Key('modbus_unit_id_field'),
-                      controller: _modbusUnitIdController,
-                      enabled: !running,
-                      keyboardType: TextInputType.number,
-                      style: const TextStyle(fontSize: 12, color: Colors.white),
-                      decoration: const InputDecoration(
-                        isDense: true,
-                        labelText: 'Unit ID',
-                        helperText: '0-255. Default: 255 (any)',
-                        filled: true,
-                        fillColor: Color(0xFF0F172A),
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: _setModbusUnitId,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      'Reverse word order (word swap) for INT32/FLOAT64 registers',
-                      style: TextStyle(color: Colors.white70, fontSize: 12),
-                    ),
-                  ),
-                  Switch(
-                    key: const Key('modbus_word_swap_switch'),
-                    value: modbus.wordSwap,
-                    onChanged: running ? null : _setModbusWordSwap,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      'Reverse byte order (byte swap) within registers',
-                      style: TextStyle(color: Colors.white70, fontSize: 12),
-                    ),
-                  ),
-                  Switch(
-                    key: const Key('modbus_byte_swap_switch'),
-                    value: modbus.byteSwap,
-                    onChanged: running ? null : _setModbusByteSwap,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Flex(
-                direction: isCompact ? Axis.vertical : Axis.horizontal,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(
-                    width: isCompact ? double.infinity : null,
-                    child: ElevatedButton(
-                      onPressed: (running || !widget.hostingSupported) ? null : _startModbusHosting,
-                      child: const Text('Start hosting'),
-                    ),
-                  ),
-                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
-                  SizedBox(
-                    width: isCompact ? double.infinity : null,
-                    child: OutlinedButton(
-                      onPressed: running ? _stopModbusHosting : null,
-                      child: const Text('Stop hosting'),
-                    ),
-                  ),
-                ],
-              ),
-              if (!widget.hostingSupported) ...[
-                const SizedBox(height: 8),
-                Text(
-                  'Hosting runs the Modbus TCP server inside the app on a TCP '
-                  'socket, which web browsers do not allow. Run the desktop '
-                  '(Windows/macOS/Linux) or mobile (Android/iOS) app to host — '
-                  'you can still design the register map here.',
-                  style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
-                ),
-              ],
-              if (running && widget.modbusHost.endpointUrl != null) ...[
-                const SizedBox(height: 8),
-                SelectableText(
-                  widget.modbusHost.endpointUrl!,
-                  style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
-                ),
-              ],
-              if (widget.modbusHost.lastError != null) ...[
-                const SizedBox(height: 8),
-                Text(
-                  'Last error: ${widget.modbusHost.lastError}',
-                  style: const TextStyle(color: Colors.redAccent, fontSize: 11),
-                ),
-              ],
               const SizedBox(height: 12),
               _modbusMapEditorCard(context, modbus.map, tagOptions),
             ],
@@ -1673,13 +1760,11 @@ class _GatewayScreenState extends State<GatewayScreen> {
               ),
             )
           else
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: _groupedMapRows<ModbusMapEntry>(
-                map.entries,
-                (e) => e.tag,
-                (e) => _modbusRow(e, tagOptions),
-              ),
+            _virtualizedMapList<ModbusMapEntry>(
+              map.entries,
+              (e) => e.tag,
+              (e) => _modbusRow(e, tagOptions),
+              listKey: const Key('modbus_map_list'),
             ),
         ],
       ),
@@ -1790,8 +1875,6 @@ class _GatewayScreenState extends State<GatewayScreen> {
   /// `_buildModbusCard`.
   Widget _buildDnpCard(BuildContext context, List<String> tagOptions) {
     final dnp3 = widget.currentProject.protocols!.dnp3!;
-    final status = widget.dnpHost.status;
-    final running = status == DnpHostStatus.running;
     final isCompact = context.isCompact;
 
     return Card(
@@ -1827,155 +1910,175 @@ class _GatewayScreenState extends State<GatewayScreen> {
             else ...[
               const SizedBox(height: 12),
               // ── Hosting controls ────────────────────────────────────
-              Wrap(
-                spacing: 8,
-                runSpacing: 4,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
+              // Scoped to `widget.dnpHost` alone (WS-perf task 1): the
+              // status chip, client count, unsolicited-reporting label,
+              // port/address fields' enabled state, Start/Stop buttons,
+              // endpoint, and last error are the only things here driven
+              // by host notifies. The (virtualized) point map below is
+              // untouched by a host `notifyListeners()`.
+              ListenableBuilder(
+                listenable: widget.dnpHost,
+                builder: (context, _) {
+                  final status = widget.dnpHost.status;
+                  final running = status == DnpHostStatus.running;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Container(
-                        width: 10,
-                        height: 10,
-                        decoration: BoxDecoration(color: _dnpStatusColor(status), shape: BoxShape.circle),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 10,
+                                height: 10,
+                                decoration:
+                                    BoxDecoration(color: _dnpStatusColor(status), shape: BoxShape.circle),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                _dnpStatusLabel(status),
+                                style: const TextStyle(
+                                    color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                            ],
+                          ),
+                          Text(
+                            'Mapped tags: ${dnp3.map.entries.length}',
+                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                          ),
+                          if (widget.dnpHost.clientCount > 0)
+                            Text(
+                              'Clients: ${widget.dnpHost.clientCount}',
+                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            ),
+                          Text(
+                            // Which classes are enabled for unsolicited reporting is
+                            // a runtime, master-driven state (ENABLE/DISABLE_UNSOLICITED)
+                            // living inside the shared outstation, not project config —
+                            // a static "master-controlled" label avoids wiring a live
+                            // per-class readout through the host just for display.
+                            running ? 'Unsolicited: master-controlled' : 'Unsolicited: off',
+                            style: TextStyle(color: Colors.cyanAccent.withValues(alpha: 0.85), fontSize: 12),
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 8),
-                      Text(
-                        _dnpStatusLabel(status),
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                      const SizedBox(height: 12),
+                      Flex(
+                        direction: isCompact ? Axis.vertical : Axis.horizontal,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _mqttFlexField(
+                            isCompact: isCompact,
+                            child: TextField(
+                              controller: _dnpPortController,
+                              enabled: !running,
+                              keyboardType: TextInputType.number,
+                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              decoration: const InputDecoration(
+                                isDense: true,
+                                labelText: 'Port',
+                                helperText: 'Default: 20000',
+                                filled: true,
+                                fillColor: Color(0xFF0F172A),
+                                border: OutlineInputBorder(),
+                              ),
+                              onChanged: _setDnpPort,
+                            ),
+                          ),
+                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          _mqttFlexField(
+                            isCompact: isCompact,
+                            child: TextField(
+                              controller: _dnpOutstationAddressController,
+                              enabled: !running,
+                              keyboardType: TextInputType.number,
+                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              decoration: const InputDecoration(
+                                isDense: true,
+                                labelText: 'Outstation address',
+                                helperText: 'Default: 1024',
+                                filled: true,
+                                fillColor: Color(0xFF0F172A),
+                                border: OutlineInputBorder(),
+                              ),
+                              onChanged: _setDnpOutstationAddress,
+                            ),
+                          ),
+                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          _mqttFlexField(
+                            isCompact: isCompact,
+                            child: TextField(
+                              controller: _dnpMasterAddressController,
+                              enabled: !running,
+                              keyboardType: TextInputType.number,
+                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              decoration: const InputDecoration(
+                                isDense: true,
+                                labelText: 'Master address',
+                                helperText: 'Default: 1',
+                                filled: true,
+                                fillColor: Color(0xFF0F172A),
+                                border: OutlineInputBorder(),
+                              ),
+                              onChanged: _setDnpMasterAddress,
+                            ),
+                          ),
+                        ],
                       ),
+                      const SizedBox(height: 12),
+                      Flex(
+                        direction: isCompact ? Axis.vertical : Axis.horizontal,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(
+                            width: isCompact ? double.infinity : null,
+                            child: ElevatedButton(
+                              onPressed: (running || !widget.hostingSupported) ? null : _startDnpHosting,
+                              child: const Text('Start hosting'),
+                            ),
+                          ),
+                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                            width: isCompact ? double.infinity : null,
+                            child: OutlinedButton(
+                              onPressed: running ? _stopDnpHosting : null,
+                              child: const Text('Stop hosting'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (!widget.hostingSupported) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Hosting runs the DNP3 outstation inside the app on a TCP '
+                          'socket, which web browsers do not allow. Run the desktop '
+                          '(Windows/macOS/Linux) or mobile (Android/iOS) app to host — '
+                          'you can still design the point map here.',
+                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                        ),
+                      ],
+                      if (running && widget.dnpHost.endpointUrl != null) ...[
+                        const SizedBox(height: 8),
+                        SelectableText(
+                          widget.dnpHost.endpointUrl!,
+                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                        ),
+                      ],
+                      if (widget.dnpHost.lastError != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Last error: ${widget.dnpHost.lastError}',
+                          style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                        ),
+                      ],
                     ],
-                  ),
-                  Text(
-                    'Mapped tags: ${dnp3.map.entries.length}',
-                    style: const TextStyle(color: Colors.grey, fontSize: 12),
-                  ),
-                  if (widget.dnpHost.clientCount > 0)
-                    Text(
-                      'Clients: ${widget.dnpHost.clientCount}',
-                      style: const TextStyle(color: Colors.grey, fontSize: 12),
-                    ),
-                  Text(
-                    // Which classes are enabled for unsolicited reporting is
-                    // a runtime, master-driven state (ENABLE/DISABLE_UNSOLICITED)
-                    // living inside the shared outstation, not project config —
-                    // a static "master-controlled" label avoids wiring a live
-                    // per-class readout through the host just for display.
-                    running ? 'Unsolicited: master-controlled' : 'Unsolicited: off',
-                    style: TextStyle(color: Colors.cyanAccent.withValues(alpha: 0.85), fontSize: 12),
-                  ),
-                ],
+                  );
+                },
               ),
-              const SizedBox(height: 12),
-              Flex(
-                direction: isCompact ? Axis.vertical : Axis.horizontal,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _mqttFlexField(
-                    isCompact: isCompact,
-                    child: TextField(
-                      controller: _dnpPortController,
-                      enabled: !running,
-                      keyboardType: TextInputType.number,
-                      style: const TextStyle(fontSize: 12, color: Colors.white),
-                      decoration: const InputDecoration(
-                        isDense: true,
-                        labelText: 'Port',
-                        helperText: 'Default: 20000',
-                        filled: true,
-                        fillColor: Color(0xFF0F172A),
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: _setDnpPort,
-                    ),
-                  ),
-                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
-                  _mqttFlexField(
-                    isCompact: isCompact,
-                    child: TextField(
-                      controller: _dnpOutstationAddressController,
-                      enabled: !running,
-                      keyboardType: TextInputType.number,
-                      style: const TextStyle(fontSize: 12, color: Colors.white),
-                      decoration: const InputDecoration(
-                        isDense: true,
-                        labelText: 'Outstation address',
-                        helperText: 'Default: 1024',
-                        filled: true,
-                        fillColor: Color(0xFF0F172A),
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: _setDnpOutstationAddress,
-                    ),
-                  ),
-                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
-                  _mqttFlexField(
-                    isCompact: isCompact,
-                    child: TextField(
-                      controller: _dnpMasterAddressController,
-                      enabled: !running,
-                      keyboardType: TextInputType.number,
-                      style: const TextStyle(fontSize: 12, color: Colors.white),
-                      decoration: const InputDecoration(
-                        isDense: true,
-                        labelText: 'Master address',
-                        helperText: 'Default: 1',
-                        filled: true,
-                        fillColor: Color(0xFF0F172A),
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: _setDnpMasterAddress,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Flex(
-                direction: isCompact ? Axis.vertical : Axis.horizontal,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(
-                    width: isCompact ? double.infinity : null,
-                    child: ElevatedButton(
-                      onPressed: (running || !widget.hostingSupported) ? null : _startDnpHosting,
-                      child: const Text('Start hosting'),
-                    ),
-                  ),
-                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
-                  SizedBox(
-                    width: isCompact ? double.infinity : null,
-                    child: OutlinedButton(
-                      onPressed: running ? _stopDnpHosting : null,
-                      child: const Text('Stop hosting'),
-                    ),
-                  ),
-                ],
-              ),
-              if (!widget.hostingSupported) ...[
-                const SizedBox(height: 8),
-                Text(
-                  'Hosting runs the DNP3 outstation inside the app on a TCP '
-                  'socket, which web browsers do not allow. Run the desktop '
-                  '(Windows/macOS/Linux) or mobile (Android/iOS) app to host — '
-                  'you can still design the point map here.',
-                  style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
-                ),
-              ],
-              if (running && widget.dnpHost.endpointUrl != null) ...[
-                const SizedBox(height: 8),
-                SelectableText(
-                  widget.dnpHost.endpointUrl!,
-                  style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
-                ),
-              ],
-              if (widget.dnpHost.lastError != null) ...[
-                const SizedBox(height: 8),
-                Text(
-                  'Last error: ${widget.dnpHost.lastError}',
-                  style: const TextStyle(color: Colors.redAccent, fontSize: 11),
-                ),
-              ],
               const SizedBox(height: 12),
               _dnpMapEditorCard(context, dnp3.map, tagOptions),
             ],
@@ -2031,13 +2134,11 @@ class _GatewayScreenState extends State<GatewayScreen> {
               ),
             )
           else
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: _groupedMapRows<DnpMapEntry>(
-                map.entries,
-                (e) => e.tag,
-                (e) => _dnpRow(e, tagOptions),
-              ),
+            _virtualizedMapList<DnpMapEntry>(
+              map.entries,
+              (e) => e.tag,
+              (e) => _dnpRow(e, tagOptions),
+              listKey: const Key('dnp_map_list'),
             ),
         ],
       ),
@@ -2174,9 +2275,6 @@ class _GatewayScreenState extends State<GatewayScreen> {
   /// Mirrors `_buildModbusCard`.
   Widget _buildMqttCard(BuildContext context, List<String> tagOptions) {
     final mqtt = widget.currentProject.protocols!.mqtt!;
-    final status = widget.mqttHost.status;
-    final connected = status == MqttHostStatus.running;
-    final connecting = status == MqttHostStatus.connecting;
     final isCompact = context.isCompact;
     final isJson = mqtt.format == 'json';
 
@@ -2213,353 +2311,379 @@ class _GatewayScreenState extends State<GatewayScreen> {
             else ...[
               const SizedBox(height: 12),
               // ── Connection controls ─────────────────────────────────
-              Wrap(
-                spacing: 8,
-                runSpacing: 4,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
+              // Scoped to `widget.mqttHost` alone (WS-perf task 1): the
+              // status chip, publish count, and every field/button gated
+              // on connected/connecting are the only things here driven by
+              // host notifies (the MQTT host fires ~4Hz while publishing).
+              // The tag<->metric map editor below is untouched by a host
+              // `notifyListeners()` — see `_mqttMapEditorCard`, which
+              // scopes its own tiny "tap Rebirth above" hint to a separate,
+              // much cheaper `ListenableBuilder` instead.
+              ListenableBuilder(
+                listenable: widget.mqttHost,
+                builder: (context, _) {
+                  final status = widget.mqttHost.status;
+                  final connected = status == MqttHostStatus.running;
+                  final connecting = status == MqttHostStatus.connecting;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Container(
-                        width: 10,
-                        height: 10,
-                        decoration: BoxDecoration(color: _mqttStatusColor(status), shape: BoxShape.circle),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 10,
+                                height: 10,
+                                decoration:
+                                    BoxDecoration(color: _mqttStatusColor(status), shape: BoxShape.circle),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                _mqttStatusLabel(status),
+                                style: const TextStyle(
+                                    color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                            ],
+                          ),
+                          Text(
+                            'Mapped tags: ${mqtt.map.entries.length}',
+                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                          ),
+                          if (widget.mqttHost.publishCount > 0)
+                            Text(
+                              'Published: ${widget.mqttHost.publishCount}',
+                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            ),
+                        ],
                       ),
-                      const SizedBox(width: 8),
-                      Text(
-                        _mqttStatusLabel(status),
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                      const SizedBox(height: 12),
+                      Flex(
+                        direction: isCompact ? Axis.vertical : Axis.horizontal,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // `Expanded` only makes sense in the horizontal (Row)
+                          // arrangement — inside the vertical (Column) one used at
+                          // compact widths there's no bounded main-axis size for it
+                          // to expand into, so the field is a plain (already
+                          // full-width) child there instead.
+                          _mqttFlexField(
+                            isCompact: isCompact,
+                            child: TextFormField(
+                              initialValue: mqtt.host,
+                              enabled: !connected && !connecting,
+                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              decoration: const InputDecoration(
+                                isDense: true,
+                                labelText: 'Broker host',
+                                filled: true,
+                                fillColor: Color(0xFF0F172A),
+                                border: OutlineInputBorder(),
+                              ),
+                              onChanged: _setMqttHost,
+                            ),
+                          ),
+                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                            width: isCompact ? double.infinity : 120,
+                            child: TextField(
+                              controller: _mqttPortController,
+                              enabled: !connected && !connecting,
+                              keyboardType: TextInputType.number,
+                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              decoration: const InputDecoration(
+                                isDense: true,
+                                labelText: 'Port',
+                                helperText: 'Default: 1883',
+                                filled: true,
+                                fillColor: Color(0xFF0F172A),
+                                border: OutlineInputBorder(),
+                              ),
+                              onChanged: _setMqttPort,
+                            ),
+                          ),
+                        ],
                       ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          const Text('TLS', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                          Switch(
+                            key: const Key('mqtt_tls_switch'),
+                            value: mqtt.tls,
+                            onChanged: (connected || connecting) ? null : _setMqttTls,
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: DropdownButtonFormField<String>(
+                              key: const Key('mqtt_format_dropdown'),
+                              initialValue: mqtt.format,
+                              decoration: const InputDecoration(isDense: true, labelText: 'Payload format'),
+                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              dropdownColor: const Color(0xFF1E293B),
+                              items: const [
+                                DropdownMenuItem(value: 'json', child: Text('json')),
+                                DropdownMenuItem(value: 'sparkplug', child: Text('sparkplug')),
+                              ],
+                              onChanged: (connected || connecting)
+                                  ? null
+                                  : (v) {
+                                      if (v == null) return;
+                                      _setMqttFormat(v);
+                                    },
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      if (isJson)
+                        TextFormField(
+                          initialValue: mqtt.baseTopic,
+                          enabled: !connected && !connecting,
+                          style: const TextStyle(fontSize: 12, color: Colors.white),
+                          decoration: const InputDecoration(
+                            isDense: true,
+                            labelText: 'Base topic',
+                            filled: true,
+                            fillColor: Color(0xFF0F172A),
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: _setMqttBaseTopic,
+                        )
+                      else
+                        Flex(
+                          direction: isCompact ? Axis.vertical : Axis.horizontal,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _mqttFlexField(
+                              isCompact: isCompact,
+                              child: TextFormField(
+                                initialValue: mqtt.groupId,
+                                enabled: !connected && !connecting,
+                                style: const TextStyle(fontSize: 12, color: Colors.white),
+                                decoration: const InputDecoration(
+                                  isDense: true,
+                                  labelText: 'Group ID',
+                                  filled: true,
+                                  fillColor: Color(0xFF0F172A),
+                                  border: OutlineInputBorder(),
+                                ),
+                                onChanged: _setMqttGroupId,
+                              ),
+                            ),
+                            SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                            _mqttFlexField(
+                              isCompact: isCompact,
+                              child: TextFormField(
+                                initialValue: mqtt.edgeNodeId,
+                                enabled: !connected && !connecting,
+                                style: const TextStyle(fontSize: 12, color: Colors.white),
+                                decoration: const InputDecoration(
+                                  isDense: true,
+                                  labelText: 'Edge node ID',
+                                  helperText: 'Falls back to the project name',
+                                  filled: true,
+                                  fillColor: Color(0xFF0F172A),
+                                  border: OutlineInputBorder(),
+                                ),
+                                onChanged: _setMqttEdgeNodeId,
+                              ),
+                            ),
+                          ],
+                        ),
+                      const SizedBox(height: 12),
+                      Flex(
+                        direction: isCompact ? Axis.vertical : Axis.horizontal,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(
+                            width: isCompact ? double.infinity : 120,
+                            child: DropdownButtonFormField<int>(
+                              key: const Key('mqtt_qos_dropdown'),
+                              initialValue: mqtt.qos,
+                              decoration: const InputDecoration(isDense: true, labelText: 'QoS'),
+                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              dropdownColor: const Color(0xFF1E293B),
+                              items: const [
+                                DropdownMenuItem(value: 0, child: Text('0')),
+                                DropdownMenuItem(value: 1, child: Text('1')),
+                                DropdownMenuItem(value: 2, child: Text('2')),
+                              ],
+                              onChanged: (connected || connecting)
+                                  ? null
+                                  : (v) {
+                                      if (v == null) return;
+                                      _setMqttQos(v);
+                                    },
+                            ),
+                          ),
+                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                            width: isCompact ? double.infinity : 160,
+                            child: TextFormField(
+                              initialValue: mqtt.heartbeatSeconds.toString(),
+                              enabled: !connected && !connecting,
+                              keyboardType: TextInputType.number,
+                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              decoration: const InputDecoration(isDense: true, labelText: 'Heartbeat (s)'),
+                              onChanged: _setMqttHeartbeat,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Flex(
+                        direction: isCompact ? Axis.vertical : Axis.horizontal,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(
+                            width: isCompact ? double.infinity : 160,
+                            child: TextFormField(
+                              key: const Key('mqtt_publish_interval_field'),
+                              initialValue: mqtt.publishIntervalMs.toString(),
+                              enabled: !connected && !connecting,
+                              keyboardType: TextInputType.number,
+                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              decoration:
+                                  const InputDecoration(isDense: true, labelText: 'Publish interval (ms)'),
+                              onChanged: _setMqttPublishInterval,
+                            ),
+                          ),
+                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                            width: isCompact ? double.infinity : 160,
+                            child: TextFormField(
+                              key: const Key('mqtt_deadband_field'),
+                              initialValue: mqtt.deadband.toString(),
+                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              decoration: const InputDecoration(isDense: true, labelText: 'Deadband (analog)'),
+                              onChanged: _setMqttDeadband,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          const Expanded(
+                            child: Text('Allow remote writes',
+                                style: TextStyle(color: Colors.white70, fontSize: 12)),
+                          ),
+                          Switch(
+                            // Safe to toggle live (unlike format/topic/group/node,
+                            // which would break the Sparkplug stream): the host is
+                            // always subscribed to the command/NCMD topic and re-reads
+                            // this flag on every inbound message, so flipping it while
+                            // connected takes effect immediately without a reconnect.
+                            key: const Key('mqtt_allow_remote_writes_switch'),
+                            value: mqtt.allowRemoteWrites,
+                            onChanged: _setMqttAllowRemoteWrites,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        initialValue: mqtt.username,
+                        style: const TextStyle(fontSize: 12, color: Colors.white),
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          labelText: 'Username (optional)',
+                          filled: true,
+                          fillColor: Color(0xFF0F172A),
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: _setMqttUsername,
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        key: const Key('mqtt_password_field'),
+                        obscureText: true,
+                        style: const TextStyle(fontSize: 12, color: Colors.white),
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          labelText: 'Password (session only — never saved)',
+                          filled: true,
+                          fillColor: Color(0xFF0F172A),
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: (v) => _mqttPassword = v,
+                      ),
+                      const SizedBox(height: 12),
+                      Flex(
+                        direction: isCompact ? Axis.vertical : Axis.horizontal,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(
+                            width: isCompact ? double.infinity : null,
+                            child: ElevatedButton(
+                              onPressed: (connected || connecting || !widget.hostingSupported)
+                                  ? null
+                                  : _connectMqtt,
+                              child: const Text('Connect'),
+                            ),
+                          ),
+                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                            width: isCompact ? double.infinity : null,
+                            child: OutlinedButton(
+                              onPressed: (connected || connecting) ? _disconnectMqtt : null,
+                              child: const Text('Disconnect'),
+                            ),
+                          ),
+                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                            width: isCompact ? double.infinity : null,
+                            child: Tooltip(
+                              message: (connected && !isJson)
+                                  ? 'Re-publish NBIRTH with the current tag map — other Sparkplug B '
+                                      'subscribers (e.g. Ignition MQTT Engine) will see any tags added '
+                                      'or changed while connected.'
+                                  : 'Connect with Sparkplug B to re-publish births.',
+                              child: OutlinedButton.icon(
+                                key: const Key('mqtt_rebirth_button'),
+                                icon: const Icon(Icons.campaign_outlined, size: 16),
+                                label: const Text('Rebirth'),
+                                onPressed: (connected && !isJson) ? _rebirthMqtt : null,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (!widget.hostingSupported) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Publishing dials the broker over a TCP socket, which web '
+                          'browsers do not allow. Run the desktop (Windows/macOS/Linux) '
+                          'or mobile (Android/iOS) app to publish — you can still '
+                          'design the tag map here.',
+                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                        ),
+                      ],
+                      if ((connected || connecting) && widget.mqttHost.endpointUrl != null) ...[
+                        const SizedBox(height: 8),
+                        SelectableText(
+                          widget.mqttHost.endpointUrl!,
+                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                        ),
+                      ],
+                      if (widget.mqttHost.lastError != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Last error: ${widget.mqttHost.lastError}',
+                          style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                        ),
+                      ],
                     ],
-                  ),
-                  Text(
-                    'Mapped tags: ${mqtt.map.entries.length}',
-                    style: const TextStyle(color: Colors.grey, fontSize: 12),
-                  ),
-                  if (widget.mqttHost.publishCount > 0)
-                    Text(
-                      'Published: ${widget.mqttHost.publishCount}',
-                      style: const TextStyle(color: Colors.grey, fontSize: 12),
-                    ),
-                ],
+                  );
+                },
               ),
               const SizedBox(height: 12),
-              Flex(
-                direction: isCompact ? Axis.vertical : Axis.horizontal,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // `Expanded` only makes sense in the horizontal (Row)
-                  // arrangement — inside the vertical (Column) one used at
-                  // compact widths there's no bounded main-axis size for it
-                  // to expand into, so the field is a plain (already
-                  // full-width) child there instead.
-                  _mqttFlexField(
-                    isCompact: isCompact,
-                    child: TextFormField(
-                      initialValue: mqtt.host,
-                      enabled: !connected && !connecting,
-                      style: const TextStyle(fontSize: 12, color: Colors.white),
-                      decoration: const InputDecoration(
-                        isDense: true,
-                        labelText: 'Broker host',
-                        filled: true,
-                        fillColor: Color(0xFF0F172A),
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: _setMqttHost,
-                    ),
-                  ),
-                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
-                  SizedBox(
-                    width: isCompact ? double.infinity : 120,
-                    child: TextField(
-                      controller: _mqttPortController,
-                      enabled: !connected && !connecting,
-                      keyboardType: TextInputType.number,
-                      style: const TextStyle(fontSize: 12, color: Colors.white),
-                      decoration: const InputDecoration(
-                        isDense: true,
-                        labelText: 'Port',
-                        helperText: 'Default: 1883',
-                        filled: true,
-                        fillColor: Color(0xFF0F172A),
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: _setMqttPort,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  const Text('TLS', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                  Switch(
-                    key: const Key('mqtt_tls_switch'),
-                    value: mqtt.tls,
-                    onChanged: (connected || connecting) ? null : _setMqttTls,
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      key: const Key('mqtt_format_dropdown'),
-                      initialValue: mqtt.format,
-                      decoration: const InputDecoration(isDense: true, labelText: 'Payload format'),
-                      style: const TextStyle(fontSize: 12, color: Colors.white),
-                      dropdownColor: const Color(0xFF1E293B),
-                      items: const [
-                        DropdownMenuItem(value: 'json', child: Text('json')),
-                        DropdownMenuItem(value: 'sparkplug', child: Text('sparkplug')),
-                      ],
-                      onChanged: (connected || connecting)
-                          ? null
-                          : (v) {
-                              if (v == null) return;
-                              _setMqttFormat(v);
-                            },
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              if (isJson)
-                TextFormField(
-                  initialValue: mqtt.baseTopic,
-                  enabled: !connected && !connecting,
-                  style: const TextStyle(fontSize: 12, color: Colors.white),
-                  decoration: const InputDecoration(
-                    isDense: true,
-                    labelText: 'Base topic',
-                    filled: true,
-                    fillColor: Color(0xFF0F172A),
-                    border: OutlineInputBorder(),
-                  ),
-                  onChanged: _setMqttBaseTopic,
-                )
-              else
-                Flex(
-                  direction: isCompact ? Axis.vertical : Axis.horizontal,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _mqttFlexField(
-                      isCompact: isCompact,
-                      child: TextFormField(
-                        initialValue: mqtt.groupId,
-                        enabled: !connected && !connecting,
-                        style: const TextStyle(fontSize: 12, color: Colors.white),
-                        decoration: const InputDecoration(
-                          isDense: true,
-                          labelText: 'Group ID',
-                          filled: true,
-                          fillColor: Color(0xFF0F172A),
-                          border: OutlineInputBorder(),
-                        ),
-                        onChanged: _setMqttGroupId,
-                      ),
-                    ),
-                    SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
-                    _mqttFlexField(
-                      isCompact: isCompact,
-                      child: TextFormField(
-                        initialValue: mqtt.edgeNodeId,
-                        enabled: !connected && !connecting,
-                        style: const TextStyle(fontSize: 12, color: Colors.white),
-                        decoration: const InputDecoration(
-                          isDense: true,
-                          labelText: 'Edge node ID',
-                          helperText: 'Falls back to the project name',
-                          filled: true,
-                          fillColor: Color(0xFF0F172A),
-                          border: OutlineInputBorder(),
-                        ),
-                        onChanged: _setMqttEdgeNodeId,
-                      ),
-                    ),
-                  ],
-                ),
-              const SizedBox(height: 12),
-              Flex(
-                direction: isCompact ? Axis.vertical : Axis.horizontal,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(
-                    width: isCompact ? double.infinity : 120,
-                    child: DropdownButtonFormField<int>(
-                      key: const Key('mqtt_qos_dropdown'),
-                      initialValue: mqtt.qos,
-                      decoration: const InputDecoration(isDense: true, labelText: 'QoS'),
-                      style: const TextStyle(fontSize: 12, color: Colors.white),
-                      dropdownColor: const Color(0xFF1E293B),
-                      items: const [
-                        DropdownMenuItem(value: 0, child: Text('0')),
-                        DropdownMenuItem(value: 1, child: Text('1')),
-                        DropdownMenuItem(value: 2, child: Text('2')),
-                      ],
-                      onChanged: (connected || connecting)
-                          ? null
-                          : (v) {
-                              if (v == null) return;
-                              _setMqttQos(v);
-                            },
-                    ),
-                  ),
-                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
-                  SizedBox(
-                    width: isCompact ? double.infinity : 160,
-                    child: TextFormField(
-                      initialValue: mqtt.heartbeatSeconds.toString(),
-                      enabled: !connected && !connecting,
-                      keyboardType: TextInputType.number,
-                      style: const TextStyle(fontSize: 12, color: Colors.white),
-                      decoration: const InputDecoration(isDense: true, labelText: 'Heartbeat (s)'),
-                      onChanged: _setMqttHeartbeat,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Flex(
-                direction: isCompact ? Axis.vertical : Axis.horizontal,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(
-                    width: isCompact ? double.infinity : 160,
-                    child: TextFormField(
-                      key: const Key('mqtt_publish_interval_field'),
-                      initialValue: mqtt.publishIntervalMs.toString(),
-                      enabled: !connected && !connecting,
-                      keyboardType: TextInputType.number,
-                      style: const TextStyle(fontSize: 12, color: Colors.white),
-                      decoration: const InputDecoration(isDense: true, labelText: 'Publish interval (ms)'),
-                      onChanged: _setMqttPublishInterval,
-                    ),
-                  ),
-                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
-                  SizedBox(
-                    width: isCompact ? double.infinity : 160,
-                    child: TextFormField(
-                      key: const Key('mqtt_deadband_field'),
-                      initialValue: mqtt.deadband.toString(),
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      style: const TextStyle(fontSize: 12, color: Colors.white),
-                      decoration: const InputDecoration(isDense: true, labelText: 'Deadband (analog)'),
-                      onChanged: _setMqttDeadband,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text('Allow remote writes', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                  ),
-                  Switch(
-                    // Safe to toggle live (unlike format/topic/group/node,
-                    // which would break the Sparkplug stream): the host is
-                    // always subscribed to the command/NCMD topic and re-reads
-                    // this flag on every inbound message, so flipping it while
-                    // connected takes effect immediately without a reconnect.
-                    key: const Key('mqtt_allow_remote_writes_switch'),
-                    value: mqtt.allowRemoteWrites,
-                    onChanged: _setMqttAllowRemoteWrites,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                initialValue: mqtt.username,
-                style: const TextStyle(fontSize: 12, color: Colors.white),
-                decoration: const InputDecoration(
-                  isDense: true,
-                  labelText: 'Username (optional)',
-                  filled: true,
-                  fillColor: Color(0xFF0F172A),
-                  border: OutlineInputBorder(),
-                ),
-                onChanged: _setMqttUsername,
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                key: const Key('mqtt_password_field'),
-                obscureText: true,
-                style: const TextStyle(fontSize: 12, color: Colors.white),
-                decoration: const InputDecoration(
-                  isDense: true,
-                  labelText: 'Password (session only — never saved)',
-                  filled: true,
-                  fillColor: Color(0xFF0F172A),
-                  border: OutlineInputBorder(),
-                ),
-                onChanged: (v) => _mqttPassword = v,
-              ),
-              const SizedBox(height: 12),
-              Flex(
-                direction: isCompact ? Axis.vertical : Axis.horizontal,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(
-                    width: isCompact ? double.infinity : null,
-                    child: ElevatedButton(
-                      onPressed:
-                          (connected || connecting || !widget.hostingSupported) ? null : _connectMqtt,
-                      child: const Text('Connect'),
-                    ),
-                  ),
-                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
-                  SizedBox(
-                    width: isCompact ? double.infinity : null,
-                    child: OutlinedButton(
-                      onPressed: (connected || connecting) ? _disconnectMqtt : null,
-                      child: const Text('Disconnect'),
-                    ),
-                  ),
-                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
-                  SizedBox(
-                    width: isCompact ? double.infinity : null,
-                    child: Tooltip(
-                      message: (connected && !isJson)
-                          ? 'Re-publish NBIRTH with the current tag map — other Sparkplug B '
-                              'subscribers (e.g. Ignition MQTT Engine) will see any tags added '
-                              'or changed while connected.'
-                          : 'Connect with Sparkplug B to re-publish births.',
-                      child: OutlinedButton.icon(
-                        key: const Key('mqtt_rebirth_button'),
-                        icon: const Icon(Icons.campaign_outlined, size: 16),
-                        label: const Text('Rebirth'),
-                        onPressed: (connected && !isJson) ? _rebirthMqtt : null,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              if (!widget.hostingSupported) ...[
-                const SizedBox(height: 8),
-                Text(
-                  'Publishing dials the broker over a TCP socket, which web '
-                  'browsers do not allow. Run the desktop (Windows/macOS/Linux) '
-                  'or mobile (Android/iOS) app to publish — you can still '
-                  'design the tag map here.',
-                  style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
-                ),
-              ],
-              if ((connected || connecting) && widget.mqttHost.endpointUrl != null) ...[
-                const SizedBox(height: 8),
-                SelectableText(
-                  widget.mqttHost.endpointUrl!,
-                  style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
-                ),
-              ],
-              if (widget.mqttHost.lastError != null) ...[
-                const SizedBox(height: 8),
-                Text(
-                  'Last error: ${widget.mqttHost.lastError}',
-                  style: const TextStyle(color: Colors.redAccent, fontSize: 11),
-                ),
-              ],
-              const SizedBox(height: 12),
-              _mqttMapEditorCard(context, mqtt.map, tagOptions, showRebirthHint: connected && !isJson),
+              _mqttMapEditorCard(context, mqtt.map, tagOptions, isJson: isJson),
             ],
           ],
         ),
@@ -2572,13 +2696,17 @@ class _GatewayScreenState extends State<GatewayScreen> {
   /// identity fields above (format/base topic/group ID/edge node ID), adding
   /// or removing a mapped tag doesn't itself break the live Sparkplug B
   /// stream; it just means the currently-connected subscriber won't see the
-  /// new metric set until a Rebirth is published. [showRebirthHint] (true
-  /// only once connected with Sparkplug format) surfaces that reminder.
+  /// new metric set until a Rebirth is published. The "tap Rebirth above"
+  /// hint (shown once connected with Sparkplug format) is the only part of
+  /// this card that depends on live host state, so — unlike the rest of the
+  /// card — it gets its own tiny `ListenableBuilder` on `widget.mqttHost`
+  /// rather than pulling the (virtualized, potentially 100+-row) map list
+  /// into the connection-controls listener above.
   Widget _mqttMapEditorCard(
     BuildContext context,
     MqttMap map,
     List<String> tagOptions, {
-    required bool showRebirthHint,
+    required bool isJson,
   }) {
     return Container(
       decoration: BoxDecoration(
@@ -2615,13 +2743,22 @@ class _GatewayScreenState extends State<GatewayScreen> {
               ),
             ],
           ),
-          if (showRebirthHint) ...[
-            const SizedBox(height: 4),
-            Text(
-              'Connected — tap Rebirth above after adding/editing entries so subscribers see them.',
-              style: TextStyle(color: Colors.amber.shade200, fontSize: 11),
-            ),
-          ],
+          ListenableBuilder(
+            listenable: widget.mqttHost,
+            builder: (context, _) {
+              final connected = widget.mqttHost.status == MqttHostStatus.running;
+              if (!(connected && !isJson)) {
+                return const SizedBox.shrink();
+              }
+              return Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  'Connected — tap Rebirth above after adding/editing entries so subscribers see them.',
+                  style: TextStyle(color: Colors.amber.shade200, fontSize: 11),
+                ),
+              );
+            },
+          ),
           const SizedBox(height: 8),
           if (map.entries.isEmpty)
             const Padding(
@@ -2632,13 +2769,11 @@ class _GatewayScreenState extends State<GatewayScreen> {
               ),
             )
           else
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: _groupedMapRows<MqttMapEntry>(
-                map.entries,
-                (e) => e.tag,
-                (e) => _mqttRow(e, tagOptions),
-              ),
+            _virtualizedMapList<MqttMapEntry>(
+              map.entries,
+              (e) => e.tag,
+              (e) => _mqttRow(e, tagOptions),
+              listKey: const Key('mqtt_map_list'),
             ),
         ],
       ),
@@ -2646,6 +2781,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
   }
 
   Widget _mqttRow(MqttMapEntry entry, List<String> tagOptions) {
+    mqttRowBuildCount++; // test-only hook — see its doc comment above.
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: LayoutBuilder(

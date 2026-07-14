@@ -16,6 +16,7 @@ import 'package:soft_plc_mobile/services/dnp3_host.dart';
 import 'package:soft_plc_mobile/services/modbus_host.dart';
 import 'package:soft_plc_mobile/services/mqtt_host.dart';
 import 'package:soft_plc_mobile/services/opcua_host.dart';
+import 'package:soft_plc_mobile/widgets/live_tick.dart';
 import 'support/responsive_test_utils.dart';
 
 /// A project with one root tag and a folder of 3 generated ramp tags (plus
@@ -68,8 +69,11 @@ PlcProject _project() {
 }
 
 Widget _memoryManagerApp(PlcProject project) {
-  return MaterialApp(
-    home: MemoryManagerScreen(currentProject: project, onProjectUpdated: () {}),
+  return LiveTickScope(
+    notifier: LiveTick(),
+    child: MaterialApp(
+      home: MemoryManagerScreen(currentProject: project, onProjectUpdated: () {}),
+    ),
   );
 }
 

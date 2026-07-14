@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/system_tags.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
+import 'package:soft_plc_mobile/widgets/live_tick.dart';
 import 'package:soft_plc_mobile/widgets/tag_inspector_dock.dart';
 import 'support/responsive_test_utils.dart';
 
@@ -31,13 +32,19 @@ PlcProject _buildProject() {
 }
 
 Widget _harness(PlcProject project) {
-  return MaterialApp(
-    home: Scaffold(
-      body: TagInspectorDock(
-        project: project,
-        tags: project.tags,
-        onTagStateChanged: () {},
-        onClose: () {},
+  // Mirrors the runtime tree: the shell wraps its content (including this
+  // dock) in a LiveTickScope, and the dock's live-value cells now fetch it
+  // via `LiveTickScope.of(context)`.
+  return LiveTickScope(
+    notifier: LiveTick(),
+    child: MaterialApp(
+      home: Scaffold(
+        body: TagInspectorDock(
+          project: project,
+          tags: project.tags,
+          onTagStateChanged: () {},
+          onClose: () {},
+        ),
       ),
     ),
   );

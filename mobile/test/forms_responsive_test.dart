@@ -5,6 +5,7 @@ import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/screens/st_editor_screen.dart';
 import 'package:soft_plc_mobile/screens/project_manager_screen.dart';
 import 'package:soft_plc_mobile/screens/simulated_io_screen.dart';
+import 'package:soft_plc_mobile/widgets/live_tick.dart';
 import 'package:soft_plc_mobile/widgets/tag_inspector_dock.dart';
 import 'support/responsive_test_utils.dart';
 
@@ -111,15 +112,18 @@ void main() {
   });
 
   group('TagInspectorDock', () {
-    Widget app(PlcProject project, Size size) => MaterialApp(
-          home: Scaffold(
-            body: SizedBox(
-              width: size.width,
-              child: TagInspectorDock(
-                project: project,
-                tags: project.tags,
-                onTagStateChanged: () {},
-                onClose: () {},
+    Widget app(PlcProject project, Size size) => LiveTickScope(
+          notifier: LiveTick(),
+          child: MaterialApp(
+            home: Scaffold(
+              body: SizedBox(
+                width: size.width,
+                child: TagInspectorDock(
+                  project: project,
+                  tags: project.tags,
+                  onTagStateChanged: () {},
+                  onClose: () {},
+                ),
               ),
             ),
           ),

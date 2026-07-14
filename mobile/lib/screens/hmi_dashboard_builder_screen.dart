@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../ui/responsive.dart';
+import '../widgets/live_tick.dart';
 import '../widgets/tag_autocomplete_field.dart';
 
 class HmiDashboardBuilderScreen extends StatefulWidget {
@@ -562,8 +563,17 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
                                                 ),
                                               ),
 
-                                            // Render Component Widget
-                                            _renderComponentWidget(comp, boundTag),
+                                            // Render Component Widget. Wrapped in a
+                                            // LiveTick-driven ListenableBuilder so the
+                                            // component's bound tag value/state repaints
+                                            // on each scan pulse without needing the
+                                            // shell's whole-tree setState — static card
+                                            // chrome above (header, controls, linked-tag
+                                            // label) stays outside the builder.
+                                            ListenableBuilder(
+                                              listenable: LiveTickScope.of(ctx),
+                                              builder: (context, child) => _renderComponentWidget(comp, boundTag),
+                                            ),
                                           ],
                                         ),
                                       ),

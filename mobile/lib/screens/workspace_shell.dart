@@ -18,7 +18,9 @@ import '../services/dnp3_host.dart';
 import '../services/modbus_host.dart';
 import '../services/mqtt_host.dart';
 import '../services/opcua_host.dart';
+import '../services/notify_throttle.dart';
 import '../ui/responsive.dart';
+import '../widgets/live_tick.dart';
 import '../widgets/tag_autocomplete_field.dart';
 import '../widgets/tag_inspector_dock.dart';
 import 'scan_tick.dart';
@@ -30,6 +32,7 @@ import 'memory_manager_screen.dart';
 import 'hmi_dashboard_builder_screen.dart';
 import 'simulated_io_screen.dart';
 import 'gateway_screen.dart';
+import 'softplc_settings_dialog.dart';
 
 /// Debounce window between the last project mutation and the autosave write.
 const Duration _autosaveDebounce = Duration(milliseconds: 800);
@@ -37,6 +40,26 @@ const Duration _autosaveDebounce = Duration(milliseconds: 800);
 /// Sentinel item appended to the Add-Program dialog's task dropdown; picking
 /// it reveals inline task-creation fields instead of an existing task.
 const String _kNewTaskSentinel = '＋ New task…';
+
+/// Global (not per-project) SharedPreferences key for the UI refresh rate,
+/// in Hz, that tunes `_repaintThrottle`'s coalescing window.
+const String _kUiRefreshHzKey = 'ui_refresh_hz';
+
+/// Default UI refresh rate, in Hz, used when `ui_refresh_hz` has never been
+/// persisted (fresh install) or when reading it fails.
+const int kDefaultRefreshHz = 10;
+
+/// Clamps a requested UI refresh rate to the supported 1-30 Hz range. Pure
+/// and `@visibleForTesting` so the clamp logic is testable without pumping
+/// the shell or its settings dialog.
+@visibleForTesting
+int clampRefreshHz(int hz) => hz.clamp(1, 30);
+
+/// Maps a (clamped) refresh rate in Hz to the `NotifyThrottle` coalescing
+/// window that achieves it. Pure and `@visibleForTesting` alongside
+/// [clampRefreshHz].
+@visibleForTesting
+Duration refreshWindow(int hz) => Duration(milliseconds: (1000 / clampRefreshHz(hz)).round());
 
 class WorkspaceShell extends StatefulWidget {
   /// Optional injection seam so tests (and callers that already own a
@@ -74,6 +97,21 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   final ModbusHost _modbusHost = ModbusHost();
   final MqttHost _mqttHost = MqttHost();
   final DnpHost _dnpHost = DnpHost();
+
+  // Repaint-pulse infrastructure (see live_tick.dart). `_executeScan` no
+  // longer setStates the whole shell each tick — it writes the model
+  // directly and calls `_repaintThrottle.request()`, which pulses `_liveTick`
+  // (throttled to `_refreshHz`) so only the LiveTick-driven value leaves
+  // repaint. A targeted `setState` remains for the rare structural
+  // transitions (a fault first tripping, an AlarmReset-driven clear).
+  final LiveTick _liveTick = LiveTick();
+  int _refreshHz = kDefaultRefreshHz;
+  late NotifyThrottle _repaintThrottle;
+
+  /// Counts this State's `build()` invocations — test-only instrumentation
+  /// (see [debugBuildCount]) so a widget test can assert the per-scan
+  /// repaint path never rebuilds the whole shell.
+  int _buildCount = 0;
 
   // Scheduler-driven scan-tick status (fault latch + scan-time stats),
   // surfaced via the reserved `System` tag each scan (see `system_tags.dart`).
@@ -128,6 +166,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   @override
   void initState() {
     super.initState();
+    _repaintThrottle = NotifyThrottle(_liveTick.pulse, window: refreshWindow(_refreshHz));
     _boot();
   }
 
@@ -140,6 +179,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     _modbusHost.dispose();
     _mqttHost.dispose();
     _dnpHost.dispose();
+    _repaintThrottle.dispose();
+    _liveTick.dispose();
     super.dispose();
   }
 
@@ -147,6 +188,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     ProjectRepository? repo;
     List<PlcProject> loadedProjects = [];
     PlcProject? active;
+    SharedPreferences? prefs;
 
     if (widget.repository != null) {
       // Test/caller-supplied seam: use it directly, never touch
@@ -159,13 +201,27 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       // back to the in-memory defaults below. A slow-but-working device
       // just awaits longer and ALWAYS gets a real, persistent repository —
       // there is no arbitrary timeout that can cause a false fallback.
-      SharedPreferences? prefs;
       try {
         prefs = await SharedPreferences.getInstance();
       } catch (_) {
         prefs = null;
       }
       repo = prefs != null ? ProjectRepository(prefs) : null;
+    }
+
+    // The UI refresh rate is a GLOBAL setting (not per-project), so it lives
+    // under its own top-level key rather than inside `repo`/`ProjectRepository`
+    // (which only knows about per-project catalog/project/active-id blobs).
+    // Reuse `prefs` when the non-injected path above already fetched it;
+    // otherwise (an injected `widget.repository`, e.g. in tests) fall back to
+    // a fresh `SharedPreferences.getInstance()` call of our own. Either way
+    // this is best-effort: any failure just keeps the compile-time default.
+    int loadedRefreshHz = kDefaultRefreshHz;
+    try {
+      final settingsPrefs = prefs ?? await SharedPreferences.getInstance();
+      loadedRefreshHz = clampRefreshHz(settingsPrefs.getInt(_kUiRefreshHzKey) ?? kDefaultRefreshHz);
+    } catch (_) {
+      loadedRefreshHz = kDefaultRefreshHz;
     }
 
     if (repo != null) {
@@ -227,6 +283,11 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       }
       _booting = false;
       _history.reset(_snapshot());
+      if (loadedRefreshHz != _refreshHz) {
+        _refreshHz = loadedRefreshHz;
+        _repaintThrottle.dispose();
+        _repaintThrottle = NotifyThrottle(_liveTick.pulse, window: refreshWindow(_refreshHz));
+      }
     });
     await repo?.setActiveProjectId(_activeProject.id);
     _startRunSession();
@@ -300,6 +361,83 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// fault, for asserting fault state directly without scraping banner text.
   @visibleForTesting
   bool get debugFaulted => _faulted;
+
+  /// Test-only hook: the shell's [LiveTick], so widget tests can pulse it
+  /// directly (mirroring what `_repaintThrottle` does each scan) without
+  /// needing a full scan-timer tick to elapse.
+  @visibleForTesting
+  LiveTick get debugLiveTick => _liveTick;
+
+  /// Test-only hook: the shell's current UI refresh rate (Hz), so a widget
+  /// test can assert on it directly instead of poking at `_repaintThrottle`'s
+  /// private window.
+  @visibleForTesting
+  int get debugRefreshHz => _refreshHz;
+
+  /// Re-tunes the UI refresh rate: clamps [hz] to 1-30, swaps in a freshly
+  /// windowed `_repaintThrottle` (disposing the old one first — its
+  /// coalescing window is fixed at construction, see `NotifyThrottle`), and
+  /// best-effort persists the clamped value to the global `ui_refresh_hz`
+  /// SharedPreferences key so it survives the next boot. Called by the
+  /// SoftPLC Settings dialog's Save button; also `@visibleForTesting` so the
+  /// clamp/apply/persist path is directly testable without driving the
+  /// dialog UI.
+  @visibleForTesting
+  Future<void> applyRefreshHz(int hz) async {
+    final clamped = clampRefreshHz(hz);
+    if (mounted) {
+      setState(() {
+        _refreshHz = clamped;
+        _repaintThrottle.dispose();
+        _repaintThrottle = NotifyThrottle(_liveTick.pulse, window: refreshWindow(clamped));
+      });
+    } else {
+      _refreshHz = clamped;
+      _repaintThrottle.dispose();
+      _repaintThrottle = NotifyThrottle(_liveTick.pulse, window: refreshWindow(clamped));
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_kUiRefreshHzKey, clamped);
+    } catch (_) {
+      // Best-effort persistence: `_refreshHz` still applies for this
+      // session even if the write fails (e.g. platform channel unavailable).
+    }
+  }
+
+  /// Opens the SoftPLC Settings dialog (currently: the UI refresh-rate
+  /// field), prefilled with the shell's current `_refreshHz`. A non-null
+  /// result (Save was pressed with a parseable value) is applied via
+  /// [applyRefreshHz], which clamps + re-tunes + persists.
+  Future<void> _openSoftPlcSettings(BuildContext context) async {
+    final result = await showAdaptiveWidthDialog<int>(
+      context,
+      child: SoftPlcSettingsDialog(initialRefreshHz: _refreshHz),
+    );
+    if (result != null) {
+      await applyRefreshHz(result);
+    }
+  }
+
+  /// Test-only hook: how many times this State's `build()` has run, so a
+  /// widget test can assert that driving scans via [debugRunScan] does NOT
+  /// rebuild the whole shell (only structural transitions — a fault first
+  /// tripping, or an AlarmReset-driven clear — do that).
+  @visibleForTesting
+  int get debugBuildCount => _buildCount;
+
+  /// Test-only hook: runs one scan tick synchronously via the same
+  /// `_executeScan` the real Timer-driven scan loop calls, without needing a
+  /// real `Timer` to elapse.
+  @visibleForTesting
+  void debugRunScan() => _executeScan();
+
+  /// Test-only hook: overrides the per-task measured execution time used by
+  /// `runScanTick`'s watchdog check (see `ScanTickRuntime.elapsedForTest`),
+  /// so a test can deterministically trip a task's watchdog fault on the
+  /// next [debugRunScan] instead of needing a task to genuinely overrun.
+  @visibleForTesting
+  void debugSetScanElapsedForTest(int ms) => _scan.elapsedForTest = ms;
 
   /// Test-only hook: adds [proj] to the in-memory project catalog (mirrors
   /// what `_createNewProject`/`_importProject` do) so it's a valid target
@@ -401,42 +539,57 @@ class WorkspaceShellState extends State<WorkspaceShell> {
 
     tickSw.stop();
     final now = DateTime.now();
-    setState(() {
-      scanCount++;
-      _sessionScans++;
-      _lastScanMs = tickSw.elapsedMicroseconds / 1000.0;
-      if (_sessionScans == 1 || _lastScanMs > _maxScanMs) {
-        _maxScanMs = _lastScanMs;
-      }
-      if (_sessionScans == 1 || _lastScanMs < _minScanMs) {
-        _minScanMs = _lastScanMs;
-      }
-      if (result.faulted) {
+
+    // Plain model writes below — NOT wrapped in setState. These fields
+    // (scanCount, _sessionScans, _lastScanMs/_maxScanMs/_minScanMs) are read
+    // by on-screen surfaces only via the `System` tag through a
+    // LiveTick-driven `ListenableBuilder` (see the toolbar Scan Count above),
+    // so mutating them directly here is safe — `_repaintThrottle.request()`
+    // below is what actually schedules the next repaint, throttled to
+    // `_refreshHz`, instead of an unconditional whole-shell rebuild every scan.
+    scanCount++;
+    _sessionScans++;
+    _lastScanMs = tickSw.elapsedMicroseconds / 1000.0;
+    if (_sessionScans == 1 || _lastScanMs > _maxScanMs) {
+      _maxScanMs = _lastScanMs;
+    }
+    if (_sessionScans == 1 || _lastScanMs < _minScanMs) {
+      _minScanMs = _lastScanMs;
+    }
+    // A fault first becoming true is a rare structural transition — it flips
+    // the fault banner into existence and halts the scan loop, so it still
+    // needs an immediate shell rebuild rather than waiting on the throttled
+    // tick.
+    if (result.faulted && !_faulted) {
+      setState(() {
         _faulted = true;
         _faultTaskName = result.faultTask;
         _faultCode = result.faultCode;
         isRunning = false;
-      }
-      updateSystemStatus(_activeProject, SystemSnapshot(
-        fault: _faulted,
-        faultTask: _faultTaskName,
-        faultCode: _faultCode,
-        running: isRunning && !_faulted,
-        firstScan: result.firstScan,
-        scanCount: _sessionScans,
-        scanTimeMs: _lastScanMs,
-        maxScanTimeMs: _maxScanMs,
-        minScanTimeMs: _minScanMs,
-        freeRun: _freeRun,
-        uptimeMs: _uptime.elapsedMilliseconds,
-        year: now.year, month: now.month, day: now.day,
-        hour: now.hour, minute: now.minute, second: now.second,
-        dateTime: _formatClock(now),
-      ));
-      if (consumeAlarmReset(_activeProject)) {
-        _clearFault();
-      }
-    });
+      });
+    }
+    updateSystemStatus(_activeProject, SystemSnapshot(
+      fault: _faulted,
+      faultTask: _faultTaskName,
+      faultCode: _faultCode,
+      running: isRunning && !_faulted,
+      firstScan: result.firstScan,
+      scanCount: _sessionScans,
+      scanTimeMs: _lastScanMs,
+      maxScanTimeMs: _maxScanMs,
+      minScanTimeMs: _minScanMs,
+      freeRun: _freeRun,
+      uptimeMs: _uptime.elapsedMilliseconds,
+      year: now.year, month: now.month, day: now.day,
+      hour: now.hour, minute: now.minute, second: now.second,
+      dateTime: _formatClock(now),
+    ));
+    if (consumeAlarmReset(_activeProject)) {
+      // An AlarmReset-driven clear is also a rare structural transition
+      // (drops the fault banner) — keep it under a targeted setState.
+      setState(_clearFault);
+    }
+    _repaintThrottle.request();
   }
 
   String _two(int v) => v.toString().padLeft(2, '0');
@@ -1147,6 +1300,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
 
   @override
   Widget build(BuildContext context) {
+    _buildCount++;
     if (_booting) {
       return const Scaffold(
         backgroundColor: Color(0xFF0F172A),
@@ -1166,18 +1320,21 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     final expanded = context.isExpanded;
     final compact = context.isCompact;
 
-    return CallbackShortcuts(
-      bindings: <ShortcutActivator, VoidCallback>{
-        const SingleActivator(LogicalKeyboardKey.keyZ, control: true): _undo,
-        const SingleActivator(LogicalKeyboardKey.keyY, control: true): _redo,
-        const SingleActivator(LogicalKeyboardKey.keyZ, control: true, shift: true): _redo,
-        const SingleActivator(LogicalKeyboardKey.keyZ, meta: true): _undo,
-        const SingleActivator(LogicalKeyboardKey.keyY, meta: true): _redo,
-        const SingleActivator(LogicalKeyboardKey.keyZ, meta: true, shift: true): _redo,
-      },
-      child: Focus(
-        autofocus: true,
-        child: _buildScaffold(context, expanded: expanded, compact: compact),
+    return LiveTickScope(
+      notifier: _liveTick,
+      child: CallbackShortcuts(
+        bindings: <ShortcutActivator, VoidCallback>{
+          const SingleActivator(LogicalKeyboardKey.keyZ, control: true): _undo,
+          const SingleActivator(LogicalKeyboardKey.keyY, control: true): _redo,
+          const SingleActivator(LogicalKeyboardKey.keyZ, control: true, shift: true): _redo,
+          const SingleActivator(LogicalKeyboardKey.keyZ, meta: true): _undo,
+          const SingleActivator(LogicalKeyboardKey.keyY, meta: true): _redo,
+          const SingleActivator(LogicalKeyboardKey.keyZ, meta: true, shift: true): _redo,
+        },
+        child: Focus(
+          autofocus: true,
+          child: _buildScaffold(context, expanded: expanded, compact: compact),
+        ),
       ),
     );
   }
@@ -1300,7 +1457,23 @@ class WorkspaceShellState extends State<WorkspaceShell> {
                 ),
                 if (!compact) ...[
                   const Spacer(),
-                  Text('Scan Count: $scanCount', style: const TextStyle(fontSize: 12, color: Colors.grey, fontFamily: 'monospace')),
+                  // Reads the reserved `System.ScanCount` tag (written every
+                  // scan by `updateSystemStatus`) inside a LiveTick-driven
+                  // ListenableBuilder, so this counter keeps repainting once
+                  // a later phase removes the shell's per-scan setState. A
+                  // `Builder` gets a BuildContext BELOW the `LiveTickScope`
+                  // this same `build()` method creates — the outer `context`
+                  // parameter is the shell's own element, an ANCESTOR of
+                  // that scope, so `LiveTickScope.of` would fail to find it.
+                  Builder(
+                    builder: (context) => ListenableBuilder(
+                      listenable: LiveTickScope.of(context),
+                      builder: (context, child) {
+                        final count = readPath(_activeProject, 'System.ScanCount');
+                        return Text('Scan Count: $count', style: const TextStyle(fontSize: 12, color: Colors.grey, fontFamily: 'monospace'));
+                      },
+                    ),
+                  ),
                 ],
               ],
             ),
@@ -1410,6 +1583,16 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       onPressed: () => _openTagDock(context),
     );
 
+    // Opens the SoftPLC Settings dialog (UI refresh rate, etc.). Only used
+    // inline on expanded/medium widths — the compact layout instead surfaces
+    // it as a menu entry in the overflow `PopupMenuButton` below, to avoid
+    // adding another inline tap target to the already-tight compact row.
+    final settingsButton = IconButton(
+      icon: const Icon(Icons.settings, color: Colors.grey),
+      tooltip: 'SoftPLC Settings',
+      onPressed: () => _openSoftPlcSettings(context),
+    );
+
     // Undo / Redo project history. On compact widths the AppBar is already
     // tight (run/pause + tag toggle + these two + overflow menu all have to
     // fit at 360px), so trim the tap-target padding down from the default
@@ -1466,6 +1649,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         const SizedBox(width: 16),
 
         tagToggle,
+        settingsButton,
 
         const SizedBox(width: 12),
       ];
@@ -1500,6 +1684,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
           } else if (value == 'freerun') {
             setState(() => _freeRun = !_freeRun);
             _startScanLoop();
+          } else if (value == 'settings') {
+            _openSoftPlcSettings(context);
           }
         },
         itemBuilder: (ctx) => [
@@ -1515,6 +1701,14 @@ class WorkspaceShellState extends State<WorkspaceShell> {
             child: ListTile(
               leading: Icon(_freeRun ? Icons.fast_forward : Icons.timer_outlined, color: _freeRun ? Colors.orangeAccent : Colors.grey),
               title: Text(_freeRun ? 'Free-run (as fast as allowed)' : 'Fixed scan (${scanSpeedMs}ms)'),
+            ),
+          ),
+          const PopupMenuDivider(),
+          const PopupMenuItem(
+            value: 'settings',
+            child: ListTile(
+              leading: Icon(Icons.settings),
+              title: Text('Settings'),
             ),
           ),
           PopupMenuItem(
