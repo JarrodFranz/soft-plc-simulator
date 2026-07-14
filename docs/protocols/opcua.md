@@ -135,10 +135,10 @@ of `ioType`), and every map's leaf-expansion checks both signals
 (`root.ioType == 'SimulatedOutput' || root.access == 'ReadOnly'`) — so every
 `System.*` leaf node (`System.Fault`, `System.ScanTimeMs`, ...) is generated
 `ReadOnly` and a write attempt gets the same `Bad_NotWritable` any other
-`ReadOnly` node returns. The one exception is `System.AlarmReset`, which
-stays outside `scalarLeaves`'s composite expansion of the diagnostics fields
-an operator can legitimately write (see `docs/task-scheduling.md`) — it is
-not part of this dotted-leaf mechanism.
+`ReadOnly` node returns. `System.AlarmReset` is expanded as a leaf like every
+other `SYSTEM` field, but — because it inherits the `System` root's read-only
+access — it too is served `ReadOnly`: fault reset stays an app/HMI action in
+this workstream, not a remote SCADA write (see `docs/task-scheduling.md`).
 
 This is machine-verified end-to-end against the real Rust `opcua` client
 (`tool/opcua_e2e.sh`): the probe reads the auto-generated `System.Fault`
