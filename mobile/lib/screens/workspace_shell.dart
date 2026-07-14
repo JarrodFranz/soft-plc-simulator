@@ -77,13 +77,20 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   final MqttHost _mqttHost = MqttHost();
   final DnpHost _dnpHost = DnpHost();
 
-  // Repaint-pulse infrastructure (additive this task — see live_tick.dart).
-  // The shell still setStates the whole tree each scan below; `_liveTick`
-  // merely also pulses, throttled to `_refreshHz`, so later tasks can move
-  // individual value leaves onto it without a behavior change here.
+  // Repaint-pulse infrastructure (see live_tick.dart). `_executeScan` no
+  // longer setStates the whole shell each tick — it writes the model
+  // directly and calls `_repaintThrottle.request()`, which pulses `_liveTick`
+  // (throttled to `_refreshHz`) so only the LiveTick-driven value leaves
+  // repaint. A targeted `setState` remains for the rare structural
+  // transitions (a fault first tripping, an AlarmReset-driven clear).
   final LiveTick _liveTick = LiveTick();
   final int _refreshHz = 10;
   late NotifyThrottle _repaintThrottle;
+
+  /// Counts this State's `build()` invocations — test-only instrumentation
+  /// (see [debugBuildCount]) so a widget test can assert the per-scan
+  /// repaint path never rebuilds the whole shell.
+  int _buildCount = 0;
 
   // Scheduler-driven scan-tick status (fault latch + scan-time stats),
   // surfaced via the reserved `System` tag each scan (see `system_tags.dart`).
@@ -320,6 +327,26 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   @visibleForTesting
   LiveTick get debugLiveTick => _liveTick;
 
+  /// Test-only hook: how many times this State's `build()` has run, so a
+  /// widget test can assert that driving scans via [debugRunScan] does NOT
+  /// rebuild the whole shell (only structural transitions — a fault first
+  /// tripping, or an AlarmReset-driven clear — do that).
+  @visibleForTesting
+  int get debugBuildCount => _buildCount;
+
+  /// Test-only hook: runs one scan tick synchronously via the same
+  /// `_executeScan` the real Timer-driven scan loop calls, without needing a
+  /// real `Timer` to elapse.
+  @visibleForTesting
+  void debugRunScan() => _executeScan();
+
+  /// Test-only hook: overrides the per-task measured execution time used by
+  /// `runScanTick`'s watchdog check (see `ScanTickRuntime.elapsedForTest`),
+  /// so a test can deterministically trip a task's watchdog fault on the
+  /// next [debugRunScan] instead of needing a task to genuinely overrun.
+  @visibleForTesting
+  void debugSetScanElapsedForTest(int ms) => _scan.elapsedForTest = ms;
+
   /// Test-only hook: adds [proj] to the in-memory project catalog (mirrors
   /// what `_createNewProject`/`_importProject` do) so it's a valid target
   /// for `debugSwitchToProject` — the project switcher UI only ever offers
@@ -420,42 +447,56 @@ class WorkspaceShellState extends State<WorkspaceShell> {
 
     tickSw.stop();
     final now = DateTime.now();
-    setState(() {
-      scanCount++;
-      _sessionScans++;
-      _lastScanMs = tickSw.elapsedMicroseconds / 1000.0;
-      if (_sessionScans == 1 || _lastScanMs > _maxScanMs) {
-        _maxScanMs = _lastScanMs;
-      }
-      if (_sessionScans == 1 || _lastScanMs < _minScanMs) {
-        _minScanMs = _lastScanMs;
-      }
-      if (result.faulted) {
+
+    // Plain model writes below — NOT wrapped in setState. These fields
+    // (scanCount, _sessionScans, _lastScanMs/_maxScanMs/_minScanMs) are read
+    // by on-screen surfaces only via the `System` tag through a
+    // LiveTick-driven `ListenableBuilder` (see the toolbar Scan Count above),
+    // so mutating them directly here is safe — `_repaintThrottle.request()`
+    // below is what actually schedules the next repaint, throttled to
+    // `_refreshHz`, instead of an unconditional whole-shell rebuild every scan.
+    scanCount++;
+    _sessionScans++;
+    _lastScanMs = tickSw.elapsedMicroseconds / 1000.0;
+    if (_sessionScans == 1 || _lastScanMs > _maxScanMs) {
+      _maxScanMs = _lastScanMs;
+    }
+    if (_sessionScans == 1 || _lastScanMs < _minScanMs) {
+      _minScanMs = _lastScanMs;
+    }
+    // A fault first becoming true is a rare structural transition — it flips
+    // the fault banner into existence and halts the scan loop, so it still
+    // needs an immediate shell rebuild rather than waiting on the throttled
+    // tick.
+    if (result.faulted && !_faulted) {
+      setState(() {
         _faulted = true;
         _faultTaskName = result.faultTask;
         _faultCode = result.faultCode;
         isRunning = false;
-      }
-      updateSystemStatus(_activeProject, SystemSnapshot(
-        fault: _faulted,
-        faultTask: _faultTaskName,
-        faultCode: _faultCode,
-        running: isRunning && !_faulted,
-        firstScan: result.firstScan,
-        scanCount: _sessionScans,
-        scanTimeMs: _lastScanMs,
-        maxScanTimeMs: _maxScanMs,
-        minScanTimeMs: _minScanMs,
-        freeRun: _freeRun,
-        uptimeMs: _uptime.elapsedMilliseconds,
-        year: now.year, month: now.month, day: now.day,
-        hour: now.hour, minute: now.minute, second: now.second,
-        dateTime: _formatClock(now),
-      ));
-      if (consumeAlarmReset(_activeProject)) {
-        _clearFault();
-      }
-    });
+      });
+    }
+    updateSystemStatus(_activeProject, SystemSnapshot(
+      fault: _faulted,
+      faultTask: _faultTaskName,
+      faultCode: _faultCode,
+      running: isRunning && !_faulted,
+      firstScan: result.firstScan,
+      scanCount: _sessionScans,
+      scanTimeMs: _lastScanMs,
+      maxScanTimeMs: _maxScanMs,
+      minScanTimeMs: _minScanMs,
+      freeRun: _freeRun,
+      uptimeMs: _uptime.elapsedMilliseconds,
+      year: now.year, month: now.month, day: now.day,
+      hour: now.hour, minute: now.minute, second: now.second,
+      dateTime: _formatClock(now),
+    ));
+    if (consumeAlarmReset(_activeProject)) {
+      // An AlarmReset-driven clear is also a rare structural transition
+      // (drops the fault banner) — keep it under a targeted setState.
+      setState(_clearFault);
+    }
     _repaintThrottle.request();
   }
 
@@ -1167,6 +1208,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
 
   @override
   Widget build(BuildContext context) {
+    _buildCount++;
     if (_booting) {
       return const Scaffold(
         backgroundColor: Color(0xFF0F172A),
