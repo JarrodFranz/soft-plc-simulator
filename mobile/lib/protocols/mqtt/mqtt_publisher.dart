@@ -337,7 +337,22 @@ class MqttPublisher {
     for (final entry in cfg.map.entries) {
       final value = readPath(project, entry.tag);
       final hadBaseline = _lastPublished.containsKey(entry.tag);
-      if (hadBaseline && _lastPublished[entry.tag] == value) {
+      final lastValue = _lastPublished[entry.tag];
+      if (hadBaseline && lastValue == value) {
+        continue;
+      }
+      // Analog deadband gate (event-loop-flood fix): a NUMERIC value that
+      // moved by no more than `cfg.deadband` since the last published
+      // baseline is suppressed WITHOUT touching the baseline, so a slow
+      // drift across many small sub-deadband ticks is still measured from
+      // the original baseline rather than resetting on every tick. BOOL/
+      // STRING values and `deadband == 0.0` (the default) are never gated —
+      // unchanged behavior.
+      if (hadBaseline &&
+          cfg.deadband > 0 &&
+          value is num &&
+          lastValue is num &&
+          (value - lastValue).abs() <= cfg.deadband) {
         continue;
       }
       _lastPublished[entry.tag] = value;

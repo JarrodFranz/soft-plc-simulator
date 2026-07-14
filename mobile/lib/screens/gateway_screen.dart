@@ -741,6 +741,24 @@ class _GatewayScreenState extends State<GatewayScreen> {
     widget.onProjectUpdated();
   }
 
+  void _setMqttPublishInterval(String value) {
+    final parsed = int.tryParse(value.trim());
+    if (parsed == null || parsed < 1) {
+      return; // ignore invalid input; keep the last-valid persisted value
+    }
+    widget.currentProject.protocols!.mqtt!.publishIntervalMs = parsed;
+    widget.onProjectUpdated();
+  }
+
+  void _setMqttDeadband(String value) {
+    final parsed = double.tryParse(value.trim());
+    if (parsed == null || parsed < 0) {
+      return; // ignore invalid input; keep the last-valid persisted value
+    }
+    widget.currentProject.protocols!.mqtt!.deadband = parsed;
+    widget.onProjectUpdated();
+  }
+
   void _setMqttAllowRemoteWrites(bool value) {
     setState(() {
       widget.currentProject.protocols!.mqtt!.allowRemoteWrites = value;
@@ -2396,6 +2414,37 @@ class _GatewayScreenState extends State<GatewayScreen> {
                       style: const TextStyle(fontSize: 12, color: Colors.white),
                       decoration: const InputDecoration(isDense: true, labelText: 'Heartbeat (s)'),
                       onChanged: _setMqttHeartbeat,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Flex(
+                direction: isCompact ? Axis.vertical : Axis.horizontal,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: isCompact ? double.infinity : 160,
+                    child: TextFormField(
+                      key: const Key('mqtt_publish_interval_field'),
+                      initialValue: mqtt.publishIntervalMs.toString(),
+                      enabled: !connected && !connecting,
+                      keyboardType: TextInputType.number,
+                      style: const TextStyle(fontSize: 12, color: Colors.white),
+                      decoration: const InputDecoration(isDense: true, labelText: 'Publish interval (ms)'),
+                      onChanged: _setMqttPublishInterval,
+                    ),
+                  ),
+                  SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                  SizedBox(
+                    width: isCompact ? double.infinity : 160,
+                    child: TextFormField(
+                      key: const Key('mqtt_deadband_field'),
+                      initialValue: mqtt.deadband.toString(),
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      style: const TextStyle(fontSize: 12, color: Colors.white),
+                      decoration: const InputDecoration(isDense: true, labelText: 'Deadband (analog)'),
+                      onChanged: _setMqttDeadband,
                     ),
                   ),
                 ],

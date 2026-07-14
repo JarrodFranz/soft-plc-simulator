@@ -92,7 +92,12 @@ void main() {
       final project = buildProject();
       final m = DnpMap.autoGenerate(project);
 
-      expect(m.entries.length, 4);
+      // Recipe_Array (INT32[4]) expands into 4 scalar analogOutput leaves
+      // alongside the 4 base scalar tags below. Delay_Timer/Cycle_Counter
+      // here carry a placeholder int (not a real struct Map), so scalarLeaves
+      // doesn't expand them — they stay single opaque leaves whose
+      // TIMER/COUNTER dataType is skipped, same as before.
+      expect(m.entries.length, 8);
 
       final binaryInputs = m.entries.where((e) => e.pointType == 'binaryInput').toList();
       expect(binaryInputs.length, 1);
@@ -110,12 +115,12 @@ void main() {
       expect(analogInputs.single.index, 0);
 
       final analogOutputs = m.entries.where((e) => e.pointType == 'analogOutput').toList();
-      expect(analogOutputs.length, 1);
-      expect(analogOutputs.single.tag, 'Setpoint');
-      expect(analogOutputs.single.index, 0);
+      expect(analogOutputs.map((e) => e.tag).toList(),
+          ['Setpoint', 'Recipe_Array[0]', 'Recipe_Array[1]', 'Recipe_Array[2]', 'Recipe_Array[3]']);
+      expect(analogOutputs.map((e) => e.index).toList(), [0, 1, 2, 3, 4]);
 
-      // Composites / TIMER / COUNTER / STRING are all skipped.
-      expect(m.entries.any((e) => e.tag == 'Recipe_Array'), isFalse);
+      // TIMER / COUNTER / STRING (placeholder int/'' values, not real
+      // struct maps) are all skipped.
       expect(m.entries.any((e) => e.tag == 'Delay_Timer'), isFalse);
       expect(m.entries.any((e) => e.tag == 'Cycle_Counter'), isFalse);
       expect(m.entries.any((e) => e.tag == 'Batch_Id'), isFalse);

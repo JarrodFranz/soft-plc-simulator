@@ -49,7 +49,7 @@ void main() {
   });
 
   group('OpcuaMap.autoGenerate', () {
-    test('generates ReadWrite for input, ReadOnly for output, skips struct tag', () {
+    test('generates ReadWrite for input, ReadOnly for output; leaves keyed by dotted path', () {
       final project = PlcProject(
         id: 'test_proj',
         name: 'Test Project',
@@ -86,7 +86,14 @@ void main() {
       final map = OpcuaMap.autoGenerate(project);
 
       expect(map.namespaceUri, 'urn:softplc:test_proj');
-      expect(map.nodes.length, 2, reason: 'struct/array-valued tag must be skipped in v1');
+      // `tag` (the resolver key) is keyed on the leaf's dotted/indexed path,
+      // which for a bare scalar is the tag's addressable `name`. `nodeId`,
+      // however, must preserve the root tag's folder-qualified `path` (its
+      // browse-path identity) so external OPC UA clients bound to the
+      // shipped node ids don't break. `PumpStatusDUT` isn't a registered
+      // struct def, so `scalarLeaves` doesn't expand it — it's exposed as
+      // its own (opaque) leaf, same as any other tag.
+      expect(map.nodes.length, 3);
 
       final start = map.nodes.firstWhere((n) => n.tag == 'Start_PB');
       expect(start.nodeId, 'ns=1;s=Inputs/Start_PB');
@@ -96,10 +103,12 @@ void main() {
       expect(motor.nodeId, 'ns=1;s=Outputs/Motor_Run');
       expect(motor.access, 'ReadOnly');
 
-      expect(map.nodes.any((n) => n.tag == 'Pump1_Status'), isFalse);
+      final pump = map.nodes.firstWhere((n) => n.tag == 'Pump1_Status');
+      expect(pump.nodeId, 'ns=1;s=Status/Pump1');
+      expect(pump.access, 'ReadWrite');
     });
 
-    test('List-valued (array) tags are also skipped', () {
+    test('array tags expand into one node per scalar element', () {
       final project = PlcProject(
         id: 'arr_proj',
         name: 'Array Project',
@@ -121,7 +130,13 @@ void main() {
       );
 
       final map = OpcuaMap.autoGenerate(project);
-      expect(map.nodes, isEmpty);
+      expect(map.nodes.map((n) => n.tag).toList(),
+          [for (var i = 0; i < 8; i++) 'Recipe_Steps[$i]']);
+      // nodeId keeps the root tag's folder-qualified path with the array
+      // index suffix appended (not the resolver-key name).
+      expect(map.nodes.map((n) => n.nodeId).toList(),
+          [for (var i = 0; i < 8; i++) 'ns=1;s=Recipe/Steps[$i]']);
+      expect(map.nodes.every((n) => n.access == 'ReadWrite'), isTrue);
     });
   });
 

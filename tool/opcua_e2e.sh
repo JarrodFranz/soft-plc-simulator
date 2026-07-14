@@ -6,6 +6,10 @@
 # against it. The probe runs TWO legs:
 #   1. None/Anonymous: GetEndpoints, Browse, Read, Write, Read-back-verify,
 #      subscription + pushed DataChangeNotification (WS19/WS20) -> `PROBE PASS`.
+#      Also Reads the reserved `System` composite's dotted leaf fields
+#      (`ns=1;s=System.Fault` Boolean, `ns=1;s=System.ScanTimeMs` Double) —
+#      the WS19 Task 3 machine-proof that the address space resolves a
+#      mapped node's `tag` as a dotted path, not just an exact tag name.
 #   2. SECURE: Basic256Sha256 / SignAndEncrypt + username/password auth, then
 #      Browse/Read/Write/read-back over the encrypted channel (OPC UA security
 #      workstream, Task 7) -> `OPCUA SECURITY PROBE PASS`.

@@ -244,6 +244,26 @@ class MqttProtocolConfig {
   String username;
   MqttMap map;
 
+  /// Interval (ms) between `changedPublishes`/heartbeat host ticks. Default
+  /// 250 — a deliberate throttle-down from the original hardcoded 50ms tick
+  /// (event-loop-flood fix, WS-perf task): 100 tags at 20Hz previously
+  /// re-evaluated `changedPublishes` every 50ms regardless of how many tags
+  /// actually changed. Additive field — older saved projects simply don't
+  /// have `publish_interval_ms` in their JSON and fall back to this default
+  /// on read. The host (`mqtt_host.dart`) clamps this to a minimum of 20ms
+  /// before arming its tick timer.
+  int publishIntervalMs;
+
+  /// Analog report-by-exception deadband: a NUMERIC mapped metric whose
+  /// value has moved by no more than this amount since the last published
+  /// baseline is skipped by `changedPublishes` (see mqtt_publisher.dart).
+  /// `0.0` (the default) disables the gate entirely — every change publishes,
+  /// exactly as before this field existed. BOOL/STRING metrics are never
+  /// gated by this value. Additive field — older saved projects simply don't
+  /// have `deadband` in their JSON and fall back to `0.0` (unchanged
+  /// behavior) on read.
+  double deadband;
+
   MqttProtocolConfig({
     this.enabled = false,
     this.host = '',
@@ -258,6 +278,8 @@ class MqttProtocolConfig {
     this.allowRemoteWrites = false,
     this.username = '',
     required this.map,
+    this.publishIntervalMs = 250,
+    this.deadband = 0.0,
   });
 
   factory MqttProtocolConfig.fromJson(Map<String, dynamic> j) => MqttProtocolConfig(
@@ -276,6 +298,8 @@ class MqttProtocolConfig {
         map: j['map'] != null
             ? MqttMap.fromJson(j['map'] as Map<String, dynamic>)
             : MqttMap(entries: []),
+        publishIntervalMs: (j['publish_interval_ms'] as num?)?.toInt() ?? 250,
+        deadband: (j['deadband'] as num?)?.toDouble() ?? 0.0,
       );
 
   Map<String, dynamic> toJson() => {
@@ -292,6 +316,8 @@ class MqttProtocolConfig {
         'allow_remote_writes': allowRemoteWrites,
         'username': username,
         'map': map.toJson(),
+        'publish_interval_ms': publishIntervalMs,
+        'deadband': deadband,
       };
 
   /// Sane defaults for a project that has never configured MQTT: disabled,

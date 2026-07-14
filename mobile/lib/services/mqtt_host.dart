@@ -117,6 +117,7 @@ import '../models/protocol_settings.dart';
 import '../models/tag_resolver.dart';
 import '../protocols/mqtt/mqtt_codec.dart';
 import '../protocols/mqtt/mqtt_publisher.dart';
+import 'notify_throttle.dart';
 
 /// Lifecycle status of the [MqttHost]. `connecting` (absent from the
 /// listen-only hosts, which bind synchronously) covers the time between
@@ -251,7 +252,17 @@ class MqttHost extends ChangeNotifier {
   @visibleForTesting
   final int Function()? nowMsOverride;
 
-  MqttHost({this.pingIntervalOverride, this.nowMsOverride});
+  MqttHost({this.pingIntervalOverride, this.nowMsOverride}) {
+    _throttle = NotifyThrottle(() => notifyListeners(), window: const Duration(milliseconds: 250));
+  }
+
+  /// Coalesces the high-frequency per-tick `notifyListeners()` calls (up to
+  /// 20x/sec at the fastest configurable publish interval) to at most one
+  /// trailing UI rebuild every 250ms — see `notify_throttle.dart`. State
+  /// transitions (connect/connack/disconnect/error/rebirth) instead call
+  /// [NotifyThrottle.immediate] so the UI reflects them without delay (and
+  /// coalesces away any pending trailing tick-driven fire).
+  late final NotifyThrottle _throttle;
 
   /// The current wall-clock time in UTC epoch milliseconds — what Sparkplug B
   /// (and the JSON payload) require for a message timestamp. Defers to
@@ -293,7 +304,7 @@ class MqttHost extends ChangeNotifier {
     _status = s;
     _lastError = error;
     if (!_disposed) {
-      notifyListeners();
+      _throttle.immediate();
     }
   }
 
@@ -531,7 +542,7 @@ class MqttHost extends ChangeNotifier {
     }
 
     _startKeepAliveTimer();
-    _startTickTimer();
+    _startTickTimer(project);
     _setStatus(MqttHostStatus.running);
   }
 
@@ -569,7 +580,7 @@ class MqttHost extends ChangeNotifier {
       }
       _lastHeartbeatMs = _clock.elapsedMilliseconds;
       if (!_disposed) {
-        notifyListeners();
+        _throttle.immediate();
       }
       return;
     }
@@ -625,7 +636,7 @@ class MqttHost extends ChangeNotifier {
         }
       }
       if (sentAny && !_disposed) {
-        notifyListeners();
+        _throttle.request();
       }
     } catch (_) {
       // A crash driving the publish tick must never take this host down —
@@ -669,9 +680,17 @@ class MqttHost extends ChangeNotifier {
     });
   }
 
-  void _startTickTimer() {
+  void _startTickTimer(PlcProject project) {
     _tickTimer?.cancel();
-    _tickTimer = Timer.periodic(const Duration(milliseconds: 50), _onTick);
+    // Configurable publish interval (default 250ms; was hardcoded 50ms) —
+    // event-loop-flood fix: 100 tags at 20Hz re-evaluated `changedPublishes`
+    // every 50ms regardless of how many tags actually changed. Clamped to a
+    // floor of 20ms so a misconfigured/zero/negative value can't spin the
+    // event loop. Re-armed on every (re)connect (this method's only caller),
+    // so a config change takes effect on the NEXT connect.
+    final configuredMs = project.protocols?.mqtt?.publishIntervalMs ?? 250;
+    final clampedMs = configuredMs < 20 ? 20 : configuredMs;
+    _tickTimer = Timer.periodic(Duration(milliseconds: clampedMs), _onTick);
   }
 
   void _onSocketProblem(Object? error) {
@@ -766,7 +785,7 @@ class MqttHost extends ChangeNotifier {
       }
       _lastHeartbeatMs = _clock.elapsedMilliseconds;
       if (!_disposed) {
-        notifyListeners();
+        _throttle.immediate();
       }
     } catch (_) {
       // A manual rebirth request must never throw — it's a best-effort UI
@@ -799,6 +818,7 @@ class MqttHost extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _throttle.dispose();
     unawaited(disconnect());
     super.dispose();
   }

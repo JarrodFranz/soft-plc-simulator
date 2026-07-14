@@ -68,8 +68,12 @@ a single unit (see "v1 scope" below). The register width/type at that path
 is resolved from the full path, not by matching the map entry's `tag` string
 against top-level tag names, so a struct member gets the correct register
 width (e.g. 2 registers for an `INT32` field) and decodes to the correct
-value. **Regenerate** only ever emits top-level scalar entries; dotted
-struct-member entries are a manual-map-only feature today.
+value. **Regenerate** now emits dotted struct-member entries too — it walks
+every tag's scalar leaves (`scalarLeaves`, including the reserved `System`
+UDT's fields) rather than only top-level tags, so a composite tag's members
+are auto-mapped the same way a hand-added dotted-path entry always could be;
+a `TIMER`/`COUNTER`/`STRING` leaf is still skipped (see "The 4-table tag
+mapping" below).
 
 ## The 4-table tag mapping
 
@@ -89,9 +93,16 @@ or via **Regenerate**):
 auto-map convention), and numeric tags to Holding Registers or Input
 Registers by the same read/write rule. Addresses are assigned sequentially
 per table in tag order, advancing by 1 for bit tables or by the type's
-register width for register tables (see below). `TIMER`/`COUNTER`/`STRING`
-tags and composite (struct/array) tags are skipped entirely — v1 only maps
-scalar `BOOL`/`INT16`/`INT32`/`FLOAT64` leaf tags (see "v1 scope" below).
+register width for register tables (see below). A composite (struct/array)
+tag is **not** mapped as a single unit — instead **Regenerate** expands it
+into its scalar leaf members (via the shared `scalarLeaves` resolver, e.g.
+the reserved `System` UDT expands to `System.Fault`, `System.ScanTimeMs`,
+...) and maps each leaf exactly like any other scalar tag, at a dotted-path
+`tag` (see "Struct-member (dotted-path) map entries" above — the same
+mechanism, just auto-generated now instead of manual-only). `TIMER`/
+`COUNTER`/`STRING` **leaves** are still skipped entirely (`STRING` includes
+`System.DateTime`) — v1 only maps scalar `BOOL`/`INT16`/`INT32`/`FLOAT64`
+leaf tags (see "v1 scope" below).
 
 **Register width per type** (holding/input tables only — coils/discrete
 inputs always occupy exactly one bit):
@@ -234,9 +245,12 @@ above.
   serial/RS-485 transport.
 - **Top-level composite tags** (structs/arrays) are not mappable as a
   whole — only scalar `BOOL`/`INT16`/`INT32`/`FLOAT64` leaf tags can be
-  assigned a Modbus address. Composite members can still be exposed
-  individually if you address the specific leaf tag/path in the map (same
-  restriction the OPC UA server has today).
+  assigned a Modbus address. Composite members are exposed individually as
+  dotted-path leaf entries instead, either via **Regenerate** (which now
+  auto-expands every composite tag, including the reserved `System` UDT, into
+  its scalar leaves) or by hand-addressing a specific leaf path in the map
+  (same restriction the OPC UA/DNP3/MQTT adapters have today — a struct/array
+  is never one wire entity on any of the four protocols).
 - **FC 07/08/11/12/17/20/21/22/23/24/43** (Read Exception Status,
   Diagnostics, Get Comm Event Counter/Log, Report Server ID, Read/Write
   File Record, Mask Write Register, Read/Write Multiple Registers,

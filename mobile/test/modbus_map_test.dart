@@ -29,21 +29,22 @@ void main() {
     expect([e('Level').table, e('Level').address, e('Level').access], ['input', 0, 'ReadOnly']);
   });
 
-  test('autoGenerate skips array/struct tags (value shape, not just dataType)', () {
+  test('array tags expand into per-element entries; unregistered struct tags stay skipped', () {
     final p = PlcProject(id: 'x', name: 'X', controllerName: 'C', structDefs: const [],
       programs: const [], tasks: const [], hmis: const [], tags: [
         PlcTag(name: 'Speed', path: 'Speed', dataType: 'INT16', value: 0, ioType: 'Internal'), // scalar -> mapped
-        // Array of a scalar: dataType stays 'INT32' (passes the scalar-type
-        // filter) but value is a List — must be skipped, not mapped as one reg.
+        // Array of a scalar: each element is now its own scalar leaf,
+        // mapped individually (dotted/indexed path), not skipped.
         PlcTag(name: 'Trend', path: 'Trend', dataType: 'INT32', value: <int>[0, 0, 0],
           arrayLength: 3, ioType: 'Internal'),
-        // Struct: value is a Map (dataType would be a custom type name anyway).
+        // Struct: an unregistered custom type name (no matching structDefs
+        // entry) isn't expanded by scalarLeaves — it stays an opaque leaf
+        // whose dataType still fails the Modbus scalar-type filter.
         PlcTag(name: 'Motor', path: 'Motor', dataType: 'MotorType', value: <String, dynamic>{'run': false},
           ioType: 'Internal'),
       ]);
     final m = ModbusMap.autoGenerate(p);
-    expect(m.entries.map((e) => e.tag), ['Speed']);
-    expect(m.entries.any((e) => e.tag == 'Trend'), isFalse);
+    expect(m.entries.map((e) => e.tag).toList(), ['Speed', 'Trend[0]', 'Trend[1]', 'Trend[2]']);
     expect(m.entries.any((e) => e.tag == 'Motor'), isFalse);
   });
 

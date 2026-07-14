@@ -10,6 +10,7 @@
 // from services and widgets alike without pulling Flutter into model code.
 
 import 'project_model.dart';
+import 'tag_resolver.dart';
 
 /// One DNP3 point-map entry, binding a project tag to an index within one
 /// of the four DNP3 point types.
@@ -72,16 +73,20 @@ class DnpMap {
         'entries': entries.map((e) => e.toJson()).toList(),
       };
 
-  /// Builds a default map from a project's scalar leaf tags: one entry per
-  /// tag whose type is `BOOL`, `INT16`, `INT32`, or `FLOAT64` — composite
-  /// tags (structs/arrays) and `TIMER`/`COUNTER`/`STRING` types are skipped
-  /// (v1 doesn't support them over DNP3).
+  /// Builds a default map from a project's scalar leaf tags (`scalarLeaves`):
+  /// composite/array tags are expanded into one entry per scalar leaf whose
+  /// type is `BOOL`, `INT16`, `INT32`, or `FLOAT64` — `STRING` leaves (and
+  /// any other non-scalar-table type) are skipped (v1 doesn't support them
+  /// over DNP3). Leaves are keyed by their dotted path (e.g. `System.Fault`);
+  /// a bare scalar tag yields itself, unchanged from before.
   ///
-  /// `SimulatedOutput` tags are read-only (matching the Modbus/OPC UA
-  /// auto-map convention); everything else (`SimulatedInput`, `Internal`)
-  /// is read-write. Point type selection: `BOOL` -> `binaryInput` (RO) /
+  /// Access/point-type selection is inherited from the ROOT tag (the tag
+  /// whose name is the leaf path's first segment): `SimulatedOutput` or an
+  /// explicit `ReadOnly` tag `access` (e.g. the reserved `System` tag) is
+  /// read-only; everything else (`SimulatedInput`, `Internal`) is
+  /// read-write. Point type selection: `BOOL` -> `binaryInput` (RO) /
   /// `binaryOutput` (RW); numeric -> `analogInput` (RO) / `analogOutput`
-  /// (RW). Indexes are assigned sequentially per point type in tag order,
+  /// (RW). Indexes are assigned sequentially per point type in leaf order,
   /// each starting from 0.
   static DnpMap autoGenerate(PlcProject p) {
     const skipTypes = {'TIMER', 'COUNTER', 'STRING'};
@@ -93,16 +98,13 @@ class DnpMap {
       'analogOutput': 0,
     };
     final entries = <DnpMapEntry>[];
-    for (final tag in p.tags) {
-      final dataType = tag.dataType;
-      final value = tag.value;
-      if (skipTypes.contains(dataType) ||
-          !scalarTypes.contains(dataType) ||
-          value is Map ||
-          value is List) {
+    for (final leaf in scalarLeaves(p)) {
+      final dataType = leaf.dataType;
+      if (skipTypes.contains(dataType) || !scalarTypes.contains(dataType)) {
         continue;
       }
-      final ro = tag.ioType == 'SimulatedOutput';
+      final root = rootTagOf(p, leaf.path);
+      final ro = root?.ioType == 'SimulatedOutput' || root?.access == 'ReadOnly';
       final String pointType;
       if (dataType == 'BOOL') {
         pointType = ro ? 'binaryInput' : 'binaryOutput';
@@ -112,7 +114,7 @@ class DnpMap {
       final index = nextIndex[pointType]!;
       nextIndex[pointType] = index + 1;
       entries.add(DnpMapEntry(
-        tag: tag.name,
+        tag: leaf.path,
         pointType: pointType,
         index: index,
         eventClass: 0,

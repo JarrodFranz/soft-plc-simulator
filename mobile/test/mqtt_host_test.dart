@@ -330,7 +330,7 @@ void main() {
       expect(birthPub.retain, isTrue);
       expect(host.publishCount, greaterThanOrEqualTo(1));
 
-      // Mutate a mapped tag; the 50ms tick's changedPublishes should report it.
+      // Mutate a mapped tag; the tick (default 250ms) changedPublishes should report it.
       writePath(project, 'Speed', 42.5);
 
       final changePub = await _waitForPacketType(conn, MqttPacketType.publish, 2);
