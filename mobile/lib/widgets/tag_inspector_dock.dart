@@ -29,6 +29,32 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
   String _filterIoType = 'ALL';
   final Set<String> _expandedTags = {};
 
+  // Folder names currently collapsed in the folder-grouped tag list. Root
+  // ('') is never collapsible -- its tags always render directly with no
+  // header. Empty by default so every folder starts expanded (nothing hides
+  // unexpectedly the first time the dock opens).
+  final Set<String> _collapsedFolders = {};
+
+  // Buckets [tags] by `PlcTag.folder`, root ('') first (if present) followed
+  // by every other folder alphabetically. Entry order within each bucket
+  // preserves the input order. Mirrors memory_manager_screen's
+  // `_tagsByFolder`/`_orderedFolderKeys` and gateway_screen's
+  // `groupEntriesByFolder` grouping convention.
+  Map<String, List<PlcTag>> _groupByFolder(List<PlcTag> tags) {
+    final buckets = <String, List<PlcTag>>{};
+    for (final tag in tags) {
+      buckets.putIfAbsent(tag.folder, () => []).add(tag);
+    }
+    final ordered = <String, List<PlcTag>>{};
+    if (buckets.containsKey('')) {
+      ordered[''] = buckets['']!;
+    }
+    for (final folder in (buckets.keys.where((k) => k.isNotEmpty).toList()..sort())) {
+      ordered[folder] = buckets[folder]!;
+    }
+    return ordered;
+  }
+
   @override
   Widget build(BuildContext context) {
     final filteredTags = widget.tags.where((tag) {
@@ -111,21 +137,107 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
 
           const Divider(height: 1, color: Colors.white12),
 
-          // Tag List Matrix
+          // Tag List Matrix -- grouped by folder: root tags first with no
+          // header, then each non-root folder alphabetically under a
+          // collapsible header (folder icon + name + count + chevron).
           Expanded(
             child: filteredTags.isEmpty
                 ? const Center(child: Text('No matching tags', style: TextStyle(color: Colors.grey, fontSize: 12)))
-                : ListView.separated(
-                    padding: const EdgeInsets.all(8),
-                    itemCount: filteredTags.length,
-                    separatorBuilder: (ctx, idx) => const SizedBox(height: 6),
-                    itemBuilder: (context, index) {
-                      final tag = filteredTags[index];
-                      final isBool = tag.dataType == 'BOOL';
-                      final kids = childrenOf(widget.project, tag.name);
-                      final isExpanded = _expandedTags.contains(tag.name);
+                : Builder(builder: (context) {
+                    final grouped = _groupByFolder(filteredTags);
+                    final items = <_InspectorListItem>[];
+                    grouped.forEach((folder, tagsInFolder) {
+                      if (folder.isEmpty) {
+                        items.addAll(tagsInFolder.map(_InspectorTagRow.new));
+                        return;
+                      }
+                      items.add(_InspectorFolderHeader(folder, tagsInFolder.length));
+                      if (!_collapsedFolders.contains(folder)) {
+                        items.addAll(tagsInFolder.map(_InspectorTagRow.new));
+                      }
+                    });
 
-                      return Card(
+                    return ListView.separated(
+                      padding: const EdgeInsets.all(8),
+                      itemCount: items.length,
+                      separatorBuilder: (ctx, idx) => const SizedBox(height: 6),
+                      itemBuilder: (context, index) {
+                        final item = items[index];
+                        if (item is _InspectorFolderHeader) {
+                          return _buildFolderHeader(item.folder, item.count);
+                        }
+                        return _buildTagCard((item as _InspectorTagRow).tag);
+                      },
+                    );
+                  }),
+          ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // A small collapsible subheader row identifying a folder + its tag count,
+  // reusing the folder-subheader visual style used elsewhere (gateway
+  // screen's `_folderSubheader`, memory_manager_screen's `_folderHeader`).
+  // Uses Expanded + ellipsis on the folder name so a long name can never push
+  // the count/chevron off-screen or overflow at narrow widths (320/360px).
+  Widget _buildFolderHeader(String folder, int count) {
+    final collapsed = _collapsedFolders.contains(folder);
+    return Material(
+      key: ValueKey('inspector-folder-header-$folder'),
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(6),
+        onTap: () {
+          setState(() {
+            if (collapsed) {
+              _collapsedFolders.remove(folder);
+            } else {
+              _collapsedFolders.add(folder);
+            }
+          });
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+          child: Row(
+            children: [
+              Icon(collapsed ? Icons.folder : Icons.folder_open, color: Colors.amberAccent, size: 16),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  folder,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey),
+                ),
+              ),
+              const SizedBox(width: 4),
+              Text('($count)', style: const TextStyle(color: Colors.grey, fontSize: 11)),
+              const SizedBox(width: 4),
+              Icon(
+                collapsed ? Icons.chevron_right : Icons.expand_more,
+                size: 16,
+                color: Colors.grey,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // One tag row of the Tag List Matrix: name/path, live value pill (Task-3
+  // LiveTick-driven), force toggle, and (for composite/array tags) an
+  // expand-to-children affordance. Extracted from the flat item builder so
+  // both the root bucket and each folder bucket render identical rows.
+  Widget _buildTagCard(PlcTag tag) {
+    final isBool = tag.dataType == 'BOOL';
+    final kids = childrenOf(widget.project, tag.name);
+    final isExpanded = _expandedTags.contains(tag.name);
+
+    return Card(
                         margin: EdgeInsets.zero,
                         color: tag.isForced ? Colors.amber.shade900.withValues(alpha: 0.2) : const Color(0xFF1E293B),
                         shape: RoundedRectangleBorder(
@@ -299,14 +411,6 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                             ],
                           ),
                         ),
-                      );
-                    },
-                  ),
-          ),
-            ],
-          ),
-        );
-      },
     );
   }
 
@@ -433,4 +537,23 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
       ),
     );
   }
+}
+
+/// One flattened item in the folder-grouped Tag Inspector list: either a
+/// folder header or a tag row. Mirrors gateway_screen's `_MapListItem`
+/// sealed-item pattern so the dock's `ListView.separated` can stay a single
+/// flat itemBuilder instead of nesting a scrollable per folder.
+sealed class _InspectorListItem {
+  const _InspectorListItem();
+}
+
+class _InspectorFolderHeader extends _InspectorListItem {
+  final String folder;
+  final int count;
+  const _InspectorFolderHeader(this.folder, this.count);
+}
+
+class _InspectorTagRow extends _InspectorListItem {
+  final PlcTag tag;
+  const _InspectorTagRow(this.tag);
 }
