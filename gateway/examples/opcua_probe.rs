@@ -15,6 +15,11 @@
 //!   - `Counter`  : INT32, ReadWrite  -> ns=1;s=Counter
 //!   - `Ramp1_A`, `Ramp1_B` : FLOAT64, ReadOnly, folder 'Ramp1' ->
 //!     ns=1;s=Ramp1_A / ns=1;s=Ramp1_B (Task 2: served folder nodes)
+//!   - `System.Fault` : BOOL, ReadOnly -> ns=1;s=System.Fault
+//!   - `System.ScanTimeMs` : FLOAT64, ReadOnly -> ns=1;s=System.ScanTimeMs
+//!     (Task 3: dotted composite leaf path resolution — the reserved
+//!     `System` tag's scalar fields, exposed via the address space's
+//!     `dataTypeOfPath`/`readPath` dotted-path resolution)
 //!
 //! Steps (None/Anonymous leg): connect (SecurityPolicy::None, anonymous) ->
 //! GetEndpoints -> Read `NamespaceArray` (ns=0;i=2255) and verify index 1 is
@@ -422,6 +427,74 @@ fn run(endpoint_url: &str) -> Result<(), String> {
         Some(Variant::Double(_)) => {}
         other => return Err(format!("expected a Double Variant reading {NODE_TEMP}, got {other:?}")),
     }
+
+    // --- Step 3b: Read the reserved System composite's dotted leaf fields --
+    //
+    // Machine-proof for WS19 Task 3 (dotted leaf path resolution):
+    // `OpcUaAddressSpace.build` now resolves a mapped node's `tag` as a
+    // DOTTED PATH via `dataTypeOfPath`/`readPath`
+    // (mobile/lib/models/tag_resolver.dart), not just an exact top-level tag
+    // name match. The Dart fixture host ensures the reserved `System`
+    // composite tag (`ensureSystemTag`) and exposes its scalar leaves via
+    // `OpcuaMap.autoGenerate`, which yields node ids `ns=1;s=System.Fault`
+    // (Boolean) and `ns=1;s=System.ScanTimeMs` (Double) — reachable only if
+    // the address space builder resolves the dotted `System.Fault` /
+    // `System.ScanTimeMs` tag strings instead of failing an exact-name
+    // lookup and skipping the node.
+    println!("[probe] Read ns=1;s=System.Fault (dotted composite leaf)...");
+    let system_fault_node = NodeId::from_str("ns=1;s=System.Fault")
+        .map_err(|_| "bad NodeId literal ns=1;s=System.Fault".to_string())?;
+    let read_system_fault = ReadValueId {
+        node_id: system_fault_node,
+        attribute_id: AttributeId::Value as u32,
+        index_range: opcua::types::UAString::null(),
+        data_encoding: opcua::types::QualifiedName::null(),
+    };
+    let system_fault_results = session
+        .read(&[read_system_fault], TimestampsToReturn::Neither, 0.0)
+        .map_err(|e| format!("Read(System.Fault) failed: {e}"))?;
+    let system_fault_value = system_fault_results
+        .first()
+        .ok_or_else(|| "Read(System.Fault) returned zero results".to_string())?
+        .value
+        .clone();
+    println!("[probe] Read System.Fault -> {system_fault_value:?}");
+    match system_fault_value {
+        Some(Variant::Boolean(_)) => {}
+        other => {
+            return Err(format!(
+                "expected a Boolean Variant reading System.Fault, got {other:?}"
+            ))
+        }
+    }
+
+    println!("[probe] Read ns=1;s=System.ScanTimeMs (dotted composite leaf)...");
+    let system_scan_time_node = NodeId::from_str("ns=1;s=System.ScanTimeMs")
+        .map_err(|_| "bad NodeId literal ns=1;s=System.ScanTimeMs".to_string())?;
+    let read_system_scan_time = ReadValueId {
+        node_id: system_scan_time_node,
+        attribute_id: AttributeId::Value as u32,
+        index_range: opcua::types::UAString::null(),
+        data_encoding: opcua::types::QualifiedName::null(),
+    };
+    let system_scan_time_results = session
+        .read(&[read_system_scan_time], TimestampsToReturn::Neither, 0.0)
+        .map_err(|e| format!("Read(System.ScanTimeMs) failed: {e}"))?;
+    let system_scan_time_value = system_scan_time_results
+        .first()
+        .ok_or_else(|| "Read(System.ScanTimeMs) returned zero results".to_string())?
+        .value
+        .clone();
+    println!("[probe] Read System.ScanTimeMs -> {system_scan_time_value:?}");
+    match system_scan_time_value {
+        Some(Variant::Double(_)) => {}
+        other => {
+            return Err(format!(
+                "expected a Double Variant reading System.ScanTimeMs, got {other:?}"
+            ))
+        }
+    }
+    println!("[probe] dotted composite leaf resolution machine-proof OK.");
 
     // --- Step 4: Write a ReadWrite variable ---------------------------
     println!("[probe] Write {NODE_COUNTER}.Value = 4242...");

@@ -231,17 +231,19 @@ class OpcUaAddressSpace {
         if (parsed == null) {
           continue; // malformed node id string — skip this node.
         }
-        final tag = _findTag(project, node.tag);
-        if (tag == null) {
-          continue; // dangling tag reference — skip this node.
+        final dataType = dataTypeOfPath(project, node.tag);
+        if (dataType == null) {
+          continue; // unresolvable path — skip this node.
         }
+        final rootName = node.tag.split(RegExp(r'[.\[]')).first;
+        final rootTag = _findTag(project, rootName);
         final entry = OpcUaAddressSpaceEntry(
           nodeId: parsed,
-          browseName: tag.name,
-          tagName: node.tag,
-          dataType: tag.dataType,
+          browseName: node.tag, // dotted path (unique)
+          tagName: node.tag, // readVariant/readPath resolve dotted paths
+          dataType: dataType,
           access: node.access,
-          folder: tag.folder,
+          folder: rootTag?.folder ?? '',
         );
         entries.add(entry);
         byNodeId[parsed] = entry;

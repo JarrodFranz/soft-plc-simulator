@@ -28,6 +28,7 @@ import 'dart:typed_data';
 import 'package:soft_plc_mobile/models/opcua_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
+import 'package:soft_plc_mobile/models/system_tags.dart' show ensureSystemTag;
 import 'package:soft_plc_mobile/models/tag_resolver.dart' show writePath;
 import 'package:soft_plc_mobile/protocols/opcua/opcua_certificate.dart';
 import 'package:soft_plc_mobile/protocols/opcua/opcua_crypto.dart';
@@ -53,6 +54,16 @@ const String _fixturePassword = 'opcua-secret-1';
 ///     finds the synthesized 'Ramp1' FolderType Object among the references,
 ///     Browses INTO it, and finds these two tags there instead of flat under
 ///     Objects — see `gateway/examples/opcua_probe.rs`'s folder-browse step.
+///   - `System.Fault` (BOOL, ReadOnly) and `System.ScanTimeMs` (FLOAT64,
+///     ReadOnly) -> Task 3 (dotted leaf path resolution) machine-proof: the
+///     reserved `System` composite tag is ensured (`ensureSystemTag`) and its
+///     scalar leaves are exposed via `OpcuaMap.autoGenerate`, which keys each
+///     node's `tag` by the DOTTED resolver path (e.g. `System.Fault`) rather
+///     than a bare top-level tag name — `OpcUaAddressSpace.build` must
+///     resolve that dotted path (via `dataTypeOfPath`/`readPath`) to serve
+///     it. Node ids: `ns=1;s=System.Fault` / `ns=1;s=System.ScanTimeMs`
+///     (`System`'s `path` field is `'System'`, so autoGenerate's
+///     root-path + suffix nodeId collapses to the same dotted string).
 PlcProject _fixtureProject(int port) {
   final project = PlcProject(
     id: 'proj_opcua_e2e_fixture',
@@ -103,6 +114,19 @@ PlcProject _fixtureProject(int port) {
     hmis: [],
   );
 
+  // Task 3 (dotted leaf path resolution): inject the reserved `System`
+  // composite tag, then pull its auto-generated scalar-leaf nodes (dotted
+  // `tag` keys, e.g. `System.Fault`) out of `OpcuaMap.autoGenerate` and
+  // append them below to the hand-built node list, so the manually-pinned
+  // nodeIds for the other fixture tags (Start_PB/Temp/Counter/Ramp1_*, which
+  // the Rust probe still addresses by their existing literal `ns=1;s=...`
+  // strings) are left untouched.
+  ensureSystemTag(project);
+  final systemNodes = OpcuaMap.autoGenerate(project)
+      .nodes
+      .where((n) => n.tag == 'System.Fault' || n.tag == 'System.ScanTimeMs')
+      .toList();
+
   project.protocols = ProtocolSettings.defaults(project);
   project.protocols!.opcua = OpcUaProtocolConfig(
     enabled: true,
@@ -127,6 +151,7 @@ PlcProject _fixtureProject(int port) {
         OpcuaNode(nodeId: 'ns=1;s=Counter', tag: 'Counter', access: 'ReadWrite'),
         OpcuaNode(nodeId: 'ns=1;s=Ramp1_A', tag: 'Ramp1_A', access: 'ReadOnly'),
         OpcuaNode(nodeId: 'ns=1;s=Ramp1_B', tag: 'Ramp1_B', access: 'ReadOnly'),
+        ...systemNodes,
       ],
     ),
   );
