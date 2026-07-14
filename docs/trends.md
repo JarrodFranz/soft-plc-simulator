@@ -139,6 +139,30 @@ standard SCADA/HMI trend conventions, where a live trend is a runtime view
 over recent history rather than a stored dataset — this app makes no attempt
 to save historical trend data across sessions.
 
+## Trace cursor
+
+Both the Trends preview and the HMI `TrendChartDisplay` support a **trace
+cursor** for reading exact values off the chart:
+
+- **Tap** anywhere on the chart to drop a vertical trace line at that point
+  in time. **Drag** left/right (touch or mouse) to move it. Because the drag
+  gesture is horizontal-only, it never fights with the page's vertical
+  scrolling — you can drag the cursor and scroll the screen without either
+  one stealing the other's gesture.
+- A readout above the chart shows the cursor's time two ways — a relative
+  offset from now (e.g. `-1m 12s`, or `now` if it's within the current
+  second) and the wall-clock time (`HH:mm:ss`) — plus every visible pen's
+  value at that instant: a number for analog pens, `ON`/`OFF` for BOOL pens,
+  or `—` if that pen has no sample near the cursor.
+- The cursor anchors to a **moment in time**, not a pixel position, so it
+  stays put on the same data as the chart keeps scrolling with new samples.
+  Once that moment scrolls off the left edge of the visible window, the
+  trace **auto-hides** on its own. Tap the **✕** on the readout to clear it
+  sooner.
+- The trace is purely a viewing aid — it's never saved with the project or
+  the pen configuration, and it resets whenever the chart's own state does
+  (e.g. switching projects).
+
 ## Manual smoke checklist
 
 For a quick end-to-end sanity check after touching any part of this feature:

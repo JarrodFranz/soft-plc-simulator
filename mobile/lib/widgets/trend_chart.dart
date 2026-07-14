@@ -38,6 +38,98 @@ Color trendColorFromName(String name) {
   }
 }
 
+/// Pure horizontal mapping for the strip chart: converts between a timestamp
+/// and a pixel x, using the same padding the painter draws with. Shared by the
+/// painter and the trace-cursor hit-testing so the two never drift.
+class TrendChartGeometry {
+  final double width;
+  final int nowMs;
+  final int windowMs;
+  const TrendChartGeometry({
+    required this.width,
+    required this.nowMs,
+    required this.windowMs,
+  });
+
+  static const double leftPad = 36;
+  static const double rightPad = 8;
+
+  double get plotLeft => leftPad;
+  double get plotRight => width - rightPad;
+  double get plotW {
+    final w = plotRight - plotLeft;
+    return w < 1.0 ? 1.0 : w;
+  }
+
+  int get _win => windowMs <= 0 ? 1 : windowMs;
+
+  /// Pixel x for a timestamp (newest sample sits at the right edge).
+  double xOfTime(int tMs) => plotLeft + plotW * (1 - (nowMs - tMs) / _win);
+
+  /// Timestamp for a pixel x, clamped to the visible window.
+  int timeAtX(double x) {
+    final frac = ((x - plotLeft) / plotW).clamp(0.0, 1.0);
+    final t = nowMs - ((1 - frac) * _win).round();
+    if (t < nowMs - _win) {
+      return nowMs - _win;
+    }
+    if (t > nowMs) {
+      return nowMs;
+    }
+    return t;
+  }
+}
+
+/// The sample in [buf] whose time is closest to [tMs], or null if empty.
+TrendSample? nearestSample(List<TrendSample> buf, int tMs) {
+  if (buf.isEmpty) {
+    return null;
+  }
+  var best = buf.first;
+  var bestD = (best.t - tMs).abs();
+  for (final s in buf) {
+    final d = (s.t - tMs).abs();
+    if (d < bestD) {
+      best = s;
+      bestD = d;
+    }
+  }
+  return best;
+}
+
+/// Relative age of [cursorMs] vs [nowMs] as '-1m 12s' / '-45s' / 'now'.
+String relativeAgo(int cursorMs, int nowMs) {
+  final secs = ((nowMs - cursorMs) / 1000).round();
+  if (secs <= 0) {
+    return 'now';
+  }
+  final m = secs ~/ 60;
+  final s = secs % 60;
+  if (m > 0) {
+    return '-${m}m ${s}s';
+  }
+  return '-${s}s';
+}
+
+/// Wall-clock time of [cursorMs] as 'HH:mm:ss'.
+String clockHms(int cursorMs) {
+  final dt = DateTime.fromMillisecondsSinceEpoch(cursorMs);
+  String two(int v) => v.toString().padLeft(2, '0');
+  return '${two(dt.hour)}:${two(dt.minute)}:${two(dt.second)}';
+}
+
+/// A pen's value at a cursor sample: '—' if none, 'ON'/'OFF' for digital,
+/// else a 2-dp number.
+String formatPenValue(TrendPenView pen, TrendSample? s) {
+  if (s == null) {
+    return '—';
+  }
+  if (pen.isDigital) {
+    return s.v >= 0.5 ? 'ON' : 'OFF';
+  }
+  return s.v.toStringAsFixed(2);
+}
+
 /// Hand-painted strip chart. Analog pens share an auto-scaled left value axis
 /// and draw as connected polylines; BOOL pens draw as stacked 0/1 square-wave
 /// lanes along the bottom. Time axis: [nowMs-windowMs, nowMs], newest on the
@@ -49,6 +141,8 @@ class TrendChartPainter extends CustomPainter {
   final int nowMs;
   final Color axisColor;
   final Color gridColor;
+  final int? cursorTimeMs;
+  final Color cursorColor;
 
   TrendChartPainter({
     required this.pens,
@@ -57,10 +151,10 @@ class TrendChartPainter extends CustomPainter {
     required this.nowMs,
     required this.axisColor,
     required this.gridColor,
+    this.cursorTimeMs,
+    this.cursorColor = const Color(0xFFECEFF1),
   });
 
-  static const double _leftPad = 36;
-  static const double _rightPad = 8;
   static const double _topPad = 8;
   static const double _laneHeight = 16;
   static const double _laneGap = 4;
@@ -73,11 +167,11 @@ class TrendChartPainter extends CustomPainter {
     final digitalBandH = digital.isEmpty
         ? 0.0
         : digital.length * (_laneHeight + _laneGap) + _laneGap;
-    const plotLeft = _leftPad;
-    final plotRight = size.width - _rightPad;
+    final geo = TrendChartGeometry(width: size.width, nowMs: nowMs, windowMs: windowMs);
+    final plotLeft = geo.plotLeft;
+    final plotRight = geo.plotRight;
     const plotTop = _topPad;
     final plotBottom = size.height - digitalBandH - 4;
-    final plotW = (plotRight - plotLeft).clamp(1.0, double.infinity);
     final plotH = (plotBottom - plotTop).clamp(1.0, double.infinity);
     final win = windowMs <= 0 ? 1 : windowMs;
 
@@ -90,7 +184,7 @@ class TrendChartPainter extends CustomPainter {
       gridPaint..style = PaintingStyle.stroke,
     );
 
-    double xOf(int t) => plotLeft + plotW * (1 - (nowMs - t) / win);
+    double xOf(int t) => geo.xOfTime(t);
 
     // --- Analog auto-scale across all visible analog samples ---
     double? lo, hi;
@@ -205,6 +299,40 @@ class TrendChartPainter extends CustomPainter {
       canvas.drawRect(Rect.fromLTWH(lx, plotTop + 1, 8, 8), Paint()..color = p.color);
       t.paint(canvas, Offset(lx + 11, plotTop));
     }
+
+    // --- Trace cursor (optional) ---
+    final cursor = cursorTimeMs;
+    if (cursor != null && cursor >= nowMs - win && cursor <= nowMs) {
+      final cx = geo.xOfTime(cursor);
+      final cursorBottom = plotBottom + digitalBandH;
+      canvas.drawLine(
+        Offset(cx, plotTop),
+        Offset(cx, cursorBottom),
+        Paint()
+          ..color = cursorColor.withValues(alpha: 0.9)
+          ..strokeWidth = 1,
+      );
+      // Dot at each analog pen's nearest sample (reuse the same scale as above).
+      if (lo != null && hi != null) {
+        double lo2 = lo;
+        double hi2 = hi;
+        if ((hi2 - lo2).abs() < 1e-9) {
+          lo2 -= 1;
+          hi2 += 1;
+        }
+        final span0 = hi2 - lo2;
+        lo2 -= span0 * 0.08;
+        hi2 += span0 * 0.08;
+        double yOf2(double v) => plotTop + plotH * (1 - (v - lo2) / (hi2 - lo2));
+        for (final p in analog) {
+          final s = nearestSample(bufferOf(p.tagPath).where((s) => s.t >= nowMs - win).toList(), cursor);
+          if (s == null) {
+            continue;
+          }
+          canvas.drawCircle(Offset(cx, yOf2(s.v)), 2.5, Paint()..color = p.color);
+        }
+      }
+    }
   }
 
   @override
@@ -214,7 +342,7 @@ class TrendChartPainter extends CustomPainter {
 /// A live trend chart bound to a [TagHistorian]. Repaints on each LiveTick
 /// pulse (never via a whole-shell setState). Reused by the Trends preview and
 /// the HMI TrendChartDisplay component.
-class TrendChartView extends StatelessWidget {
+class TrendChartView extends StatefulWidget {
   final PlcProject project;
   final TagHistorian historian;
   final List<TrendPenView> pens;
@@ -243,33 +371,136 @@ class TrendChartView extends StatelessWidget {
   }
 
   @override
+  State<TrendChartView> createState() => _TrendChartViewState();
+}
+
+class _TrendChartViewState extends State<TrendChartView> {
+  int? _cursorTimeMs;
+
+  @override
   Widget build(BuildContext context) {
-    if (pens.isEmpty) {
+    if (widget.pens.isEmpty) {
       return SizedBox(
-        height: height,
+        height: widget.height,
         child: Center(
           child: Text('No pens to plot', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
         ),
       );
     }
     return SizedBox(
-      height: height,
-      child: ListenableBuilder(
-        listenable: LiveTickScope.of(context),
-        builder: (context, _) {
-          final now = DateTime.now().millisecondsSinceEpoch;
-          return CustomPaint(
-            size: Size.infinite,
-            painter: TrendChartPainter(
-              pens: pens,
-              bufferOf: historian.buffer,
-              windowMs: windowMs,
-              nowMs: now,
-              axisColor: Colors.grey.shade300,
-              gridColor: Colors.grey.shade600,
-            ),
+      height: widget.height,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth;
+          return ListenableBuilder(
+            listenable: LiveTickScope.of(context),
+            builder: (context, _) {
+              final now = DateTime.now().millisecondsSinceEpoch;
+              final win = widget.windowMs <= 0 ? 1 : widget.windowMs;
+              final geo = TrendChartGeometry(width: width, nowMs: now, windowMs: widget.windowMs);
+              final cursor = _cursorTimeMs;
+              final inWindow = cursor != null && cursor >= now - win && cursor <= now;
+              // Auto-hide: reset the state cleanly once the anchored time has
+              // scrolled off the left edge (never mutate state during build).
+              if (cursor != null && !inWindow) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted && _cursorTimeMs == cursor) {
+                    setState(() => _cursorTimeMs = null);
+                  }
+                });
+              }
+              return Stack(
+                children: [
+                  Positioned.fill(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTapDown: (d) => setState(() => _cursorTimeMs = geo.timeAtX(d.localPosition.dx)),
+                      onHorizontalDragStart: (d) => setState(() => _cursorTimeMs = geo.timeAtX(d.localPosition.dx)),
+                      onHorizontalDragUpdate: (d) => setState(() => _cursorTimeMs = geo.timeAtX(d.localPosition.dx)),
+                      child: CustomPaint(
+                        size: Size.infinite,
+                        painter: TrendChartPainter(
+                          pens: widget.pens,
+                          bufferOf: widget.historian.buffer,
+                          windowMs: widget.windowMs,
+                          nowMs: now,
+                          axisColor: Colors.grey.shade300,
+                          gridColor: Colors.grey.shade600,
+                          cursorTimeMs: inWindow ? cursor : null,
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (inWindow) _buildReadout(geo, cursor, now),
+                ],
+              );
+            },
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildReadout(TrendChartGeometry geo, int cursor, int now) {
+    final cursorX = geo.xOfTime(cursor);
+    final onRight = cursorX > geo.width / 2;
+    final rows = <Widget>[];
+    for (final p in widget.pens) {
+      final s = nearestSample(widget.historian.buffer(p.tagPath), cursor);
+      rows.add(Padding(
+        padding: const EdgeInsets.only(top: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(width: 8, height: 8, color: p.color),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                '${p.label}: ${formatPenValue(p, s)}',
+                style: const TextStyle(fontSize: 10, color: Colors.white),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      ));
+    }
+    return Positioned(
+      top: 6,
+      left: onRight ? 6 : null,
+      right: onRight ? null : 6,
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 170),
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(
+          color: const Color(0xFF0F172A).withValues(alpha: 0.88),
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: Colors.grey.shade700),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text(
+                    '${relativeAgo(cursor, now)}  ${clockHms(cursor)}',
+                    style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                InkWell(
+                  onTap: () => setState(() => _cursorTimeMs = null),
+                  child: Icon(Icons.close, size: 14, color: Colors.grey.shade400),
+                ),
+              ],
+            ),
+            ...rows,
+          ],
+        ),
       ),
     );
   }
