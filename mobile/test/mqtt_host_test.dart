@@ -688,6 +688,89 @@ void main() {
     });
   });
 
+  group('MqttHost — NDEATH published before graceful DISCONNECT (mqtt-ndeath-on-disconnect)', () {
+    test('disconnect() publishes an NDEATH (same bdSeq as the NBIRTH) before the MQTT DISCONNECT', () async {
+      final server = await ServerSocket.bind('127.0.0.1', 0);
+      final broker = _BrokerServer(server);
+      addTearDown(server.close);
+      final project = _sparkplugProject(port: server.port);
+      final host = MqttHost();
+      addTearDown(host.dispose);
+
+      final connFuture = broker.acceptOne();
+      await host.connect(() => project, password: '');
+      final conn = await connFuture;
+      await _waitForPacketType(conn, MqttPacketType.connect, 1);
+      conn.sendConnackAccepted();
+
+      final birth = await _waitForPacketType(conn, MqttPacketType.publish, 1);
+      final birthBdSeq = _bdSeqOf(parsePublish(birth)!.payload);
+
+      // Snapshot how many packets the broker has seen so far, so the
+      // post-disconnect packets can be inspected in isolation.
+      final packetsBeforeDisconnect = conn.packets.length;
+
+      await host.disconnect();
+
+      // Give the broker's socket listener a moment to drain the final bytes
+      // (disconnect() awaits socket.flush(), but the broker-side read is a
+      // separate async hop).
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      final newPackets = conn.packets.sublist(packetsBeforeDisconnect);
+      expect(newPackets, isNotEmpty);
+
+      final ndeathIndex = newPackets.indexWhere(
+        (p) => p.isNotEmpty && ((p[0] >> 4) & 0x0F) == MqttPacketType.publish,
+      );
+      final disconnectIndex = newPackets.indexWhere(
+        (p) => p.isNotEmpty && ((p[0] >> 4) & 0x0F) == MqttPacketType.disconnect,
+      );
+
+      expect(ndeathIndex, greaterThanOrEqualTo(0), reason: 'expected an NDEATH PUBLISH after disconnect()');
+      expect(disconnectIndex, greaterThanOrEqualTo(0), reason: 'expected a DISCONNECT packet after disconnect()');
+      expect(ndeathIndex, lessThan(disconnectIndex), reason: 'NDEATH must be published BEFORE the MQTT DISCONNECT');
+
+      final ndeathPub = parsePublish(newPackets[ndeathIndex])!;
+      expect(ndeathPub.topic, 'spBv1.0/SoftPLC/NDEATH/Node1');
+      expect(_bdSeqOf(ndeathPub.payload), birthBdSeq, reason: 'NDEATH must carry the CURRENT session bdSeq');
+    });
+
+    test('disconnect() on a never-connected host writes no NDEATH publish', () async {
+      final host = MqttHost();
+
+      await host.disconnect();
+
+      expect(host.status, MqttHostStatus.stopped);
+      // Never-connected means no socket was ever opened, so there is no
+      // outbound log at all to inspect for a stray PUBLISH — the absence of
+      // a crash and the stopped status are the observable contract here.
+    });
+
+    test('disconnect() before CONNACK (socket open, not yet acknowledged) writes no NDEATH publish', () async {
+      final server = await ServerSocket.bind('127.0.0.1', 0);
+      final broker = _BrokerServer(server);
+      addTearDown(server.close);
+      final project = _sparkplugProject(port: server.port);
+      final host = MqttHost();
+      addTearDown(host.dispose);
+
+      final connFuture = broker.acceptOne();
+      await host.connect(() => project, password: '');
+      final conn = await connFuture;
+      await _waitForPacketType(conn, MqttPacketType.connect, 1);
+      // Deliberately never send CONNACK — _connacked stays false.
+
+      await host.disconnect();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      final hasPublish = conn.packets.any(
+        (p) => p.isNotEmpty && ((p[0] >> 4) & 0x0F) == MqttPacketType.publish,
+      );
+      expect(hasPublish, isFalse, reason: 'no NDEATH should be sent before the session was CONNACK\'d');
+    });
+  });
+
   group('MqttHost — hostile broker input never crashes', () {
     test('garbage bytes from the broker drop the connection without throwing', () async {
       final server = await ServerSocket.bind('127.0.0.1', 0);

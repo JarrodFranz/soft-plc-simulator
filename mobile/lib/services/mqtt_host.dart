@@ -793,16 +793,36 @@ class MqttHost extends ChangeNotifier {
     }
   }
 
-  /// Stops the publisher session: sends a graceful MQTT DISCONNECT (which
-  /// tells the broker NOT to fire the registered Will — the Will is a
-  /// dead-connection safety net, not something a clean shutdown re-publishes
-  /// itself; see `mqtt_publisher.dart`'s `willMessage` doc comment), tears
-  /// down the socket, and cancels every timer. Safe to call when never
-  /// connected or already stopped.
+  /// Stops the publisher session: publishes an explicit Sparkplug B NDEATH
+  /// (see below), then sends a graceful MQTT DISCONNECT (which tells the
+  /// broker NOT to fire the registered Will — the Will remains a
+  /// dead-connection safety net for an UNEXPECTED drop; see
+  /// `mqtt_publisher.dart`'s `willMessage` doc comment), tears down the
+  /// socket, and cancels every timer. Safe to call when never connected or
+  /// already stopped.
   Future<void> disconnect() async {
     _stopping = true;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
+
+    // Sparkplug B: a clean MQTT DISCONNECT tells the broker NOT to fire the
+    // registered Will (NDEATH). So on an INTENTIONAL stop we must publish the
+    // death certificate ourselves first — otherwise the host keeps the node
+    // Online forever. Uses the CURRENT session bdSeq (deathMessage does not
+    // advance it). Best-effort: a broken socket here must not block teardown.
+    final provider = _projectProvider;
+    if (_connacked && _socket != null && provider != null) {
+      try {
+        final project = provider();
+        final death = _publisher.deathMessage(project, _wallNowMs());
+        if (death != null) {
+          _sendPublish(death);
+          await _socket?.flush();
+        }
+      } catch (_) {
+        // Ignore — best-effort death notice only.
+      }
+    }
 
     try {
       _socket?.add(encodeDisconnect());
