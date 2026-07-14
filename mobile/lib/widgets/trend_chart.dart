@@ -151,17 +151,12 @@ class TrendChartPainter extends CustomPainter {
     required this.gridColor,
   });
 
-  // Mirror TrendChartGeometry's padding so the two never drift (checked below).
-  static const double _leftPad = 36;
-  static const double _rightPad = 8;
   static const double _topPad = 8;
   static const double _laneHeight = 16;
   static const double _laneGap = 4;
 
   @override
   void paint(Canvas canvas, Size size) {
-    assert(_leftPad == TrendChartGeometry.leftPad, 'left padding must match TrendChartGeometry');
-    assert(_rightPad == TrendChartGeometry.rightPad, 'right padding must match TrendChartGeometry');
     final digital = pens.where((p) => p.isDigital).toList();
     final analog = pens.where((p) => !p.isDigital).toList();
 
