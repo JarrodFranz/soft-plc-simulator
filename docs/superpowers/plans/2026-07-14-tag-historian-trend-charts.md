@@ -309,7 +309,10 @@ void main() {
   });
 
   test('PlcProject.trends round-trips; absent key -> empty', () {
-    final p = PlcProject(name: 'P');
+    final p = PlcProject(
+      id: 'p', name: 'P', controllerName: 'C',
+      tags: [], structDefs: [], programs: [], tasks: [], hmis: [],
+    );
     p.trends.add(TrendPen(tagPath: 'A'));
     final back = PlcProject.fromJson(p.toJson());
     expect(back.trends.length, 1);
@@ -1008,7 +1011,10 @@ import 'package:mobile/widgets/trend_chart.dart';
 
 void main() {
   testWidgets('Trends tab lists pens and renders a preview chart', (tester) async {
-    final proj = PlcProject(name: 'P');
+    final proj = PlcProject(
+      id: 'p', name: 'P', controllerName: 'C',
+      tags: [], structDefs: [], programs: [], tasks: [], hmis: [],
+    );
     proj.tags.add(PlcTag(name: 'A', path: 'A', dataType: 'FLOAT64', value: 0.0, ioType: 'Internal'));
     proj.trends.add(TrendPen(tagPath: 'A', color: 'green'));
     final historian = TagHistorian()..syncPens(proj.trends);
@@ -1278,11 +1284,14 @@ import 'package:mobile/widgets/trend_chart.dart';
 
 void main() {
   testWidgets('a TrendChartDisplay component renders a TrendChartView', (tester) async {
-    final proj = PlcProject(name: 'P');
+    final proj = PlcProject(
+      id: 'p', name: 'P', controllerName: 'C',
+      tags: [], structDefs: [], programs: [], tasks: [], hmis: [],
+    );
     proj.tags.add(PlcTag(name: 'A', path: 'A', dataType: 'FLOAT64', value: 0.0, ioType: 'Internal'));
     proj.trends.add(TrendPen(tagPath: 'A', color: 'green'));
     final historian = TagHistorian()..syncPens(proj.trends);
-    final hmi = HmiScreen(id: 'h1', name: 'Screen', components: [
+    final hmi = HmiScreenDef(id: 'h1', title: 'Screen', components: [
       HmiComponent(id: 'c1', title: 'Trend', type: kTrendChartDisplay, tagBinding: '',
           trendPens: [TrendPenRef(penTagPath: 'A')], windowMs: 60000),
     ]);
@@ -1305,7 +1314,7 @@ void main() {
 }
 ```
 
-> Confirm the real HMI-screen class name/constructor (`HmiScreen`) and adjust the fixture to match `project_model.dart`.
+> The HMI-screen class is `HmiScreenDef(id:, title:, components:)` (verified in `project_model.dart`); the builder's `hmiScreen:` param takes an `HmiScreenDef`.
 
 - [ ] **Step 2: Run test to verify it fails**
 
