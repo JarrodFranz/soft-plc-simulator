@@ -160,7 +160,7 @@ void main() {
     final proj = _proj(tags, prog);
     final rt = SfcRuntime();
     executeSfcPrograms(proj, 100, rt); // A false, B true -> should go to sy
-    expect(rt.activeStepId['M'], 'sy');
+    expect(rt.active['M'], {'sy'});
   });
 
   test('A wins over B when both true (priority order)', () {
@@ -181,6 +181,6 @@ void main() {
     final proj = _proj(tags, prog);
     final rt = SfcRuntime();
     executeSfcPrograms(proj, 100, rt);
-    expect(rt.activeStepId['M'], 'sx'); // A (higher priority) wins
+    expect(rt.active['M'], {'sx'}); // A (higher priority) wins
   });
 }

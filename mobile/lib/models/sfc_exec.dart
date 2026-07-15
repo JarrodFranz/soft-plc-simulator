@@ -4,10 +4,10 @@ import 'tag_resolver.dart';
 
 /// Active-step state per SFC program, keyed by program name.
 class SfcRuntime {
-  final Map<String, String> activeStepId = {};
-  final Map<String, int> stepElapsedMs = {};
+  final Map<String, Set<String>> active = {}; // progName -> active step ids
+  final Map<String, int> stepElapsedMs = {}; // '<prog>|<stepId>' -> STEP_T ms
   void clear() {
-    activeStepId.clear();
+    active.clear();
     stepElapsedMs.clear();
   }
 }
@@ -30,10 +30,13 @@ void _forceAwareWrite(PlcProject p, String path, dynamic value) {
   writePath(p, path, value);
 }
 
-/// Executes every SequentialFunctionChart program: the active step's action
-/// runs each scan (N semantics), STEP_T accumulates by scan ticks, and the
-/// first true outgoing transition (list order) switches the active step —
-/// the new step acts from the next scan.
+/// Executes every SequentialFunctionChart program: every active step's
+/// action runs each scan (N semantics), STEP_T accumulates by scan ticks
+/// per-step, and transitions fire against a start-of-scan snapshot of the
+/// active set — first-true wins for alternative divergences, fork
+/// transitions activate all branch heads at once, and join transitions wait
+/// until every source step is active before firing. Newly activated steps
+/// act starting next scan.
 void executeSfcPrograms(PlcProject p, int dtMs, SfcRuntime rt, {Set<String>? only, Set<String>? readOnly}) {
   for (final prog in p.programs) {
     if (prog.language != 'SequentialFunctionChart' || prog.sfcSteps.isEmpty) {
@@ -42,56 +45,89 @@ void executeSfcPrograms(PlcProject p, int dtMs, SfcRuntime rt, {Set<String>? onl
     if (only != null && !only.contains(prog.name)) {
       continue;
     }
-    // Resolve (or initialize) the active step.
-    SfcStep? active;
-    final currentId = rt.activeStepId[prog.name];
-    if (currentId != null) {
+    SfcStep? stepById(String id) {
       for (final s in prog.sfcSteps) {
-        if (s.id == currentId) {
-          active = s;
-          break;
+        if (s.id == id) {
+          return s;
         }
       }
-    }
-    if (active == null) {
-      for (final s in prog.sfcSteps) {
-        if (s.isInitial) {
-          active = s;
-          break;
-        }
-      }
-      active ??= prog.sfcSteps.first;
-      rt.activeStepId[prog.name] = active.id;
-      rt.stepElapsedMs[prog.name] = 0;
+      return null;
     }
 
-    final elapsed = (rt.stepElapsedMs[prog.name] ?? 0) + dtMs;
-    rt.stepElapsedMs[prog.name] = elapsed;
-    final vars = {'STEP_T': elapsed};
+    // Init the active set (initial step, else first).
+    var activeSet = rt.active[prog.name];
+    if (activeSet == null || activeSet.isEmpty) {
+      final initial = prog.sfcSteps.firstWhere((s) => s.isInitial, orElse: () => prog.sfcSteps.first);
+      activeSet = {initial.id};
+      rt.active[prog.name] = activeSet;
+      rt.stepElapsedMs['${prog.name}|${initial.id}'] = 0;
+    }
 
-    // N-action: every scan while the step is active.
-    runStatements(p, active.actionSt, (path, v) {
-      if (readOnly == null || !readOnly.contains(path)) {
-        _forceAwareWrite(p, path, v);
+    // Advance elapsed + run actions for each active step.
+    for (final id in activeSet) {
+      final key = '${prog.name}|$id';
+      final elapsed = (rt.stepElapsedMs[key] ?? 0) + dtMs;
+      rt.stepElapsedMs[key] = elapsed;
+      final step = stepById(id);
+      if (step != null) {
+        runStatements(p, step.actionSt, (path, v) {
+          if (readOnly == null || !readOnly.contains(path)) {
+            _forceAwareWrite(p, path, v);
+          }
+        }, extraVars: {'STEP_T': elapsed});
       }
-    },
-        extraVars: vars);
+    }
 
-    // First true outgoing transition switches the step (effective next scan).
+    // Compute firings against the START-OF-SCAN snapshot.
+    final snapshot = Set<String>.from(activeSet);
+    final consumed = <String>{};
+    final toAdd = <String>{};
     for (final t in prog.sfcTransitions) {
-      if (t.fromStepId != active.id) {
+      // sources / eligibility per kind
+      List<String> sources;
+      List<String> targets;
+      if (t.kind == 'parallelFork') {
+        sources = [t.fromStepId];
+        targets = t.toStepIds;
+      } else if (t.kind == 'parallelJoin') {
+        sources = t.fromStepIds;
+        targets = [t.toStepId];
+      } else {
+        sources = [t.fromStepId];
+        targets = [t.toStepId];
+      }
+      // eligible iff all sources are in the snapshot and none already consumed
+      final eligible = sources.isNotEmpty &&
+          sources.every((s) => snapshot.contains(s)) &&
+          sources.every((s) => !consumed.contains(s));
+      if (!eligible) {
         continue;
       }
-      if (evalStCondition(p, t.conditionSt, extraVars: vars)) {
-        final targetExists = prog.sfcSteps.any((s) => s.id == t.toStepId);
-        if (targetExists) {
-          rt.activeStepId[prog.name] = t.toStepId;
-          rt.stepElapsedMs[prog.name] = 0;
-          break;
-        }
-        // Dangling target (no such step): ignore this transition and keep
-        // evaluating later ones, rather than stranding the step for the scan.
+      final elapsed = rt.stepElapsedMs['${prog.name}|${sources.first}'] ?? 0;
+      if (!evalStCondition(p, t.conditionSt, extraVars: {'STEP_T': elapsed})) {
+        continue;
+      }
+      // A transition whose target(s) are entirely dangling (no such step)
+      // must not strand the chart: skip it and keep evaluating later
+      // transitions this scan, rather than consuming its sources for nothing.
+      final validTargets = targets.where((tgt) => stepById(tgt) != null).toList();
+      if (validTargets.isEmpty) {
+        continue;
+      }
+      // commit
+      consumed.addAll(sources);
+      toAdd.addAll(validTargets);
+    }
+
+    // Apply.
+    final next = Set<String>.from(activeSet)
+      ..removeAll(consumed)
+      ..addAll(toAdd);
+    for (final id in toAdd) {
+      if (!activeSet.contains(id)) {
+        rt.stepElapsedMs['${prog.name}|$id'] = 0; // (re)activated -> reset STEP_T
       }
     }
+    rt.active[prog.name] = next;
   }
 }

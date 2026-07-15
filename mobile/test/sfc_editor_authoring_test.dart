@@ -1,7 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/sfc_exec.dart';
 import 'package:soft_plc_mobile/screens/sfc_editor_screen.dart';
+
+// Migrated from the old vertical-list authoring controls to the 2D canvas
+// (SFC-v2). Intent preserved: a step can be deleted (with its transitions), and
+// an in-flight condition edit is committed to the model and survives a sibling
+// rebuild. (Branch add/reorder authoring returns in a later task.)
 
 PlcProgram _prog() {
   final p = PlcProgram(name: 'BR', language: 'SequentialFunctionChart', rungs: []);
@@ -16,7 +22,7 @@ PlcProgram _prog() {
 }
 
 void main() {
-  testWidgets('add branch appends an outgoing transition to the step', (tester) async {
+  testWidgets('delete step (via the step editor) removes the step and its transitions', (tester) async {
     tester.view.physicalSize = const Size(1400, 1200);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -28,41 +34,14 @@ void main() {
       tags: [], structDefs: [], programs: [prog], tasks: [], hmis: [],
     );
     await tester.pumpWidget(MaterialApp(
-      home: SfcEditorScreen(currentProject: proj, program: prog, onProgramUpdated: () {}),
+      home: SfcEditorScreen(currentProject: proj, program: prog, onProgramUpdated: () {}, sfcRuntime: SfcRuntime(), scanRunning: false),
     ));
     await tester.pumpAndSettle();
 
-    // s0 starts with 1 outgoing.
-    expect(prog.sfcTransitions.where((t) => t.fromStepId == 's0').length, 1);
-
-    // Tap the first "add branch" affordance (tooltip 'Add branch').
-    await tester.tap(find.byTooltip('Add branch').first);
+    // Tap the RUN step box to open its editor, then Delete.
+    await tester.tap(find.text('RUN'));
     await tester.pumpAndSettle();
-
-    expect(prog.sfcTransitions.where((t) => t.fromStepId == 's0').length, 2);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('delete step removes the step and its transitions', (tester) async {
-    tester.view.physicalSize = const Size(1400, 1200);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    final prog = _prog();
-    final proj = PlcProject(
-      id: 'p', name: 'P', controllerName: 'C',
-      tags: [], structDefs: [], programs: [prog], tasks: [], hmis: [],
-    );
-    await tester.pumpWidget(MaterialApp(
-      home: SfcEditorScreen(currentProject: proj, program: prog, onProgramUpdated: () {}),
-    ));
-    await tester.pumpAndSettle();
-
-    // Delete RUN (s1): the s0->s1 transition must go too.
-    // The RUN card's delete button is the 2nd delete icon.
-    final deletes = find.byIcon(Icons.delete);
-    await tester.tap(deletes.at(1));
+    await tester.tap(find.text('Delete'));
     await tester.pumpAndSettle();
 
     expect(prog.sfcSteps.any((s) => s.id == 's1'), isFalse);
@@ -70,9 +49,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets(
-      'unsubmitted condition edit survives a sibling setState (add branch)',
-      (tester) async {
+  testWidgets('editing a transition condition in its block commits to the model', (tester) async {
     tester.view.physicalSize = const Size(1400, 1200);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -84,30 +61,48 @@ void main() {
       tags: [], structDefs: [], programs: [prog], tasks: [], hmis: [],
     );
     await tester.pumpWidget(MaterialApp(
-      home: SfcEditorScreen(currentProject: proj, program: prog, onProgramUpdated: () {}),
+      home: SfcEditorScreen(currentProject: proj, program: prog, onProgramUpdated: () {}, sfcRuntime: SfcRuntime(), scanRunning: false),
     ));
     await tester.pumpAndSettle();
 
-    // TextField order: s0's action field (0), t0's condition field (1,
-    // since t0 is s0's inline outgoing), s1's action field (2).
-    final conditionField = find.byType(TextField).at(1);
-
-    // Type into the condition field WITHOUT submitting (no Enter/onSubmitted).
-    await tester.enterText(conditionField, 'New_Unsubmitted_Condition');
-    // Do not pump a settle here beyond what enterText already does; the
-    // edit is committed via onChanged on every keystroke, so it should
-    // already be on the model, but exercise a further partial edit that
-    // relies purely on onChanged without any explicit submit action.
+    // The only TextField on the canvas is t0's condition block (step boxes show
+    // their action as static text).
+    expect(find.byType(TextField), findsOneWidget);
+    await tester.enterText(find.byType(TextField), 'New_Condition');
     await tester.pump();
 
-    // A sibling authoring control (Add branch) triggers setState, which
-    // rebuilds the tree and recreates TextEditingControllers.
-    await tester.tap(find.byTooltip('Add branch').first);
+    expect(prog.sfcTransitions.firstWhere((t) => t.id == 't0').conditionSt, 'New_Condition');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('an unsubmitted condition edit survives a sibling setState (add step)', (tester) async {
+    tester.view.physicalSize = const Size(1400, 1200);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final prog = _prog();
+    final proj = PlcProject(
+      id: 'p', name: 'P', controllerName: 'C',
+      tags: [], structDefs: [], programs: [prog], tasks: [], hmis: [],
+    );
+    await tester.pumpWidget(MaterialApp(
+      home: SfcEditorScreen(currentProject: proj, program: prog, onProgramUpdated: () {}, sfcRuntime: SfcRuntime(), scanRunning: false),
+    ));
+    await tester.pumpAndSettle();
+
+    // Type into the condition field without submitting (committed via onChanged).
+    await tester.enterText(find.byType(TextField), 'Unsubmitted_Condition');
+    await tester.pump();
+
+    // A sibling authoring control (Add SFC Step) triggers setState, rebuilding
+    // the canvas.
+    await tester.tap(find.byTooltip('Add SFC Step'));
     await tester.pumpAndSettle();
 
     expect(
       prog.sfcTransitions.firstWhere((t) => t.id == 't0').conditionSt,
-      'New_Unsubmitted_Condition',
+      'Unsubmitted_Condition',
     );
     expect(tester.takeException(), isNull);
   });

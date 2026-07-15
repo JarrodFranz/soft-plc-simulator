@@ -1,145 +1,202 @@
-# SFC Alternative (OR) Branching
+# SFC v2: 2D Layout, Alternative & Parallel Branching
 
-This note documents alternative branching in the Sequential Function Chart
-(SFC) editor and engine: a step choosing between several possible next
-steps by priority order, evaluated on a single active token.
+This note documents the v2 Sequential Function Chart (SFC) editor and
+engine: a textbook 2D chart layout (step boxes, transition blocks, branch
+columns, parallel fork/join double-bars), a multi-token execution engine
+(simultaneous active steps), and structured authoring for both alternative
+(OR) and parallel (AND) branching, including nesting.
 
-**Non-goal**: this is *alternative* (OR/selection) branching only — exactly
-one outgoing transition fires per scan, and the chart carries exactly one
-active step (token) per program. There is no parallel/AND branching (no
-simultaneous divergence into multiple concurrently-active steps, and no
-convergence/synchronization join). A step with multiple outgoing
-transitions behaves like an if/else-if ladder, not a fork.
+## Model: one additive transition shape carries all three chart shapes
 
-## Model: a step can own multiple ordered outgoing transitions
+`SfcStep` is unchanged. `SfcTransition`
+(`mobile/lib/models/project_model.dart`) gained three additive fields on
+top of its original `fromStepId` / `toStepId` / `conditionSt`:
 
-`SfcStep`/`SfcTransition` (`mobile/lib/models/project_model.dart`) already
-supported this before this effort: a transition is just `fromStepId` +
-`toStepId` + `conditionSt`, and any number of transitions may share the
-same `fromStepId`. What changed is that the *editor* now lets a user build
-and reorder that set per step, instead of one step having at most one
-practically-editable outgoing path.
+- `kind` — `'single'` (default), `'parallelFork'`, or `'parallelJoin'`.
+- `toStepIds` — for a `parallelFork`, every branch head it activates at
+  once (`toStepId` is unused/empty on a fork).
+- `fromStepIds` — for a `parallelJoin`, every branch tail it waits on
+  (`fromStepId` is unused/empty on a join).
 
-Top-to-bottom order of a step's outgoing transitions **is** their
-if/else-if priority. That order is the transition's position within the
-program's single `sfcTransitions` list (transitions sharing a `fromStepId`
-form an ordered group within that list) — there is no separate priority
-field to keep in sync.
+A `'single'` transition works exactly as before: one source, one target,
+one condition. Any number of `'single'` transitions may still share a
+`fromStepId` — that is alternative (if/else-if) branching, unchanged from
+the original design: **top-to-bottom list order is priority**, and there is
+no separate priority field to keep in sync.
 
-## Engine: first-true wins (unchanged)
+On disk the new fields serialize as `kind` / `to_step_ids` / `from_step_ids`
+and are fully additive: an old project file with none of those keys loads
+with `kind: 'single'` and empty lists, round-trips byte-for-byte, and the
+Go-Online / live-execution state is session-only and never appears in
+persisted project JSON (see [Testing](#testing)).
 
-The scan engine, `executeSfcPrograms` in `mobile/lib/models/sfc_exec.dart`,
-was **not modified** by this effort — it already implemented exactly the
-semantics the editor now exposes:
+## Structured-only constraint
 
-- Each scan, the active step's `actionSt` runs (N/non-stored action
-  semantics), then the engine walks `prog.sfcTransitions` **in list order**
-  looking for transitions whose `fromStepId` matches the active step.
-- The **first** transition in that order whose `conditionSt` evaluates true
-  switches the active step (effective next scan) and stops evaluating
-  further transitions for this program this scan — later transitions in
-  the same group are never reached once an earlier one fires. This is the
-  if/else-if behavior: priority = list order.
-- If the winning transition's `toStepId` doesn't match any existing step
-  (a dangling target — see below), the engine skips it and keeps
-  evaluating later transitions in the group rather than stranding the scan
-  with no active step.
-- Only a single token is tracked (`SfcRuntime.activeStepId` is one step id
-  per program name) — there is no mechanism for a step to activate more
-  than one successor at once.
+The parser and layout only give a faithful 2D drawing for a
+**well-structured** chart: every `parallelFork` is matched by exactly one
+`parallelJoin` whose `fromStepIds` are that fork's branch tails, forks/joins
+nest cleanly (a branch may itself contain another fork/join or an
+alternative diamond, but branches never cross each other), and an
+alternative divergence's branches reconverge at a single shared step (or
+never reconverge at all). The structured-authoring helpers (below) only
+ever build charts in this shape. A chart built by hand outside those
+helpers that violates the shape still **never crashes** the parser or the
+engine — unmatched or overlapping structures degrade to plain sequential
+leaves so every step and transition is still drawn and still executes —
+but it will not lay out as a clean fork/join or alternative diamond.
 
-## Editor: per-step branch list
+## Engine: an active-step SET, not a single token
 
-The step card (`_buildSfcStepCard` in
-`mobile/lib/screens/sfc_editor_screen.dart`) gained an **Add branch**
-button (`Icons.add_circle_outline`) that calls `addSfcBranch` — it appends
-a new outgoing transition defaulted to a self-hold (`toStepId` = the
-step's own id, `conditionSt = 'TRUE'`) for the user to then retarget and
-re-condition.
+`SfcRuntime` (`mobile/lib/models/sfc_exec.dart`) tracks
+`active: Map<String, Set<String>>` — the set of simultaneously-active step
+ids per program — plus a `stepElapsedMs` STEP_T timer per step. Each scan
+(`executeSfcPrograms`):
 
-Each outgoing transition renders its own branch-control row
-(`_branchControls`) with:
+1. **Every** active step's `actionSt` runs (N/non-stored semantics) and its
+   STEP_T accumulates, exactly as before — just for every step in the set
+   instead of one.
+2. Transitions are evaluated against a start-of-scan snapshot of the active
+   set, grouped by kind:
+   - **`single`** — fires like an if/else-if guard: first transition (in
+     list order) out of an active step whose condition is true wins;
+     firing consumes that one source step and activates its one target.
+   - **`parallelFork`** — fires once its single source step is active and
+     its condition is true; firing consumes that one source and activates
+     **every** id in `toStepIds` at once (simultaneous divergence).
+   - **`parallelJoin`** — fires only once **every** id in `fromStepIds` is
+     active (and none already consumed this scan) and its condition is
+     true; firing consumes all of them and activates its one target
+     (synchronization: the join waits for the slowest branch).
+3. A transition whose target(s) don't currently exist (a dangling
+   reference) is skipped rather than stranding the scan — the same
+   graceful-degradation rule as the original single-token engine.
 
-- A **target dropdown** (`DropdownButton<int>`, keyed by step index rather
-  than id) listing every step in the program plus a trailing sentinel
-  entry **"＋ New step…"**. Picking a step retargets `toStepId`; picking
-  "＋ New step…" calls `addSfcStep` and retargets to the freshly created
-  step in the same action.
-- **Reorder controls** (`Icons.arrow_upward` / `Icons.arrow_downward`,
-  tooltips "Higher priority" / "Lower priority") calling
-  `reorderSfcBranch`, which swaps the transition with its neighbor *within
-  its `fromStepId` group* inside the global `sfcTransitions` list — this
-  directly changes engine-observed priority, since the engine reads that
-  same list order.
-- A **delete-branch** control (`Icons.delete_outline`, tooltip "Delete
-  branch") calling `deleteSfcTransition` to remove just that one outgoing
-  transition.
-- The existing condition editor (`_buildSfcTransitionGraphic`) underneath,
-  unchanged, for editing that branch's `conditionSt`.
+Steps newly activated this scan start acting **next** scan (their STEP_T
+begins at 0); a single-token chart with no fork/join transitions behaves
+identically to before — the multi-token machinery is a strict superset,
+not a special case that a legacy chart has to opt into.
 
-## Layout: flow order + GOTO chips
+## Parsing: chart graph → region tree
 
-Steps are laid out top-to-bottom in **flow order** starting from the
-initial step, not in raw list/creation order. `layoutSfc` (a pure helper,
-`mobile/lib/models/sfc_layout.dart`) walks the chart depth-first from the
-initial step (fallback: the first step), following each step's *first*
-not-yet-placed outgoing target to continue the main line. A step is placed
-the first time it's reached; steps never reached by any walk are appended
-last, in their original list order. The walk is cycle-safe (a step already
-placed is never re-entered).
+`parseSfc` (`mobile/lib/models/sfc_region.dart`) is a pure function that
+classifies a `List<SfcStep>` + `List<SfcTransition>` graph into a tree of
+regions for the 2D layout pass to consume:
 
-For each step's outgoing transitions, at most one is drawn **inline** —
-directly connecting down into the next card, the way a linear SFC always
-has. That's the first outgoing (in priority order) whose target is exactly
-the next card in the flow-ordered layout. Every other outgoing (including
-extra branches to already-placed steps, or a step whose only successor
-isn't the next card) renders as a distinct **GOTO chip** instead of an
-inline connector:
+- **`StepRegion`** — a single step box.
+- **`TransRegion`** — a transition edge; `isGoto` marks an edge whose
+  target is already placed (a loop-back or re-convergence), which the
+  canvas draws as a **GOTO** reference chip instead of a straight
+  connector, so cycles and reconvergence never redraw a step twice.
+- **`SeqRegion`** — a straight-line run of steps/transitions.
+- **`AltRegion`** — an alternative divergence: `branches` fan out from
+  `head` guarded by `guards` (the `single` transitions), reconverging at
+  `merge` (or `null` if the branches never rejoin).
+- **`ParRegion`** — a parallel fork/join: `branches` run in parallel
+  between `fork` and the matching `join`, continuing at `after`
+  (`join.toStepId`).
 
-- **`Icons.subdirectory_arrow_left`** — a loop-back: the target step is at
-  or above the current row (a genuine cycle back into earlier logic).
-- **`Icons.arrow_forward`** — a forward branch: the target step exists but
-  is laid out further down than the next card (skips over intervening
-  steps).
-- **`Icons.link_off`** with label **"(deleted)"** — a dangling target: the
-  transition's `toStepId` no longer matches any step in the program (its
-  target step was deleted). The engine treats this the same way at
-  runtime: it skips the transition and evaluates the next one in the
-  group.
+The parser never throws and never loops forever: a visited-set makes every
+cycle terminate, and any step unreachable from the initial step is still
+emitted as a trailing leaf so a partially-built chart always draws in full.
 
-Each chip is labeled `GOTO <target step name>` (or `GOTO (deleted)`).
+## Layout: a real 2D chart, not a list
 
-## Delete-step cleanup + initial promotion
+`layoutSfcRegion` (`mobile/lib/models/sfc_layout2.dart`) turns the region
+tree into absolute-positioned geometry — the way an SFC reads in the
+IEC 61131-3 standard, not a scrolling list:
 
-`deleteSfcStep` (`mobile/lib/models/sfc_edit.dart`) removes the step and
-**every** transition that references it in **either** direction — as a
-source (its own outgoing branches) and as a target (any other step's
-branch pointing at it, which would otherwise become a "(deleted)" chip
-forever). If the deleted step was the initial step and at least one step
-remains, the first remaining step is promoted to initial, so the engine
-and the flow-order layout always have a start step to walk from.
+- **Step boxes** and **transition blocks** are separate visual elements —
+  a transition renders as its own bordered block holding the editable
+  condition, not a thin connector.
+- **Alternative branches render side-by-side**: an `AltRegion` lays its
+  branches out as adjacent columns fanning out from the shared divergence
+  point and funnelling back into the shared convergence point, so an
+  if/else-if reads left-to-right the way it's drawn on paper instead of
+  stacking vertically.
+- **Parallel fork/join render as double-line bars**: a `ParRegion` draws a
+  horizontal double-bar at the fork, one column per simultaneous branch
+  underneath it, and a second double-bar at the join gathering every
+  branch back together — the standard SFC parallel-branch notation.
+- **Nesting** falls out of the recursion for free: a branch column is
+  itself laid out by the same routine, so a parallel branch can contain a
+  nested alternative or another nested fork/join, and it lays out and
+  draws correctly at any depth.
+- **GOTO references**: a loop-back or an already-drawn convergence target
+  renders as a small labeled chip rather than a duplicate box, keeping
+  cyclic and reconverging charts compact and readable.
 
-## Nothing new is persisted
+## Go-Online: live highlighting on the 2D canvas
 
-No serialization or migration change was needed. `SfcStep`/`SfcTransition`
-already round-tripped the full graph (arbitrary transition counts per
-step, arbitrary targets) before this effort — a step "owning multiple
-ordered outgoing transitions" was already representable on disk; only the
-editor UI to author and reorder that shape, and the flow-order layout to
-render it sensibly, were new. A project saved with alternative branches,
-reloaded, produces the identical step/transition graph (same ids, same
-`sfcTransitions` order, same priorities).
+The SFC editor canvas (`mobile/lib/screens/sfc_editor_screen.dart`) has the
+same session-only **Go-Online** toggle pattern as the LD editor: off by
+default (a fully static editor), and when on, overlays the live scan state
+directly on the boxes it already drew:
+
+- Every step currently in `SfcRuntime.active[program.name]` glows (green
+  border/fill, elevated shadow) and shows a live **STEP_T** readout; every
+  other step dims, so a fork with two active branches highlights **both**
+  columns at once — the highlight is inherently parallel-aware because it
+  reads the same active-step set the engine writes.
+- The canvas repaints on the shared `LiveTick` pulse (the same
+  scan-driven, throttled repaint mechanism used by the rest of the app),
+  not on a full shell rebuild — going online never triggers the wider
+  editor to re-render.
+- When the scan is paused, the last live state simply **freezes** instead
+  of going blank (gated on the toggle alone, not on `scanRunning`).
+- Nothing about this is persisted: `_online` is local widget state and
+  `SfcRuntime` is passed in from the shell's own session-only runtime
+  object — a chart's serialized JSON is byte-for-byte identical whether or
+  not it was ever taken online.
+
+## Structured authoring
+
+The step menu (`_buildSfcStepCard` / step editor dialog in
+`sfc_editor_screen.dart`) offers three structural actions, backed by pure
+helpers in `mobile/lib/models/sfc_edit.dart`:
+
+- **＋ Add step after** (`addSfcStepAfter`) — splices a new step into the
+  linear flow immediately after the anchor.
+- **＋ Add alternative branch** (`addAlternativeBranch`) — adds another
+  `single` divergence out of the anchor; if the anchor already flows
+  onward, the new branch reconverges at that same successor so the result
+  is a clean two-armed diamond.
+- **＋ Add parallel branch** (`addParallelBranch`) — if the anchor isn't
+  already a fork source, builds a brand-new `parallelFork`/`parallelJoin`
+  pair around it with two fresh single-step branches; if it already is,
+  appends a third/Nth branch to that same fork and join. Calling this
+  again on a step that's a branch tail of an *enclosing* fork **nests** a
+  fork/join inside that branch instead of breaking the outer structure.
+
+Deleting a step (`deleteSfcStepStructured`) is structure-aware: deleting
+the head of a parallel branch removes that entire branch (including any
+structure nested inside it) via `deleteParallelBranch`, and collapses the
+fork/join back into a plain sequence once only one branch would remain;
+deleting any other step falls back to the original `deleteSfcStep`
+(removing every transition that references it in either direction, and
+promoting a new initial step if the deleted step was initial). Every
+structural helper keeps the fork/join invariant intact — a fork's
+`toStepIds` always equals its branch heads and the matching join's
+`fromStepIds` always equals the current branch tails — so the chart stays
+parseable with no dangling references after every edit.
 
 ## Testing
 
-Covered by dedicated tests alongside the full existing suite:
-`test/sfc_layout_test.dart` (flow-order placement, inline vs. GOTO
-classification, cycle safety), `test/sfc_edit_test.dart` (`addSfcBranch`,
-`deleteSfcTransition`, `deleteSfcStep` cleanup + initial promotion,
-`reorderSfcBranch` priority swaps), `test/sfc_editor_authoring_test.dart`
-and `test/sfc_editor_branch_render_test.dart` (editor UI: add/delete
-branch, target dropdown incl. "＋ New step…", reorder buttons, GOTO chip
-rendering), `test/sfc_branch_roundtrip_test.dart` (save/reload byte-for-
-byte graph equivalence), and `test/sfc_exec_test.dart` /
-`test/sfc_exec_integration_test.dart` (engine first-true-wins priority and
-dangling-target skip behavior, unchanged).
+Covered by dedicated test files alongside the full existing suite:
+`test/sfc_transition_kind_test.dart` and `test/sfc_branch_roundtrip_test.dart`
+(the additive model fields), `test/sfc_multitoken_test.dart` and
+`test/sfc_exec_test.dart` / `test/sfc_exec_integration_test.dart` (the
+multi-token engine: fork activates all, join waits for all, alternative
+first-true, single-token parity), `test/sfc_region_test.dart` (pure region
+parsing: sequences, alternatives, parallel fork/join, nesting, cycles,
+dangling targets), `test/sfc_layout2_test.dart` (pure 2D layout geometry),
+`test/sfc_canvas_render_test.dart` / `test/sfc_editor_branch_render_test.dart`
+(canvas rendering of boxes, blocks, bars, and GOTO chips),
+`test/sfc_edit_test.dart` / `test/sfc_edit_parallel_test.dart` /
+`test/sfc_editor_authoring_test.dart` (structured authoring: alternative
+and parallel branch creation, nesting, collapse-on-delete), and
+`test/sfc_online_test.dart` (Go-Online highlighting). The final guard,
+`test/sfc_v2_roundtrip_test.dart`, pins the three cross-cutting
+contracts above end to end: a fork+join chart round-trips its new fields
+with list order preserved, a hand-built legacy (pre-v2) project JSON loads
+unchanged as all-`single` with empty lists, and running the live engine
+through several scans never changes a project's serialized JSON.
