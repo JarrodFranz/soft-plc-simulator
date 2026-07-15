@@ -77,6 +77,9 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
         builder: (context, constraints) {
           final cardWidth = _cardWidth(constraints.maxWidth);
           final rows = layoutSfc(widget.program.sfcSteps, widget.program.sfcTransitions);
+          final rowIndexOf = <String, int>{
+            for (var i = 0; i < rows.length; i++) rows[i].step.id: i,
+          };
           return ListView.builder(
             padding: const EdgeInsets.all(24),
             itemCount: rows.length,
@@ -85,7 +88,13 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
               return Column(
                 children: [
                   _buildSfcStepCard(row.step, cardWidth),
-                  for (final o in row.outgoing) _buildOutgoing(o, cardWidth),
+                  for (final o in row.outgoing)
+                    _buildOutgoing(
+                      o,
+                      cardWidth,
+                      isLoopBack: o.target != null &&
+                          (rowIndexOf[o.target!.id] ?? (1 << 30)) <= index,
+                    ),
                 ],
               );
             },
@@ -274,7 +283,7 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
     );
   }
 
-  Widget _buildOutgoing(SfcOutgoing o, double width) {
+  Widget _buildOutgoing(SfcOutgoing o, double width, {required bool isLoopBack}) {
     // The condition editor is the existing transition graphic body.
     final condition = _buildSfcTransitionGraphic(o.transition, width);
     if (o.inline) {
@@ -282,7 +291,17 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
     }
     // Non-inline: a GOTO reference chip to the target (or "(deleted)").
     final targetName = o.target?.name ?? '(deleted)';
-    final isLoop = o.target != null; // any placed target reached again is a loop/merge
+    // Deleted target: link_off. Genuine loop-back (target at/above this row):
+    // the loop icon. Forward branch (target below this row): a distinct
+    // forward icon so it isn't mistaken for a loop.
+    final IconData icon;
+    if (o.target == null) {
+      icon = Icons.link_off;
+    } else if (isLoopBack) {
+      icon = Icons.subdirectory_arrow_left;
+    } else {
+      icon = Icons.arrow_forward;
+    }
     return Column(
       children: [
         condition,
@@ -298,8 +317,7 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(isLoop ? Icons.subdirectory_arrow_left : Icons.link_off,
-                  size: 14, color: Colors.amberAccent),
+              Icon(icon, size: 14, color: Colors.amberAccent),
               const SizedBox(width: 6),
               Text('GOTO $targetName',
                   style: const TextStyle(
