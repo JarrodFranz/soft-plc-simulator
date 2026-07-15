@@ -50,6 +50,14 @@ const String _kUiRefreshHzKey = 'ui_refresh_hz';
 /// persisted (fresh install) or when reading it fails.
 const int kDefaultRefreshHz = 10;
 
+/// Global (not per-project) SharedPreferences key for whether HMI haptic
+/// feedback (pushbuttons + toggles) is enabled.
+const String _kHapticsEnabledKey = 'haptics_enabled';
+
+/// Default for HMI haptic feedback when `haptics_enabled` has never been
+/// persisted or reading it fails — on (a no-op on desktop/web regardless).
+const bool kDefaultHapticsEnabled = true;
+
 /// Clamps a requested UI refresh rate to the supported 1-30 Hz range. Pure
 /// and `@visibleForTesting` so the clamp logic is testable without pumping
 /// the shell or its settings dialog.
@@ -107,6 +115,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   // transitions (a fault first tripping, an AlarmReset-driven clear).
   final LiveTick _liveTick = LiveTick();
   int _refreshHz = kDefaultRefreshHz;
+  bool _hapticsEnabled = kDefaultHapticsEnabled;
   late NotifyThrottle _repaintThrottle;
 
   /// Memory-only trend historian, sampled once per scan tick in
@@ -224,11 +233,14 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     // a fresh `SharedPreferences.getInstance()` call of our own. Either way
     // this is best-effort: any failure just keeps the compile-time default.
     int loadedRefreshHz = kDefaultRefreshHz;
+    bool loadedHaptics = kDefaultHapticsEnabled;
     try {
       final settingsPrefs = prefs ?? await SharedPreferences.getInstance();
       loadedRefreshHz = clampRefreshHz(settingsPrefs.getInt(_kUiRefreshHzKey) ?? kDefaultRefreshHz);
+      loadedHaptics = settingsPrefs.getBool(_kHapticsEnabledKey) ?? kDefaultHapticsEnabled;
     } catch (_) {
       loadedRefreshHz = kDefaultRefreshHz;
+      loadedHaptics = kDefaultHapticsEnabled;
     }
 
     if (repo != null) {
@@ -296,6 +308,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         _repaintThrottle.dispose();
         _repaintThrottle = NotifyThrottle(_liveTick.pulse, window: refreshWindow(_refreshHz));
       }
+      _hapticsEnabled = loadedHaptics;
     });
     await repo?.setActiveProjectId(_activeProject.id);
     _startRunSession();
@@ -382,6 +395,30 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   @visibleForTesting
   int get debugRefreshHz => _refreshHz;
 
+  @visibleForTesting
+  bool get debugHapticsEnabled => _hapticsEnabled;
+
+  /// Sets whether HMI haptic feedback is enabled: updates `_hapticsEnabled`
+  /// (rebuilding so the HMI builder picks up the new value) and best-effort
+  /// persists it to the global `haptics_enabled` SharedPreferences key. Called
+  /// by the SoftPLC Settings dialog's Save button; `@visibleForTesting` so the
+  /// apply/persist path is directly testable without driving the dialog UI.
+  @visibleForTesting
+  Future<void> applyHapticsEnabled(bool enabled) async {
+    if (mounted) {
+      setState(() => _hapticsEnabled = enabled);
+    } else {
+      _hapticsEnabled = enabled;
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kHapticsEnabledKey, enabled);
+    } catch (_) {
+      // Best-effort persistence: `_hapticsEnabled` still applies for this
+      // session even if the write fails (e.g. platform channel unavailable).
+    }
+  }
+
   /// Re-tunes the UI refresh rate: clamps [hz] to 1-30, swaps in a freshly
   /// windowed `_repaintThrottle` (disposing the old one first — its
   /// coalescing window is fixed at construction, see `NotifyThrottle`), and
@@ -413,17 +450,22 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     }
   }
 
-  /// Opens the SoftPLC Settings dialog (currently: the UI refresh-rate
-  /// field), prefilled with the shell's current `_refreshHz`. A non-null
-  /// result (Save was pressed with a parseable value) is applied via
-  /// [applyRefreshHz], which clamps + re-tunes + persists.
+  /// Opens the SoftPLC Settings dialog (UI refresh-rate field + haptics
+  /// toggle), prefilled with the shell's current `_refreshHz`/`_hapticsEnabled`.
+  /// A non-null result (Save was pressed with a parseable rate) is applied via
+  /// [applyRefreshHz] (clamps + re-tunes + persists) and [applyHapticsEnabled]
+  /// (updates + persists).
   Future<void> _openSoftPlcSettings(BuildContext context) async {
-    final result = await showAdaptiveWidthDialog<int>(
+    final result = await showAdaptiveWidthDialog<SoftPlcSettingsResult>(
       context,
-      child: SoftPlcSettingsDialog(initialRefreshHz: _refreshHz),
+      child: SoftPlcSettingsDialog(
+        initialRefreshHz: _refreshHz,
+        initialHapticsEnabled: _hapticsEnabled,
+      ),
     );
     if (result != null) {
-      await applyRefreshHz(result);
+      await applyRefreshHz(result.refreshHz);
+      await applyHapticsEnabled(result.hapticsEnabled);
     }
   }
 
@@ -2557,6 +2599,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         onScanTriggered: () => setState(() => _executeScan()),
         onProjectUpdated: _markDirtyAndAutosave,
         historian: _historian,
+        hapticsEnabled: _hapticsEnabled,
       );
     } else if (_activeViewId == 'MEMORY') {
       return MemoryManagerScreen(

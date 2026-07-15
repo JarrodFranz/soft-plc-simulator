@@ -1,20 +1,42 @@
 import 'package:flutter/material.dart';
 
-/// Global "SoftPLC Settings" dialog. Currently exposes a single knob — the
-/// UI refresh rate (Hz) that re-tunes the shell's repaint throttle — but is
-/// its own file/widget so future global (non-per-project) settings have an
-/// obvious home.
+/// The values the [SoftPlcSettingsDialog] returns on Save. The dialog is purely
+/// presentational — the caller (the shell) clamps/persists/applies each field.
+class SoftPlcSettingsResult {
+  /// The (still-unclamped) UI refresh rate in Hz entered in the field.
+  final int refreshHz;
+
+  /// Whether HMI haptic feedback (pushbuttons + toggles) is enabled.
+  final bool hapticsEnabled;
+
+  const SoftPlcSettingsResult({
+    required this.refreshHz,
+    required this.hapticsEnabled,
+  });
+}
+
+/// Global "SoftPLC Settings" dialog. Exposes device-level (non-per-project)
+/// knobs: the UI refresh rate (Hz) that re-tunes the shell's repaint throttle,
+/// and a Haptic feedback toggle for HMI pushbuttons/toggles. Its own
+/// file/widget so future global settings have an obvious home.
 ///
-/// Purely presentational: it owns the text field and validates the input,
+/// Purely presentational: it owns the field/switch and validates the input,
 /// but has no knowledge of `NotifyThrottle`/`SharedPreferences`. `Save` pops
-/// the dialog with the parsed, still-unclamped int; the caller (the shell)
-/// is responsible for clamping (via `clampRefreshHz`) and applying it.
+/// the dialog with a [SoftPlcSettingsResult] (refresh rate still unclamped);
+/// the caller (the shell) clamps, applies, and persists.
 class SoftPlcSettingsDialog extends StatefulWidget {
   /// The refresh rate (Hz) to prefill the field with — the shell's current
   /// `_refreshHz` at the time the dialog was opened.
   final int initialRefreshHz;
 
-  const SoftPlcSettingsDialog({super.key, required this.initialRefreshHz});
+  /// Whether haptics are currently enabled — prefills the toggle.
+  final bool initialHapticsEnabled;
+
+  const SoftPlcSettingsDialog({
+    super.key,
+    required this.initialRefreshHz,
+    required this.initialHapticsEnabled,
+  });
 
   @override
   State<SoftPlcSettingsDialog> createState() => _SoftPlcSettingsDialogState();
@@ -22,12 +44,14 @@ class SoftPlcSettingsDialog extends StatefulWidget {
 
 class _SoftPlcSettingsDialogState extends State<SoftPlcSettingsDialog> {
   late final TextEditingController _hzController;
+  late bool _hapticsEnabled;
   String? _errorText;
 
   @override
   void initState() {
     super.initState();
     _hzController = TextEditingController(text: '${widget.initialRefreshHz}');
+    _hapticsEnabled = widget.initialHapticsEnabled;
   }
 
   @override
@@ -42,7 +66,10 @@ class _SoftPlcSettingsDialogState extends State<SoftPlcSettingsDialog> {
       setState(() => _errorText = 'Enter a whole number 1-30');
       return;
     }
-    Navigator.pop(context, parsed);
+    Navigator.pop(
+      context,
+      SoftPlcSettingsResult(refreshHz: parsed, hapticsEnabled: _hapticsEnabled),
+    );
   }
 
   @override
@@ -65,6 +92,14 @@ class _SoftPlcSettingsDialogState extends State<SoftPlcSettingsDialog> {
                 helperText: 'Range: 1-30 Hz (default 10 Hz)',
                 errorText: _errorText,
               ),
+            ),
+            const SizedBox(height: 8),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Haptic feedback'),
+              subtitle: const Text('Vibrate on HMI pushbutton/toggle presses (mobile)'),
+              value: _hapticsEnabled,
+              onChanged: (v) => setState(() => _hapticsEnabled = v),
             ),
           ],
         ),

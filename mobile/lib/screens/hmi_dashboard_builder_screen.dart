@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../models/project_model.dart';
 import '../services/tag_historian.dart';
 import '../ui/responsive.dart';
@@ -13,6 +14,11 @@ class HmiDashboardBuilderScreen extends StatefulWidget {
   final VoidCallback onProjectUpdated;
   final TagHistorian historian;
 
+  /// Whether a pushbutton/toggle press fires a haptic pulse (mobile only;
+  /// a no-op on desktop/web). Defaults to on. Sourced from the shell's global
+  /// `haptics_enabled` setting.
+  final bool hapticsEnabled;
+
   const HmiDashboardBuilderScreen({
     super.key,
     required this.currentProject,
@@ -20,6 +26,7 @@ class HmiDashboardBuilderScreen extends StatefulWidget {
     required this.onScanTriggered,
     required this.onProjectUpdated,
     required this.historian,
+    this.hapticsEnabled = true,
   });
 
   @override
@@ -28,6 +35,15 @@ class HmiDashboardBuilderScreen extends StatefulWidget {
 
 class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
   bool isEditMode = false;
+
+  /// Fires a medium haptic pulse for an HMI control press, when haptics are
+  /// enabled. `HapticFeedback` is a no-op on desktop/web, so no platform gate
+  /// is needed here.
+  void _hapticPulse() {
+    if (widget.hapticsEnabled) {
+      HapticFeedback.mediumImpact();
+    }
+  }
   bool isPaletteVisible = true;
   int? _hoveredTargetIndex;
 
@@ -822,6 +838,7 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
           width: double.infinity,
           child: ElevatedButton(
             onPressed: () {
+              _hapticPulse();
               _setTagValue(tag, true);
               Future.delayed(const Duration(milliseconds: 300), () {
                 if (mounted) _setTagValue(tag, false);
@@ -853,7 +870,10 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
             Switch(
               value: isTrue,
               activeTrackColor: Colors.green,
-              onChanged: (val) => _setTagValue(tag, val),
+              onChanged: (val) {
+                _hapticPulse();
+                _setTagValue(tag, val);
+              },
             ),
           ],
         );
