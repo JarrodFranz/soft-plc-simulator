@@ -47,6 +47,21 @@
   - **Sequential Function Chart (SFC)**: State Machine Chart Editor with Initial Steps, Steps, Transitions, ST Actions, and Condition Autocomplete Palette.
 - **Status**: ✅ **COMPLETED**
 
+**LD visual rework + Go-Online live monitor (post-ship)** ✅ — branch risers
+now centre in the inter-cell gap next to the branch element they serve
+(`kLdGapHalf`/`ldRiserXBefore`/`ldRiserXAfter` in `ld_layout.dart`) instead of
+sitting flush against a cell edge, and contact/coil symbols are laid out on a
+`Stack` centred on the wire with the tag name captioned above. A new
+session-only **Go-Online** toggle (app-bar `Icons.sensors`) overlays the last
+scan's power-flow solve on the rung canvas via a transient `LdMonitor` tap
+in `executeRung`: energized wires/elements glow bright green, de-energized
+dim to slate, and block faces show live ACC/PT, CV/PV, and resolved
+compare/math operands. Repaints via the existing `LiveTick` pattern (no
+shell rebuild); gated on the toggle alone so a paused scan **freezes** the
+last live state instead of going blank. Nothing is persisted — guarded by a
+dedicated round-trip test asserting no `nodePower`/`online` key ever reaches
+serialized project JSON. Documented in [`docs/ld-editor.md`](docs/ld-editor.md).
+
 ---
 
 ## Phase 3.5: Structured Tag System, Simulated I/O & In-App Execution Engines ✅
