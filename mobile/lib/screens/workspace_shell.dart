@@ -142,6 +142,10 @@ class WorkspaceShellState extends State<WorkspaceShell> {
 
   // Side Dock Inspector State
   bool isTagDockVisible = true;
+  // In a short (landscape-phone) viewport the Scan Loop Speed bar is collapsed
+  // by default to reclaim vertical space; the app-bar speed toggle shows it.
+  // Ignored on taller viewports (the bar always shows there).
+  bool _scanBarVisibleInShort = false;
 
   // Autosave status. `_saveFailed` is a third state (alongside
   // saving/saved) surfaced when a save actually throws, so a failure is
@@ -1409,6 +1413,11 @@ class WorkspaceShellState extends State<WorkspaceShell> {
 
     final expanded = context.isExpanded;
     final compact = context.isCompact;
+    final short = context.isShort;
+    // The Scan Loop Speed bar always shows on taller viewports; on a short
+    // (landscape-phone) viewport it is collapsed until the app-bar toggle
+    // reveals it, to reclaim vertical space.
+    final showScanBar = !short || _scanBarVisibleInShort;
 
     return LiveTickScope(
       notifier: _liveTick,
@@ -1423,13 +1432,15 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         },
         child: Focus(
           autofocus: true,
-          child: _buildScaffold(context, expanded: expanded, compact: compact),
+          child: _buildScaffold(context,
+              expanded: expanded, compact: compact, short: short, showScanBar: showScanBar),
         ),
       ),
     );
   }
 
-  Widget _buildScaffold(BuildContext context, {required bool expanded, required bool compact}) {
+  Widget _buildScaffold(BuildContext context,
+      {required bool expanded, required bool compact, required bool short, required bool showScanBar}) {
     return Scaffold(
       key: _scaffoldKey,
       appBar: AppBar(
@@ -1460,7 +1471,9 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         ),
         backgroundColor: const Color(0xFF1E293B),
         elevation: 0,
-        actions: _buildAppBarActions(context, compact: compact),
+        // Shorter bar on a short (landscape-phone) viewport to reclaim height.
+        toolbarHeight: short ? 46 : null,
+        actions: _buildAppBarActions(context, compact: compact, short: short),
       ),
       drawer: expanded ? null : Drawer(child: _buildLeftDockContent()),
       endDrawer: expanded
@@ -1510,34 +1523,45 @@ class WorkspaceShellState extends State<WorkspaceShell> {
             ),
 
           // PLC Execution Controls Toolbar (Scan Speed Slider cleanly placed to avoid clipping)
+          if (showScanBar) ...[
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            key: const Key('scanSpeedBar'),
+            padding: EdgeInsets.symmetric(horizontal: 16, vertical: short ? 2 : 6),
             color: const Color(0xFF0F172A),
             child: Row(
               children: [
                 const Icon(Icons.speed, size: 16, color: Colors.grey),
                 const SizedBox(width: 8),
-                if (!compact) ...[
+                if (!compact && !short) ...[
                   const Text('SCAN LOOP SPEED:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey)),
                   const SizedBox(width: 12),
                 ],
                 Expanded(
-                  child: Slider(
-                    value: scanSpeedMs.toDouble(),
-                    min: 50.0,
-                    max: 2000.0,
-                    divisions: 39,
-                    activeColor: scanSpeedMs > 500 ? Colors.amber : Colors.cyan,
-                    onChanged: (val) {
-                      setState(() {
-                        scanSpeedMs = val.round();
-                      });
-                      _startScanLoop();
-                    },
+                  child: SliderTheme(
+                    // Slimmer slider (thinner track, smaller thumb/overlay) on a
+                    // short viewport so the on-demand bar stays low-profile.
+                    data: SliderTheme.of(context).copyWith(
+                      trackHeight: short ? 2 : null,
+                      thumbShape: short ? const RoundSliderThumbShape(enabledThumbRadius: 6) : null,
+                      overlayShape: short ? const RoundSliderOverlayShape(overlayRadius: 12) : null,
+                    ),
+                    child: Slider(
+                      value: scanSpeedMs.toDouble(),
+                      min: 50.0,
+                      max: 2000.0,
+                      divisions: 39,
+                      activeColor: scanSpeedMs > 500 ? Colors.amber : Colors.cyan,
+                      onChanged: (val) {
+                        setState(() {
+                          scanSpeedMs = val.round();
+                        });
+                        _startScanLoop();
+                      },
+                    ),
                   ),
                 ),
                 Text(
-                  compact ? '${scanSpeedMs}ms' : '${scanSpeedMs}ms ${scanSpeedMs >= 500 ? "(Slow Mo Step)" : ""}',
+                  (compact || short) ? '${scanSpeedMs}ms' : '${scanSpeedMs}ms ${scanSpeedMs >= 500 ? "(Slow Mo Step)" : ""}',
                   style: TextStyle(
                     fontSize: 12,
                     fontFamily: 'monospace',
@@ -1545,7 +1569,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
                     color: scanSpeedMs >= 500 ? Colors.amberAccent : Colors.cyanAccent,
                   ),
                 ),
-                if (!compact) ...[
+                if (!compact && !short) ...[
                   const Spacer(),
                   // Reads the reserved `System.ScanCount` tag (written every
                   // scan by `updateSystemStatus`) inside a LiveTick-driven
@@ -1569,6 +1593,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
             ),
           ),
           const Divider(height: 1, color: Colors.white12),
+          ],
 
           // Main Shell Layout
           Expanded(
@@ -1610,7 +1635,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     );
   }
 
-  List<Widget> _buildAppBarActions(BuildContext context, {required bool compact}) {
+  List<Widget> _buildAppBarActions(BuildContext context, {required bool compact, required bool short}) {
     // Run / Pause Toggle. Compact iconSize/padding matches undo/redo/
     // freeRunToggle below — with the free-run toggle added, the compact
     // AppBar now packs 6 tap targets at 320/360px, so every action here must
@@ -1662,6 +1687,17 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         setState(() => _freeRun = !_freeRun);
         _startScanLoop();
       },
+    );
+
+    // Show/hide the (collapsed-by-default) Scan Loop Speed bar — only surfaced
+    // on a short (landscape-phone) viewport, where the bar is hidden to
+    // reclaim vertical space.
+    final scanBarToggle = IconButton(
+      icon: Icon(Icons.speed, color: _scanBarVisibleInShort ? Colors.cyanAccent : Colors.grey, size: compact ? 20 : 24),
+      tooltip: _scanBarVisibleInShort ? 'Hide scan speed bar' : 'Show scan speed bar',
+      padding: compact ? const EdgeInsets.symmetric(horizontal: 4) : const EdgeInsets.all(8),
+      constraints: compact ? const BoxConstraints() : null,
+      onPressed: () => setState(() => _scanBarVisibleInShort = !_scanBarVisibleInShort),
     );
 
     // Toggle Tag Inspector Side Dock / End Drawer
@@ -1719,6 +1755,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         undoButton,
         redoButton,
         freeRunToggle,
+        if (short) scanBarToggle,
 
         const SizedBox(width: 12),
 
@@ -1774,6 +1811,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
           } else if (value == 'freerun') {
             setState(() => _freeRun = !_freeRun);
             _startScanLoop();
+          } else if (value == 'scanbar') {
+            setState(() => _scanBarVisibleInShort = !_scanBarVisibleInShort);
           } else if (value == 'settings') {
             _openSoftPlcSettings(context);
           }
@@ -1793,6 +1832,14 @@ class WorkspaceShellState extends State<WorkspaceShell> {
               title: Text(_freeRun ? 'Free-run (as fast as allowed)' : 'Fixed scan (${scanSpeedMs}ms)'),
             ),
           ),
+          if (short)
+            PopupMenuItem(
+              value: 'scanbar',
+              child: ListTile(
+                leading: Icon(Icons.speed, color: _scanBarVisibleInShort ? Colors.cyanAccent : Colors.grey),
+                title: Text(_scanBarVisibleInShort ? 'Hide scan speed bar' : 'Show scan speed bar'),
+              ),
+            ),
           const PopupMenuDivider(),
           const PopupMenuItem(
             value: 'settings',

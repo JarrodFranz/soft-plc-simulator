@@ -58,6 +58,14 @@ void main() {
     expect(isExpandedSize(const Size(840, 599)), isFalse); // 1px too short
   });
 
+  test('isShortSize keys on height only', () {
+    expect(isShortSize(const Size(900, 410)), isTrue); // landscape phone
+    expect(isShortSize(const Size(360, 740)), isFalse); // portrait phone (tall)
+    expect(isShortSize(const Size(1400, 900)), isFalse); // desktop
+    expect(isShortSize(const Size(900, 499)), isTrue); // just under threshold
+    expect(isShortSize(const Size(900, 500)), isFalse); // exact threshold
+  });
+
   testWidgets('showAdaptiveWidthDialog clamps to viewport on a phone',
       (tester) async {
     await setSurface(tester, phoneSize);

@@ -10,6 +10,9 @@ abstract class Breakpoints {
   // get the 3-pane layout (all three panes squeeze into a few hundred px of
   // height and become unusable); it falls back to the adaptive/drawer layout.
   static const double expandedMinHeight = 600;
+  // Below this height the vertical chrome (app bar + scan-speed bar) is
+  // compacted to reclaim space — this is the short landscape-phone regime.
+  static const double shortHeight = 500;
 }
 
 enum WidthClass { compact, medium, expanded }
@@ -18,6 +21,10 @@ enum WidthClass { compact, medium, expanded }
 /// wide enough AND tall enough. Pure (no BuildContext) so it is unit-testable.
 bool isExpandedSize(Size size) =>
     size.width >= Breakpoints.expanded && size.height >= Breakpoints.expandedMinHeight;
+
+/// Whether a viewport of [size] is short enough to warrant compacted vertical
+/// chrome (a phone in landscape). Pure so it is unit-testable.
+bool isShortSize(Size size) => size.height < Breakpoints.shortHeight;
 
 extension ResponsiveContext on BuildContext {
   Size get _viewport => MediaQuery.sizeOf(this);
@@ -35,6 +42,7 @@ extension ResponsiveContext on BuildContext {
 
   bool get isCompact => widthPx < Breakpoints.compact;
   bool get isExpanded => isExpandedSize(_viewport);
+  bool get isShort => isShortSize(_viewport);
 }
 
 /// Minimum finger hit-target (Material spec).
