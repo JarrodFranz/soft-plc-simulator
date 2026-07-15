@@ -395,22 +395,29 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
   Widget build(BuildContext context) {
     final components = widget.hmiScreen.components;
     final expanded = context.isExpanded;
+    final short = context.isShort;
+    // On a short (landscape-phone) viewport, keep the mode switcher inline in
+    // the AppBar row (like expanded) instead of on its own 48px row below, and
+    // shorten the bar — reclaiming vertical space for the dashboard itself.
+    final inlineMode = expanded || short;
 
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.hmiScreen.title),
         backgroundColor: const Color(0xFF1E293B),
         elevation: 0,
+        toolbarHeight: short ? 46 : null,
         // On compact, the mode switcher pill is too wide to share the AppBar
         // row with the title and action icons — it moves to its own row below.
-        bottom: expanded
+        // On a short viewport it stays inline to save the extra row.
+        bottom: inlineMode
             ? null
             : PreferredSize(
                 preferredSize: const Size.fromHeight(48),
                 child: Align(alignment: Alignment.centerLeft, child: _buildModeSwitcher()),
               ),
         actions: [
-          if (expanded) _buildModeSwitcher(),
+          if (inlineMode) _buildModeSwitcher(),
 
           if (isEditMode) ...[
             if (expanded)

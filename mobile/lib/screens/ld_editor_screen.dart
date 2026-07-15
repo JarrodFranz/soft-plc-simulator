@@ -196,10 +196,14 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final short = context.isShort;
     return Scaffold(
       appBar: AppBar(
-        title: Text('${widget.program.name} — Ladder Diagram (LD) Editor'),
+        title: Text(short
+            ? '${widget.program.name} (LD)'
+            : '${widget.program.name} — Ladder Diagram (LD) Editor'),
         backgroundColor: const Color(0xFF1E293B),
+        toolbarHeight: short ? 46 : null,
       ),
       body: LayoutBuilder(
         builder: (context, constraints) {
