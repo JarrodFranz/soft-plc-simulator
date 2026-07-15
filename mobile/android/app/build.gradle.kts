@@ -6,7 +6,13 @@ plugins {
 
 android {
     namespace = "com.jarrodfranz.soft_plc_mobile"
-    compileSdk = flutter.compileSdkVersion
+    // Pinned to 36 (above this Flutter version's default of 34): a transitive
+    // plugin dependency (flutter_plugin_android_lifecycle, via file_picker /
+    // share_plus) requires consumers to compile against Android API 36+.
+    // compileSdk only affects which APIs are available at compile time; it is
+    // independent of targetSdk (runtime behavior) and minSdk (install range),
+    // which stay on the Flutter defaults below.
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
