@@ -566,6 +566,7 @@ class SimRule {
   String sourcePath;
   double refValue;
   double tauSec;
+  String valveCurve;
 
   SimRule({
     required this.id,
@@ -584,6 +585,7 @@ class SimRule {
     this.sourcePath = '',
     this.refValue = 100.0,
     this.tauSec = 5.0,
+    this.valveCurve = 'linear',
   }) : condition = condition ?? [];
 
   factory SimRule.fromJson(Map<String, dynamic> j) => SimRule(
@@ -603,6 +605,7 @@ class SimRule {
         sourcePath: j['source'] ?? '',
         refValue: (j['ref_value'] as num?)?.toDouble() ?? 100.0,
         tauSec: (j['tau_sec'] as num?)?.toDouble() ?? 5.0,
+        valveCurve: j['valve_curve'] ?? 'linear',
       );
 
   Map<String, dynamic> toJson() => {
@@ -622,6 +625,7 @@ class SimRule {
         'source': sourcePath,
         'ref_value': refValue,
         'tau_sec': tauSec,
+        'valve_curve': valveCurve,
       };
 }
 
