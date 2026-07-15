@@ -71,10 +71,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
 
-    // (a) step names render as boxes on the canvas. (The alt-divergence head
-    // 'START' is drawn both as the sequence step and as the alt head, so it
-    // appears more than once — the layout's structural convention.)
-    expect(find.text('START'), findsWidgets);
+    // (a) step names render as boxes on the canvas. The alt-divergence head
+    // 'START' is placed once by the enclosing sequence's step — the Alt
+    // fragment must NOT redraw it (that previously produced a duplicate box).
+    expect(find.text('START'), findsOneWidget);
     expect(find.text('BRANCH_A'), findsOneWidget);
     expect(find.text('BRANCH_B'), findsOneWidget);
     expect(find.text('MERGE'), findsWidgets);

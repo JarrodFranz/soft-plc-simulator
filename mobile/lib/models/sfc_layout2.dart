@@ -256,12 +256,15 @@ _Frag _seqFrag(List<SfcRegion> items) {
   return _Frag(boxes, conns, w, totalH, firstEntryX, lastExitX);
 }
 
-/// Alternative divergence/convergence: [head] on top, then each guarded branch
-/// in its own adjacent column, funnelling down to a shared convergence point
-/// (the enclosing sequence draws the final link to the merge step).
+/// Alternative divergence/convergence: each guarded branch in its own adjacent
+/// column, fanning out from this fragment's top-centre entry and funnelling
+/// down to a shared convergence point.
+///
+/// [alt.head] is NOT drawn here — the enclosing sequence's `StepRegion` places
+/// that step authoritatively (mirroring how `_parFrag` relies on the preceding
+/// step rather than redrawing it). Drawing it here as well produced a
+/// duplicate box directly above the branch fan.
 _Frag _altFrag(AltRegion alt) {
-  final headF = _stepFrag(alt.head);
-
   // Each column = its guard transition block, then the branch body.
   final cols = <_Frag>[];
   for (var i = 0; i < alt.branches.length; i++) {
@@ -274,7 +277,8 @@ _Frag _altFrag(AltRegion alt) {
   }
 
   if (cols.isEmpty) {
-    return headF;
+    return _Frag(const <SfcBox>[], const <SfcConn>[], _kStepW, 0, _kStepW / 2,
+        _kStepW / 2);
   }
 
   var branchRowW = 0.0;
@@ -283,34 +287,20 @@ _Frag _altFrag(AltRegion alt) {
   }
   branchRowW += _kBranchColGap * (cols.length - 1);
 
-  final w = _max(headF.w, branchRowW);
+  final w = branchRowW;
+  final entryX = w / 2;
+  const branchTopY = _kVGap;
 
   final boxes = <SfcBox>[];
   final conns = <SfcConn>[];
 
-  // Head centred at top.
-  final headDx = (w - headF.w) / 2;
-  final placedHead = _shift(headF, headDx, 0);
-  boxes.addAll(placedHead.boxes);
-  conns.addAll(placedHead.conns);
-  final headExitX = placedHead.exitX;
-  final headBottomY = headF.h;
-
-  final branchTopY = headF.h + _kVGap;
-  final startX = (w - branchRowW) / 2;
-
-  var cx = startX;
+  var cx = 0.0;
   var maxColH = 0.0;
   final exits = <List<double>>[];
   for (final col in cols) {
     final placed = _shift(col, cx, branchTopY);
-    // Divergence link: head bottom-centre to this column's entry.
-    conns.add(SfcConn(
-      x1: headExitX,
-      y1: headBottomY,
-      x2: placed.entryX,
-      y2: branchTopY,
-    ));
+    // Divergence link: fragment's top-centre entry to this column's entry.
+    conns.add(SfcConn(x1: entryX, y1: 0, x2: placed.entryX, y2: branchTopY));
     boxes.addAll(placed.boxes);
     conns.addAll(placed.conns);
     exits.add([placed.exitX, branchTopY + col.h]);
@@ -325,7 +315,7 @@ _Frag _altFrag(AltRegion alt) {
     conns.add(SfcConn(x1: e[0], y1: e[1], x2: convergeX, y2: convergeY));
   }
 
-  return _Frag(boxes, conns, w, convergeY, w / 2, w / 2);
+  return _Frag(boxes, conns, w, convergeY, entryX, convergeX);
 }
 
 /// A single Alt column: the guard transition block stacked above the branch.
