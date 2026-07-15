@@ -210,17 +210,30 @@ void moveBranchMerge(LdRung rung, LdBranchView br, LdNode newDest) {
   }
 }
 
-/// Removes `program.rungs[index]` if in range, else no-op.
+/// Renumbers every rung's rungIndex to match its position in program.rungs,
+/// keeping the exec/monitor state key ('prog|rungIndex|nodeId') collision-free.
+void reindexRungs(PlcProgram program) {
+  for (int i = 0; i < program.rungs.length; i++) {
+    program.rungs[i].rungIndex = i;
+  }
+}
+
+/// Removes `program.rungs[index]` if in range, else no-op. Reindexes the
+/// surviving rungs afterward so `rungIndex` always matches list position
+/// (see [reindexRungs] — a stale/duplicate rungIndex aliases exec/monitor
+/// state across rungs).
 void deleteRung(PlcProgram program, int index) {
   if (index < 0 || index >= program.rungs.length) {
     return;
   }
   program.rungs.removeAt(index);
+  reindexRungs(program);
 }
 
 /// Moves the rung at [from] to [to]. No-op if either is out of range or they
 /// are equal. After removal, [to] is clamped into `[0, length]` so moving to
-/// (or past) the end lands the rung last.
+/// (or past) the end lands the rung last. Reindexes afterward (see
+/// [reindexRungs]) so `rungIndex` always matches list position.
 void moveRung(PlcProgram program, int from, int to) {
   final rungs = program.rungs;
   // `to` may equal length (append past the end); `from` must be a real index.
@@ -236,6 +249,7 @@ void moveRung(PlcProgram program, int from, int to) {
     dest = rungs.length;
   }
   rungs.insert(dest, rung);
+  reindexRungs(program);
 }
 
 /// Adds a new terminal output coil on a fresh lane, wired left-rail -> coil

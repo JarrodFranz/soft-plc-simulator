@@ -2,6 +2,7 @@ import '../models/project_model.dart';
 import '../models/sim_engine.dart';
 import '../models/signal_engine.dart';
 import '../models/ld_exec.dart';
+import '../models/ld_monitor.dart';
 import '../models/fbd_exec.dart';
 import '../models/sfc_exec.dart';
 import '../models/st_exec.dart';
@@ -12,6 +13,7 @@ import '../models/tag_resolver.dart';
 class ScanTickRuntime {
   final SimRuntime sim = SimRuntime();
   final LdExecRuntime ld = LdExecRuntime();
+  final LdMonitor ldMonitor = LdMonitor();
   final FbdRuntime fbd = FbdRuntime();
   final SfcRuntime sfc = SfcRuntime();
   final StRuntime st = StRuntime();
@@ -25,6 +27,7 @@ class ScanTickRuntime {
   void resetSession() {
     sim.byRuleId.clear();
     ld.clear();
+    ldMonitor.clear();
     fbd.clear();
     sfc.clear();
     st.clear();
@@ -67,7 +70,7 @@ ScanTickResult runScanTick(PlcProject p, int dtMs, ScanTickRuntime rt) {
   for (final task in due) {
     final only = task.programs.toSet();
     final sw = Stopwatch()..start();
-    executeLdPrograms(p, dtMs, rt.ld, only: only, readOnly: readOnly);
+    executeLdPrograms(p, dtMs, rt.ld, only: only, readOnly: readOnly, monitor: rt.ldMonitor);
     executeFbdPrograms(p, dtMs, rt.fbd, only: only, readOnly: readOnly);
     executeSfcPrograms(p, dtMs, rt.sfc, only: only, readOnly: readOnly);
     executeStPrograms(p, dtMs, rt.st, only: only, readOnly: readOnly);

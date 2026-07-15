@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/ld_graph.dart';
 import '../models/ld_layout.dart';
+import '../models/ld_monitor.dart';
 import '../models/tag_resolver.dart';
 import '../ui/responsive.dart';
+import '../widgets/live_tick.dart';
 import '../widgets/tag_autocomplete_field.dart';
 
 const double _kContactH = 54.0;
@@ -28,12 +30,16 @@ class LdEditorScreen extends StatefulWidget {
   final PlcProject currentProject;
   final PlcProgram program;
   final VoidCallback onProgramUpdated;
+  final LdMonitor monitor;
+  final bool scanRunning;
 
   const LdEditorScreen({
     super.key,
     required this.currentProject,
     required this.program,
     required this.onProgramUpdated,
+    required this.monitor,
+    required this.scanRunning,
   });
 
   @override
@@ -93,6 +99,37 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
   LdBranchView? _dragBranch;
   bool _dragTapEnd = false; // true = dragging the tap (start) handle; false = merge (end)
   double _dragX = 0;
+
+  // Session-only "Go-Online" live-monitor toggle. When true, wires/elements
+  // reflect the last scan's power solve (via widget.monitor); default false so
+  // the static editor view is byte-for-byte unchanged. Never persisted.
+  bool _online = false;
+
+  // Energized/de-energized palette for the live "online" view.
+  static const Color _kEnergized = Colors.greenAccent;
+  static const Color _kDeEnergized = Color(0xFF475569); // slate-600
+
+  bool _nodeLit(LdRung rung, LdNode n) =>
+      _online &&
+      (widget.monitor.nodePower[
+              widget.monitor.keyFor(widget.program.name, rung.rungIndex, n.id)] ??
+          false);
+
+  // Formats a live tag/path value for a block-face readout. Numeric leaves
+  // read via `readPath` (ints as-is, doubles to 1 decimal); a BOOL leaf is
+  // shown as '1'/'0' to match the executor's bool->num operand mapping (see
+  // `_operandValue` in ld_exec.dart); anything else (unresolvable path,
+  // non-numeric value) falls back to an em dash.
+  String _liveNum(String path) {
+    final v = readPath(widget.currentProject, path);
+    if (v is num) {
+      return v is int ? '$v' : v.toStringAsFixed(1);
+    }
+    if (v is bool) {
+      return v ? '1' : '0';
+    }
+    return '—';
+  }
 
   // Unified horizontal scroll for the non-compact (desktop) rung list, used
   // only when the widest rung exceeds the available pane width. Persistent
@@ -204,6 +241,27 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
             : '${widget.program.name} — Ladder Diagram (LD) Editor'),
         backgroundColor: const Color(0xFF1E293B),
         toolbarHeight: short ? 46 : null,
+        actions: [
+          if (_online)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Center(
+                child: Text(
+                  widget.scanRunning ? 'LIVE' : 'FROZEN',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: widget.scanRunning ? Colors.greenAccent : Colors.amberAccent,
+                  ),
+                ),
+              ),
+            ),
+          IconButton(
+            icon: Icon(Icons.sensors, color: _online ? Colors.greenAccent : Colors.grey),
+            tooltip: 'Go Online (live monitor)',
+            onPressed: () => setState(() => _online = !_online),
+          ),
+        ],
       ),
       body: LayoutBuilder(
         builder: (context, constraints) {
@@ -527,6 +585,10 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           LdNode(id: '', kind: LdKind.coil, variable: 'Output_Coil'),
         ],
       ));
+      // Guarantees rungIndex == list position even if a prior delete/move left
+      // gaps (see reindexRungs doc) — avoids two rungs aliasing the same
+      // exec/monitor state key.
+      reindexRungs(widget.program);
     });
     widget.onProgramUpdated();
   }
@@ -628,21 +690,35 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 ),
               );
 
+              // While online, rebuild the rung's Stack (painter + element
+              // widgets) on each LiveTick pulse so every scan's power solve is
+              // reflected. Off-line, this is a pass-through — the static path
+              // is byte-for-byte unchanged.
+              Widget wrapLive(Widget child) {
+                if (!_online) {
+                  return child;
+                }
+                return ListenableBuilder(
+                  listenable: LiveTickScope.of(context),
+                  builder: (_, __) => child,
+                );
+              }
+
               if (!needsScroll || compact) {
                 // On a compact pane the enclosing InteractiveViewer already
                 // provides panning across the whole canvas (including any
                 // rung wider than the pane) — an inner horizontal scrollable
                 // here would fight that single pan gesture, so it's only
                 // used on wide/desktop panes.
-                return canvas;
+                return wrapLive(canvas);
               }
               // The rung's minimum content width exceeds the available space
               // (typical on a phone) — let this rung scroll horizontally on
               // its own rather than overflow the enclosing column.
-              return SingleChildScrollView(
+              return wrapLive(SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 child: canvas,
-              );
+              ));
             },
           ),
         ],
@@ -662,8 +738,10 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
         onTap: () => _onNodeTap(rung, n),
         onDoubleTap: () => _showEditNodeDialog(rung, n),
         child: n.kind == LdKind.block
-            ? _buildBlock(n)
-            : (n.kind == LdKind.link ? _buildLink(n) : _buildContactCoil(n)),
+            ? _buildBlock(n, live: _online, lit: _nodeLit(rung, n))
+            : (n.kind == LdKind.link
+                ? _buildLink(n)
+                : _buildContactCoil(n, live: _online, lit: _nodeLit(rung, n))),
       ),
     );
   }
@@ -1256,7 +1334,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     );
   }
 
-  Widget _buildContactCoil(LdNode n) {
+  Widget _buildContactCoil(LdNode n, {required bool live, required bool lit}) {
     final isCoil = n.kind == LdKind.coil;
     String symbol;
     Color color;
@@ -1297,34 +1375,53 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           symbol = '-| |-';
       }
     }
+    // `color` is the static face color (amberAccent for coils, greenAccent for
+    // contacts). When live, override it with the energized/de-energized palette.
+    final Color faceColor = !live ? color : (lit ? _kEnergized : _kDeEnergized);
     return Container(
-      alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
+        color: lit ? _kEnergized.withValues(alpha: 0.12) : const Color(0xFF1E293B),
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: color, width: 1.5),
+        border: Border.all(color: faceColor, width: 1.5),
       ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        mainAxisSize: MainAxisSize.min,
+      child: Stack(
+        alignment: Alignment.center,
         children: [
-          Text(n.variable,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 9, color: color, fontFamily: 'monospace')),
-          const SizedBox(height: 2),
+          // Symbol glyph centred on the cell — the wire (drawn at the cell's
+          // vertical centre) passes through it.
           Text(symbol,
               maxLines: 1,
-              style: TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.bold, fontSize: 14, color: color)),
+              style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                  color: faceColor)),
+          // Tag name captioned just above the glyph.
+          Positioned(
+            top: 4,
+            left: 2,
+            right: 2,
+            child: Text(n.variable,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 9,
+                    color: faceColor,
+                    fontFamily: 'monospace')),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildBlock(LdNode n) {
+  Widget _buildBlock(LdNode n, {required bool live, required bool lit}) {
     if (_isCompareBlock(n.blockType) || _isMathBlock(n.blockType)) {
-      return _buildDataBlock(n);
+      return _buildDataBlock(n, live: live, lit: lit);
     }
+    final Color borderColor =
+        !live ? Colors.grey.shade500 : (lit ? _kEnergized : _kDeEnergized);
     final isCounter = _isCounterBlock(n.blockType);
     String topLeft;
     String topRight;
@@ -1332,7 +1429,9 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     String bottomRight;
     String presetLine;
     if (isCounter) {
-      presetLine = 'PV ${n.presetMs}';
+      presetLine = live
+          ? 'CV ${_liveNum('${n.variable}.CV')} / ${n.presetMs}'
+          : 'PV ${n.presetMs}';
       switch (n.blockType) {
         case 'CTD':
           topLeft = 'CD';
@@ -1351,7 +1450,9 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     } else {
       topLeft = 'IN';
       topRight = 'Q';
-      presetLine = 'PT ${n.presetMs}ms';
+      presetLine = live
+          ? '${_liveNum('${n.variable}.ACC')} / ${n.presetMs} ms'
+          : 'PT ${n.presetMs}ms';
       bottomLeft = 'PT';
       bottomRight = 'ET';
     }
@@ -1359,7 +1460,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       decoration: BoxDecoration(
         color: const Color(0xFF1E293B),
         borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: Colors.grey.shade500, width: 1.5),
+        border: Border.all(color: borderColor, width: 1.5),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -1404,15 +1505,24 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
   /// a two-row operand body: operand A on top, the operator glyph centred,
   /// operand B below — with a left `EN` pin and a right pin (`Q` for
   /// compare, `ENO` for math).
-  Widget _buildDataBlock(LdNode n) {
+  Widget _buildDataBlock(LdNode n, {required bool live, required bool lit}) {
     final isCompare = _isCompareBlock(n.blockType);
     final rightPin = isCompare ? 'Q' : 'ENO';
     final glyph = _blockOperatorGlyph(n.blockType);
+    final Color borderColor =
+        !live ? Colors.grey.shade500 : (lit ? _kEnergized : _kDeEnergized);
+    String liveOperand(String s) {
+      final literal = num.tryParse(s);
+      if (literal != null) {
+        return s;
+      }
+      return live ? _liveNum(s) : s;
+    }
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF1E293B),
         borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: Colors.grey.shade500, width: 1.5),
+        border: Border.all(color: borderColor, width: 1.5),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -1436,7 +1546,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 _BlockPinRow(left: 'EN', right: rightPin),
-                Text(n.operandA,
+                Text(liveOperand(n.operandA),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 9, color: Colors.white, fontFamily: 'monospace'),
@@ -1446,7 +1556,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.amberAccent, fontFamily: 'monospace'),
                     textAlign: TextAlign.center),
-                Text(n.operandB,
+                Text(liveOperand(n.operandB),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 9, color: Colors.white, fontFamily: 'monospace'),
@@ -1457,7 +1567,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 // optional user-assigned name — shown only when set so
                 // unnamed compare blocks keep their original compact face).
                 if (!isCompare)
-                  Text('→ ${n.variable}',
+                  Text(live ? '→ ${n.variable} = ${_liveNum(n.variable)}' : '→ ${n.variable}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 7, color: Colors.cyanAccent, fontFamily: 'monospace'),
@@ -1524,18 +1634,32 @@ class _LadderPainter extends CustomPainter {
       if (src == null || dst == null) {
         continue;
       }
+      // Live power flow: a wire is energized iff its source node is. Offline,
+      // `paint` already carries its initial greenAccent/2.0 values, so there
+      // is nothing to reset here.
+      if (s._online) {
+        final lit = s._nodeLit(rung, src);
+        paint.color = lit ? _LdEditorScreenState._kEnergized : _LdEditorScreenState._kDeEnergized;
+        paint.strokeWidth = lit ? 3.0 : 2.0;
+      }
       final p1 = s._outPort(rung, src, col, width);
       final p2 = s._inPort(rung, dst, col, width);
       final path = Path()..moveTo(p1.dx, p1.dy);
       if (src.row == dst.row) {
         path.lineTo(p2.dx, p2.dy);
       } else if (dst.row > src.row) {
-        // going into a deeper branch lane: vertical at source's right boundary
-        path.lineTo(p1.dx, p2.dy);
+        // Descending into a deeper branch lane: riser centred in the gap
+        // BEFORE the branch element (the destination).
+        final riserX = ldRiserXBefore(col[dst.id] ?? 0);
+        path.lineTo(riserX, p1.dy);
+        path.lineTo(riserX, p2.dy);
         path.lineTo(p2.dx, p2.dy);
       } else {
-        // returning to a shallower lane: vertical at destination's left boundary
-        path.lineTo(p2.dx, p1.dy);
+        // Returning to a shallower lane: riser centred in the gap AFTER the
+        // branch element (the source).
+        final riserX = ldRiserXAfter(col[src.id] ?? 0);
+        path.lineTo(riserX, p1.dy);
+        path.lineTo(riserX, p2.dy);
         path.lineTo(p2.dx, p2.dy);
       }
       canvas.drawPath(path, paint);
