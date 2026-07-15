@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
+import '../models/sfc_layout.dart';
 import '../ui/responsive.dart';
 
 class SfcEditorScreen extends StatefulWidget {
@@ -75,17 +76,16 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
       child: LayoutBuilder(
         builder: (context, constraints) {
           final cardWidth = _cardWidth(constraints.maxWidth);
+          final rows = layoutSfc(widget.program.sfcSteps, widget.program.sfcTransitions);
           return ListView.builder(
             padding: const EdgeInsets.all(24),
-            itemCount: widget.program.sfcSteps.length,
+            itemCount: rows.length,
             itemBuilder: (context, index) {
-              final step = widget.program.sfcSteps[index];
-              final transition = index < widget.program.sfcTransitions.length ? widget.program.sfcTransitions[index] : null;
-
+              final row = rows[index];
               return Column(
                 children: [
-                  _buildSfcStepCard(step, index, cardWidth),
-                  if (transition != null) _buildSfcTransitionGraphic(transition, cardWidth),
+                  _buildSfcStepCard(row.step, cardWidth),
+                  for (final o in row.outgoing) _buildOutgoing(o, cardWidth),
                 ],
               );
             },
@@ -182,7 +182,7 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
     );
   }
 
-  Widget _buildSfcStepCard(SfcStep step, int index, double width) {
+  Widget _buildSfcStepCard(SfcStep step, double width) {
     return Container(
       width: width,
       margin: const EdgeInsets.symmetric(vertical: 4),
@@ -215,7 +215,7 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
                   icon: const Icon(Icons.delete, size: 16, color: Colors.redAccent),
                   onPressed: () {
                     setState(() {
-                      widget.program.sfcSteps.removeAt(index);
+                      widget.program.sfcSteps.removeWhere((s) => s.id == step.id);
                     });
                     widget.onProgramUpdated();
                   },
@@ -271,6 +271,43 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
           Container(width: 3, height: 16, color: Colors.purpleAccent),
         ],
       ),
+    );
+  }
+
+  Widget _buildOutgoing(SfcOutgoing o, double width) {
+    // The condition editor is the existing transition graphic body.
+    final condition = _buildSfcTransitionGraphic(o.transition, width);
+    if (o.inline) {
+      return condition; // vertical connector flows into the next card below
+    }
+    // Non-inline: a GOTO reference chip to the target (or "(deleted)").
+    final targetName = o.target?.name ?? '(deleted)';
+    final isLoop = o.target != null; // any placed target reached again is a loop/merge
+    return Column(
+      children: [
+        condition,
+        Container(
+          width: width,
+          margin: const EdgeInsets.only(top: 2, bottom: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E293B),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.6)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(isLoop ? Icons.subdirectory_arrow_left : Icons.link_off,
+                  size: 14, color: Colors.amberAccent),
+              const SizedBox(width: 6),
+              Text('GOTO $targetName',
+                  style: const TextStyle(
+                      color: Colors.amberAccent, fontSize: 12, fontFamily: 'monospace')),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
