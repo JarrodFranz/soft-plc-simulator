@@ -31,7 +31,6 @@ reference image is exactly this shape.)
 ## Non-goals / YAGNI
 
 - No free-form node placement / arbitrary wire drawing (structured + GOTO only).
-- No live "online" power-flow highlight in this feature (can follow later).
 - No action qualifiers beyond the existing N (non-stored) action (S/R/L/P/D…
   are out of scope).
 - No default-project showcase change here beyond what's needed (optional,
@@ -202,13 +201,45 @@ by canvas affordances:
 - Every op maintains the well-structured invariant (no operation can create an
   unstructured graph); illegal ops are disabled/no-ops.
 
+## Component 6 — Live online highlighting (Go-Online)
+
+Mirror the LD editor's Go-Online monitor for the multi-token SFC. The engine
+already holds the live marking in `SfcRuntime.active[prog]` (the active-step
+set) and `stepElapsedMs['$prog|$id']` (each active step's `STEP_T`). Expose it
+to the editor and render it live, transient (session-only), like the LD monitor.
+
+- **Wiring:** the shell owns `ScanTickRuntime.sfc` (`SfcRuntime`). `SfcEditorScreen`
+  gains a `SfcRuntime sfcRuntime` param + a `bool scanRunning` (the shell passes
+  `_scan.sfc` and `isRunning && !_faulted`) — the same pattern used for the LD
+  `LdMonitor`/`scanRunning`.
+- **Toggle:** a session-only `_online` bool + a "Go Online" toolbar toggle
+  (`Icons.sensors`, `LIVE`/`FROZEN` label from `scanRunning`), default off,
+  never persisted — identical UX to the LD editor.
+- **Highlight (when `_online`):**
+  - **Active step boxes** glow energized (bright green fill/border); inactive
+    steps dim to slate. With parallel branches, **multiple** boxes are lit at
+    once — the online view makes concurrent/parallel execution obvious.
+  - An **active step's live `STEP_T`** is shown on its box (read from
+    `stepElapsedMs`), like the LD block live values.
+  - A transition block whose **from-step(s) are active and condition is true**
+    (about to fire) highlights amber; otherwise normal. (Condition truth is
+    read live via the existing ST-condition evaluation used by the engine, or
+    left as active/enabled-only if that is simpler — plan-time call.)
+- **Repaint** via `LiveTick` (Phase 12), gated on `_online`; paused → frozen on
+  the last marking (the active set stops updating). Off / stopped → plain 2D
+  view. Nothing persisted.
+- **Gating** matches the LD monitor: live rendering active iff `_online`
+  (so paused freezes rather than dropping to static).
+
 ## Data flow
 
 Scan tick → `executeSfcPrograms` advances the active-step **set** (fork/join/
-alternative). Editor mutates `sfcSteps`/`sfcTransitions` in place via the pure
-helpers + existing autosave. Rendering derives `parseSfc` → `sfc_layout2` each
-build (cheap; memoize per rebuild if needed). No new persisted state beyond the
-3 additive transition fields.
+alternative) in `SfcRuntime`. Editor mutates `sfcSteps`/`sfcTransitions` in
+place via the pure helpers + existing autosave. Rendering derives `parseSfc` →
+`sfc_layout2` each build (cheap; memoize per rebuild if needed) and, when
+`_online`, reads the live active set from `sfcRuntime` and repaints on the
+`LiveTick` pulse. No new persisted state beyond the 3 additive transition fields
+(the Go-Online toggle is transient).
 
 ## Error handling / edge cases
 
@@ -237,6 +268,11 @@ build (cheap; memoize per rebuild if needed). No new persisted state beyond the
   chip); authoring (add step / add alternative / add parallel / nest / delete)
   updates the model + re-lays-out; edit a condition/target/name; no RenderFlex
   overflow at 320/360/1400; pan/zoom works.
+- **Live online:** with a running `SfcRuntime` whose active set contains a step
+  (and, for parallel, two steps), Go-Online on lights those step boxes and dims
+  the rest; two concurrently-active parallel steps are both lit; Go-Online off
+  renders the plain view; repaint occurs on a `LiveTick` pulse without a
+  whole-shell `setState`; nothing about the toggle is persisted.
 - **Round-trip:** `kind`/`to_step_ids`/`from_step_ids` survive `toJson`/
   `fromJson`; a legacy chart (no new keys) loads as all-`single`; the default
   projects' 20-scan scan-equivalence stays green.
@@ -246,8 +282,11 @@ build (cheap; memoize per rebuild if needed). No new persisted state beyond the
 ## Files
 
 - **Modify:** `models/project_model.dart` (SfcTransition fields + json);
-  `models/sfc_exec.dart` (multi-token engine); `screens/sfc_editor_screen.dart`
-  (2D canvas rewrite + authoring affordances).
+  `models/sfc_exec.dart` (multi-token engine; expose the active-step set already
+  held in `SfcRuntime`); `screens/sfc_editor_screen.dart` (2D canvas rewrite +
+  authoring affordances + Go-Online highlight); `screens/workspace_shell.dart`
+  (pass `_scan.sfc` + `isRunning && !_faulted` into `SfcEditorScreen`, mirroring
+  the LD `LdMonitor`/`scanRunning` wiring).
 - **Create:** `models/sfc_region.dart` (parse), `models/sfc_layout2.dart`
   (geometry) + tests.
 - **Modify/retire:** `models/sfc_layout.dart` (the old list layout — replaced;
