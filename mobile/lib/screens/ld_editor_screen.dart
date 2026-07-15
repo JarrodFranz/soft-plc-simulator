@@ -115,6 +115,17 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
               widget.monitor.keyFor(widget.program.name, rung.rungIndex, n.id)] ??
           false);
 
+  // Formats a live tag/path value for a block-face readout. Numeric leaves
+  // read via `readPath` (ints as-is, doubles to 1 decimal); anything else
+  // (unresolvable path, non-numeric value) falls back to an em dash.
+  String _liveNum(String path) {
+    final v = readPath(widget.currentProject, path);
+    if (v is num) {
+      return v is int ? '$v' : v.toStringAsFixed(1);
+    }
+    return '—';
+  }
+
   // Unified horizontal scroll for the non-compact (desktop) rung list, used
   // only when the widest rung exceeds the available pane width. Persistent
   // so the Scrollbar's drag-thumb and scroll position survive rebuilds.
@@ -1400,8 +1411,6 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     if (_isCompareBlock(n.blockType) || _isMathBlock(n.blockType)) {
       return _buildDataBlock(n, live: live, lit: lit);
     }
-    // Live block *values* (ACC/PT, CV/PV) are a later task — this task applies
-    // only the energized border/header color.
     final Color borderColor =
         !live ? Colors.grey.shade500 : (lit ? _kEnergized : _kDeEnergized);
     final isCounter = _isCounterBlock(n.blockType);
@@ -1411,7 +1420,9 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     String bottomRight;
     String presetLine;
     if (isCounter) {
-      presetLine = 'PV ${n.presetMs}';
+      presetLine = live
+          ? 'CV ${_liveNum('${n.variable}.CV')} / ${n.presetMs}'
+          : 'PV ${n.presetMs}';
       switch (n.blockType) {
         case 'CTD':
           topLeft = 'CD';
@@ -1430,7 +1441,9 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     } else {
       topLeft = 'IN';
       topRight = 'Q';
-      presetLine = 'PT ${n.presetMs}ms';
+      presetLine = live
+          ? '${_liveNum('${n.variable}.ACC')} / ${n.presetMs} ms'
+          : 'PT ${n.presetMs}ms';
       bottomLeft = 'PT';
       bottomRight = 'ET';
     }
@@ -1487,9 +1500,15 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     final isCompare = _isCompareBlock(n.blockType);
     final rightPin = isCompare ? 'Q' : 'ENO';
     final glyph = _blockOperatorGlyph(n.blockType);
-    // Live block *values* are a later task — apply only the energized border.
     final Color borderColor =
         !live ? Colors.grey.shade500 : (lit ? _kEnergized : _kDeEnergized);
+    String liveOperand(String s) {
+      final literal = num.tryParse(s);
+      if (literal != null) {
+        return s;
+      }
+      return live ? _liveNum(s) : s;
+    }
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF1E293B),
@@ -1518,7 +1537,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 _BlockPinRow(left: 'EN', right: rightPin),
-                Text(n.operandA,
+                Text(liveOperand(n.operandA),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 9, color: Colors.white, fontFamily: 'monospace'),
@@ -1528,7 +1547,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.amberAccent, fontFamily: 'monospace'),
                     textAlign: TextAlign.center),
-                Text(n.operandB,
+                Text(liveOperand(n.operandB),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 9, color: Colors.white, fontFamily: 'monospace'),
@@ -1539,7 +1558,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 // optional user-assigned name — shown only when set so
                 // unnamed compare blocks keep their original compact face).
                 if (!isCompare)
-                  Text('→ ${n.variable}',
+                  Text(live ? '→ ${n.variable} = ${_liveNum(n.variable)}' : '→ ${n.variable}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 7, color: Colors.cyanAccent, fontFamily: 'monospace'),
