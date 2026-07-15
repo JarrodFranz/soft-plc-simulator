@@ -30,6 +30,7 @@ void main() {
 
     final mon = LdMonitor();
     mon.nodePower[mon.keyFor('Main', 0, 'a')] = true;
+    mon.nodeTrue[mon.keyFor('Main', 0, 'a')] = true;
 
     await tester.pumpWidget(MaterialApp(
       home: LiveTickScope(
@@ -93,6 +94,8 @@ void main() {
     final mon = LdMonitor();
     mon.nodePower[mon.keyFor('Main', 0, 'a')] = true;
     mon.nodePower[mon.keyFor('Main', 0, 'b')] = true;
+    mon.nodeTrue[mon.keyFor('Main', 0, 'a')] = true;
+    mon.nodeTrue[mon.keyFor('Main', 0, 'b')] = true;
 
     await tester.pumpWidget(MaterialApp(
       home: LiveTickScope(
