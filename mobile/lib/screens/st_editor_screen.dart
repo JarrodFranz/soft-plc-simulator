@@ -375,11 +375,13 @@ END_FOR;''',
     final allItems = _buildAllAutocompleteItems();
     final expanded = context.isExpanded;
     final compact = context.isCompact;
+    final short = context.isShort;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Structured Text (ST) Code Editor'),
+        title: Text(short ? 'ST Code Editor' : 'Structured Text (ST) Code Editor'),
         backgroundColor: const Color(0xFF1E293B),
+        toolbarHeight: short ? 46 : null,
         actions: [
           IconButton(
             icon: const Icon(Icons.play_circle_fill, color: Colors.greenAccent),

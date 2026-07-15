@@ -473,10 +473,14 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
 
   @override
   Widget build(BuildContext context) {
+    final short = context.isShort;
     return Scaffold(
       appBar: AppBar(
-        title: Text('${widget.currentProject.name} — Memory & Struct Hierarchy'),
+        title: Text(short
+            ? '${widget.currentProject.name} — Memory'
+            : '${widget.currentProject.name} — Memory & Struct Hierarchy'),
         backgroundColor: const Color(0xFF1E293B),
+        toolbarHeight: short ? 46 : null,
         bottom: TabBar(
           controller: _tabController,
           indicatorColor: Colors.cyan,
