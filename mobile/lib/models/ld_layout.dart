@@ -12,6 +12,18 @@ const double kLdCoilRailGap = 40.0;
 /// Left-anchored x for a grid column.
 double ldColX(int col) => col * kLdColW;
 
+/// Half the inter-cell wire gap — the inset from a cell edge to the centre of
+/// the gap between it and the neighbouring column. `(116 - 66)/2 = 25`.
+const double kLdGapHalf = (kLdColW - kLdCellW) / 2;
+
+/// X of a vertical branch riser sitting in the gap immediately to the LEFT of
+/// the cell at [col] (centred between col-1's right edge and col's left edge).
+double ldRiserXBefore(int col) => ldColX(col) - kLdGapHalf;
+
+/// X of a vertical branch riser sitting in the gap immediately to the RIGHT of
+/// the cell at [col].
+double ldRiserXAfter(int col) => ldColX(col) + kLdCellW + kLdGapHalf;
+
 /// Left-x of a node. Coils right-anchor against the rail; everything else
 /// left-anchors from L1 at its assigned column.
 double ldNodeX(LdNode n, int col, double width) {
