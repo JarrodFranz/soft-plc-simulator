@@ -141,7 +141,7 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
           top: b.y + _kCanvasPad,
           width: b.w,
           height: b.h,
-          child: _bar(),
+          child: _bar(b.kind),
         );
       default:
         return const Positioned(left: 0, top: 0, child: SizedBox.shrink());
@@ -218,15 +218,119 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
         border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.7), width: 1.5),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
-      child: TagAutocompleteField(
-        key: ValueKey('sfccond_${t.id}'),
-        options: widget.currentProject.tags.map((tag) => tag.name).toList(),
-        initialValue: t.conditionSt,
-        onChanged: (val) {
-          t.conditionSt = val;
-          widget.onProgramUpdated();
-        },
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            child: TagAutocompleteField(
+              key: ValueKey('sfccond_${t.id}'),
+              options: widget.currentProject.tags.map((tag) => tag.name).toList(),
+              initialValue: t.conditionSt,
+              onChanged: (val) {
+                t.conditionSt = val;
+                widget.onProgramUpdated();
+              },
+            ),
+          ),
+          InkWell(
+            key: ValueKey('sfctransmenu_${t.id}'),
+            onTap: () => _showTransitionMenu(t),
+            child: const Padding(
+              padding: EdgeInsets.only(left: 2),
+              child: Icon(Icons.more_vert, size: 16, color: Colors.amberAccent),
+            ),
+          ),
+        ],
       ),
+    );
+  }
+
+  /// Transition block menu: set target (existing step / new step / GOTO) or
+  /// delete the transition. Only offered for ordinary `single` edges — fork /
+  /// join links are managed structurally through the step menu.
+  void _showTransitionMenu(SfcTransition t) {
+    showAdaptiveWidthDialog(
+      context,
+      desiredWidth: 420,
+      child: AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: const Text('Transition'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'TARGET STEP:',
+              style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 6),
+            if (t.kind == 'single')
+              _targetDropdown(t)
+            else
+              const Text(
+                'Fork / join links are edited via the step menu.',
+                style: TextStyle(fontSize: 11, color: Colors.white54),
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              _applyStructure(() => deleteSfcTransition(widget.program, t.id));
+              Navigator.pop(context);
+            },
+            child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
+          ),
+          if (t.kind == 'single')
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _applyStructure(() {
+                  final s = addSfcStep(widget.program);
+                  t.toStepId = s.id;
+                });
+              },
+              child: const Text('New step', style: TextStyle(color: Colors.purpleAccent)),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// A dropdown of every step id — picking one retargets the `single` edge to an
+  /// existing step (a forward edge, or a GOTO/back-edge when it points upstream).
+  Widget _targetDropdown(SfcTransition t) {
+    final steps = widget.program.sfcSteps;
+    final valid = steps.any((s) => s.id == t.toStepId) ? t.toStepId : null;
+    return DropdownButton<String>(
+      key: ValueKey('sfctarget_${t.id}'),
+      isExpanded: true,
+      dropdownColor: const Color(0xFF1E293B),
+      value: valid,
+      hint: const Text('(select target)', style: TextStyle(fontSize: 12, color: Colors.white54)),
+      items: [
+        for (final s in steps)
+          DropdownMenuItem(
+            value: s.id,
+            child: Text(
+              s.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12),
+            ),
+          ),
+      ],
+      onChanged: (v) {
+        if (v == null) {
+          return;
+        }
+        _applyStructure(() => t.toStepId = v);
+        Navigator.pop(context);
+      },
     );
   }
 
@@ -259,9 +363,11 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
     );
   }
 
-  /// A thin double-line bar for a parallel fork / join.
-  Widget _bar() {
+  /// A thin double-line bar for a parallel fork / join. [kind] is `'forkBar'`
+  /// or `'joinBar'` — used as a stable key so tests / hit-tests can find it.
+  Widget _bar(String kind) {
     return Column(
+      key: ValueKey('sfc_$kind'),
       mainAxisAlignment: MainAxisAlignment.center,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -272,8 +378,32 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
     );
   }
 
-  /// Tap a step box -> edit its name / N-action, or delete it. (Structural
-  /// authoring — adding branches / retargeting — returns in a later task.)
+  /// Applies a pure structure mutation and refreshes the canvas.
+  void _applyStructure(void Function() mutate) {
+    setState(mutate);
+    widget.onProgramUpdated();
+  }
+
+  /// A compact dark-theme action chip used in the step editor's STRUCTURE row.
+  Widget _structureButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return OutlinedButton.icon(
+      onPressed: onTap,
+      icon: Icon(icon, size: 14, color: Colors.purpleAccent),
+      label: Text(label, style: const TextStyle(fontSize: 11, color: Colors.purpleAccent)),
+      style: OutlinedButton.styleFrom(
+        side: BorderSide(color: Colors.purpleAccent.withValues(alpha: 0.5)),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        visualDensity: VisualDensity.compact,
+      ),
+    );
+  }
+
+  /// Tap a step box -> edit its name / N-action, add structure (step after /
+  /// alternative / parallel branch), or delete it (collapse-aware).
   void _showStepEditor(SfcStep step) {
     String pendingName = step.name;
     String pendingAction = step.actionSt;
@@ -309,12 +439,48 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
               ),
               onChanged: (v) => pendingAction = v,
             ),
+            const SizedBox(height: 14),
+            const Text(
+              'STRUCTURE:',
+              style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                _structureButton(
+                  icon: Icons.south,
+                  label: '＋Add step after',
+                  onTap: () {
+                    Navigator.pop(context);
+                    _applyStructure(() => addSfcStepAfter(widget.program, step.id));
+                  },
+                ),
+                _structureButton(
+                  icon: Icons.call_split,
+                  label: '＋Add alternative branch',
+                  onTap: () {
+                    Navigator.pop(context);
+                    _applyStructure(() => addAlternativeBranch(widget.program, step.id));
+                  },
+                ),
+                _structureButton(
+                  icon: Icons.account_tree,
+                  label: '＋Add parallel branch',
+                  onTap: () {
+                    Navigator.pop(context);
+                    _applyStructure(() => addParallelBranch(widget.program, step.id));
+                  },
+                ),
+              ],
+            ),
           ],
         ),
         actions: [
           TextButton(
             onPressed: () {
-              setState(() => deleteSfcStep(widget.program, step.id));
+              setState(() => deleteSfcStepStructured(widget.program, step.id));
               widget.onProgramUpdated();
               Navigator.pop(context);
             },

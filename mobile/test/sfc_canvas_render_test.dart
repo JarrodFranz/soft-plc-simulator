@@ -53,6 +53,39 @@ PlcProject _projectFor(PlcProgram prog) => PlcProject(
       tags: [], structDefs: [], programs: [prog], tasks: [], hmis: [],
     );
 
+/// A minimal linear chart A(init) -> B -> C, used to exercise structured
+/// authoring from the canvas.
+PlcProgram _linearProg() {
+  final p = PlcProgram(name: 'LN', language: 'SequentialFunctionChart', rungs: []);
+  p.sfcSteps.addAll([
+    SfcStep(id: 's0', name: 'A_START', isInitial: true),
+    SfcStep(id: 's1', name: 'B_MID'),
+    SfcStep(id: 's2', name: 'C_END'),
+  ]);
+  p.sfcTransitions.addAll([
+    SfcTransition(id: 't0', fromStepId: 's0', toStepId: 's1', conditionSt: 'Go1'),
+    SfcTransition(id: 't1', fromStepId: 's1', toStepId: 's2', conditionSt: 'Go2'),
+  ]);
+  return p;
+}
+
+Future<void> _tapAddParallel(WidgetTester tester, PlcProgram prog) async {
+  await tester.pumpWidget(MaterialApp(
+    home: SfcEditorScreen(
+      currentProject: _projectFor(prog),
+      program: prog,
+      onProgramUpdated: () {},
+    ),
+  ));
+  await tester.pumpAndSettle();
+
+  // Open the mid-step editor and add a parallel branch around it.
+  await tester.tap(find.text('B_MID'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('＋Add parallel branch'));
+  await tester.pumpAndSettle();
+}
+
 void main() {
   testWidgets('2D canvas renders steps, transition blocks, branches at 1400', (tester) async {
     tester.view.physicalSize = const Size(1400, 1200);
@@ -121,5 +154,48 @@ void main() {
     expect(find.byType(InteractiveViewer), findsOneWidget);
     // Steps still render on the (pannable) canvas at a narrow width.
     expect(find.text('START'), findsWidgets);
+  });
+
+  testWidgets('tapping ＋Add parallel branch adds fork/join + side-by-side branches at 1400', (tester) async {
+    tester.view.physicalSize = const Size(1400, 1200);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final prog = _linearProg();
+    await _tapAddParallel(tester, prog);
+
+    expect(tester.takeException(), isNull);
+
+    // The model gained a matching parallelFork + parallelJoin pair.
+    final fork = prog.sfcTransitions.firstWhere((t) => t.kind == 'parallelFork');
+    expect(prog.sfcTransitions.any((t) => t.kind == 'parallelJoin'), isTrue);
+    expect(fork.toStepIds.length, 2);
+
+    // The canvas renders the double-line fork + join bars.
+    expect(find.byKey(const ValueKey('sfc_forkBar')), findsOneWidget);
+    expect(find.byKey(const ValueKey('sfc_joinBar')), findsOneWidget);
+
+    // The two branch step boxes are laid out at DIFFERENT x (side-by-side).
+    final names = fork.toStepIds
+        .map((id) => prog.sfcSteps.firstWhere((s) => s.id == id).name)
+        .toList();
+    final x0 = tester.getTopLeft(find.text(names[0])).dx;
+    final x1 = tester.getTopLeft(find.text(names[1])).dx;
+    expect(x0 == x1, isFalse);
+  });
+
+  testWidgets('＋Add parallel branch: no overflow / no exception at 360 width', (tester) async {
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final prog = _linearProg();
+    await _tapAddParallel(tester, prog);
+
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const ValueKey('sfc_forkBar')), findsOneWidget);
+    expect(find.byKey(const ValueKey('sfc_joinBar')), findsOneWidget);
   });
 }
