@@ -1,30 +1,40 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
-/// Width breakpoints (logical px). Adaptation keys on WIDTH, never platform.
+/// Breakpoints (logical px). Adaptation keys on viewport SIZE, never platform.
 abstract class Breakpoints {
   static const double compact = 640; // < 640: phone / narrow window
-  static const double expanded = 840; // >= 840: desktop / web-on-monitor
+  static const double expanded = 840; // >= 840 wide: desktop / web-on-monitor
+  // The 3-pane desktop IDE also needs vertical room. A viewport that is wide
+  // enough but too SHORT — a phone held in landscape (e.g. 900x410) — must NOT
+  // get the 3-pane layout (all three panes squeeze into a few hundred px of
+  // height and become unusable); it falls back to the adaptive/drawer layout.
+  static const double expandedMinHeight = 600;
 }
 
 enum WidthClass { compact, medium, expanded }
 
+/// Whether a viewport of [size] is large enough for the 3-pane desktop IDE:
+/// wide enough AND tall enough. Pure (no BuildContext) so it is unit-testable.
+bool isExpandedSize(Size size) =>
+    size.width >= Breakpoints.expanded && size.height >= Breakpoints.expandedMinHeight;
+
 extension ResponsiveContext on BuildContext {
-  double get widthPx => MediaQuery.sizeOf(this).width;
+  Size get _viewport => MediaQuery.sizeOf(this);
+  double get widthPx => _viewport.width;
 
   WidthClass get widthClass {
-    final w = widthPx;
-    if (w < Breakpoints.compact) {
+    if (widthPx < Breakpoints.compact) {
       return WidthClass.compact;
     }
-    if (w < Breakpoints.expanded) {
+    if (!isExpandedSize(_viewport)) {
       return WidthClass.medium;
     }
     return WidthClass.expanded;
   }
 
   bool get isCompact => widthPx < Breakpoints.compact;
-  bool get isExpanded => widthPx >= Breakpoints.expanded;
+  bool get isExpanded => isExpandedSize(_viewport);
 }
 
 /// Minimum finger hit-target (Material spec).
