@@ -1,8 +1,15 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/sfc_edit.dart';
-import '../models/sfc_layout.dart';
+import '../models/sfc_region.dart';
+import '../models/sfc_layout2.dart';
 import '../ui/responsive.dart';
+import '../widgets/tag_autocomplete_field.dart';
+
+/// Padding inside the scroll content, around the laid-out chart, so boxes at
+/// x=0 / y=0 are not flush against the canvas edge. Applied to both the
+/// positioned boxes and the connector painter.
+const double _kCanvasPad = 28.0;
 
 class SfcEditorScreen extends StatefulWidget {
   final PlcProject currentProject;
@@ -64,47 +71,273 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
     );
   }
 
-  Widget _buildCenterWorkspace(bool expanded) {
+  // ---------------------------------------------------------------------------
+  // 2D pan/zoom canvas (SFC-v2): region parser -> 2D layout -> positioned boxes
+  // + a connector painter. Mirrors the FBD/LD editors' InteractiveViewer +
+  // Stack(CustomPaint + Positioned...) pattern.
+  // ---------------------------------------------------------------------------
+
+  Widget _buildCanvas() {
+    final region = parseSfc(widget.program.sfcSteps, widget.program.sfcTransitions);
+    final layout = layoutSfcRegion(region);
+
+    final stack = Stack(
+      children: [
+        Positioned.fill(
+          child: CustomPaint(painter: _SfcPainter(layout)),
+        ),
+        for (final b in layout.boxes) _positionedBox(b),
+      ],
+    );
+
     return Container(
       color: const Color(0xFF0F172A),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final cardWidth = _cardWidth(constraints.maxWidth);
-          final rows = layoutSfc(widget.program.sfcSteps, widget.program.sfcTransitions);
-          final rowIndexOf = <String, int>{
-            for (var i = 0; i < rows.length; i++) rows[i].step.id: i,
-          };
-          return ListView.builder(
-            padding: const EdgeInsets.all(24),
-            itemCount: rows.length,
-            itemBuilder: (context, index) {
-              final row = rows[index];
-              return Column(
-                children: [
-                  _buildSfcStepCard(row.step, cardWidth),
-                  for (final o in row.outgoing)
-                    _buildOutgoing(
-                      o,
-                      cardWidth,
-                      isLoopBack: o.target != null &&
-                          (rowIndexOf[o.target!.id] ?? (1 << 30)) <= index,
-                    ),
-                ],
-              );
-            },
-          );
+      child: InteractiveViewer(
+        constrained: false,
+        minScale: 0.4,
+        maxScale: 2.5,
+        boundaryMargin: const EdgeInsets.all(200),
+        child: SizedBox(
+          width: layout.width + _kCanvasPad * 2,
+          height: layout.height + _kCanvasPad * 2,
+          child: stack,
+        ),
+      ),
+    );
+  }
+
+  Widget _positionedBox(SfcBox b) {
+    switch (b.kind) {
+      case 'step':
+        // Fixed height: the step box content (badge + name + action preview)
+        // fills the laid-out box exactly.
+        return Positioned(
+          left: b.x + _kCanvasPad,
+          top: b.y + _kCanvasPad,
+          width: b.w,
+          height: b.h,
+          child: _stepBox(b.step!),
+        );
+      case 'trans':
+        // Height-intrinsic so the inline condition field never overflows a
+        // fixed box on a narrow screen; width is pinned to the laid-out block.
+        return Positioned(
+          left: b.x + _kCanvasPad,
+          top: b.y + _kCanvasPad,
+          width: b.w,
+          child: _transBlock(b.transition!),
+        );
+      case 'goto':
+        return Positioned(
+          left: b.x + _kCanvasPad,
+          top: b.y + _kCanvasPad,
+          width: b.w,
+          child: _gotoChip(b.transition!),
+        );
+      case 'forkBar':
+      case 'joinBar':
+        return Positioned(
+          left: b.x + _kCanvasPad,
+          top: b.y + _kCanvasPad,
+          width: b.w,
+          height: b.h,
+          child: _bar(),
+        );
+      default:
+        return const Positioned(left: 0, top: 0, child: SizedBox.shrink());
+    }
+  }
+
+  Widget _stepBox(SfcStep step) {
+    final accent = step.isInitial ? Colors.greenAccent : Colors.purpleAccent;
+    return GestureDetector(
+      onTap: () => _showStepEditor(step),
+      child: Container(
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E293B),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: accent, width: 2),
+          boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 6)],
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: (step.isInitial ? Colors.green : Colors.purple).withValues(alpha: 0.3),
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                  child: Text(
+                    step.isInitial ? 'INIT' : 'STEP',
+                    style: TextStyle(fontWeight: FontWeight.bold, color: accent, fontSize: 8),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    step.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+                  ),
+                ),
+                const Icon(Icons.edit, size: 11, color: Colors.white38),
+              ],
+            ),
+            const SizedBox(height: 3),
+            Expanded(
+              child: Text(
+                step.actionSt.isEmpty ? '(no action)' : step.actionSt,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 9,
+                  color: step.actionSt.isEmpty ? Colors.white38 : Colors.cyanAccent,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// A transition rendered as a BORDERED BLOCK holding the editable condition
+  /// (with tag autocomplete). Editing writes straight through to the model, so
+  /// an in-flight edit survives a sibling rebuild.
+  Widget _transBlock(SfcTransition t) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.7), width: 1.5),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+      child: TagAutocompleteField(
+        key: ValueKey('sfccond_${t.id}'),
+        options: widget.currentProject.tags.map((tag) => tag.name).toList(),
+        initialValue: t.conditionSt,
+        onChanged: (val) {
+          t.conditionSt = val;
+          widget.onProgramUpdated();
         },
       ),
     );
   }
 
-  double _cardWidth(double availableWidth) {
-    const margins = 24.0 * 2; // ListView padding, left + right
-    final maxW = availableWidth - margins;
-    if (maxW <= 0) {
-      return 0.0;
-    }
-    return maxW < 450 ? maxW : 450.0;
+  Widget _gotoChip(SfcTransition t) {
+    final target = widget.program.sfcSteps.where((s) => s.id == t.toStepId);
+    final targetName = target.isEmpty ? '(deleted)' : target.first.name;
+    return Container(
+      alignment: Alignment.center,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.6)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.replay, size: 14, color: Colors.amberAccent),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              'GOTO $targetName',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.amberAccent, fontSize: 11, fontFamily: 'monospace'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// A thin double-line bar for a parallel fork / join.
+  Widget _bar() {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(height: 2, color: Colors.purpleAccent),
+        const SizedBox(height: 3),
+        Container(height: 2, color: Colors.purpleAccent),
+      ],
+    );
+  }
+
+  /// Tap a step box -> edit its name / N-action, or delete it. (Structural
+  /// authoring — adding branches / retargeting — returns in a later task.)
+  void _showStepEditor(SfcStep step) {
+    String pendingName = step.name;
+    String pendingAction = step.actionSt;
+
+    showAdaptiveWidthDialog(
+      context,
+      desiredWidth: 420,
+      child: AlertDialog(
+        backgroundColor: const Color(0xFF1E293B),
+        title: Text(step.isInitial ? 'Initial Step' : 'Step'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextFormField(
+              initialValue: step.name,
+              decoration: const InputDecoration(labelText: 'Step name'),
+              onChanged: (v) => pendingName = v,
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'N (Non-Stored Action Logic):',
+              style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            TextFormField(
+              initialValue: step.actionSt,
+              maxLines: 4,
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: Colors.cyanAccent),
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: 'Enter ST Action statements...',
+              ),
+              onChanged: (v) => pendingAction = v,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              setState(() => deleteSfcStep(widget.program, step.id));
+              widget.onProgramUpdated();
+              Navigator.pop(context);
+            },
+            child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              setState(() {
+                step.name = pendingName.trim().isEmpty ? step.name : pendingName.trim();
+                step.actionSt = pendingAction;
+              });
+              widget.onProgramUpdated();
+              Navigator.pop(context);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -137,8 +370,8 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
       body: expanded
           ? Row(
               children: [
-                // CENTER WORKSPACE: Visual SFC Step Transition Chart
-                Expanded(child: _buildCenterWorkspace(true)),
+                // CENTER WORKSPACE: 2D SFC pan/zoom canvas.
+                Expanded(child: _buildCanvas()),
 
                 const VerticalDivider(width: 1, color: Colors.white12),
 
@@ -146,7 +379,7 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
                 _buildTagPaletteDock(),
               ],
             )
-          : _buildCenterWorkspace(false),
+          : _buildCanvas(),
     );
   }
 
@@ -184,241 +417,39 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
       ),
     );
   }
+}
 
-  Widget _buildSfcStepCard(SfcStep step, double width) {
-    return Container(
-      width: width,
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: step.isInitial ? Colors.greenAccent : Colors.purpleAccent, width: 2),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(14.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: (step.isInitial ? Colors.green : Colors.purple).withValues(alpha: 0.3),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Text(
-                    step.isInitial ? 'INITIAL STEP' : 'STEP',
-                    style: TextStyle(fontWeight: FontWeight.bold, color: step.isInitial ? Colors.greenAccent : Colors.purpleAccent, fontSize: 10),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(child: Text(step.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14))),
-                IconButton(
-                  icon: const Icon(Icons.delete, size: 16, color: Colors.redAccent),
-                  tooltip: 'Delete step',
-                  padding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.compact,
-                  constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                  onPressed: () {
-                    setState(() => deleteSfcStep(widget.program, step.id));
-                    widget.onProgramUpdated();
-                  },
-                ),
-                const SizedBox(width: 4),
-                IconButton(
-                  icon: const Icon(Icons.add_circle_outline, size: 16, color: Colors.purpleAccent),
-                  tooltip: 'Add branch',
-                  padding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.compact,
-                  constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                  onPressed: () {
-                    setState(() => addSfcBranch(widget.program, step.id));
-                    widget.onProgramUpdated();
-                  },
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            const Text('N (Non-Stored Action Logic):', style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 4),
-            TextField(
-              controller: TextEditingController(text: step.actionSt),
-              maxLines: 2,
-              onChanged: (val) {
-                step.actionSt = val;
-                widget.onProgramUpdated();
-              },
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: Colors.cyanAccent),
-              decoration: const InputDecoration(isDense: true, border: OutlineInputBorder(), hintText: 'Enter ST Action statements...'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+/// Paints the SFC connector segments. A normal edge is a single line; a
+/// [SfcConn.doubleBar] edge (parallel fork / join link) is drawn as two
+/// parallel strokes.
+class _SfcPainter extends CustomPainter {
+  final SfcLayout layout;
 
-  Widget _buildSfcTransitionGraphic(SfcTransition transition, double width) {
-    return Container(
-      width: width,
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      child: Column(
-        children: [
-          Container(width: 3, height: 16, color: Colors.purpleAccent),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(width: 20, height: 4, color: Colors.amberAccent),
-              const SizedBox(width: 8),
-              Expanded(
-                child: TextField(
-                  controller: TextEditingController(text: transition.conditionSt),
-                  onChanged: (val) {
-                    transition.conditionSt = val;
-                    widget.onProgramUpdated();
-                  },
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: Colors.amberAccent, fontWeight: FontWeight.bold),
-                  decoration: const InputDecoration(isDense: true, border: OutlineInputBorder(), labelText: 'Transition Condition (BOOL ST Expression)'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Container(width: 20, height: 4, color: Colors.amberAccent),
-            ],
-          ),
-          Container(width: 3, height: 16, color: Colors.purpleAccent),
-        ],
-      ),
-    );
-  }
+  _SfcPainter(this.layout);
 
-  Widget _branchControls(SfcTransition t, double width) {
-    final steps = widget.program.sfcSteps;
-    return Row(
-      children: [
-        const Text('→ ', style: TextStyle(color: Colors.amberAccent, fontFamily: 'monospace')),
-        Expanded(
-          // Keyed by step index (not step id) so this stays a
-          // DropdownButton<int>: the shell's SELECT PROJECT selector is a
-          // DropdownButton<String>, and the responsive smoke test locates it
-          // via find.byType(DropdownButton<String>).first — a String-typed
-          // dropdown here (behind the compact Drawer) would shadow it.
-          // Sentinel index -1 = "＋ New step…".
-          child: DropdownButton<int>(
-            isExpanded: true,
-            dropdownColor: const Color(0xFF1E293B),
-            value: () {
-              final i = steps.indexWhere((s) => s.id == t.toStepId);
-              return i >= 0 ? i : null;
-            }(),
-            hint: const Text('(target)', style: TextStyle(color: Colors.grey, fontSize: 12)),
-            items: [
-              for (var i = 0; i < steps.length; i++)
-                DropdownMenuItem(value: i, child: Text(steps[i].name, style: const TextStyle(fontSize: 12))),
-              const DropdownMenuItem(value: -1, child: Text('＋ New step…', style: TextStyle(fontSize: 12, color: Colors.cyanAccent))),
-            ],
-            onChanged: (v) {
-              if (v == null) {
-                return;
-              }
-              setState(() {
-                if (v == -1) {
-                  final s = addSfcStep(widget.program);
-                  t.toStepId = s.id;
-                } else {
-                  t.toStepId = steps[v].id;
-                }
-              });
-              widget.onProgramUpdated();
-            },
-          ),
-        ),
-        IconButton(
-          icon: const Icon(Icons.arrow_upward, size: 16, color: Colors.cyanAccent),
-          tooltip: 'Higher priority',
-          padding: EdgeInsets.zero,
-          visualDensity: VisualDensity.compact,
-          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-          onPressed: () {
-            setState(() => reorderSfcBranch(widget.program, t.id, -1));
-            widget.onProgramUpdated();
-          },
-        ),
-        IconButton(
-          icon: const Icon(Icons.arrow_downward, size: 16, color: Colors.cyanAccent),
-          tooltip: 'Lower priority',
-          padding: EdgeInsets.zero,
-          visualDensity: VisualDensity.compact,
-          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-          onPressed: () {
-            setState(() => reorderSfcBranch(widget.program, t.id, 1));
-            widget.onProgramUpdated();
-          },
-        ),
-        IconButton(
-          icon: const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
-          tooltip: 'Delete branch',
-          padding: EdgeInsets.zero,
-          visualDensity: VisualDensity.compact,
-          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-          onPressed: () {
-            setState(() => deleteSfcTransition(widget.program, t.id));
-            widget.onProgramUpdated();
-          },
-        ),
-      ],
-    );
-  }
+  @override
+  void paint(Canvas canvas, Size size) {
+    final line = Paint()
+      ..color = Colors.purpleAccent.withValues(alpha: 0.7)
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke;
 
-  Widget _buildOutgoing(SfcOutgoing o, double width, {required bool isLoopBack}) {
-    final controls = SizedBox(width: width, child: _branchControls(o.transition, width));
-    // The condition editor is the existing transition graphic body.
-    final condition = _buildSfcTransitionGraphic(o.transition, width);
-    if (o.inline) {
-      // vertical connector flows into the next card below
-      return Column(children: [controls, condition]);
+    for (final c in layout.conns) {
+      final x1 = c.x1 + _kCanvasPad;
+      final y1 = c.y1 + _kCanvasPad;
+      final x2 = c.x2 + _kCanvasPad;
+      final y2 = c.y2 + _kCanvasPad;
+      if (c.doubleBar) {
+        // Fork/join links are vertical; offset the twin strokes in x.
+        const off = 3.0;
+        canvas.drawLine(Offset(x1 - off, y1), Offset(x2 - off, y2), line);
+        canvas.drawLine(Offset(x1 + off, y1), Offset(x2 + off, y2), line);
+      } else {
+        canvas.drawLine(Offset(x1, y1), Offset(x2, y2), line);
+      }
     }
-    // Non-inline: a GOTO reference chip to the target (or "(deleted)").
-    final targetName = o.target?.name ?? '(deleted)';
-    // Deleted target: link_off. Genuine loop-back (target at/above this row):
-    // the loop icon. Forward branch (target below this row): a distinct
-    // forward icon so it isn't mistaken for a loop.
-    final IconData icon;
-    if (o.target == null) {
-      icon = Icons.link_off;
-    } else if (isLoopBack) {
-      icon = Icons.subdirectory_arrow_left;
-    } else {
-      icon = Icons.arrow_forward;
-    }
-    return Column(
-      children: [
-        controls,
-        condition,
-        Container(
-          width: width,
-          margin: const EdgeInsets.only(top: 2, bottom: 8),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1E293B),
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.6)),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 14, color: Colors.amberAccent),
-              const SizedBox(width: 6),
-              Flexible(
-                child: Text('GOTO $targetName',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        color: Colors.amberAccent, fontSize: 12, fontFamily: 'monospace')),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
   }
+
+  @override
+  bool shouldRepaint(covariant _SfcPainter oldDelegate) => oldDelegate.layout != layout;
 }
