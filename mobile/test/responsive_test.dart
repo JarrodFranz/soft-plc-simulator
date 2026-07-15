@@ -34,6 +34,28 @@ void main() {
     await tester.pumpWidget(probe());
     expect(wc, WidthClass.expanded);
     expect(expanded, isTrue);
+
+    // A phone in landscape is WIDE (>= 840) but SHORT (< 600 tall): it must NOT
+    // get the 3-pane desktop IDE — it falls back to the adaptive/drawer layout.
+    await setSurface(tester, const Size(900, 410));
+    await tester.pumpWidget(probe());
+    expect(wc, WidthClass.medium);
+    expect(compact, isFalse);
+    expect(expanded, isFalse);
+
+    // A genuinely large landscape viewport (tablet/desktop) stays expanded.
+    await setSurface(tester, const Size(1200, 800));
+    await tester.pumpWidget(probe());
+    expect(wc, WidthClass.expanded);
+    expect(expanded, isTrue);
+  });
+
+  test('isExpandedSize requires both width and height', () {
+    expect(isExpandedSize(const Size(1400, 900)), isTrue); // desktop
+    expect(isExpandedSize(const Size(900, 410)), isFalse); // landscape phone (short)
+    expect(isExpandedSize(const Size(760, 900)), isFalse); // too narrow
+    expect(isExpandedSize(const Size(840, 600)), isTrue); // exact thresholds
+    expect(isExpandedSize(const Size(840, 599)), isFalse); // 1px too short
   });
 
   testWidgets('showAdaptiveWidthDialog clamps to viewport on a phone',
