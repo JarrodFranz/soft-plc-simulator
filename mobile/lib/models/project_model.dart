@@ -372,13 +372,20 @@ class SfcTransition {
   String fromStepId;
   String toStepId;
   String conditionSt;
+  String kind;
+  List<String> toStepIds;
+  List<String> fromStepIds;
 
   SfcTransition({
     required this.id,
     required this.fromStepId,
     required this.toStepId,
     required this.conditionSt,
-  });
+    this.kind = 'single',
+    List<String>? toStepIds,
+    List<String>? fromStepIds,
+  })  : toStepIds = toStepIds ?? [],
+        fromStepIds = fromStepIds ?? [];
 
   factory SfcTransition.fromJson(Map<String, dynamic> json) {
     return SfcTransition(
@@ -386,6 +393,9 @@ class SfcTransition {
       fromStepId: json['from_step_id'] ?? '',
       toStepId: json['to_step_id'] ?? '',
       conditionSt: json['condition_st'] ?? '',
+      kind: json['kind'] ?? 'single',
+      toStepIds: (json['to_step_ids'] as List? ?? []).map((e) => e.toString()).toList(),
+      fromStepIds: (json['from_step_ids'] as List? ?? []).map((e) => e.toString()).toList(),
     );
   }
 
@@ -394,6 +404,9 @@ class SfcTransition {
     'from_step_id': fromStepId,
     'to_step_id': toStepId,
     'condition_st': conditionSt,
+    'kind': kind,
+    'to_step_ids': toStepIds,
+    'from_step_ids': fromStepIds,
   };
 }
 
