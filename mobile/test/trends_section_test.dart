@@ -46,8 +46,8 @@ void main() {
     proj.trends.add(TrendPen(tagPath: 'A', color: 'green'));
     final historian = TagHistorian()..syncPens(proj.trends);
 
-    Future<void> pumpAt(double width) async {
-      tester.view.physicalSize = Size(width, 1400);
+    Future<void> pumpAt(double width, [double height = 1400]) async {
+      tester.view.physicalSize = Size(width, height);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
@@ -74,6 +74,11 @@ void main() {
     expect(tester.takeException(), isNull);
 
     await pumpAt(1400);
+    expect(tester.takeException(), isNull);
+
+    // Short landscape-phone viewport (wide but shallow): the Add Pen button +
+    // fixed preview chart + pen list must not overflow the shallow body.
+    await pumpAt(900, 410);
     expect(tester.takeException(), isNull);
   });
 

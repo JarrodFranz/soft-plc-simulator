@@ -1301,8 +1301,12 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
         ? 300000
         : pens.map((p) => p.retentionMode == 'time' ? p.windowMs : p.maxPoints * p.sampleIntervalMs)
               .reduce((a, b) => a > b ? a : b);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    // A single scrollable list (not a Column with a fixed chart + Expanded
+    // list): on a short (landscape-phone) viewport a fixed 220px preview plus
+    // the button and pen list overflows the body, so let the whole tab scroll
+    // and shrink the preview.
+    final short = context.isShort;
+    return ListView(
       children: [
         Padding(
           padding: const EdgeInsets.all(8),
@@ -1322,37 +1326,31 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
             historian: widget.historian,
             pens: penViews,
             windowMs: windowMs,
-            height: 220,
+            height: short ? 150 : 220,
           ),
         ),
         const Divider(height: 1),
-        Expanded(
-          child: pens.isEmpty
-              ? Center(child: Text('No pens yet — add one to start recording.', style: TextStyle(color: Colors.grey.shade500)))
-              : ListView.builder(
-                  itemCount: pens.length,
-                  itemBuilder: (context, i) {
-                    final p = pens[i];
-                    final retention = p.retentionMode == 'time'
-                        ? '${(p.windowMs / 1000).toStringAsFixed(0)}s'
-                        : '${p.maxPoints} pts';
-                    return ListTile(
-                      dense: true,
-                      leading: Container(width: 14, height: 14, color: trendColorFromName(p.color)),
-                      title: Text(p.tagPath, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
-                      subtitle: Text('${p.sampleIntervalMs} ms • $retention'),
-                      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                        IconButton(icon: const Icon(Icons.settings, size: 18), onPressed: () => _showPenDialog(p)),
-                        IconButton(icon: const Icon(Icons.delete, size: 18, color: Colors.redAccent), onPressed: () {
-                          setState(() => widget.currentProject.trends.remove(p));
-                          widget.historian.syncPens(widget.currentProject.trends);
-                          widget.onProjectUpdated();
-                        }),
-                      ]),
-                    );
-                  },
-                ),
-        ),
+        if (pens.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 24),
+            child: Center(child: Text('No pens yet — add one to start recording.', style: TextStyle(color: Colors.grey.shade500))),
+          )
+        else
+          for (final p in pens)
+            ListTile(
+              dense: true,
+              leading: Container(width: 14, height: 14, color: trendColorFromName(p.color)),
+              title: Text(p.tagPath, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+              subtitle: Text('${p.sampleIntervalMs} ms • ${p.retentionMode == 'time' ? '${(p.windowMs / 1000).toStringAsFixed(0)}s' : '${p.maxPoints} pts'}'),
+              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                IconButton(icon: const Icon(Icons.settings, size: 18), onPressed: () => _showPenDialog(p)),
+                IconButton(icon: const Icon(Icons.delete, size: 18, color: Colors.redAccent), onPressed: () {
+                  setState(() => widget.currentProject.trends.remove(p));
+                  widget.historian.syncPens(widget.currentProject.trends);
+                  widget.onProjectUpdated();
+                }),
+              ]),
+            ),
       ],
     );
   }
