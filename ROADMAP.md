@@ -117,9 +117,9 @@
   - **Responsive & adaptive layout** (width-based, not platform-based; shared `mobile/lib/ui/responsive.dart` with breakpoints 640/840, `context.isCompact`/`isExpanded`, viewport-clamped dialogs, 44px touch targets): the desktop 3-pane IDE is preserved at ≥840 px, and on a phone/narrow window the project tree becomes a `Drawer`, the Tag Inspector an end-drawer, editor palettes on-demand bottom sheets, graphical canvases pan/zoom viewers with tap-to-configure, and the Memory Manager a card list — verified by widget tests at fixed surface sizes plus a whole-app overflow smoke test (155 tests). ✅
   - **Editor polish** ✅ — the FBD workspace pans/zooms on every platform (was desktop-fixed) with an "Auto-arrange" action that lays blocks into tidy dependency-ordered columns (pure, tested layout); the HMI component dialog's dropdown overflow was fixed.
   - **Project-wide undo/redo** ✅ — a snapshot history (reusing the WS6 lossless serialization) captures on the debounced autosave tick (coalescing a drag/burst into one step), works across every editor with no per-editor plumbing, resets on project swap, and restores via `fromJson` with an editor-revision key that rebuilds the editor cleanly. Toolbar buttons + Ctrl/⌘+Z / +Y / +Shift+Z shortcuts; depth-capped, in-memory.
-  - Haptic feedback on pushbutton press. ⏳
+  - **Haptic feedback on HMI control press** ✅ — a `HapticFeedback.mediumImpact()` pulse when a `PushbuttonSwitch` is pressed or a `ToggleSwitch` is flipped in RUN mode (a no-op on desktop/web; fires on Android/iOS), gated by a global **SoftPLC Settings → Haptic feedback** toggle (default on, persisted via `SharedPreferences` `haptics_enabled`). Covered by widget tests asserting the platform haptic call fires only when enabled, plus the shell pref round-trip.
   - Native mobile packaging (iOS/Android). ⏳ (see Phase 10)
-- **Status**: 🔄 **ACTIVE — responsive/adaptive layout, editor polish (pannable FBD + auto-arrange), and project-wide undo/redo shipped; haptics & native packaging remain**
+- **Status**: 🔄 **ACTIVE — responsive/adaptive layout, editor polish (pannable FBD + auto-arrange), project-wide undo/redo, and HMI haptic feedback shipped; native packaging remains**
 
 ---
 

@@ -202,7 +202,7 @@ flutter analyze
 | **Phase 4** | Industrial OPC UA Server Adapter — in-app pure-Dart server, real-client E2E-verified (ADR-010) | ✅ Shipped |
 | **Phase 5** | Modbus TCP Server Adapter — in-app pure-Dart server, real-client E2E-verified | ✅ Shipped |
 | **Phase 6** | MQTT Client / Sparkplug B Publisher — in-app pure-Dart publisher, real-broker E2E-verified | ✅ Shipped |
-| **Phase 7** | Touch HMI Controls & Mobile UI Polish | 🔄 Active — responsive layout, editor polish, undo/redo shipped; haptics & native packaging ⏳ |
+| **Phase 7** | Touch HMI Controls & Mobile UI Polish | 🔄 Active — responsive layout, editor polish, undo/redo, HMI haptic feedback shipped; native packaging ⏳ |
 | **Phase 8** | DNP3 Outstation Protocol Adapter — in-app pure-Dart outstation, real-master E2E-verified | ✅ Shipped |
 | **Phase 9** | Advanced Process Simulation Engine | ✅ Completed |
 | **Phase 10** | Release Packaging, Installers & Examples | 🔄 Active — identity/icons/splash done; signed store builds remain |
