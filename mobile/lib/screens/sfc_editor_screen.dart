@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/sfc_edit.dart';
+import '../models/sfc_exec.dart';
 import '../models/sfc_region.dart';
 import '../models/sfc_layout2.dart';
 import '../ui/responsive.dart';
+import '../widgets/live_tick.dart';
 import '../widgets/tag_autocomplete_field.dart';
 
 /// Padding inside the scroll content, around the laid-out chart, so boxes at
@@ -16,11 +18,22 @@ class SfcEditorScreen extends StatefulWidget {
   final PlcProgram program;
   final VoidCallback onProgramUpdated;
 
+  /// Live active-step state populated by the scan (Task 2). Read only when the
+  /// session-only Go-Online toggle is on; otherwise the editor is fully static.
+  final SfcRuntime sfcRuntime;
+
+  /// Whether the scan is actually running (mirrors the LD editor's
+  /// `scanRunning`). Drives the LIVE / FROZEN badge; when false the active set
+  /// simply stops changing (frozen view).
+  final bool scanRunning;
+
   const SfcEditorScreen({
     super.key,
     required this.currentProject,
     required this.program,
     required this.onProgramUpdated,
+    required this.sfcRuntime,
+    required this.scanRunning,
   });
 
   @override
@@ -28,10 +41,41 @@ class SfcEditorScreen extends StatefulWidget {
 }
 
 class _SfcEditorScreenState extends State<SfcEditorScreen> {
+  // Session-only "Go-Online" live-monitor toggle. When true, active step boxes
+  // glow energized and show their live STEP_T; default false so the static
+  // editor view is unchanged. Never persisted.
+  bool _online = false;
+
+  // Fallback repaint pulse used only when no [LiveTickScope] is present in the
+  // ancestor tree (e.g. widget tests that pump the editor standalone). In the
+  // app the shell provides the real scan-driven tick.
+  final LiveTick _fallbackTick = LiveTick();
+
+  // Energized accent for the live "online" view (mirrors the LD monitor).
+  static const Color _kEnergized = Colors.greenAccent;
+
   @override
   void initState() {
     super.initState();
     _ensureDefaultSfc();
+  }
+
+  @override
+  void dispose() {
+    _fallbackTick.dispose();
+    super.dispose();
+  }
+
+  /// Whether [step] is in the live active set (only meaningful while online).
+  bool _isActive(SfcStep step) =>
+      _online &&
+      (widget.sfcRuntime.active[widget.program.name]?.contains(step.id) ?? false);
+
+  /// Compact STEP_T label for an active step (ms below a second, else seconds).
+  String _stepTLabel(SfcStep step) {
+    final ms = widget.sfcRuntime.stepElapsedMs['${widget.program.name}|${step.id}'] ?? 0;
+    final formatted = ms < 1000 ? '${ms}ms' : '${(ms / 1000).toStringAsFixed(1)}s';
+    return 'STEP_T $formatted';
   }
 
   void _ensureDefaultSfc() {
@@ -78,6 +122,22 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
   // ---------------------------------------------------------------------------
 
   Widget _buildCanvas() {
+    // Offline: a plain static canvas, no per-tick repaint.
+    if (!_online) {
+      return _buildCanvasContent();
+    }
+    // Online: repaint the canvas on each LiveTick pulse so active-step glow and
+    // STEP_T track the scan. Falls back to a local (never-pulsed) tick when no
+    // LiveTickScope is present, so the highlight still renders one-shot.
+    final tick =
+        context.getInheritedWidgetOfExactType<LiveTickScope>()?.notifier ?? _fallbackTick;
+    return ListenableBuilder(
+      listenable: tick,
+      builder: (context, _) => _buildCanvasContent(),
+    );
+  }
+
+  Widget _buildCanvasContent() {
     final region = parseSfc(widget.program.sfcSteps, widget.program.sfcTransitions);
     final layout = layoutSfcRegion(region);
 
@@ -149,59 +209,88 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
   }
 
   Widget _stepBox(SfcStep step) {
-    final accent = step.isInitial ? Colors.greenAccent : Colors.purpleAccent;
+    final active = _isActive(step);
+    final dim = _online && !active;
+    final accent = active ? _kEnergized : (step.isInitial ? Colors.greenAccent : Colors.purpleAccent);
     return GestureDetector(
       onTap: () => _showStepEditor(step),
-      child: Container(
-        decoration: BoxDecoration(
-          color: const Color(0xFF1E293B),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: accent, width: 2),
-          boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 6)],
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                  decoration: BoxDecoration(
-                    color: (step.isInitial ? Colors.green : Colors.purple).withValues(alpha: 0.3),
-                    borderRadius: BorderRadius.circular(3),
+      child: Opacity(
+        opacity: dim ? 0.45 : 1.0,
+        child: Container(
+          decoration: BoxDecoration(
+            color: active ? const Color(0xFF14361F) : const Color(0xFF1E293B),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: accent, width: active ? 3 : 2),
+            boxShadow: active
+                ? [BoxShadow(color: _kEnergized.withValues(alpha: 0.6), blurRadius: 16, spreadRadius: 1)]
+                : const [BoxShadow(color: Colors.black45, blurRadius: 6)],
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: (step.isInitial ? Colors.green : Colors.purple).withValues(alpha: 0.3),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                    child: Text(
+                      step.isInitial ? 'INIT' : 'STEP',
+                      style: TextStyle(fontWeight: FontWeight.bold, color: accent, fontSize: 8),
+                    ),
                   ),
-                  child: Text(
-                    step.isInitial ? 'INIT' : 'STEP',
-                    style: TextStyle(fontWeight: FontWeight.bold, color: accent, fontSize: 8),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      step.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+                    ),
                   ),
+                  const Icon(Icons.edit, size: 11, color: Colors.white38),
+                ],
+              ),
+              if (active) ...[
+                const SizedBox(height: 2),
+                Row(
+                  children: [
+                    const Icon(Icons.timer, size: 9, color: _kEnergized),
+                    const SizedBox(width: 3),
+                    Flexible(
+                      child: Text(
+                        _stepTLabel(step),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 8,
+                          fontWeight: FontWeight.bold,
+                          color: _kEnergized,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: Text(
-                    step.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
-                  ),
-                ),
-                const Icon(Icons.edit, size: 11, color: Colors.white38),
               ],
-            ),
-            const SizedBox(height: 3),
-            Expanded(
-              child: Text(
-                step.actionSt.isEmpty ? '(no action)' : step.actionSt,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 9,
-                  color: step.actionSt.isEmpty ? Colors.white38 : Colors.cyanAccent,
+              const SizedBox(height: 3),
+              Expanded(
+                child: Text(
+                  step.actionSt.isEmpty ? '(no action)' : step.actionSt,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 9,
+                    color: step.actionSt.isEmpty ? Colors.white38 : Colors.cyanAccent,
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -519,6 +608,25 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
         backgroundColor: const Color(0xFF1E293B),
         toolbarHeight: short ? 46 : null,
         actions: [
+          if (_online)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Center(
+                child: Text(
+                  widget.scanRunning ? 'LIVE' : 'FROZEN',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: widget.scanRunning ? Colors.greenAccent : Colors.amberAccent,
+                  ),
+                ),
+              ),
+            ),
+          IconButton(
+            icon: Icon(Icons.sensors, color: _online ? Colors.greenAccent : Colors.grey),
+            tooltip: _online ? 'Go Offline (stop live monitor)' : 'Go Online (live monitor)',
+            onPressed: () => setState(() => _online = !_online),
+          ),
           if (!expanded)
             IconButton(
               icon: const Icon(Icons.label_important, color: Colors.purpleAccent),
@@ -616,6 +724,30 @@ class _SfcPainter extends CustomPainter {
     }
   }
 
+  // The painter draws only the connector segments, so it need only repaint when
+  // the connector geometry actually changes (a structural edit). A fresh
+  // `SfcLayout` is built every `build()` — comparing by reference (the previous
+  // `oldDelegate.layout != layout`) reported "changed" every time, forcing a
+  // wasteful repaint on every rebuild (including per-tick online rebuilds where
+  // the connectors are identical). Compare the painted fields instead.
   @override
-  bool shouldRepaint(covariant _SfcPainter oldDelegate) => oldDelegate.layout != layout;
+  bool shouldRepaint(covariant _SfcPainter oldDelegate) {
+    final a = oldDelegate.layout;
+    final b = layout;
+    if (a.width != b.width || a.height != b.height || a.conns.length != b.conns.length) {
+      return true;
+    }
+    for (var i = 0; i < a.conns.length; i++) {
+      final c1 = a.conns[i];
+      final c2 = b.conns[i];
+      if (c1.x1 != c2.x1 ||
+          c1.y1 != c2.y1 ||
+          c1.x2 != c2.x2 ||
+          c1.y2 != c2.y2 ||
+          c1.doubleBar != c2.doubleBar) {
+        return true;
+      }
+    }
+    return false;
+  }
 }

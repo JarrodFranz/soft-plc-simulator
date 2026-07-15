@@ -2678,6 +2678,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
           currentProject: _activeProject,
           program: prog,
           onProgramUpdated: _markDirtyAndAutosave,
+          sfcRuntime: _scan.sfc,
+          scanRunning: isRunning && !_faulted,
         );
       } else {
         return StEditorScreen(

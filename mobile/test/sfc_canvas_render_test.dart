@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/sfc_exec.dart';
 import 'package:soft_plc_mobile/screens/sfc_editor_screen.dart';
 import 'package:soft_plc_mobile/widgets/tag_autocomplete_field.dart';
 
@@ -75,6 +76,8 @@ Future<void> _tapAddParallel(WidgetTester tester, PlcProgram prog) async {
       currentProject: _projectFor(prog),
       program: prog,
       onProgramUpdated: () {},
+      sfcRuntime: SfcRuntime(),
+      scanRunning: false,
     ),
   ));
   await tester.pumpAndSettle();
@@ -99,6 +102,8 @@ void main() {
         currentProject: _projectFor(prog),
         program: prog,
         onProgramUpdated: () {},
+        sfcRuntime: SfcRuntime(),
+        scanRunning: false,
       ),
     ));
     await tester.pumpAndSettle();
@@ -146,6 +151,8 @@ void main() {
         currentProject: _projectFor(prog),
         program: prog,
         onProgramUpdated: () {},
+        sfcRuntime: SfcRuntime(),
+        scanRunning: false,
       ),
     ));
     await tester.pumpAndSettle();

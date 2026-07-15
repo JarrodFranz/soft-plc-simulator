@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/sfc_exec.dart';
 import 'package:soft_plc_mobile/screens/sfc_editor_screen.dart';
 
 // Migrated from the old vertical-list renderer to the 2D canvas (SFC-v2).
@@ -40,6 +41,8 @@ void main() {
         currentProject: proj,
         program: prog,
         onProgramUpdated: () {},
+        sfcRuntime: SfcRuntime(),
+        scanRunning: false,
       ),
     ));
     await tester.pumpAndSettle();
@@ -88,6 +91,8 @@ void main() {
         currentProject: proj,
         program: prog,
         onProgramUpdated: () {},
+        sfcRuntime: SfcRuntime(),
+        scanRunning: false,
       ),
     ));
     await tester.pumpAndSettle();
@@ -126,6 +131,8 @@ void main() {
         currentProject: proj,
         program: prog,
         onProgramUpdated: () {},
+        sfcRuntime: SfcRuntime(),
+        scanRunning: false,
       ),
     ));
     await tester.pumpAndSettle();

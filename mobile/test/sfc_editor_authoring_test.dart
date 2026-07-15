@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/sfc_exec.dart';
 import 'package:soft_plc_mobile/screens/sfc_editor_screen.dart';
 
 // Migrated from the old vertical-list authoring controls to the 2D canvas
@@ -33,7 +34,7 @@ void main() {
       tags: [], structDefs: [], programs: [prog], tasks: [], hmis: [],
     );
     await tester.pumpWidget(MaterialApp(
-      home: SfcEditorScreen(currentProject: proj, program: prog, onProgramUpdated: () {}),
+      home: SfcEditorScreen(currentProject: proj, program: prog, onProgramUpdated: () {}, sfcRuntime: SfcRuntime(), scanRunning: false),
     ));
     await tester.pumpAndSettle();
 
@@ -60,7 +61,7 @@ void main() {
       tags: [], structDefs: [], programs: [prog], tasks: [], hmis: [],
     );
     await tester.pumpWidget(MaterialApp(
-      home: SfcEditorScreen(currentProject: proj, program: prog, onProgramUpdated: () {}),
+      home: SfcEditorScreen(currentProject: proj, program: prog, onProgramUpdated: () {}, sfcRuntime: SfcRuntime(), scanRunning: false),
     ));
     await tester.pumpAndSettle();
 
@@ -86,7 +87,7 @@ void main() {
       tags: [], structDefs: [], programs: [prog], tasks: [], hmis: [],
     );
     await tester.pumpWidget(MaterialApp(
-      home: SfcEditorScreen(currentProject: proj, program: prog, onProgramUpdated: () {}),
+      home: SfcEditorScreen(currentProject: proj, program: prog, onProgramUpdated: () {}, sfcRuntime: SfcRuntime(), scanRunning: false),
     ));
     await tester.pumpAndSettle();
 
