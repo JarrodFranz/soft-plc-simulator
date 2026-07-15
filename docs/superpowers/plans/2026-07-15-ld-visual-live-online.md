@@ -44,7 +44,7 @@ Create `mobile/test/ld_layout_geometry_test.dart`:
 
 ```dart
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mobile/models/ld_layout.dart';
+import 'package:soft_plc_mobile/models/ld_layout.dart';
 
 void main() {
   test('kLdGapHalf is half the inter-cell gap', () {
@@ -121,10 +121,10 @@ Create `mobile/test/ld_branch_render_test.dart`. This is a smoke/overflow test â
 ```dart
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mobile/data/default_projects.dart';
-import 'package:mobile/models/project_model.dart';
-import 'package:mobile/screens/ld_editor_screen.dart';
-import 'package:mobile/widgets/live_tick.dart';
+import 'package:soft_plc_mobile/data/default_projects.dart';
+import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/screens/ld_editor_screen.dart';
+import 'package:soft_plc_mobile/widgets/live_tick.dart';
 
 void main() {
   testWidgets('a rung with a parallel branch renders without overflow', (tester) async {
@@ -217,9 +217,9 @@ Create `mobile/test/ld_symbol_alignment_test.dart`:
 ```dart
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mobile/data/default_projects.dart';
-import 'package:mobile/screens/ld_editor_screen.dart';
-import 'package:mobile/widgets/live_tick.dart';
+import 'package:soft_plc_mobile/data/default_projects.dart';
+import 'package:soft_plc_mobile/screens/ld_editor_screen.dart';
+import 'package:soft_plc_mobile/widgets/live_tick.dart';
 
 void main() {
   testWidgets('contact symbol glyph is vertically centred on the cell', (tester) async {
@@ -337,9 +337,9 @@ Create `mobile/test/ld_monitor_test.dart`:
 
 ```dart
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mobile/models/project_model.dart';
-import 'package:mobile/models/ld_exec.dart';
-import 'package:mobile/models/ld_monitor.dart';
+import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/ld_exec.dart';
+import 'package:soft_plc_mobile/models/ld_monitor.dart';
 
 PlcProject _projWithSeries({required bool aVal}) {
   final proj = PlcProject(
@@ -508,8 +508,8 @@ Create `mobile/test/scan_ld_monitor_test.dart`:
 
 ```dart
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mobile/models/project_model.dart';
-import 'package:mobile/screens/scan_tick.dart';
+import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/screens/scan_tick.dart';
 
 void main() {
   test('runScanTick populates the LD monitor for a running LD program', () {
@@ -622,10 +622,10 @@ Create `mobile/test/ld_online_highlight_test.dart`:
 ```dart
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mobile/models/project_model.dart';
-import 'package:mobile/models/ld_monitor.dart';
-import 'package:mobile/screens/ld_editor_screen.dart';
-import 'package:mobile/widgets/live_tick.dart';
+import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/ld_monitor.dart';
+import 'package:soft_plc_mobile/screens/ld_editor_screen.dart';
+import 'package:soft_plc_mobile/widgets/live_tick.dart';
 
 void main() {
   testWidgets('Go-Online toggle appears and can be turned on', (tester) async {
@@ -878,10 +878,10 @@ Create `mobile/test/ld_online_values_test.dart`:
 ```dart
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mobile/models/project_model.dart';
-import 'package:mobile/models/ld_monitor.dart';
-import 'package:mobile/screens/ld_editor_screen.dart';
-import 'package:mobile/widgets/live_tick.dart';
+import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/ld_monitor.dart';
+import 'package:soft_plc_mobile/screens/ld_editor_screen.dart';
+import 'package:soft_plc_mobile/widgets/live_tick.dart';
 
 void main() {
   testWidgets('a TON block shows live ACC/PT when online', (tester) async {
@@ -1011,8 +1011,8 @@ Create `mobile/test/ld_no_persist_test.dart`:
 
 ```dart
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mobile/data/default_projects.dart';
-import 'package:mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/data/default_projects.dart';
+import 'package:soft_plc_mobile/models/project_model.dart';
 
 void main() {
   test('LD monitor / online state add nothing to serialized JSON', () {
