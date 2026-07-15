@@ -55,4 +55,66 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('-| |-'), findsOneWidget);
   });
+
+  testWidgets('Go-Online at 320 width does not overflow (narrow-pane RenderFlex guard)',
+      (tester) async {
+    // Narrowest supported width. A lit node plus a live timer block exercise
+    // both the wire-highlight readout and the block-face live-value readout
+    // (ACC/PT) at once, at the tightest layout budget.
+    tester.view.physicalSize = const Size(320, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final proj = PlcProject(
+      id: 'p', name: 'P', controllerName: 'C',
+      tags: [
+        PlcTag(name: 'A', path: 'A', dataType: 'BOOL', value: true, ioType: 'Internal'),
+        PlcTag(
+          name: 'T1', path: 'T1', dataType: 'TIMER', ioType: 'Internal',
+          value: {'ACC': 1400, 'PRE': 3000, 'EN': true, 'DN': false, 'TT': true},
+        ),
+      ],
+      structDefs: [], programs: [], tasks: [], hmis: [],
+    );
+    final rung = LdRung(rungIndex: 0, comment: '', nodes: [
+      LdNode(id: 'L', kind: LdKind.leftRail),
+      LdNode(id: 'a', kind: LdKind.contact, variable: 'A'),
+      LdNode(id: 'b', kind: LdKind.block, blockType: 'TON', variable: 'T1', presetMs: 3000),
+      LdNode(id: 'R', kind: LdKind.rightRail),
+    ], wires: [
+      LdWire(fromId: 'L', toId: 'a'),
+      LdWire(fromId: 'a', toId: 'b'),
+      LdWire(fromId: 'b', toId: 'R'),
+    ]);
+    final prog = PlcProgram(name: 'Main', language: 'LadderLogic', rungs: [rung]);
+    proj.programs.add(prog);
+
+    final mon = LdMonitor();
+    mon.nodePower[mon.keyFor('Main', 0, 'a')] = true;
+    mon.nodePower[mon.keyFor('Main', 0, 'b')] = true;
+
+    await tester.pumpWidget(MaterialApp(
+      home: LiveTickScope(
+        notifier: LiveTick(),
+        child: LdEditorScreen(
+          currentProject: proj,
+          program: prog,
+          onProgramUpdated: () {},
+          monitor: mon,
+          scanRunning: true,
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    // Turn Go-Online on at this narrow width: no RenderFlex overflow, and the
+    // live ACC readout (block-face) is exercised alongside the ladder.
+    await tester.tap(find.byTooltip('Go Online (live monitor)'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.textContaining('1400'), findsOneWidget);
+    expect(find.text('-| |-'), findsOneWidget);
+  });
 }

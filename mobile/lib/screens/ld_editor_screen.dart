@@ -116,12 +116,17 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           false);
 
   // Formats a live tag/path value for a block-face readout. Numeric leaves
-  // read via `readPath` (ints as-is, doubles to 1 decimal); anything else
-  // (unresolvable path, non-numeric value) falls back to an em dash.
+  // read via `readPath` (ints as-is, doubles to 1 decimal); a BOOL leaf is
+  // shown as '1'/'0' to match the executor's bool->num operand mapping (see
+  // `_operandValue` in ld_exec.dart); anything else (unresolvable path,
+  // non-numeric value) falls back to an em dash.
   String _liveNum(String path) {
     final v = readPath(widget.currentProject, path);
     if (v is num) {
       return v is int ? '$v' : v.toStringAsFixed(1);
+    }
+    if (v is bool) {
+      return v ? '1' : '0';
     }
     return '—';
   }
@@ -580,6 +585,10 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           LdNode(id: '', kind: LdKind.coil, variable: 'Output_Coil'),
         ],
       ));
+      // Guarantees rungIndex == list position even if a prior delete/move left
+      // gaps (see reindexRungs doc) — avoids two rungs aliasing the same
+      // exec/monitor state key.
+      reindexRungs(widget.program);
     });
     widget.onProgramUpdated();
   }
@@ -1625,14 +1634,13 @@ class _LadderPainter extends CustomPainter {
       if (src == null || dst == null) {
         continue;
       }
-      // Live power flow: a wire is energized iff its source node is.
+      // Live power flow: a wire is energized iff its source node is. Offline,
+      // `paint` already carries its initial greenAccent/2.0 values, so there
+      // is nothing to reset here.
       if (s._online) {
         final lit = s._nodeLit(rung, src);
         paint.color = lit ? _LdEditorScreenState._kEnergized : _LdEditorScreenState._kDeEnergized;
         paint.strokeWidth = lit ? 3.0 : 2.0;
-      } else {
-        paint.color = Colors.greenAccent;
-        paint.strokeWidth = 2.0;
       }
       final p1 = s._outPort(rung, src, col, width);
       final p2 = s._inPort(rung, dst, col, width);
