@@ -82,6 +82,32 @@ and nothing new is persisted, since the step/transition graph already
 round-tripped arbitrary branch counts. Documented in
 [`docs/sfc-branching.md`](docs/sfc-branching.md).
 
+**SFC v2: 2D layout + parallel (fork/join) branching (post-ship)** ✅ — the
+SFC editor now draws a real textbook-style 2D chart (step boxes and
+transition **blocks** as distinct elements, alternative branches laid out
+as side-by-side columns, parallel fork/join as double-line bars, nested to
+any depth, with GOTO reference chips for loop-backs and reconvergence)
+instead of the old single flow-ordered list. `SfcTransition` gained three
+additive fields — `kind` (`'single'` / `'parallelFork'` / `'parallelJoin'`),
+`toStepIds`, `fromStepIds` — and `SfcRuntime.active` became a per-program
+**set** of simultaneously-active step ids instead of one token: a fork
+activates every branch head at once, a join waits until every branch tail
+is active before firing, and an alternative divergence keeps its original
+first-true-by-list-order priority. A pure parser (`sfc_region.dart`) turns
+the step/transition graph into a region tree and a pure layout pass
+(`sfc_layout2.dart`) turns that into absolute 2D geometry for the new
+pan/zoom canvas; structured-authoring helpers (`sfc_edit.dart`) add/nest/
+collapse alternative and parallel branches from the step menu without ever
+producing a dangling reference. Go-Online highlighting is parallel-aware
+(every step in the live active set glows, so both branches of an active
+fork light up together) and remains session-only — a project's serialized
+JSON is provably identical whether or not it was ever taken online. Fully
+additive and backward-compatible: a pre-v2 project file (all `single`
+transitions, none of the new keys) loads and round-trips unchanged. The
+old flow-ordered list layout (`sfc_layout.dart`) has been retired now that
+the 2D pipeline fully supersedes it. Documented in
+[`docs/sfc-branching.md`](docs/sfc-branching.md).
+
 ---
 
 ## Phase 3.5: Structured Tag System, Simulated I/O & In-App Execution Engines ✅
