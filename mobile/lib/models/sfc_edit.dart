@@ -121,24 +121,68 @@ SfcTransition? _joinForFork(PlcProgram p, SfcTransition fork) {
   return null;
 }
 
-/// The branch-tail step of the branch that starts at [headId]: follows `single`
-/// edges from [headId] until it reaches a step listed in [join.fromStepIds].
-/// Returns [headId] itself for a single-step branch. Cycle-safe.
-String _branchTail(PlcProgram p, SfcTransition join, String headId) {
-  final seen = <String>{};
-  String cur = headId;
-  while (!seen.contains(cur)) {
-    seen.add(cur);
-    if (join.fromStepIds.contains(cur)) {
-      return cur;
+/// The `parallelJoin` that currently lists [stepId] as one of its branch tails,
+/// or null. A step is a branch tail iff it appears in some join's `fromStepIds`;
+/// this is exactly what the parser (`sfc_region.dart`) keys its branch-walk stop
+/// on, so any mutator that changes a branch tail MUST keep this in sync.
+SfcTransition? _joinWithTail(PlcProgram p, String stepId) {
+  for (final t in p.sfcTransitions) {
+    if (t.kind == 'parallelJoin' && t.fromStepIds.contains(stepId)) {
+      return t;
     }
-    final next = _firstSingleOut(p, cur)?.toStepId;
-    if (next == null) {
-      return cur;
-    }
-    cur = next;
   }
-  return cur;
+  return null;
+}
+
+/// Collects every step id belonging to the branch that starts at [branchHeadId]
+/// of the fork whose matching [join] is given — crossing any NESTED fork/join
+/// structures inside the branch so nothing is left orphaned. Traversal follows
+/// `single` edges, `parallelFork` heads, and `parallelJoin` after-steps for any
+/// NESTED join, but STOPS (inclusively) at the step that is this branch's tail
+/// into [join] (a member of `join.fromStepIds`) so it never crosses into the
+/// join or a sibling branch. When [join] is null the branch is followed to its
+/// dead ends. Cycle-safe.
+Set<String> _branchSubgraph(
+  PlcProgram p,
+  SfcTransition? join,
+  String branchHeadId,
+) {
+  final steps = <String>{};
+  final seen = <String>{};
+  final queue = <String>[branchHeadId];
+
+  while (queue.isNotEmpty) {
+    final s = queue.removeAt(0);
+    if (seen.contains(s)) {
+      continue;
+    }
+    seen.add(s);
+    if (!p.sfcSteps.any((st) => st.id == s)) {
+      continue;
+    }
+    steps.add(s);
+
+    // Boundary: this step is the branch's tail into the OUTER join. Record it
+    // (by inclusion) but do NOT expand past it — that would cross the join into
+    // sibling branches or the after-step.
+    if (join != null && join.fromStepIds.contains(s)) {
+      continue;
+    }
+
+    for (final t in p.sfcTransitions) {
+      if (t.fromStepId == s && t.kind == 'single') {
+        queue.add(t.toStepId);
+      } else if (t.fromStepId == s && t.kind == 'parallelFork') {
+        queue.addAll(t.toStepIds);
+      } else if (t.kind == 'parallelJoin' &&
+          (join == null || t.id != join.id) &&
+          t.fromStepIds.contains(s)) {
+        // Cross a NESTED join: continue from its after-step.
+        queue.add(t.toStepId);
+      }
+    }
+  }
+  return steps;
 }
 
 /// Adds another `single` route out of [atStepId] — an alternative divergence.
@@ -149,6 +193,46 @@ String _branchTail(PlcProgram p, SfcTransition join, String headId) {
 SfcTransition addAlternativeBranch(PlcProgram p, String atStepId) {
   // Capture where the anchor currently flows (its convergence step), if any.
   final mergeId = _firstSingleOut(p, atStepId)?.toStepId;
+
+  // Anchor is a parallel-branch TAIL (no linear successor but listed in a join's
+  // fromStepIds). An unconverged alternative divergence cannot itself be a join
+  // tail, so build a reconverging diamond and hand the join a NEW tail — the
+  // merge step — in place of the anchor, so the invariant (join tails == current
+  // branch tails) holds and the parser walks the whole branch.
+  if (mergeId == null) {
+    final joinTail = _joinWithTail(p, atStepId);
+    if (joinTail != null) {
+      final merge = addSfcStep(p);
+      final altStep = addSfcStep(p);
+      // Original (straight) arm: anchor -> merge.
+      p.sfcTransitions.add(SfcTransition(
+        id: newSfcTransitionId(p),
+        fromStepId: atStepId,
+        toStepId: merge.id,
+        conditionSt: 'TRUE',
+      ));
+      // Alternative arm: anchor -> altStep -> merge.
+      final diverge = SfcTransition(
+        id: newSfcTransitionId(p),
+        fromStepId: atStepId,
+        toStepId: altStep.id,
+        conditionSt: 'TRUE',
+      );
+      p.sfcTransitions.add(diverge);
+      p.sfcTransitions.add(SfcTransition(
+        id: newSfcTransitionId(p),
+        fromStepId: altStep.id,
+        toStepId: merge.id,
+        conditionSt: 'TRUE',
+      ));
+      // The merge step is now the branch's actual tail into the enclosing join.
+      final idx = joinTail.fromStepIds.indexOf(atStepId);
+      if (idx >= 0) {
+        joinTail.fromStepIds[idx] = merge.id;
+      }
+      return diverge;
+    }
+  }
 
   final newStep = addSfcStep(p);
   final diverge = SfcTransition(
@@ -195,6 +279,17 @@ SfcStep addSfcStepAfter(PlcProgram p, String afterStepId) {
       toStepId: newStep.id,
       conditionSt: 'TRUE',
     ));
+    // If the anchor was a parallel-branch TAIL, the appended step is now the
+    // branch's actual tail: hand the enclosing join the new tail id in place of
+    // the anchor so the parser walks the whole branch (invariant: join tails ==
+    // current branch tails) instead of stopping at the stale tail.
+    final joinTail = _joinWithTail(p, afterStepId);
+    if (joinTail != null) {
+      final idx = joinTail.fromStepIds.indexOf(afterStepId);
+      if (idx >= 0) {
+        joinTail.fromStepIds[idx] = newStep.id;
+      }
+    }
   }
   return newStep;
 }
@@ -295,35 +390,52 @@ void deleteParallelBranch(PlcProgram p, String forkTransitionId, String branchHe
   }
   final join = _joinForFork(p, fork);
 
-  // Collect the steps of the branch (head..tail) so they can be deleted.
-  final branchSteps = <String>[];
-  {
-    final seen = <String>{};
-    String cur = branchHeadId;
-    final tail = join != null ? _branchTail(p, join, branchHeadId) : branchHeadId;
-    while (!seen.contains(cur)) {
-      seen.add(cur);
-      branchSteps.add(cur);
-      if (cur == tail) {
+  // Gather the ENTIRE branch subgraph (crossing any nested fork/join) so nested
+  // structure is removed cleanly instead of orphaned.
+  final branchSteps = _branchSubgraph(p, join, branchHeadId);
+
+  // The branch's tail into the OUTER join is the one join tail that lives inside
+  // the branch subgraph (may sit past a nested join, e.g. a nested join's
+  // after-step) — NOT necessarily the branch head.
+  String? branchOuterTail;
+  if (join != null) {
+    for (final id in join.fromStepIds) {
+      if (branchSteps.contains(id)) {
+        branchOuterTail = id;
         break;
       }
-      final next = _firstSingleOut(p, cur)?.toStepId;
-      if (next == null) {
-        break;
-      }
-      cur = next;
     }
   }
-  final branchTailId = branchSteps.isNotEmpty ? branchSteps.last : branchHeadId;
 
-  // Detach the branch from the fork / join sets.
+  // Detach the branch from the fork / join sets. Removing the branch's OUTER
+  // tail (not merely its head) keeps join.fromStepIds consistent.
   fork.toStepIds.remove(branchHeadId);
-  join?.fromStepIds.remove(branchTailId);
-
-  // Remove the branch's steps (and every edge touching them).
-  for (final id in branchSteps) {
-    deleteSfcStep(p, id);
+  if (join != null && branchOuterTail != null) {
+    join.fromStepIds.remove(branchOuterTail);
   }
+
+  // Remove every transition internal to the branch (singles, nested forks and
+  // nested joins), keeping the outer fork/join which are handled explicitly.
+  p.sfcTransitions.removeWhere((t) {
+    if (t.id == fork.id || (join != null && t.id == join.id)) {
+      return false;
+    }
+    switch (t.kind) {
+      case 'single':
+        return branchSteps.contains(t.fromStepId) ||
+            branchSteps.contains(t.toStepId);
+      case 'parallelFork':
+        return branchSteps.contains(t.fromStepId);
+      case 'parallelJoin':
+        return branchSteps.contains(t.toStepId) ||
+            t.fromStepIds.any(branchSteps.contains);
+      default:
+        return false;
+    }
+  });
+
+  // Remove the branch's steps.
+  p.sfcSteps.removeWhere((s) => branchSteps.contains(s.id));
 
   // Collapse when the fork can no longer diverge.
   if (fork.toStepIds.length <= 1) {

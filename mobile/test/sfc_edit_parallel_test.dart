@@ -99,6 +99,25 @@ SfcTransition _forkOf(PlcProgram p) =>
 SfcTransition _joinOf(PlcProgram p) =>
     p.sfcTransitions.firstWhere((t) => t.kind == 'parallelJoin');
 
+/// True when [stepId] appears as a [StepRegion] INSIDE some [ParRegion] branch
+/// of the parsed [root] — i.e. it is reachable within its branch, not stranded
+/// as a top-level trailing orphan leaf.
+bool _stepInSomeParBranch(SfcRegion root, String stepId) {
+  for (final par in _flatten(root).whereType<ParRegion>()) {
+    for (final b in par.branches) {
+      for (final r in b) {
+        final hit = _flatten(r)
+            .whereType<StepRegion>()
+            .any((s) => s.step.id == stepId);
+        if (hit) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 void main() {
   group('addParallelBranch', () {
     test('linear -> creates a fork/join pair with 2 consistent branches', () {
@@ -182,6 +201,33 @@ void main() {
     });
   });
 
+  group('addSfcStepAfter', () {
+    test('on a parallel-branch TAIL keeps the step INSIDE the branch', () {
+      final p = _linear();
+      final fork = addParallelBranch(p, 's1'); // join.fromStepIds == fork heads.
+      final tail = fork.toStepIds.first; // b1: a fresh single-step branch tail.
+
+      final join = _joinOf(p);
+      expect(join.fromStepIds.contains(tail), isTrue);
+
+      final added = addSfcStepAfter(p, tail); // extend that branch: tail -> added.
+
+      // The join now tracks the NEW tail, not the stale one.
+      expect(join.fromStepIds.contains(added.id), isTrue,
+          reason: 'join must adopt the new branch tail');
+      expect(join.fromStepIds.contains(tail), isFalse,
+          reason: 'old tail is no longer a branch tail');
+
+      _assertParseableNoDangling(p);
+
+      // The new step is reachable INSIDE the parallel branch (not orphaned as a
+      // stray trailing box).
+      final root = parseSfc(p.sfcSteps, p.sfcTransitions);
+      expect(_stepInSomeParBranch(root, added.id), isTrue,
+          reason: 'new step must live inside the parallel branch');
+    });
+  });
+
   group('addAlternativeBranch', () {
     test('adds a second single so the step diverges (>= 2 singles)', () {
       final p = _linear();
@@ -200,6 +246,43 @@ void main() {
           .single;
       expect(alt.head.id, 's1');
       expect(alt.branches.length >= 2, isTrue);
+    });
+
+    test('on a parallel-branch TAIL reconverges INSIDE the branch', () {
+      final p = _linear();
+      final fork = addParallelBranch(p, 's1');
+      final tail = fork.toStepIds.first; // b1: branch tail.
+
+      final join = _joinOf(p);
+      expect(join.fromStepIds.contains(tail), isTrue);
+
+      final diverge = addAlternativeBranch(p, tail);
+      final altStepId = diverge.toStepId; // the alternative arm's step.
+
+      // The branch tail became a divergence head with >= 2 single exits.
+      final singlesOut = p.sfcTransitions
+          .where((t) => t.kind == 'single' && t.fromStepId == tail)
+          .toList();
+      expect(singlesOut.length >= 2, isTrue);
+
+      // The join no longer keys on the (now non-tail) anchor; every tail it lists
+      // is a real, current tail step.
+      expect(join.fromStepIds.contains(tail), isFalse);
+      final ids = p.sfcSteps.map((s) => s.id).toSet();
+      for (final tl in join.fromStepIds) {
+        expect(ids.contains(tl), isTrue);
+      }
+
+      _assertParseableNoDangling(p);
+
+      final root = parseSfc(p.sfcSteps, p.sfcTransitions);
+      // The alternative arm is reachable inside the parallel branch, and the
+      // branch tail is now an alternative divergence head.
+      expect(_stepInSomeParBranch(root, altStepId), isTrue);
+      final altHeads =
+          _flatten(root).whereType<AltRegion>().map((a) => a.head.id).toSet();
+      expect(altHeads.contains(tail), isTrue,
+          reason: 'the branch tail must parse as an alternative head');
     });
   });
 
@@ -251,6 +334,65 @@ void main() {
       final all = _flatten(parseSfc(p.sfcSteps, p.sfcTransitions));
       expect(all.whereType<ParRegion>(), isEmpty);
       expect(all.whereType<AltRegion>(), isEmpty);
+    });
+
+    test('deleting a branch that CONTAINS a nested parallel leaves no garbage',
+        () {
+      final p = _linear();
+      final outerFork = addParallelBranch(p, 's1'); // outer fork/join around s1.
+      final victim = outerFork.toStepIds[0]; // branch we will nest into + delete.
+      final survivor = outerFork.toStepIds[1]; // the sibling that must survive.
+
+      // Nest a second fork/join INSIDE the victim branch.
+      addParallelBranch(p, victim);
+
+      // Capture the nested structure's ids so we can assert they are all gone.
+      final innerFork = p.sfcTransitions.firstWhere(
+          (t) => t.kind == 'parallelFork' && t.fromStepId == victim);
+      final outerJoin = p.sfcTransitions.firstWhere((t) =>
+          t.kind == 'parallelJoin' && t.fromStepIds.contains(survivor));
+      // The victim branch's outer tail is the join tail that is NOT the survivor.
+      final victimOuterTail =
+          outerJoin.fromStepIds.firstWhere((id) => id != survivor);
+      final nestedIds = <String>{...innerFork.toStepIds, victimOuterTail};
+
+      _assertParseableNoDangling(p); // sanity: well-formed before delete.
+
+      deleteParallelBranch(p, outerFork.id, victim);
+
+      // Every nested step (and the victim head) is gone — nothing orphaned.
+      final ids = p.sfcSteps.map((s) => s.id).toSet();
+      expect(ids.contains(victim), isFalse);
+      for (final n in nestedIds) {
+        expect(ids.contains(n), isFalse, reason: 'nested id $n must be removed');
+      }
+
+      // Collapsed to a plain sequence: no parallel structure remains at all.
+      expect(p.sfcTransitions.any((t) => t.kind == 'parallelFork'), isFalse);
+      expect(p.sfcTransitions.any((t) => t.kind == 'parallelJoin'), isFalse);
+
+      // The surviving sibling is spliced through to the outer after-step:
+      // s1 -> survivor -> s2.
+      expect(
+        p.sfcTransitions.any((t) =>
+            t.kind == 'single' && t.fromStepId == 's1' && t.toStepId == survivor),
+        isTrue,
+      );
+      expect(
+        p.sfcTransitions.any((t) =>
+            t.kind == 'single' && t.fromStepId == survivor && t.toStepId == 's2'),
+        isTrue,
+      );
+
+      _assertParseableNoDangling(p);
+
+      // No step is stranded: every remaining step is reachable in the tree.
+      final root = parseSfc(p.sfcSteps, p.sfcTransitions);
+      final reached = _flatten(root)
+          .whereType<StepRegion>()
+          .map((s) => s.step.id)
+          .toSet();
+      expect(reached, ids, reason: 'every remaining step must be reachable');
     });
   });
 }
