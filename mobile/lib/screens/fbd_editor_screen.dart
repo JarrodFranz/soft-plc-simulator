@@ -459,11 +459,15 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
   @override
   Widget build(BuildContext context) {
     final expanded = context.isExpanded;
+    final short = context.isShort;
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('${widget.program.name} — Function Block Diagram (FBD) Editor'),
+        title: Text(short
+            ? '${widget.program.name} (FBD)'
+            : '${widget.program.name} — Function Block Diagram (FBD) Editor'),
         backgroundColor: const Color(0xFF1E293B),
+        toolbarHeight: short ? 46 : null,
         actions: [
           IconButton(
             tooltip: 'Auto-arrange blocks',

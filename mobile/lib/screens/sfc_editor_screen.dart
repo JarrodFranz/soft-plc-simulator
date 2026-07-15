@@ -107,11 +107,15 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
   @override
   Widget build(BuildContext context) {
     final expanded = context.isExpanded;
+    final short = context.isShort;
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('${widget.program.name} — Sequential Function Chart (SFC) Editor'),
+        title: Text(short
+            ? '${widget.program.name} (SFC)'
+            : '${widget.program.name} — Sequential Function Chart (SFC) Editor'),
         backgroundColor: const Color(0xFF1E293B),
+        toolbarHeight: short ? 46 : null,
         actions: [
           if (!expanded)
             IconButton(
