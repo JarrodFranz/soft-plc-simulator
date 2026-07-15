@@ -1298,24 +1298,38 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       }
     }
     return Container(
-      alignment: Alignment.center,
       decoration: BoxDecoration(
         color: const Color(0xFF1E293B),
         borderRadius: BorderRadius.circular(6),
         border: Border.all(color: color, width: 1.5),
       ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        mainAxisSize: MainAxisSize.min,
+      child: Stack(
+        alignment: Alignment.center,
         children: [
-          Text(n.variable,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 9, color: color, fontFamily: 'monospace')),
-          const SizedBox(height: 2),
+          // Symbol glyph centred on the cell — the wire (drawn at the cell's
+          // vertical centre) passes through it.
           Text(symbol,
               maxLines: 1,
-              style: TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.bold, fontSize: 14, color: color)),
+              style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                  color: color)),
+          // Tag name captioned just above the glyph.
+          Positioned(
+            top: 4,
+            left: 2,
+            right: 2,
+            child: Text(n.variable,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 9,
+                    color: color,
+                    fontFamily: 'monospace')),
+          ),
         ],
       ),
     );
