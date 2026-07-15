@@ -138,4 +138,49 @@ void main() {
     executeSfcPrograms(p, 100, rt); // B acts
     expect(readPath(p, 'X'), equals(1)); // reached B, not stranded on A
   });
+
+  test('first-true outgoing transition wins by priority', () {
+    final prog = PlcProgram(name: 'M', language: 'SequentialFunctionChart', rungs: []);
+    prog.sfcSteps.addAll([
+      SfcStep(id: 's0', name: 'HOME', isInitial: true),
+      SfcStep(id: 'sx', name: 'X'),
+      SfcStep(id: 'sy', name: 'Y'),
+      SfcStep(id: 'sz', name: 'Z'),
+    ]);
+    // Priority: A -> X, else B -> Y, else TRUE -> Z.
+    prog.sfcTransitions.addAll([
+      SfcTransition(id: 't0', fromStepId: 's0', toStepId: 'sx', conditionSt: 'A'),
+      SfcTransition(id: 't1', fromStepId: 's0', toStepId: 'sy', conditionSt: 'B'),
+      SfcTransition(id: 't2', fromStepId: 's0', toStepId: 'sz', conditionSt: 'TRUE'),
+    ]);
+    final tags = [
+      PlcTag(name: 'A', path: 'A', dataType: 'BOOL', value: false, ioType: 'Internal'),
+      PlcTag(name: 'B', path: 'B', dataType: 'BOOL', value: true, ioType: 'Internal'),
+    ];
+    final proj = _proj(tags, prog);
+    final rt = SfcRuntime();
+    executeSfcPrograms(proj, 100, rt); // A false, B true -> should go to sy
+    expect(rt.activeStepId['M'], 'sy');
+  });
+
+  test('A wins over B when both true (priority order)', () {
+    final prog = PlcProgram(name: 'M', language: 'SequentialFunctionChart', rungs: []);
+    prog.sfcSteps.addAll([
+      SfcStep(id: 's0', name: 'HOME', isInitial: true),
+      SfcStep(id: 'sx', name: 'X'),
+      SfcStep(id: 'sy', name: 'Y'),
+    ]);
+    prog.sfcTransitions.addAll([
+      SfcTransition(id: 't0', fromStepId: 's0', toStepId: 'sx', conditionSt: 'A'),
+      SfcTransition(id: 't1', fromStepId: 's0', toStepId: 'sy', conditionSt: 'B'),
+    ]);
+    final tags = [
+      PlcTag(name: 'A', path: 'A', dataType: 'BOOL', value: true, ioType: 'Internal'),
+      PlcTag(name: 'B', path: 'B', dataType: 'BOOL', value: true, ioType: 'Internal'),
+    ];
+    final proj = _proj(tags, prog);
+    final rt = SfcRuntime();
+    executeSfcPrograms(proj, 100, rt);
+    expect(rt.activeStepId['M'], 'sx'); // A (higher priority) wins
+  });
 }

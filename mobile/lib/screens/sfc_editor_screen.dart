@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
+import '../models/sfc_edit.dart';
+import '../models/sfc_layout.dart';
 import '../ui/responsive.dart';
 
 class SfcEditorScreen extends StatefulWidget {
@@ -42,15 +44,8 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
   }
 
   void _addNewStep() {
-    final idx = widget.program.sfcSteps.length;
-    final newStep = SfcStep(
-      id: 's_$idx',
-      name: 'Step_$idx',
-      actionSt: '// ST Action for Step_$idx\n',
-    );
-
     setState(() {
-      widget.program.sfcSteps.add(newStep);
+      addSfcStep(widget.program);
     });
     widget.onProgramUpdated();
   }
@@ -75,17 +70,25 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
       child: LayoutBuilder(
         builder: (context, constraints) {
           final cardWidth = _cardWidth(constraints.maxWidth);
+          final rows = layoutSfc(widget.program.sfcSteps, widget.program.sfcTransitions);
+          final rowIndexOf = <String, int>{
+            for (var i = 0; i < rows.length; i++) rows[i].step.id: i,
+          };
           return ListView.builder(
             padding: const EdgeInsets.all(24),
-            itemCount: widget.program.sfcSteps.length,
+            itemCount: rows.length,
             itemBuilder: (context, index) {
-              final step = widget.program.sfcSteps[index];
-              final transition = index < widget.program.sfcTransitions.length ? widget.program.sfcTransitions[index] : null;
-
+              final row = rows[index];
               return Column(
                 children: [
-                  _buildSfcStepCard(step, index, cardWidth),
-                  if (transition != null) _buildSfcTransitionGraphic(transition, cardWidth),
+                  _buildSfcStepCard(row.step, cardWidth),
+                  for (final o in row.outgoing)
+                    _buildOutgoing(
+                      o,
+                      cardWidth,
+                      isLoopBack: o.target != null &&
+                          (rowIndexOf[o.target!.id] ?? (1 << 30)) <= index,
+                    ),
                 ],
               );
             },
@@ -182,7 +185,7 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
     );
   }
 
-  Widget _buildSfcStepCard(SfcStep step, int index, double width) {
+  Widget _buildSfcStepCard(SfcStep step, double width) {
     return Container(
       width: width,
       margin: const EdgeInsets.symmetric(vertical: 4),
@@ -213,10 +216,24 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
                 Expanded(child: Text(step.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14))),
                 IconButton(
                   icon: const Icon(Icons.delete, size: 16, color: Colors.redAccent),
+                  tooltip: 'Delete step',
+                  padding: EdgeInsets.zero,
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                   onPressed: () {
-                    setState(() {
-                      widget.program.sfcSteps.removeAt(index);
-                    });
+                    setState(() => deleteSfcStep(widget.program, step.id));
+                    widget.onProgramUpdated();
+                  },
+                ),
+                const SizedBox(width: 4),
+                IconButton(
+                  icon: const Icon(Icons.add_circle_outline, size: 16, color: Colors.purpleAccent),
+                  tooltip: 'Add branch',
+                  padding: EdgeInsets.zero,
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                  onPressed: () {
+                    setState(() => addSfcBranch(widget.program, step.id));
                     widget.onProgramUpdated();
                   },
                 ),
@@ -228,7 +245,7 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
             TextField(
               controller: TextEditingController(text: step.actionSt),
               maxLines: 2,
-              onSubmitted: (val) {
+              onChanged: (val) {
                 step.actionSt = val;
                 widget.onProgramUpdated();
               },
@@ -256,7 +273,7 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
               Expanded(
                 child: TextField(
                   controller: TextEditingController(text: transition.conditionSt),
-                  onSubmitted: (val) {
+                  onChanged: (val) {
                     transition.conditionSt = val;
                     widget.onProgramUpdated();
                   },
@@ -271,6 +288,137 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
           Container(width: 3, height: 16, color: Colors.purpleAccent),
         ],
       ),
+    );
+  }
+
+  Widget _branchControls(SfcTransition t, double width) {
+    final steps = widget.program.sfcSteps;
+    return Row(
+      children: [
+        const Text('→ ', style: TextStyle(color: Colors.amberAccent, fontFamily: 'monospace')),
+        Expanded(
+          // Keyed by step index (not step id) so this stays a
+          // DropdownButton<int>: the shell's SELECT PROJECT selector is a
+          // DropdownButton<String>, and the responsive smoke test locates it
+          // via find.byType(DropdownButton<String>).first — a String-typed
+          // dropdown here (behind the compact Drawer) would shadow it.
+          // Sentinel index -1 = "＋ New step…".
+          child: DropdownButton<int>(
+            isExpanded: true,
+            dropdownColor: const Color(0xFF1E293B),
+            value: () {
+              final i = steps.indexWhere((s) => s.id == t.toStepId);
+              return i >= 0 ? i : null;
+            }(),
+            hint: const Text('(target)', style: TextStyle(color: Colors.grey, fontSize: 12)),
+            items: [
+              for (var i = 0; i < steps.length; i++)
+                DropdownMenuItem(value: i, child: Text(steps[i].name, style: const TextStyle(fontSize: 12))),
+              const DropdownMenuItem(value: -1, child: Text('＋ New step…', style: TextStyle(fontSize: 12, color: Colors.cyanAccent))),
+            ],
+            onChanged: (v) {
+              if (v == null) {
+                return;
+              }
+              setState(() {
+                if (v == -1) {
+                  final s = addSfcStep(widget.program);
+                  t.toStepId = s.id;
+                } else {
+                  t.toStepId = steps[v].id;
+                }
+              });
+              widget.onProgramUpdated();
+            },
+          ),
+        ),
+        IconButton(
+          icon: const Icon(Icons.arrow_upward, size: 16, color: Colors.cyanAccent),
+          tooltip: 'Higher priority',
+          padding: EdgeInsets.zero,
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+          onPressed: () {
+            setState(() => reorderSfcBranch(widget.program, t.id, -1));
+            widget.onProgramUpdated();
+          },
+        ),
+        IconButton(
+          icon: const Icon(Icons.arrow_downward, size: 16, color: Colors.cyanAccent),
+          tooltip: 'Lower priority',
+          padding: EdgeInsets.zero,
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+          onPressed: () {
+            setState(() => reorderSfcBranch(widget.program, t.id, 1));
+            widget.onProgramUpdated();
+          },
+        ),
+        IconButton(
+          icon: const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
+          tooltip: 'Delete branch',
+          padding: EdgeInsets.zero,
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+          onPressed: () {
+            setState(() => deleteSfcTransition(widget.program, t.id));
+            widget.onProgramUpdated();
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildOutgoing(SfcOutgoing o, double width, {required bool isLoopBack}) {
+    final controls = SizedBox(width: width, child: _branchControls(o.transition, width));
+    // The condition editor is the existing transition graphic body.
+    final condition = _buildSfcTransitionGraphic(o.transition, width);
+    if (o.inline) {
+      // vertical connector flows into the next card below
+      return Column(children: [controls, condition]);
+    }
+    // Non-inline: a GOTO reference chip to the target (or "(deleted)").
+    final targetName = o.target?.name ?? '(deleted)';
+    // Deleted target: link_off. Genuine loop-back (target at/above this row):
+    // the loop icon. Forward branch (target below this row): a distinct
+    // forward icon so it isn't mistaken for a loop.
+    final IconData icon;
+    if (o.target == null) {
+      icon = Icons.link_off;
+    } else if (isLoopBack) {
+      icon = Icons.subdirectory_arrow_left;
+    } else {
+      icon = Icons.arrow_forward;
+    }
+    return Column(
+      children: [
+        controls,
+        condition,
+        Container(
+          width: width,
+          margin: const EdgeInsets.only(top: 2, bottom: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E293B),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.6)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 14, color: Colors.amberAccent),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text('GOTO $targetName',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.amberAccent, fontSize: 12, fontFamily: 'monospace')),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
