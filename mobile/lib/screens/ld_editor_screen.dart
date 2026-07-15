@@ -1530,12 +1530,18 @@ class _LadderPainter extends CustomPainter {
       if (src.row == dst.row) {
         path.lineTo(p2.dx, p2.dy);
       } else if (dst.row > src.row) {
-        // going into a deeper branch lane: vertical at source's right boundary
-        path.lineTo(p1.dx, p2.dy);
+        // Descending into a deeper branch lane: riser centred in the gap
+        // BEFORE the branch element (the destination).
+        final riserX = ldRiserXBefore(col[dst.id] ?? 0);
+        path.lineTo(riserX, p1.dy);
+        path.lineTo(riserX, p2.dy);
         path.lineTo(p2.dx, p2.dy);
       } else {
-        // returning to a shallower lane: vertical at destination's left boundary
-        path.lineTo(p2.dx, p1.dy);
+        // Returning to a shallower lane: riser centred in the gap AFTER the
+        // branch element (the source).
+        final riserX = ldRiserXAfter(col[src.id] ?? 0);
+        path.lineTo(riserX, p1.dy);
+        path.lineTo(riserX, p2.dy);
         path.lineTo(p2.dx, p2.dy);
       }
       canvas.drawPath(path, paint);
