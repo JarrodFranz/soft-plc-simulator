@@ -1,5 +1,6 @@
 import 'project_model.dart';
 import 'tag_resolver.dart';
+import 'valve_curve.dart';
 
 /// Per-rule timing state carried across scans.
 class RuleRuntime {
@@ -119,9 +120,15 @@ int _xorshift32(int x) {
 
 /// Analog gain for [integrate]/[ramp]: scales the per-second rate by
 /// `source / refValue` when a driving tag is set (1.0 — i.e. unscaled — when
-/// [SimRule.sourcePath] is empty or [SimRule.refValue] is zero).
-double _gain(PlcProject p, SimRule r) =>
-    (r.sourcePath.isEmpty || r.refValue == 0) ? 1.0 : _asDouble(readPath(p, r.sourcePath)) / r.refValue;
+/// [SimRule.sourcePath] is empty or [SimRule.refValue] is zero), routed
+/// through the rule's valve characteristic ([SimRule.valveCurve]).
+double _gain(PlcProject p, SimRule r) {
+  if (r.sourcePath.isEmpty || r.refValue == 0) {
+    return 1.0;
+  }
+  final fraction = _asDouble(readPath(p, r.sourcePath)) / r.refValue;
+  return valveCurveGain(r.valveCurve, fraction);
+}
 
 void applySimRules(PlcProject p, List<SimRule> rules, int dtMs, SimRuntime rt) {
   final dt = dtMs / 1000.0;

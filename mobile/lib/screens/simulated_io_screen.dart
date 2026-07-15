@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/tag_resolver.dart';
+import '../models/valve_curve.dart';
 import '../ui/responsive.dart';
 import '../widgets/tag_autocomplete_field.dart';
 
@@ -278,6 +279,25 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
         ),
       ));
       w.add(_numField('= 100% rate at', r.refValue, (v) => r.refValue = v));
+      if (r.sourcePath.isNotEmpty) {
+        w.add(const Padding(
+          padding: EdgeInsets.only(top: 10, bottom: 2),
+          child: Text('Valve characteristic', style: TextStyle(fontSize: 11, color: Colors.amberAccent)),
+        ));
+        w.add(DropdownButtonFormField<String>(
+          initialValue: (r.valveCurve == kValveEqualPercentage || r.valveCurve == kValveQuickOpening)
+              ? r.valveCurve
+              : kValveLinear,
+          isExpanded: true,
+          decoration: const InputDecoration(isDense: true),
+          items: const [
+            DropdownMenuItem(value: kValveLinear, child: Text('Linear', style: TextStyle(fontSize: 12))),
+            DropdownMenuItem(value: kValveEqualPercentage, child: Text('Equal-percentage', style: TextStyle(fontSize: 12))),
+            DropdownMenuItem(value: kValveQuickOpening, child: Text('Quick-opening', style: TextStyle(fontSize: 12))),
+          ],
+          onChanged: (v) => setDlg(() => r.valveCurve = v ?? kValveLinear),
+        ));
+      }
     }
     if (r.behavior == 'firstOrderLag') {
       w.add(_numField('Time constant τ (seconds)', r.tauSec, (v) => r.tauSec = v));

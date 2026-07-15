@@ -32,7 +32,7 @@ The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators
   - **Output & Display Components**: `LedIndicatorLight` (BOOL pilot lights), `DigitalGaugeDisplay` (progress gauges), `StatusPillDisplay` (value pills), `TankGraphicDisplay` (vessel liquid level graphics), `TrendChartDisplay` (multi-pen historical trend chart).
   - **Grid Column Resizer**: Snap width controls (`1 Col`, `2 Col`, `3 Col`, `4 Col`).
 - **Simulated I/O Rules Engine**:
-  - Data-driven, editable input behaviours in a dedicated **Simulated I/O** screen: `pulse`, `ramp`, `integrate`, `delayedSet`, and `setWhileCondition`, each gated by AND-combined conditions (literal or tag-vs-tag comparisons) with **per-second rates** independent of scan speed. Photo eyes blip while the belt runs, tanks fill while valves open, temperatures drift — all visible and tunable, and manual forcing always wins.
+  - Data-driven, editable input behaviours in a dedicated **Simulated I/O** screen: `pulse`, `ramp`, `integrate`, `delayedSet`, and `setWhileCondition`, each gated by AND-combined conditions (literal or tag-vs-tag comparisons) with **per-second rates** independent of scan speed. Photo eyes blip while the belt runs, tanks fill while valves open, temperatures drift — all visible and tunable, and manual forcing always wins. An `integrate`/`ramp` rule driven by an actuator tag can also pick a **valve characteristic** (linear/equal-percentage/quick-opening) shaping how the actuator's position maps onto rate — see `docs/valve-curves.md`.
 - **Toggleable Side Dock Tag Inspector**:
   - Searchable tag matrix with live values, quality flags, engineering units, and manual value forcing controls accessible right on the HMI screen.
 - **Tag Historian & Trend Charts**:
