@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
+import '../models/sfc_edit.dart';
 import '../models/sfc_layout.dart';
 import '../ui/responsive.dart';
 
@@ -222,10 +223,24 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
                 Expanded(child: Text(step.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14))),
                 IconButton(
                   icon: const Icon(Icons.delete, size: 16, color: Colors.redAccent),
+                  tooltip: 'Delete step',
+                  padding: EdgeInsets.zero,
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                   onPressed: () {
-                    setState(() {
-                      widget.program.sfcSteps.removeWhere((s) => s.id == step.id);
-                    });
+                    setState(() => deleteSfcStep(widget.program, step.id));
+                    widget.onProgramUpdated();
+                  },
+                ),
+                const SizedBox(width: 4),
+                IconButton(
+                  icon: const Icon(Icons.add_circle_outline, size: 16, color: Colors.purpleAccent),
+                  tooltip: 'Add branch',
+                  padding: EdgeInsets.zero,
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                  onPressed: () {
+                    setState(() => addSfcBranch(widget.program, step.id));
                     widget.onProgramUpdated();
                   },
                 ),
@@ -283,11 +298,91 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
     );
   }
 
+  Widget _branchControls(SfcTransition t, double width) {
+    final steps = widget.program.sfcSteps;
+    return Row(
+      children: [
+        const Text('→ ', style: TextStyle(color: Colors.amberAccent, fontFamily: 'monospace')),
+        Expanded(
+          // Keyed by step index (not step id) so this stays a
+          // DropdownButton<int>: the shell's SELECT PROJECT selector is a
+          // DropdownButton<String>, and the responsive smoke test locates it
+          // via find.byType(DropdownButton<String>).first — a String-typed
+          // dropdown here (behind the compact Drawer) would shadow it.
+          // Sentinel index -1 = "＋ New step…".
+          child: DropdownButton<int>(
+            isExpanded: true,
+            dropdownColor: const Color(0xFF1E293B),
+            value: () {
+              final i = steps.indexWhere((s) => s.id == t.toStepId);
+              return i >= 0 ? i : null;
+            }(),
+            hint: const Text('(target)', style: TextStyle(color: Colors.grey, fontSize: 12)),
+            items: [
+              for (var i = 0; i < steps.length; i++)
+                DropdownMenuItem(value: i, child: Text(steps[i].name, style: const TextStyle(fontSize: 12))),
+              const DropdownMenuItem(value: -1, child: Text('＋ New step…', style: TextStyle(fontSize: 12, color: Colors.cyanAccent))),
+            ],
+            onChanged: (v) {
+              if (v == null) {
+                return;
+              }
+              setState(() {
+                if (v == -1) {
+                  final s = addSfcStep(widget.program);
+                  t.toStepId = s.id;
+                } else {
+                  t.toStepId = steps[v].id;
+                }
+              });
+              widget.onProgramUpdated();
+            },
+          ),
+        ),
+        IconButton(
+          icon: const Icon(Icons.arrow_upward, size: 16, color: Colors.cyanAccent),
+          tooltip: 'Higher priority',
+          padding: EdgeInsets.zero,
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+          onPressed: () {
+            setState(() => reorderSfcBranch(widget.program, t.id, -1));
+            widget.onProgramUpdated();
+          },
+        ),
+        IconButton(
+          icon: const Icon(Icons.arrow_downward, size: 16, color: Colors.cyanAccent),
+          tooltip: 'Lower priority',
+          padding: EdgeInsets.zero,
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+          onPressed: () {
+            setState(() => reorderSfcBranch(widget.program, t.id, 1));
+            widget.onProgramUpdated();
+          },
+        ),
+        IconButton(
+          icon: const Icon(Icons.delete_outline, size: 16, color: Colors.redAccent),
+          tooltip: 'Delete branch',
+          padding: EdgeInsets.zero,
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+          onPressed: () {
+            setState(() => deleteSfcTransition(widget.program, t.id));
+            widget.onProgramUpdated();
+          },
+        ),
+      ],
+    );
+  }
+
   Widget _buildOutgoing(SfcOutgoing o, double width, {required bool isLoopBack}) {
+    final controls = SizedBox(width: width, child: _branchControls(o.transition, width));
     // The condition editor is the existing transition graphic body.
     final condition = _buildSfcTransitionGraphic(o.transition, width);
     if (o.inline) {
-      return condition; // vertical connector flows into the next card below
+      // vertical connector flows into the next card below
+      return Column(children: [controls, condition]);
     }
     // Non-inline: a GOTO reference chip to the target (or "(deleted)").
     final targetName = o.target?.name ?? '(deleted)';
@@ -304,6 +399,7 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
     }
     return Column(
       children: [
+        controls,
         condition,
         Container(
           width: width,
