@@ -109,7 +109,19 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
   static const Color _kEnergized = Colors.greenAccent;
   static const Color _kDeEnergized = Color(0xFF475569); // slate-600
 
+  /// Element-face highlight: lit when the element is itself true (a contact
+  /// conducting, a coil/timer/counter energized-active, a compare true) —
+  /// decoupled from upstream power, so a true element lights even if no power
+  /// reaches it.
   bool _nodeLit(LdRung rung, LdNode n) =>
+      _online &&
+      (widget.monitor.nodeTrue[
+              widget.monitor.keyFor(widget.program.name, rung.rungIndex, n.id)] ??
+          false);
+
+  /// Wire energization: whether power actually flows out of [n] (drives the
+  /// wire colour, distinct from the element-face highlight).
+  bool _nodePowered(LdRung rung, LdNode n) =>
       _online &&
       (widget.monitor.nodePower[
               widget.monitor.keyFor(widget.program.name, rung.rungIndex, n.id)] ??
@@ -1634,11 +1646,12 @@ class _LadderPainter extends CustomPainter {
       if (src == null || dst == null) {
         continue;
       }
-      // Live power flow: a wire is energized iff its source node is. Offline,
+      // Live power flow: a wire is energized iff power actually flows out of
+      // its source node (nodePower, not the element-face true-state). Offline,
       // `paint` already carries its initial greenAccent/2.0 values, so there
       // is nothing to reset here.
       if (s._online) {
-        final lit = s._nodeLit(rung, src);
+        final lit = s._nodePowered(rung, src);
         paint.color = lit ? _LdEditorScreenState._kEnergized : _LdEditorScreenState._kDeEnergized;
         paint.strokeWidth = lit ? 3.0 : 2.0;
       }

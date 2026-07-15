@@ -82,6 +82,11 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
   final ordered = [...rung.nodes]
     ..sort((a, b) => (col[a.id] ?? 0).compareTo(col[b.id] ?? 0));
   final power = <String, bool>{};
+  // The element's OWN evaluated true-state (decoupled from upstream power): a
+  // contact's conducting condition, a coil/timer/counter's energized-active
+  // state, a compare block's result. Drives the online element highlight;
+  // `power` (power flow) still drives the wire colour.
+  final elemTrue = <String, bool>{};
 
   bool inputPower(LdNode n) {
     bool any = false;
@@ -97,9 +102,11 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
     switch (n.kind) {
       case LdKind.leftRail:
         power[n.id] = true;
+        elemTrue[n.id] = true;
         break;
       case LdKind.rightRail:
         power[n.id] = inputPower(n);
+        elemTrue[n.id] = power[n.id]!;
         break;
       case LdKind.contact:
         final inP = inputPower(n);
@@ -122,10 +129,12 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
             cond = val;
         }
         power[n.id] = inP && cond;
+        elemTrue[n.id] = cond; // glow when this contact is conducting
         break;
       case LdKind.coil:
         final inP = inputPower(n);
         power[n.id] = inP;
+        elemTrue[n.id] = inP; // glow when this coil is energized
         final key = '$progName|${rung.rungIndex}|${n.id}';
         final prevP = rt.prevBool[key] ?? inP;
         rt.prevBool[key] = inP;
@@ -186,6 +195,7 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
               res = a != b;
           }
           power[n.id] = inP && res;
+          elemTrue[n.id] = res; // glow when the comparison is true
           break;
         }
 
@@ -216,6 +226,7 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
             write(n.variable, outVal);
           }
           power[n.id] = inP;
+          elemTrue[n.id] = inP; // glow while the math block executes
           break;
         }
 
@@ -242,6 +253,7 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
           write('$base.DN', q);
           write('$base.TT', q);
           power[n.id] = q;
+          elemTrue[n.id] = inP; // glow while the pulse timer is triggered
           break;
         }
 
@@ -263,6 +275,7 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
           write('$base.QU', qu);
           write('$base.R', reset);
           power[n.id] = qu;
+          elemTrue[n.id] = inP; // glow while the counter is enabled
           break;
         }
 
@@ -294,6 +307,7 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
           write('$base.QD', qd);
           write('$base.R', reset);
           power[n.id] = qd;
+          elemTrue[n.id] = inP; // glow while the counter is enabled
           break;
         }
 
@@ -326,6 +340,7 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
           write('$base.QD', qd);
           write('$base.R', reset);
           power[n.id] = qu;
+          elemTrue[n.id] = inP; // glow while the up/down counter is enabled
           break;
         }
 
@@ -361,19 +376,22 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
         write('$base.DN', dn);
         write('$base.TT', n.blockType == 'TOF' ? (!inP && dn) : (inP && !dn));
         power[n.id] = dn; // block output (Q) feeds downstream elements
+        elemTrue[n.id] = inP; // glow while the timer is enabled/counting
         break;
       case LdKind.link:
         // Empty branch placeholder: open (no power), writes nothing. A
         // guided-editing scaffold until filled with a real element.
         power[n.id] = false;
+        elemTrue[n.id] = false;
         break;
     }
   }
 
   if (monitor != null) {
     for (final n in rung.nodes) {
-      monitor.nodePower[monitor.keyFor(progName, rung.rungIndex, n.id)] =
-          power[n.id] ?? false;
+      final k = monitor.keyFor(progName, rung.rungIndex, n.id);
+      monitor.nodePower[k] = power[n.id] ?? false;
+      monitor.nodeTrue[k] = elemTrue[n.id] ?? (power[n.id] ?? false);
     }
   }
 }
