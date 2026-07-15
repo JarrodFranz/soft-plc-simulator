@@ -62,6 +62,26 @@ last live state instead of going blank. Nothing is persisted — guarded by a
 dedicated round-trip test asserting no `nodePower`/`online` key ever reaches
 serialized project JSON. Documented in [`docs/ld-editor.md`](docs/ld-editor.md).
 
+**SFC alternative branching (post-ship)** ✅ — a step in the SFC editor can
+now own multiple ordered outgoing transitions, each with its own editable
+target step and condition; top-to-bottom order is if/else-if priority
+(single-token OR/selection branching, not parallel/AND — the engine picks
+the first true outgoing transition on the one active step, same as
+before). The step card gained an **Add branch** button and, per outgoing,
+a target dropdown (every step plus **"＋ New step…"**), reorder-priority
+controls, and a delete-branch control (`mobile/lib/screens/sfc_editor_screen.dart`,
+`mobile/lib/models/sfc_edit.dart`). Steps now lay out in **flow order**
+from the initial step via a new pure helper (`mobile/lib/models/sfc_layout.dart`);
+a non-inline outgoing renders as a GOTO chip — a loop-back icon for a
+target at/above, a forward-branch icon for a target further down, or
+`(deleted)` for a dangling target. Deleting a step removes every
+transition referencing it in either direction and promotes a new initial
+step if needed. The engine (`sfc_exec.dart`) was **not changed** — it
+already implemented first-true-wins priority over a single active token —
+and nothing new is persisted, since the step/transition graph already
+round-tripped arbitrary branch counts. Documented in
+[`docs/sfc-branching.md`](docs/sfc-branching.md).
+
 ---
 
 ## Phase 3.5: Structured Tag System, Simulated I/O & In-App Execution Engines ✅
