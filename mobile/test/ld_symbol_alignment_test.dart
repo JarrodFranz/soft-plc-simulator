@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/data/default_projects.dart';
+import 'package:soft_plc_mobile/models/ld_monitor.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/screens/ld_editor_screen.dart';
 import 'package:soft_plc_mobile/widgets/live_tick.dart';
@@ -22,6 +23,8 @@ void main() {
           currentProject: proj,
           program: prog,
           onProgramUpdated: () {},
+          monitor: LdMonitor(),
+          scanRunning: false,
         ),
       ),
     ));

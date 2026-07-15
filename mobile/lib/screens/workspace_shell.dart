@@ -2664,6 +2664,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
           currentProject: _activeProject,
           program: prog,
           onProgramUpdated: _markDirtyAndAutosave,
+          monitor: _scan.ldMonitor,
+          scanRunning: isRunning && !_faulted,
         );
       } else if (prog.language == 'FunctionBlockDiagram') {
         return FbdEditorScreen(

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/main.dart';
 import 'package:soft_plc_mobile/data/default_projects.dart';
+import 'package:soft_plc_mobile/models/ld_monitor.dart';
 import 'package:soft_plc_mobile/screens/ld_editor_screen.dart';
 
 // The app is a desktop/tablet-width tool; pump at a realistic surface so the
@@ -34,6 +35,8 @@ void main() {
         currentProject: project,
         program: program,
         onProgramUpdated: () {},
+        monitor: LdMonitor(),
+        scanRunning: false,
       ),
     ));
     await tester.pump();

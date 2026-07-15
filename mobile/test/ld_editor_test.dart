@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/ld_graph.dart';
+import 'package:soft_plc_mobile/models/ld_monitor.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/screens/ld_editor_screen.dart';
 import 'support/responsive_test_utils.dart';
@@ -47,6 +48,8 @@ Widget _app(PlcProgram program) {
       currentProject: project,
       program: program,
       onProgramUpdated: () {},
+      monitor: LdMonitor(),
+      scanRunning: false,
     ),
   );
 }
