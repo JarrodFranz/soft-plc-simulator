@@ -1354,7 +1354,18 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
   }
 
   void _showPenDialog(TrendPen? existing) {
-    final options = scalarLeaves(widget.currentProject).map((l) => l.path).toList();
+    // Tag paths already claimed by OTHER pens — a tag may only be historized
+    // by one pen (buffers are keyed by tag path). The pen being edited keeps
+    // its own tag available.
+    final taken = widget.currentProject.trends
+        .where((p) => p != existing)
+        .map((p) => p.tagPath)
+        .toSet();
+    final options = scalarLeaves(widget.currentProject)
+        .map((l) => l.path)
+        .where((path) => !taken.contains(path))
+        .toList();
+    String? error;
     String tagPath = existing?.tagPath ?? '';
     String color = existing?.color ?? 'cyan';
     int intervalMs = existing?.sampleIntervalMs ?? 250;
@@ -1416,17 +1427,29 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                 keyboardType: TextInputType.number,
                 decoration: InputDecoration(labelText: mode == 'time' ? 'Window (seconds)' : 'Max points'),
               ),
+              if (error != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: Text(error!, style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
+                ),
             ]),
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
             ElevatedButton(
               onPressed: () {
+                final chosen = tagPath.trim();
+                if (chosen.isEmpty || taken.contains(chosen)) {
+                  setDlg(() => error = chosen.isEmpty
+                      ? 'Choose a tag to historize.'
+                      : 'A pen already exists for "$chosen".');
+                  return;
+                }
                 final iv = int.tryParse(intervalCtrl.text) ?? 250;
                 final val = int.tryParse(valueCtrl.text) ?? 0;
                 setState(() {
-                  final target = existing ?? TrendPen(tagPath: tagPath);
-                  target.tagPath = tagPath;
+                  final target = existing ?? TrendPen(tagPath: chosen);
+                  target.tagPath = chosen;
                   target.color = color;
                   target.sampleIntervalMs = iv < 50 ? 50 : iv;
                   target.retentionMode = mode;
