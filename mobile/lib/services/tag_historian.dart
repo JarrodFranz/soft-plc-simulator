@@ -52,16 +52,26 @@ class TagHistorian {
     }
   }
 
+  // Trims leading (oldest) samples in a SINGLE `removeRange` shift rather than
+  // per-element `removeAt(0)` calls. Samples are always appended in increasing
+  // `t` order, so the elements to drop are a contiguous leading run; removing
+  // them one at a time is O(n) per removal (each shifts the whole tail), which
+  // in steady state costs O(n) every sample. Computing the drop count and doing
+  // one `removeRange(0, drop)` is a single O(n) shift instead.
   void _trim(List<TrendSample> buf, TrendPenLike p, int nowMs) {
     if (p.retentionMode == 'points') {
       final maxPts = p.maxPoints < 2 ? 2 : p.maxPoints;
-      while (buf.length > maxPts) {
-        buf.removeAt(0);
+      if (buf.length > maxPts) {
+        buf.removeRange(0, buf.length - maxPts);
       }
     } else {
       final cutoff = nowMs - (p.windowMs < 1000 ? 1000 : p.windowMs);
-      while (buf.isNotEmpty && buf.first.t < cutoff) {
-        buf.removeAt(0);
+      var drop = 0;
+      while (drop < buf.length && buf[drop].t < cutoff) {
+        drop++;
+      }
+      if (drop > 0) {
+        buf.removeRange(0, drop);
       }
     }
   }
