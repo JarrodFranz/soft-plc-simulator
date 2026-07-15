@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'project_model.dart';
 import 'ld_graph.dart';
+import 'ld_monitor.dart';
 import 'tag_resolver.dart';
 
 /// Prev-scan state for edge contacts and pulse coils, keyed by
@@ -52,7 +53,8 @@ double _operandValue(PlcProject p, String s) {
 
 /// Executes every LadderLogic program in [p], rungs top-to-bottom, once.
 /// Writes are immediately visible to later rungs (seal-in works).
-void executeLdPrograms(PlcProject p, int dtMs, LdExecRuntime rt, {Set<String>? only, Set<String>? readOnly}) {
+void executeLdPrograms(PlcProject p, int dtMs, LdExecRuntime rt,
+    {Set<String>? only, Set<String>? readOnly, LdMonitor? monitor}) {
   for (final prog in p.programs) {
     if (prog.language != 'LadderLogic') {
       continue;
@@ -65,7 +67,7 @@ void executeLdPrograms(PlcProject p, int dtMs, LdExecRuntime rt, {Set<String>? o
         if (readOnly == null || !readOnly.contains(path)) {
           _forceAwareWrite(p, path, v);
         }
-      });
+      }, monitor: monitor);
     }
   }
 }
@@ -74,7 +76,8 @@ void executeLdPrograms(PlcProject p, int dtMs, LdExecRuntime rt, {Set<String>? o
 /// a node's input power is the OR of its inbound wires' source powers, so
 /// series chains AND and parallel convergences OR.
 void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
-    LdExecRuntime rt, void Function(String path, dynamic value) write) {
+    LdExecRuntime rt, void Function(String path, dynamic value) write,
+    {LdMonitor? monitor}) {
   final col = colAssignment(rung);
   final ordered = [...rung.nodes]
     ..sort((a, b) => (col[a.id] ?? 0).compareTo(col[b.id] ?? 0));
@@ -364,6 +367,13 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
         // guided-editing scaffold until filled with a real element.
         power[n.id] = false;
         break;
+    }
+  }
+
+  if (monitor != null) {
+    for (final n in rung.nodes) {
+      monitor.nodePower[monitor.keyFor(progName, rung.rungIndex, n.id)] =
+          power[n.id] ?? false;
     }
   }
 }
