@@ -394,5 +394,59 @@ void main() {
           .toSet();
       expect(reached, ids, reason: 'every remaining step must be reachable');
     });
+
+    test(
+        'BOTH branch heads nested (indeterminate outer join): safe no-op, '
+        'no downstream deletion, survivor not stranded', () {
+      final p = _linear();
+      final fork = addParallelBranch(p, 's1'); // outer fork/join around s1.
+      final b1 = fork.toStepIds[0];
+      final b2 = fork.toStepIds[1];
+
+      // Nest a parallel inside BOTH branch heads of the same fork. In this
+      // shape neither head is left as a plain, directly-listed join tail, so
+      // `_joinForFork` cannot identify the fork's own outer join from either
+      // side.
+      addParallelBranch(p, b1);
+      addParallelBranch(p, b2);
+
+      _assertParseableNoDangling(p); // sanity: well-formed before the delete.
+
+      final stepIdsBefore = p.sfcSteps.map((s) => s.id).toSet();
+      final transitionIdsBefore = p.sfcTransitions.map((t) => t.id).toSet();
+      expect(p.sfcSteps.any((s) => s.id == 's2'), isTrue);
+
+      // Attempting to delete the b1 branch here must NOT sweep the real outer
+      // join (and everything downstream of it, e.g. s2) into the delete set,
+      // and must NOT strand the surviving b2 branch. The outer join is
+      // indeterminate in this shape, so this must be a safe no-op.
+      deleteParallelBranch(p, fork.id, b1);
+
+      // The chart is unchanged: same steps, same transitions.
+      expect(p.sfcSteps.map((s) => s.id).toSet(), stepIdsBefore,
+          reason: 'indeterminate-outer-join delete must not remove/add steps');
+      expect(p.sfcTransitions.map((t) => t.id).toSet(), transitionIdsBefore,
+          reason:
+              'indeterminate-outer-join delete must not remove/add transitions');
+
+      // The outer join's after-step must survive untouched.
+      expect(p.sfcSteps.any((s) => s.id == 's2'), isTrue,
+          reason:
+              's2 is downstream of the real outer join and must not be deleted');
+
+      _assertParseableNoDangling(p);
+
+      // The surviving sibling branch (b2's subgraph) still reaches the fork's
+      // after-step — it must NOT be stranded as a dead end.
+      final root = parseSfc(p.sfcSteps, p.sfcTransitions);
+      final reached = _flatten(root)
+          .whereType<StepRegion>()
+          .map((s) => s.step.id)
+          .toSet();
+      expect(reached.contains('s2'), isTrue,
+          reason: 's2 must still be reachable in the parsed tree');
+      expect(_stepInSomeParBranch(root, b2), isTrue,
+          reason: 'surviving branch b2 must still live inside a parallel region');
+    });
   });
 }

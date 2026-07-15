@@ -390,6 +390,21 @@ void deleteParallelBranch(PlcProgram p, String forkTransitionId, String branchHe
   }
   final join = _joinForFork(p, fork);
 
+  // Safety guard: `_joinForFork` can fail to identify the fork's own outer
+  // join when EVERY OTHER branch of this fork is itself nested (none of them
+  // is left as a plain, directly-listed join tail for the heuristic to find).
+  // In that shape `join == null` does NOT mean "this fork has no join" — the
+  // join still exists in the model, we simply cannot reliably tell which one
+  // it is. Proceeding with a null join would let `_branchSubgraph` cross ANY
+  // join it meets (including the real outer one) and sweep its after-step and
+  // everything downstream into the delete set, while stranding the surviving
+  // sibling branch. Rather than risk that corruption, bail out safely and
+  // leave the chart unchanged — the caller can retry after disambiguating
+  // (e.g. deleting the nested branches first).
+  if (join == null) {
+    return;
+  }
+
   // Gather the ENTIRE branch subgraph (crossing any nested fork/join) so nested
   // structure is removed cleanly instead of orphaned.
   final branchSteps = _branchSubgraph(p, join, branchHeadId);
@@ -398,26 +413,24 @@ void deleteParallelBranch(PlcProgram p, String forkTransitionId, String branchHe
   // the branch subgraph (may sit past a nested join, e.g. a nested join's
   // after-step) — NOT necessarily the branch head.
   String? branchOuterTail;
-  if (join != null) {
-    for (final id in join.fromStepIds) {
-      if (branchSteps.contains(id)) {
-        branchOuterTail = id;
-        break;
-      }
+  for (final id in join.fromStepIds) {
+    if (branchSteps.contains(id)) {
+      branchOuterTail = id;
+      break;
     }
   }
 
   // Detach the branch from the fork / join sets. Removing the branch's OUTER
   // tail (not merely its head) keeps join.fromStepIds consistent.
   fork.toStepIds.remove(branchHeadId);
-  if (join != null && branchOuterTail != null) {
+  if (branchOuterTail != null) {
     join.fromStepIds.remove(branchOuterTail);
   }
 
   // Remove every transition internal to the branch (singles, nested forks and
   // nested joins), keeping the outer fork/join which are handled explicitly.
   p.sfcTransitions.removeWhere((t) {
-    if (t.id == fork.id || (join != null && t.id == join.id)) {
+    if (t.id == fork.id || t.id == join.id) {
       return false;
     }
     switch (t.kind) {
@@ -440,16 +453,13 @@ void deleteParallelBranch(PlcProgram p, String forkTransitionId, String branchHe
   // Collapse when the fork can no longer diverge.
   if (fork.toStepIds.length <= 1) {
     final anchor = fork.fromStepId;
-    final afterId = join?.toStepId ?? '';
+    final afterId = join.toStepId;
     final survivorHead = fork.toStepIds.isNotEmpty ? fork.toStepIds.first : null;
-    final survivorTail = (join != null && join.fromStepIds.isNotEmpty)
-        ? join.fromStepIds.first
-        : survivorHead;
+    final survivorTail =
+        join.fromStepIds.isNotEmpty ? join.fromStepIds.first : survivorHead;
 
     p.sfcTransitions.removeWhere((t) => t.id == fork.id);
-    if (join != null) {
-      p.sfcTransitions.removeWhere((t) => t.id == join.id);
-    }
+    p.sfcTransitions.removeWhere((t) => t.id == join.id);
 
     if (survivorHead != null && p.sfcSteps.any((s) => s.id == survivorHead)) {
       // anchor -> survivor branch ...
