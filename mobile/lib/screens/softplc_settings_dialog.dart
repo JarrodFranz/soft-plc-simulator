@@ -85,7 +85,9 @@ class _SoftPlcSettingsDialogState extends State<SoftPlcSettingsDialog> {
           children: [
             TextField(
               controller: _hzController,
-              autofocus: true,
+              // No autofocus: on a short (landscape-phone) viewport the
+              // auto-opened keyboard shrinks the dialog and pushes the Haptic
+              // feedback toggle below the fold. The user taps the field to edit.
               keyboardType: TextInputType.number,
               decoration: InputDecoration(
                 labelText: 'UI refresh rate (Hz)',
