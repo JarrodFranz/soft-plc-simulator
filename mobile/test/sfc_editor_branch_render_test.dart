@@ -99,4 +99,42 @@ void main() {
     expect(find.byIcon(Icons.subdirectory_arrow_left), findsOneWidget);
     expect(find.byIcon(Icons.arrow_forward), findsOneWidget);
   });
+
+  testWidgets(
+      'GOTO chip with a long target name does not overflow at 320 width',
+      (tester) async {
+    tester.view.physicalSize = const Size(320, 1400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    // s1 -> s0 is a loop-back GOTO chip; s0 has a very long name so the
+    // chip's Text would overflow the fixed-width chip container without
+    // Flexible/ellipsis.
+    final prog = PlcProgram(name: 'LONG', language: 'SequentialFunctionChart', rungs: []);
+    prog.sfcSteps.addAll([
+      SfcStep(id: 's0', name: 'Waiting_For_Bottle_At_Station_Number_Three', isInitial: true),
+      SfcStep(id: 's1', name: 'RUN'),
+    ]);
+    prog.sfcTransitions.addAll([
+      SfcTransition(id: 't0', fromStepId: 's0', toStepId: 's1', conditionSt: 'Start'),
+      SfcTransition(id: 't1', fromStepId: 's1', toStepId: 's0', conditionSt: 'Done'),
+    ]);
+
+    final proj = PlcProject(
+      id: 'p3', name: 'P3', controllerName: 'C',
+      tags: [], structDefs: [], programs: [prog], tasks: [], hmis: [],
+    );
+
+    await tester.pumpWidget(MaterialApp(
+      home: SfcEditorScreen(
+        currentProject: proj,
+        program: prog,
+        onProgramUpdated: () {},
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+  });
 }

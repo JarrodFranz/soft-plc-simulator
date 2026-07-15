@@ -44,15 +44,8 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
   }
 
   void _addNewStep() {
-    final idx = widget.program.sfcSteps.length;
-    final newStep = SfcStep(
-      id: 's_$idx',
-      name: 'Step_$idx',
-      actionSt: '// ST Action for Step_$idx\n',
-    );
-
     setState(() {
-      widget.program.sfcSteps.add(newStep);
+      addSfcStep(widget.program);
     });
     widget.onProgramUpdated();
   }
@@ -252,7 +245,7 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
             TextField(
               controller: TextEditingController(text: step.actionSt),
               maxLines: 2,
-              onSubmitted: (val) {
+              onChanged: (val) {
                 step.actionSt = val;
                 widget.onProgramUpdated();
               },
@@ -280,7 +273,7 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
               Expanded(
                 child: TextField(
                   controller: TextEditingController(text: transition.conditionSt),
-                  onSubmitted: (val) {
+                  onChanged: (val) {
                     transition.conditionSt = val;
                     widget.onProgramUpdated();
                   },
@@ -415,9 +408,13 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
             children: [
               Icon(icon, size: 14, color: Colors.amberAccent),
               const SizedBox(width: 6),
-              Text('GOTO $targetName',
-                  style: const TextStyle(
-                      color: Colors.amberAccent, fontSize: 12, fontFamily: 'monospace')),
+              Flexible(
+                child: Text('GOTO $targetName',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.amberAccent, fontSize: 12, fontFamily: 'monospace')),
+              ),
             ],
           ),
         ),

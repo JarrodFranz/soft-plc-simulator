@@ -54,4 +54,14 @@ void main() {
     reorderSfcBranch(p, 't0', -1); // already first in its group
     expect(p.sfcTransitions.where((t) => t.fromStepId == 's0').map((t) => t.id).toList(), ['t0', 't1']);
   });
+
+  test('add -> delete-middle -> add via addSfcStep/deleteSfcStep yields all-unique ids', () {
+    final p = _prog(); // s0, s1, s2 already present
+    addSfcStep(p); // -> s3
+    deleteSfcStep(p, 's1'); // delete a middle step (not the last-added one)
+    addSfcStep(p); // must not collide with any remaining id (s0, s2, s3)
+
+    final ids = p.sfcSteps.map((s) => s.id).toList();
+    expect(ids.length, ids.toSet().length, reason: 'step ids must be unique: $ids');
+  });
 }
