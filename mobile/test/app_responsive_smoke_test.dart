@@ -139,10 +139,33 @@ Future<void> _switchProject(WidgetTester tester, {required bool compact, require
   await tester.pumpAndSettle();
   await tester.tap(dropdown);
   await tester.pumpAndSettle();
-  // The dropdown menu renders project names as Text in an overlay route.
-  final option = find.text(projectName).last;
-  expect(option, findsOneWidget, reason: 'project "$projectName" must appear in the SELECT PROJECT dropdown');
-  await tester.tap(option);
+  // The open dropdown menu is a scrollable overlay route that opens scrolled
+  // to the CURRENTLY ACTIVE project, not to the top — so with 13 default
+  // projects the target item can sit either above or below the fold
+  // depending on which project is presently selected (notably at 320x568).
+  // Reset to the top first, then scroll the menu's own Scrollable downward
+  // until the item mounts before tapping — mirroring _navigateTo's nav-tree
+  // scroll loop.
+  final menuScrollable = find.byType(Scrollable).last;
+  final option = find.descendant(of: menuScrollable, matching: find.text(projectName));
+  var resetRemaining = 40;
+  while (resetRemaining > 0) {
+    await tester.drag(menuScrollable, const Offset(0, 300));
+    await tester.pump(const Duration(milliseconds: 50));
+    resetRemaining--;
+  }
+  var remaining = 40;
+  while (option.evaluate().isEmpty && remaining > 0) {
+    await tester.drag(menuScrollable, const Offset(0, -120));
+    await tester.pump(const Duration(milliseconds: 50));
+    remaining--;
+  }
+  await tester.pumpAndSettle();
+  expect(option, findsWidgets, reason: 'project "$projectName" must appear in the SELECT PROJECT dropdown');
+  final target = option.first;
+  await tester.ensureVisible(target);
+  await tester.pumpAndSettle();
+  await tester.tap(target);
   await tester.pumpAndSettle();
   expect(tester.takeException(), isNull);
 }
