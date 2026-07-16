@@ -580,6 +580,9 @@ class SimRule {
   double refValue;
   double tauSec;
   String valveCurve;
+  String noiseDistribution;
+  double driftAmplitude;
+  double driftPeriodSec;
 
   SimRule({
     required this.id,
@@ -599,6 +602,9 @@ class SimRule {
     this.refValue = 100.0,
     this.tauSec = 5.0,
     this.valveCurve = 'linear',
+    this.noiseDistribution = 'uniform',
+    this.driftAmplitude = 0.0,
+    this.driftPeriodSec = 60.0,
   }) : condition = condition ?? [];
 
   factory SimRule.fromJson(Map<String, dynamic> j) => SimRule(
@@ -619,6 +625,9 @@ class SimRule {
         refValue: (j['ref_value'] as num?)?.toDouble() ?? 100.0,
         tauSec: (j['tau_sec'] as num?)?.toDouble() ?? 5.0,
         valveCurve: j['valve_curve'] ?? 'linear',
+        noiseDistribution: j['noise_dist'] ?? 'uniform',
+        driftAmplitude: (j['drift_amp'] as num?)?.toDouble() ?? 0.0,
+        driftPeriodSec: (j['drift_period_sec'] as num?)?.toDouble() ?? 60.0,
       );
 
   Map<String, dynamic> toJson() => {
@@ -639,6 +648,9 @@ class SimRule {
         'ref_value': refValue,
         'tau_sec': tauSec,
         'valve_curve': valveCurve,
+        'noise_dist': noiseDistribution,
+        'drift_amp': driftAmplitude,
+        'drift_period_sec': driftPeriodSec,
       };
 }
 
