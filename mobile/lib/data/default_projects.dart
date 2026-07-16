@@ -44,6 +44,7 @@ abstract class DefaultProjects {
     _fbdPulseOutputProject(),
     _cascadeTanksProject(),
     _noisyLevelProject(),
+    _mimoTwoZoneProject(),
   ];
 
   // ── 1. Basic Motor Start/Stop (LD) ──────────────────────────────────────
@@ -1342,6 +1343,163 @@ System_Ready := Pump_Motor AND Quality_OK AND NOT Alarm_Active;''',
           HmiComponent(id: 'nl1', title: 'Tank Level (%) - Clean', type: 'TankGraphicDisplay', tagBinding: 'Tank_Level', gridSpanWidth: 4, accentColor: 'cyan'),
           HmiComponent(id: 'nl2', title: 'Level Measured (%) - Noisy', type: 'DigitalGaugeDisplay', tagBinding: 'Level_Meas', gridSpanWidth: 4, accentColor: 'amber'),
           HmiComponent(id: 'nl3', title: 'Level Filtered (%) - Smoothed', type: 'DigitalGaugeDisplay', tagBinding: 'Level_Filtered', gridSpanWidth: 4, accentColor: 'teal'),
+        ],
+      ),
+    ],
+  );
+
+  // ── 13. MIMO — Two Thermal Zones (coupled 2x2 plant + 2 PID + decoupler) ─
+  //
+  // A 2x2 multivariable process: two adjacent thermal zones, each with its
+  // own heater (Heater_A/Heater_B) and temperature (Temp_A/Temp_B). The
+  // zones share a wall, so heat conducts between them — driving one heater
+  // warms BOTH zones. That cross-coupling is what makes this a genuine MIMO
+  // control problem rather than two independent loops.
+  //
+  // Plant (stacked SimRules per PV): each zone temperature integrates its own
+  // heater input (analog-scaled by Heater/100), is pulled toward the OTHER
+  // zone's temperature by an A<->B conduction firstOrderLag (tauSec 8 — the
+  // shared-wall coupling), and loses heat toward ambient by a slower
+  // firstOrderLag (tauSec 40). The conduction tau is deliberately short
+  // relative to the loss tau, so the steady-state off-diagonal gains
+  // (k12/k21) are a large fraction of the diagonal (k11/k22) — a strongly
+  // interacting process. See test/mimo_project_test.dart, which asserts the
+  // identified gain matrix has clearly non-zero off-diagonal terms.
+  //
+  // Control (TwoZone_FBD): two PID loops (pidA: SP_A/Temp_A -> u_A; pidB:
+  // SP_B/Temp_B -> u_B) followed by a STATIC DECOUPLER. Each heater command
+  // is the loop's own PID output minus a decoupling term proportional to the
+  // OTHER loop's output: Heater_A = LIMIT(u_A - d12*u_B, 0..100), Heater_B =
+  // LIMIT(u_B - d21*u_A, 0..100). The decoupler gains d12/d21 are CONST
+  // blocks defaulting to '0' (loops coupled by default); setting them to
+  // K12/K11 and K21/K22 cancels the interaction. u_A/u_B are exposed as
+  // Internal tags so the pre-decoupler PID outputs are observable.
+  static PlcProject _mimoTwoZoneProject() => PlcProject(
+    id: 'proj_mimo_two_zone',
+    name: 'MIMO — Two Thermal Zones',
+    controllerName: 'PLC_MIMO',
+    scanPeriodMs: 200,
+    tags: [
+      PlcTag(name: 'Heater_A', path: 'Outputs/Heater_A', dataType: 'FLOAT64', value: 0.0, ioType: 'SimulatedOutput', engineeringUnits: '%', description: 'Zone A heater power command (decoupler output)'),
+      PlcTag(name: 'Heater_B', path: 'Outputs/Heater_B', dataType: 'FLOAT64', value: 0.0, ioType: 'SimulatedOutput', engineeringUnits: '%', description: 'Zone B heater power command (decoupler output)'),
+      PlcTag(name: 'Temp_A', path: 'Inputs/Temp_A', dataType: 'FLOAT64', value: 20.0, ioType: 'SimulatedInput', engineeringUnits: '°C', description: 'Zone A temperature process value'),
+      PlcTag(name: 'Temp_B', path: 'Inputs/Temp_B', dataType: 'FLOAT64', value: 20.0, ioType: 'SimulatedInput', engineeringUnits: '°C', description: 'Zone B temperature process value'),
+      PlcTag(name: 'SP_A', path: 'Internal/SP_A', dataType: 'FLOAT64', value: 50.0, ioType: 'Internal', engineeringUnits: '°C', description: 'Zone A temperature setpoint'),
+      PlcTag(name: 'SP_B', path: 'Internal/SP_B', dataType: 'FLOAT64', value: 40.0, ioType: 'Internal', engineeringUnits: '°C', description: 'Zone B temperature setpoint'),
+      PlcTag(name: 'Amb', path: 'Internal/Amb', dataType: 'FLOAT64', value: 20.0, ioType: 'Internal', engineeringUnits: '°C', description: 'Ambient temperature both zones lose heat toward'),
+      PlcTag(name: 'u_A', path: 'Internal/u_A', dataType: 'FLOAT64', value: 0.0, ioType: 'Internal', engineeringUnits: '%', description: 'Zone A PID output before the static decoupler'),
+      PlcTag(name: 'u_B', path: 'Internal/u_B', dataType: 'FLOAT64', value: 0.0, ioType: 'Internal', engineeringUnits: '%', description: 'Zone B PID output before the static decoupler'),
+    ],
+    structDefs: [],
+    simRules: [
+      // Temp_A
+      SimRule(id: 'sa0', name: 'Zone A heater', targetPath: 'Temp_A', behavior: 'integrate',
+          ratePerSec: 3.0, sourcePath: 'Heater_A', refValue: 100.0, minValue: 0, maxValue: 200, condition: const []),
+      SimRule(id: 'sa1', name: 'A<->B conduction', targetPath: 'Temp_A', behavior: 'firstOrderLag',
+          sourcePath: 'Temp_B', tauSec: 8.0, minValue: 0, maxValue: 200, condition: const []),
+      SimRule(id: 'sa2', name: 'Zone A heat loss', targetPath: 'Temp_A', behavior: 'firstOrderLag',
+          sourcePath: 'Amb', tauSec: 40.0, minValue: 0, maxValue: 200, condition: const []),
+      // Temp_B (symmetric)
+      SimRule(id: 'sb0', name: 'Zone B heater', targetPath: 'Temp_B', behavior: 'integrate',
+          ratePerSec: 3.0, sourcePath: 'Heater_B', refValue: 100.0, minValue: 0, maxValue: 200, condition: const []),
+      SimRule(id: 'sb1', name: 'B<->A conduction', targetPath: 'Temp_B', behavior: 'firstOrderLag',
+          sourcePath: 'Temp_A', tauSec: 8.0, minValue: 0, maxValue: 200, condition: const []),
+      SimRule(id: 'sb2', name: 'Zone B heat loss', targetPath: 'Temp_B', behavior: 'firstOrderLag',
+          sourcePath: 'Amb', tauSec: 40.0, minValue: 0, maxValue: 200, condition: const []),
+    ],
+    programs: [
+      PlcProgram(
+        name: 'TwoZone_FBD',
+        language: 'FunctionBlockDiagram',
+        description: 'Two PID loops (SP/Temp -> u) feeding a static decoupler (Heater = LIMIT(u - d*u_other, 0..100))',
+        fbdBlocks: [
+          // Loop A: SP_A/Temp_A -> pidA -> u_A
+          FbdBlock(id: 'a_sp', type: 'TAG_INPUT', title: 'SP A', tagBinding: 'SP_A', x: 40, y: 60),
+          FbdBlock(id: 'a_pv', type: 'TAG_INPUT', title: 'Temp A', tagBinding: 'Temp_A', x: 40, y: 150),
+          FbdBlock(id: 'a_kp', type: 'CONST', title: 'Kp A', tagBinding: '4', x: 40, y: 240),
+          FbdBlock(id: 'a_ki', type: 'CONST', title: 'Ki A', tagBinding: '0.3', x: 40, y: 310),
+          FbdBlock(id: 'a_kd', type: 'CONST', title: 'Kd A', tagBinding: '0', x: 40, y: 380),
+          FbdBlock(id: 'a_pid', type: 'PID', title: 'PID A', tagBinding: '', x: 280, y: 180),
+          FbdBlock(id: 'a_uo', type: 'TAG_OUTPUT', title: 'u A', tagBinding: 'u_A', x: 500, y: 180),
+          // Loop B: SP_B/Temp_B -> pidB -> u_B
+          FbdBlock(id: 'b_sp', type: 'TAG_INPUT', title: 'SP B', tagBinding: 'SP_B', x: 40, y: 560),
+          FbdBlock(id: 'b_pv', type: 'TAG_INPUT', title: 'Temp B', tagBinding: 'Temp_B', x: 40, y: 650),
+          FbdBlock(id: 'b_kp', type: 'CONST', title: 'Kp B', tagBinding: '4', x: 40, y: 740),
+          FbdBlock(id: 'b_ki', type: 'CONST', title: 'Ki B', tagBinding: '0.3', x: 40, y: 810),
+          FbdBlock(id: 'b_kd', type: 'CONST', title: 'Kd B', tagBinding: '0', x: 40, y: 880),
+          FbdBlock(id: 'b_pid', type: 'PID', title: 'PID B', tagBinding: '', x: 280, y: 680),
+          FbdBlock(id: 'b_uo', type: 'TAG_OUTPUT', title: 'u B', tagBinding: 'u_B', x: 500, y: 680),
+          // Decoupler shared feedback reads + LIMIT bounds
+          FbdBlock(id: 'd_ua', type: 'TAG_INPUT', title: 'u A (fb)', tagBinding: 'u_A', x: 700, y: 120),
+          FbdBlock(id: 'd_ub', type: 'TAG_INPUT', title: 'u B (fb)', tagBinding: 'u_B', x: 700, y: 740),
+          FbdBlock(id: 'd_c0', type: 'CONST', title: 'Lo (0%)', tagBinding: '0', x: 700, y: 400),
+          FbdBlock(id: 'd_c100', type: 'CONST', title: 'Hi (100%)', tagBinding: '100', x: 700, y: 470),
+          // Decoupler A: Heater_A = LIMIT(u_A - d12*u_B, 0..100)
+          FbdBlock(id: 'a_d12', type: 'CONST', title: 'd12', tagBinding: '0', x: 700, y: 260),
+          FbdBlock(id: 'a_mul', type: 'MUL', title: 'd12 * u_B', tagBinding: '', x: 900, y: 260),
+          FbdBlock(id: 'a_sub', type: 'SUB', title: 'u_A - m', tagBinding: '', x: 1080, y: 180),
+          FbdBlock(id: 'a_lim', type: 'LIMIT', title: 'Clamp 0..100', tagBinding: '', x: 1260, y: 180),
+          FbdBlock(id: 'a_ho', type: 'TAG_OUTPUT', title: 'Heater A', tagBinding: 'Heater_A', x: 1470, y: 180),
+          // Decoupler B: Heater_B = LIMIT(u_B - d21*u_A, 0..100)
+          FbdBlock(id: 'b_d21', type: 'CONST', title: 'd21', tagBinding: '0', x: 700, y: 580),
+          FbdBlock(id: 'b_mul', type: 'MUL', title: 'd21 * u_A', tagBinding: '', x: 900, y: 580),
+          FbdBlock(id: 'b_sub', type: 'SUB', title: 'u_B - m', tagBinding: '', x: 1080, y: 680),
+          FbdBlock(id: 'b_lim', type: 'LIMIT', title: 'Clamp 0..100', tagBinding: '', x: 1260, y: 680),
+          FbdBlock(id: 'b_ho', type: 'TAG_OUTPUT', title: 'Heater B', tagBinding: 'Heater_B', x: 1470, y: 680),
+        ],
+        fbdWires: [
+          // Loop A
+          FbdWire(fromBlockId: 'a_sp', fromPin: 'OUT', toBlockId: 'a_pid', toPin: 'SP'),
+          FbdWire(fromBlockId: 'a_pv', fromPin: 'OUT', toBlockId: 'a_pid', toPin: 'PV'),
+          FbdWire(fromBlockId: 'a_kp', fromPin: 'OUT', toBlockId: 'a_pid', toPin: 'KP'),
+          FbdWire(fromBlockId: 'a_ki', fromPin: 'OUT', toBlockId: 'a_pid', toPin: 'KI'),
+          FbdWire(fromBlockId: 'a_kd', fromPin: 'OUT', toBlockId: 'a_pid', toPin: 'KD'),
+          FbdWire(fromBlockId: 'a_pid', fromPin: 'CV', toBlockId: 'a_uo', toPin: 'IN'),
+          // Loop B
+          FbdWire(fromBlockId: 'b_sp', fromPin: 'OUT', toBlockId: 'b_pid', toPin: 'SP'),
+          FbdWire(fromBlockId: 'b_pv', fromPin: 'OUT', toBlockId: 'b_pid', toPin: 'PV'),
+          FbdWire(fromBlockId: 'b_kp', fromPin: 'OUT', toBlockId: 'b_pid', toPin: 'KP'),
+          FbdWire(fromBlockId: 'b_ki', fromPin: 'OUT', toBlockId: 'b_pid', toPin: 'KI'),
+          FbdWire(fromBlockId: 'b_kd', fromPin: 'OUT', toBlockId: 'b_pid', toPin: 'KD'),
+          FbdWire(fromBlockId: 'b_pid', fromPin: 'CV', toBlockId: 'b_uo', toPin: 'IN'),
+          // Decoupler A: MUL(d12, u_B) -> SUB(u_A, m) -> LIMIT(0, s, 100) -> Heater_A
+          FbdWire(fromBlockId: 'a_d12', fromPin: 'OUT', toBlockId: 'a_mul', toPin: 'IN1'),
+          FbdWire(fromBlockId: 'd_ub', fromPin: 'OUT', toBlockId: 'a_mul', toPin: 'IN2'),
+          FbdWire(fromBlockId: 'd_ua', fromPin: 'OUT', toBlockId: 'a_sub', toPin: 'IN1'),
+          FbdWire(fromBlockId: 'a_mul', fromPin: 'OUT', toBlockId: 'a_sub', toPin: 'IN2'),
+          FbdWire(fromBlockId: 'd_c0', fromPin: 'OUT', toBlockId: 'a_lim', toPin: 'MN'),
+          FbdWire(fromBlockId: 'a_sub', fromPin: 'OUT', toBlockId: 'a_lim', toPin: 'IN'),
+          FbdWire(fromBlockId: 'd_c100', fromPin: 'OUT', toBlockId: 'a_lim', toPin: 'MX'),
+          FbdWire(fromBlockId: 'a_lim', fromPin: 'OUT', toBlockId: 'a_ho', toPin: 'IN'),
+          // Decoupler B: MUL(d21, u_A) -> SUB(u_B, m) -> LIMIT(0, s, 100) -> Heater_B
+          FbdWire(fromBlockId: 'b_d21', fromPin: 'OUT', toBlockId: 'b_mul', toPin: 'IN1'),
+          FbdWire(fromBlockId: 'd_ua', fromPin: 'OUT', toBlockId: 'b_mul', toPin: 'IN2'),
+          FbdWire(fromBlockId: 'd_ub', fromPin: 'OUT', toBlockId: 'b_sub', toPin: 'IN1'),
+          FbdWire(fromBlockId: 'b_mul', fromPin: 'OUT', toBlockId: 'b_sub', toPin: 'IN2'),
+          FbdWire(fromBlockId: 'd_c0', fromPin: 'OUT', toBlockId: 'b_lim', toPin: 'MN'),
+          FbdWire(fromBlockId: 'b_sub', fromPin: 'OUT', toBlockId: 'b_lim', toPin: 'IN'),
+          FbdWire(fromBlockId: 'd_c100', fromPin: 'OUT', toBlockId: 'b_lim', toPin: 'MX'),
+          FbdWire(fromBlockId: 'b_lim', fromPin: 'OUT', toBlockId: 'b_ho', toPin: 'IN'),
+        ],
+      ),
+    ],
+    tasks: [
+      PlcTask(name: 'TwoZoneTask', type: 'Continuous', periodMs: 200, programNames: ['TwoZone_FBD']),
+    ],
+    hmis: [
+      HmiScreenDef(
+        id: 'hmi_mimo_two_zone',
+        title: 'Two Thermal Zones (MIMO) Dashboard',
+        layoutType: 'GridDashboard',
+        components: [
+          HmiComponent(id: 'mz1', title: 'Zone A Setpoint', type: 'NumericSliderInput', tagBinding: 'SP_A', gridSpanWidth: 2, accentColor: 'teal'),
+          HmiComponent(id: 'mz2', title: 'Zone B Setpoint', type: 'NumericSliderInput', tagBinding: 'SP_B', gridSpanWidth: 2, accentColor: 'teal'),
+          HmiComponent(id: 'mz3', title: 'Zone A Temp (°C)', type: 'DigitalGaugeDisplay', tagBinding: 'Temp_A', gridSpanWidth: 2, accentColor: 'cyan'),
+          HmiComponent(id: 'mz4', title: 'Zone B Temp (°C)', type: 'DigitalGaugeDisplay', tagBinding: 'Temp_B', gridSpanWidth: 2, accentColor: 'cyan'),
+          HmiComponent(id: 'mz5', title: 'Heater A (%)', type: 'DigitalGaugeDisplay', tagBinding: 'Heater_A', gridSpanWidth: 2, accentColor: 'amber'),
+          HmiComponent(id: 'mz6', title: 'Heater B (%)', type: 'DigitalGaugeDisplay', tagBinding: 'Heater_B', gridSpanWidth: 2, accentColor: 'amber'),
+          HmiComponent(id: 'mz7', title: 'PID A Out u_A (%)', type: 'DigitalGaugeDisplay', tagBinding: 'u_A', gridSpanWidth: 2, accentColor: 'teal'),
+          HmiComponent(id: 'mz8', title: 'PID B Out u_B (%)', type: 'DigitalGaugeDisplay', tagBinding: 'u_B', gridSpanWidth: 2, accentColor: 'teal'),
         ],
       ),
     ],
