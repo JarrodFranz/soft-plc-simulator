@@ -122,7 +122,7 @@ void main() {
   group('addParallelBranch', () {
     test('linear -> creates a fork/join pair with 2 consistent branches', () {
       final p = _linear();
-      final fork = addParallelBranch(p, 's1');
+      final fork = addParallelBranch(p, 's1')!;
 
       expect(fork.kind, 'parallelFork');
       expect(fork.fromStepId, 's1');
@@ -204,7 +204,7 @@ void main() {
   group('addSfcStepAfter', () {
     test('on a parallel-branch TAIL keeps the step INSIDE the branch', () {
       final p = _linear();
-      final fork = addParallelBranch(p, 's1'); // join.fromStepIds == fork heads.
+      final fork = addParallelBranch(p, 's1')!; // join.fromStepIds == fork heads.
       final tail = fork.toStepIds.first; // b1: a fresh single-step branch tail.
 
       final join = _joinOf(p);
@@ -250,7 +250,7 @@ void main() {
 
     test('on a parallel-branch TAIL reconverges INSIDE the branch', () {
       final p = _linear();
-      final fork = addParallelBranch(p, 's1');
+      final fork = addParallelBranch(p, 's1')!;
       final tail = fork.toStepIds.first; // b1: branch tail.
 
       final join = _joinOf(p);
@@ -306,7 +306,7 @@ void main() {
 
     test('deleting down to one branch COLLAPSES to a plain sequence', () {
       final p = _linear();
-      final fork = addParallelBranch(p, 's1'); // 2 branches.
+      final fork = addParallelBranch(p, 's1')!; // 2 branches.
       final heads = List<String>.from(fork.toStepIds);
       final survivor = heads[1];
 
@@ -339,7 +339,7 @@ void main() {
     test('deleting a branch that CONTAINS a nested parallel leaves no garbage',
         () {
       final p = _linear();
-      final outerFork = addParallelBranch(p, 's1'); // outer fork/join around s1.
+      final outerFork = addParallelBranch(p, 's1')!; // outer fork/join around s1.
       final victim = outerFork.toStepIds[0]; // branch we will nest into + delete.
       final survivor = outerFork.toStepIds[1]; // the sibling that must survive.
 
@@ -399,7 +399,7 @@ void main() {
         'BOTH branch heads nested (indeterminate outer join): safe no-op, '
         'no downstream deletion, survivor not stranded', () {
       final p = _linear();
-      final fork = addParallelBranch(p, 's1'); // outer fork/join around s1.
+      final fork = addParallelBranch(p, 's1')!; // outer fork/join around s1.
       final b1 = fork.toStepIds[0];
       final b2 = fork.toStepIds[1];
 
@@ -447,6 +447,76 @@ void main() {
           reason: 's2 must still be reachable in the parsed tree');
       expect(_stepInSomeParBranch(root, b2), isTrue,
           reason: 'surviving branch b2 must still live inside a parallel region');
+    });
+  });
+
+  group('addParallelBranch alt-head guard (A1)', () {
+    test('on an alternative-divergence head is a safe no-op', () {
+      final p = PlcProgram(name: 'M', language: 'SequentialFunctionChart', rungs: []);
+      final a = addSfcStep(p, name: 'A'); // initial
+      final x = addSfcStep(p, name: 'X');
+      final y = addSfcStep(p, name: 'Y');
+      // Two alternative arms out of A -> alt-divergence head.
+      final b1 = addSfcBranch(p, a.id)
+        ..toStepId = x.id
+        ..conditionSt = 'C1';
+      final b2 = addSfcBranch(p, a.id)
+        ..toStepId = y.id
+        ..conditionSt = 'C2';
+      final beforeSteps = p.sfcSteps.length;
+      final beforeTrans = p.sfcTransitions
+          .map((t) => '${t.id}:${t.kind}:${t.fromStepId}->${t.toStepId}')
+          .toList();
+      addParallelBranch(p, a.id); // must NOT strip b1/b2
+      expect(p.sfcSteps.length, beforeSteps, reason: 'no steps added/removed');
+      expect(p.sfcTransitions.where((t) => t.kind == 'parallelFork'), isEmpty,
+          reason: 'no fork created');
+      expect(
+        p.sfcTransitions
+            .map((t) => '${t.id}:${t.kind}:${t.fromStepId}->${t.toStepId}')
+            .toList(),
+        beforeTrans,
+        reason: 'both alt arms intact, unchanged',
+      );
+      expect(b1.fromStepId, a.id);
+      expect(b2.fromStepId, a.id);
+
+      _assertParseableNoDangling(p);
+    });
+  });
+
+  group('deleteSfcStepStructured fork-source (A2)', () {
+    test('deleting a fork-source step removes fork + branches + join (no orphans)',
+        () {
+      final p = PlcProgram(name: 'M', language: 'SequentialFunctionChart', rungs: []);
+      final src = addSfcStep(p, name: 'SRC'); // initial, will own the fork
+      addParallelBranch(p, src.id); // fork SRC -> [b1,b2], join -> after
+      // sanity: a fork now exists out of src
+      expect(
+        p.sfcTransitions
+            .any((t) => t.kind == 'parallelFork' && t.fromStepId == src.id),
+        isTrue,
+      );
+      deleteSfcStepStructured(p, src.id); // must remove the whole construct
+      expect(p.sfcTransitions.any((t) => t.kind == 'parallelFork'), isFalse,
+          reason: 'fork gone');
+      expect(p.sfcTransitions.any((t) => t.kind == 'parallelJoin'), isFalse,
+          reason: 'paired join gone (not orphaned)');
+      // every remaining transition references an existing step (no dangling)
+      final ids = p.sfcSteps.map((s) => s.id).toSet();
+      for (final t in p.sfcTransitions) {
+        if (t.kind == 'single') {
+          expect(ids.contains(t.fromStepId) || t.fromStepId.isEmpty, isTrue);
+        }
+        for (final h in t.toStepIds) {
+          expect(ids.contains(h), isTrue);
+        }
+        for (final tl in t.fromStepIds) {
+          expect(ids.contains(tl), isTrue);
+        }
+      }
+      final region = parseSfc(p.sfcSteps, p.sfcTransitions);
+      expect(region, isNotNull);
     });
   });
 }

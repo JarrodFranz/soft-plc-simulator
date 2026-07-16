@@ -304,8 +304,10 @@ SfcStep addSfcStepAfter(PlcProgram p, String afterStepId) {
 /// - If [afterStepId] IS already a fork source, appends ANOTHER single-step
 ///   branch to that fork + its join.
 ///
-/// Returns the `parallelFork` transition (new or extended).
-SfcTransition addParallelBranch(PlcProgram p, String afterStepId) {
+/// Returns the `parallelFork` transition (new or extended), or `null` when
+/// [afterStepId] is an alternative-divergence head (see guard below) and the
+/// call was a safe no-op.
+SfcTransition? addParallelBranch(PlcProgram p, String afterStepId) {
   // Extend an existing fork: add a third/Nth branch.
   final existingFork = _forkFrom(p, afterStepId);
   if (existingFork != null) {
@@ -316,6 +318,21 @@ SfcTransition addParallelBranch(PlcProgram p, String afterStepId) {
       join.fromStepIds.add(nb.id);
     }
     return existingFork;
+  }
+
+  // Safety guard: if the anchor already has >= 2 `single` outgoings, it is an
+  // ALTERNATIVE-divergence head (built by `addAlternativeBranch`), not a plain
+  // linear step. Forking it would silently strip every alternative arm (each
+  // arm is a `single` out of the anchor) down to the fork's sole exit,
+  // destroying the alt-divergence the user built. Rather than do that, bail
+  // out safely and leave the chart unchanged — mirrors the `join == null`
+  // no-op guard in `deleteParallelBranch`. A single (or zero) successor is not
+  // an alt-divergence and still forks as before.
+  final singleOutCount = p.sfcTransitions
+      .where((t) => t.kind == 'single' && t.fromStepId == afterStepId)
+      .length;
+  if (singleOutCount >= 2) {
+    return null;
   }
 
   // Determine the step the new join should lead to.
@@ -491,10 +508,61 @@ void deleteParallelBranch(PlcProgram p, String forkTransitionId, String branchHe
   }
 }
 
-/// Deletes [stepId] with collapse-aware cleanup: if the step is the head of a
-/// parallel branch, the whole branch is removed (collapsing the fork/join when
-/// only one branch remains); otherwise a plain [deleteSfcStep].
+/// Deletes [stepId] with collapse-aware cleanup:
+/// - If the step OWNS an outgoing `parallelFork` (it is a fork SOURCE), the
+///   entire parallel construct is removed with it — the fork, every branch's
+///   full subgraph, and the paired join — since deleting the source makes the
+///   whole construct unreachable; leaving any of it behind would orphan it.
+/// - Else if the step is the HEAD of a parallel branch, the whole branch is
+///   removed (collapsing the fork/join when only one branch remains).
+/// - Otherwise a plain [deleteSfcStep].
 void deleteSfcStepStructured(PlcProgram p, String stepId) {
+  final ownFork =
+      p.sfcTransitions.where((t) => t.kind == 'parallelFork' && t.fromStepId == stepId);
+  if (ownFork.isNotEmpty) {
+    final fork = ownFork.first;
+    final join = _joinForFork(p, fork);
+    // Safety guard: mirrors `deleteParallelBranch`'s `join == null` no-op — if
+    // the paired join cannot be reliably identified, sweeping the branch
+    // subgraphs with a null join would let `_branchSubgraph` cross ANY join it
+    // meets and over-delete. Degrade safely: fall through to the ordinary
+    // structured delete instead of corrupting the chart.
+    if (join != null) {
+      final removeSteps = <String>{};
+      for (final head in fork.toStepIds) {
+        removeSteps.addAll(_branchSubgraph(p, join, head));
+      }
+      final wasInitial = p.sfcSteps.any((s) => s.id == stepId && s.isInitial);
+
+      // Remove the fork, the join, and every transition internal to any
+      // branch (singles, nested forks, nested joins). Nothing is reconnected —
+      // the source step itself is being deleted, so the whole construct simply
+      // goes away.
+      p.sfcTransitions.removeWhere((t) {
+        if (t.id == fork.id || t.id == join.id) {
+          return true;
+        }
+        switch (t.kind) {
+          case 'single':
+            return removeSteps.contains(t.fromStepId) || removeSteps.contains(t.toStepId);
+          case 'parallelFork':
+            return removeSteps.contains(t.fromStepId);
+          case 'parallelJoin':
+            return removeSteps.contains(t.toStepId) || t.fromStepIds.any(removeSteps.contains);
+          default:
+            return false;
+        }
+      });
+
+      p.sfcSteps.removeWhere((s) => s.id == stepId || removeSteps.contains(s.id));
+
+      if (wasInitial && p.sfcSteps.isNotEmpty && !p.sfcSteps.any((s) => s.isInitial)) {
+        p.sfcSteps.first.isInitial = true;
+      }
+      return;
+    }
+  }
+
   for (final t in p.sfcTransitions) {
     if (t.kind == 'parallelFork' && t.toStepIds.contains(stepId)) {
       deleteParallelBranch(p, t.id, stepId);
