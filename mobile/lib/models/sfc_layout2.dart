@@ -189,22 +189,27 @@ _Frag _stepFrag(SfcStep s) {
 }
 
 _Frag _transFrag(TransRegion t) {
-  final goto = t.isGoto;
-  final kind = goto ? 'goto' : 'trans';
-  final w = goto ? _kGotoW : _kTransW;
-  final h = goto ? _kGotoH : _kTransH;
-  final box =
-      SfcBox(kind: kind, transition: t.transition, x: 0, y: 0, w: w, h: h);
-  return _Frag([box], const <SfcConn>[], w, h, w / 2, w / 2);
+  if (t.isGoto) {
+    final box = SfcBox(
+        kind: 'goto', transition: t.transition, x: 0, y: 0, w: _kGotoW, h: _kGotoH);
+    return _Frag([box], const <SfcConn>[], _kGotoW, _kGotoH, _kGotoW / 2,
+        _kGotoW / 2);
+  }
+  return _transBlockFrag(t.transition);
 }
 
-/// Trans fragment for a raw guard transition (rendered as a plain trans block).
-_Frag _guardFrag(SfcTransition g) {
-  final box = SfcBox(
-      kind: 'trans', transition: g, x: 0, y: 0, w: _kTransW, h: _kTransH);
+/// Shared bordered `'trans'` block fragment, used both for a non-goto
+/// `TransRegion` and for a raw Alt-branch guard transition — identical
+/// geometry, single source of truth.
+_Frag _transBlockFrag(SfcTransition t) {
+  final box =
+      SfcBox(kind: 'trans', transition: t, x: 0, y: 0, w: _kTransW, h: _kTransH);
   return _Frag([box], const <SfcConn>[], _kTransW, _kTransH, _kTransW / 2,
       _kTransW / 2);
 }
+
+/// Trans fragment for a raw guard transition (rendered as a plain trans block).
+_Frag _guardFrag(SfcTransition g) => _transBlockFrag(g);
 
 /// Stack [items] vertically, centred on a common axis, with straight vertical
 /// connectors between each item's exit and the next item's entry.
@@ -384,7 +389,7 @@ _Frag _parFrag(ParRegion par) {
   const branchTopY = _kBarH + _kVGap;
   var cx = startX;
   var maxColH = 0.0;
-  final exits = <double>[];
+  final exits = <List<double>>[];
   for (final col in cols) {
     final placed = _shift(col, cx, branchTopY);
     // Fork link: bar bottom down into the branch (double line).
@@ -397,7 +402,7 @@ _Frag _parFrag(ParRegion par) {
     ));
     boxes.addAll(placed.boxes);
     conns.addAll(placed.conns);
-    exits.add(placed.exitX);
+    exits.add([placed.exitX, branchTopY + col.h]);
     maxColH = _max(maxColH, col.h);
     cx += col.w + _kBranchColGap;
   }
@@ -412,13 +417,14 @@ _Frag _parFrag(ParRegion par) {
     h: _kBarH,
   ));
 
-  final branchBottomY = branchTopY + maxColH;
-  for (final ex in exits) {
-    // Join link: branch bottom up into the join bar (double line).
+  for (final e in exits) {
+    // Join link: each column's real exit point up into the join bar
+    // (double line) — branches of unequal height converge from their own
+    // actual bottom-y, not a single uniform bottom.
     conns.add(SfcConn(
-      x1: ex,
-      y1: branchBottomY,
-      x2: ex,
+      x1: e[0],
+      y1: e[1],
+      x2: e[0],
       y2: joinY,
       doubleBar: true,
     ));

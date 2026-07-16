@@ -243,6 +243,38 @@ void main() {
       _assertNoStepOverlap(layout);
     });
 
+    test('A3: parallel join connectors start at each column real exit-y (uneven branches)', () {
+      // fork -> [ [p1] , [q1 -> q2] ] -> join -> done
+      final steps = [
+        _step('a', initial: true),
+        _step('p1'),
+        _step('q1'),
+        _step('q2'),
+        _step('done'),
+      ];
+      final trans = [
+        _fork('f', 'a', ['p1', 'q1']),
+        _single('q', 'q1', 'q2'),
+        _join('j', ['p1', 'q2'], 'done'),
+      ];
+      final layout = layoutSfcRegion(parseSfc(steps, trans));
+
+      // Join connectors converge UP into the join bar: among the doubleBar
+      // (fork/join) connectors, they are the ones ending at the greatest y2
+      // (closest to the join bar, as opposed to the fork links near the top).
+      final doubleBarConns = layout.conns.where((c) => c.doubleBar).toList();
+      final maxY2 = doubleBarConns.map((c) => c.y2).reduce((a, b) => a > b ? a : b);
+      final joinConnYs = <double>{
+        for (final c in doubleBarConns.where((c) => (c.y2 - maxY2).abs() < 0.001))
+          c.y1,
+      };
+      expect(joinConnYs.length, greaterThan(1),
+          reason: 'uneven branches -> distinct per-column join start-y');
+
+      _assertBoundsContainAll(layout);
+      _assertNoStepOverlap(layout);
+    });
+
     test('bounds are non-negative and non-empty for a single step', () {
       final layout = layoutSfcRegion(parseSfc([_step('only', initial: true)], []));
       expect(layout.width, greaterThan(0));

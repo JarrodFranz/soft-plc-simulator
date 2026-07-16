@@ -2,6 +2,9 @@ import 'project_model.dart';
 import 'st_expr.dart';
 import 'tag_resolver.dart';
 
+/// Step-elapsed-map key: `'<prog>|<stepId>'`.
+String _stepKey(String prog, String stepId) => '$prog|$stepId';
+
 /// Active-step state per SFC program, keyed by program name.
 class SfcRuntime {
   final Map<String, Set<String>> active = {}; // progName -> active step ids
@@ -60,12 +63,12 @@ void executeSfcPrograms(PlcProject p, int dtMs, SfcRuntime rt, {Set<String>? onl
       final initial = prog.sfcSteps.firstWhere((s) => s.isInitial, orElse: () => prog.sfcSteps.first);
       activeSet = {initial.id};
       rt.active[prog.name] = activeSet;
-      rt.stepElapsedMs['${prog.name}|${initial.id}'] = 0;
+      rt.stepElapsedMs[_stepKey(prog.name, initial.id)] = 0;
     }
 
     // Advance elapsed + run actions for each active step.
     for (final id in activeSet) {
-      final key = '${prog.name}|$id';
+      final key = _stepKey(prog.name, id);
       final elapsed = (rt.stepElapsedMs[key] ?? 0) + dtMs;
       rt.stepElapsedMs[key] = elapsed;
       final step = stepById(id);
@@ -103,7 +106,7 @@ void executeSfcPrograms(PlcProject p, int dtMs, SfcRuntime rt, {Set<String>? onl
       if (!eligible) {
         continue;
       }
-      final elapsed = rt.stepElapsedMs['${prog.name}|${sources.first}'] ?? 0;
+      final elapsed = rt.stepElapsedMs[_stepKey(prog.name, sources.first)] ?? 0;
       if (!evalStCondition(p, t.conditionSt, extraVars: {'STEP_T': elapsed})) {
         continue;
       }
@@ -125,7 +128,7 @@ void executeSfcPrograms(PlcProject p, int dtMs, SfcRuntime rt, {Set<String>? onl
       ..addAll(toAdd);
     for (final id in toAdd) {
       if (!activeSet.contains(id)) {
-        rt.stepElapsedMs['${prog.name}|$id'] = 0; // (re)activated -> reset STEP_T
+        rt.stepElapsedMs[_stepKey(prog.name, id)] = 0; // (re)activated -> reset STEP_T
       }
     }
     rt.active[prog.name] = next;
