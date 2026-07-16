@@ -61,6 +61,7 @@ class ProjectRepository {
 
   static const String _catalogKey = 'project_catalog';
   static const String _activeProjectIdKey = 'active_project_id';
+  static const String _seededDefaultIdsKey = 'seeded_default_ids';
   static String _projectKey(String id) => 'project_$id';
 
   // ── Catalog ──────────────────────────────────────────────────────────
@@ -203,7 +204,57 @@ class ProjectRepository {
     }
     await _writeCatalog([]);
     await _prefs.remove(_activeProjectIdKey);
+    await _prefs.remove(_seededDefaultIdsKey);
     await seedDefaultsIfEmpty();
+  }
+
+  /// Adds any built-in default whose id has never been seeded on this device,
+  /// without touching existing projects. Non-destructive: user edits are never
+  /// overwritten, existing projects never duplicated, and a default the user
+  /// deleted (its id already in the ledger) is never resurrected.
+  ///
+  /// On a pre-migration install (ledger absent) the defaults already present
+  /// in the catalog are treated as already-seeded, so the first run adds only
+  /// genuinely-new defaults and records the full set.
+  Future<void> backfillNewDefaults() async {
+    final catalogIds = _readCatalog().map((s) => s.id).toSet();
+    final raw = _prefs.getString(_seededDefaultIdsKey);
+    Set<String> seeded;
+    if (raw == null) {
+      seeded = <String>{
+        for (final d in DefaultProjects.all())
+          if (catalogIds.contains(d.id)) d.id,
+      };
+    } else {
+      seeded = _decodeStringSet(raw);
+    }
+    var changed = false;
+    for (final d in DefaultProjects.all()) {
+      if (!seeded.contains(d.id)) {
+        if (!catalogIds.contains(d.id)) {
+          await saveProject(d);
+        }
+        seeded.add(d.id);
+        changed = true;
+      }
+    }
+    if (changed || raw == null) {
+      await _prefs.setString(_seededDefaultIdsKey, jsonEncode(seeded.toList()));
+    }
+  }
+
+  /// Defensive decode of the seeded-ids blob: any corruption yields an empty
+  /// set (treated like a fresh ledger) rather than throwing.
+  Set<String> _decodeStringSet(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded.map((e) => e.toString()).toSet();
+      }
+    } catch (_) {
+      // fall through
+    }
+    return <String>{};
   }
 
   // ── Id generation ────────────────────────────────────────────────────
