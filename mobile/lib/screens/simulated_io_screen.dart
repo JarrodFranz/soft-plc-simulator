@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../models/noise_model.dart';
 import '../models/project_model.dart';
 import '../models/tag_resolver.dart';
 import '../models/valve_curve.dart';
@@ -348,6 +349,20 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
       w.add(_numField('Noise amplitude (±)', r.targetValue, (v) => r.targetValue = v));
       w.add(_numField('Min', r.minValue, (v) => r.minValue = v));
       w.add(_numField('Max', r.maxValue, (v) => r.maxValue = v));
+      w.add(DropdownButtonFormField<String>(
+        initialValue: r.noiseDistribution == kNoiseGaussian ? kNoiseGaussian : kNoiseUniform,
+        isExpanded: true,
+        decoration: const InputDecoration(labelText: 'Distribution', isDense: true),
+        items: const [
+          DropdownMenuItem(value: kNoiseUniform, child: Text('Uniform', style: TextStyle(fontSize: 12))),
+          DropdownMenuItem(value: kNoiseGaussian, child: Text('Gaussian', style: TextStyle(fontSize: 12))),
+        ],
+        onChanged: (v) => setDlg(() => r.noiseDistribution = v ?? kNoiseUniform),
+      ));
+      w.add(_numField('Drift amplitude', r.driftAmplitude, (v) => setDlg(() => r.driftAmplitude = v)));
+      if (r.driftAmplitude > 0) {
+        w.add(_numField('Drift period (s)', r.driftPeriodSec, (v) => r.driftPeriodSec = v));
+      }
     }
     return w;
   }

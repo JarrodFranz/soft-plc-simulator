@@ -182,6 +182,81 @@ void main() {
 
         expect(tester.takeException(), isNull);
       });
+
+      testWidgets(
+          '$sizeLabel: Measurement Noise shows distribution + drift amplitude, drift period only when amplitude > 0',
+          (tester) async {
+        await setSurface(tester, size);
+        final project = _projectById('proj_st_reactor');
+        await tester.pumpWidget(app(project));
+        await tester.pumpAndSettle();
+
+        await openFirstRuleEditor(tester);
+
+        // Switch behaviour to Measurement Noise.
+        await tester.tap(find.byType(DropdownButtonFormField<String>).first);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Measurement Noise').last);
+        await tester.pumpAndSettle();
+
+        expect(find.text('Distribution'), findsOneWidget);
+        expect(find.text('Drift amplitude'), findsOneWidget);
+        // No drift configured by default -> period field hidden.
+        expect(find.text('Drift period (s)'), findsNothing);
+
+        // Select Gaussian distribution.
+        final distributionDropdown = find.ancestor(
+          of: find.text('Distribution'),
+          matching: find.byType(DropdownButtonFormField<String>),
+        );
+        await tester.ensureVisible(distributionDropdown);
+        await tester.tap(distributionDropdown);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Gaussian').last);
+        await tester.pumpAndSettle();
+
+        // Set a non-zero drift amplitude -> period field should appear.
+        await tester.enterText(find.widgetWithText(TextFormField, 'Drift amplitude'), '1.5');
+        await tester.pump();
+
+        expect(find.text('Drift period (s)'), findsOneWidget);
+
+        await tester.enterText(find.widgetWithText(TextFormField, 'Drift period (s)'), '30');
+        await tester.pump();
+
+        // Save.
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Save'));
+        await tester.pumpAndSettle();
+
+        final saved = project.simRules.firstWhere((r) => r.id == 'sim0');
+        expect(saved.behavior, 'noise');
+        expect(saved.noiseDistribution, 'gaussian');
+        expect(saved.driftAmplitude, 1.5);
+        expect(saved.driftPeriodSec, 30.0);
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('$sizeLabel: non-noise behaviour does not show distribution/drift controls', (tester) async {
+        await setSurface(tester, size);
+        final project = _projectById('proj_st_reactor');
+        await tester.pumpWidget(app(project));
+        await tester.pumpAndSettle();
+
+        await openFirstRuleEditor(tester);
+
+        // Switch behaviour to Set While Condition (non-noise).
+        await tester.tap(find.byType(DropdownButtonFormField<String>).first);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Set While Condition').last);
+        await tester.pumpAndSettle();
+
+        expect(find.text('Distribution'), findsNothing);
+        expect(find.text('Drift amplitude'), findsNothing);
+        expect(find.text('Drift period (s)'), findsNothing);
+
+        expect(tester.takeException(), isNull);
+      });
     }
 
     testWidgets('320x568: rule editor opens without overflow', (tester) async {
@@ -279,5 +354,32 @@ void main() {
 
       expect(tester.takeException(), isNull);
     });
+
+    for (final size in [smallPhoneSize, desktopSize]) {
+      final sizeLabel = size == smallPhoneSize ? '320x568' : '1400x900';
+
+      testWidgets('$sizeLabel: Measurement Noise distribution + drift controls open without overflow',
+          (tester) async {
+        await setSurface(tester, size);
+        final project = _projectById('proj_st_reactor');
+        await tester.pumpWidget(app(project));
+        await tester.pumpAndSettle();
+
+        await openFirstRuleEditor(tester);
+
+        await tester.tap(find.byType(DropdownButtonFormField<String>).first);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Measurement Noise').last);
+        await tester.pumpAndSettle();
+
+        // Set a non-zero drift amplitude so the drift period field is also
+        // present, to exercise the widest control set at this size.
+        await tester.enterText(find.widgetWithText(TextFormField, 'Drift amplitude'), '1.5');
+        await tester.pump();
+
+        expect(find.text('Drift period (s)'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
+    }
   });
 }
