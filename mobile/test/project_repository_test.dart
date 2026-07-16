@@ -181,4 +181,22 @@ void main() {
     await repo.backfillNewDefaults();
     expect((await repo.listProjects()).length, DefaultProjects.all().length);
   });
+
+  test('resetToDefaults leaves the ledger durable so a later delete is not resurrected', () async {
+    final repo = await freshRepo();
+    await repo.backfillNewDefaults(); // initial seed + ledger
+    await repo.resetToDefaults();
+
+    final id = (await repo.listProjects()).first.id;
+    await repo.deleteProject(id);
+
+    // Simulate the next app startup calling backfillNewDefaults again.
+    await repo.backfillNewDefaults();
+
+    expect(
+      (await repo.listProjects()).any((s) => s.id == id),
+      isFalse,
+      reason: 'a default deleted after resetToDefaults must not be resurrected by the next backfill',
+    );
+  });
 }

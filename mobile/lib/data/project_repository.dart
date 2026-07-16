@@ -205,7 +205,7 @@ class ProjectRepository {
     await _writeCatalog([]);
     await _prefs.remove(_activeProjectIdKey);
     await _prefs.remove(_seededDefaultIdsKey);
-    await seedDefaultsIfEmpty();
+    await backfillNewDefaults();
   }
 
   /// Adds any built-in default whose id has never been seeded on this device,
