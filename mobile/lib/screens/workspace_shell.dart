@@ -33,6 +33,7 @@ import 'memory_manager_screen.dart';
 import 'hmi_dashboard_builder_screen.dart';
 import 'simulated_io_screen.dart';
 import 'pid_autotune_screen.dart';
+import 'interaction_analysis_screen.dart';
 import 'gateway_screen.dart';
 import 'softplc_settings_dialog.dart';
 
@@ -2129,6 +2130,28 @@ class WorkspaceShellState extends State<WorkspaceShell> {
                 Container(
                   margin: const EdgeInsets.only(left: 12, top: 2),
                   decoration: BoxDecoration(
+                    color: _activeViewId == 'INTERACTION' ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(Icons.grain, size: 16, color: _activeViewId == 'INTERACTION' ? Colors.cyanAccent : Colors.tealAccent),
+                      title: Text(
+                        'INTERACTION ANALYSIS',
+                        style: TextStyle(fontSize: 11, fontWeight: _activeViewId == 'INTERACTION' ? FontWeight.bold : FontWeight.normal),
+                      ),
+                      onTap: () => _selectView(context, 'INTERACTION'),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 8),
+
+                Container(
+                  margin: const EdgeInsets.only(left: 12, top: 2),
+                  decoration: BoxDecoration(
                     color: _activeViewId == 'GATEWAY' ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
                     borderRadius: BorderRadius.circular(4),
                   ),
@@ -2725,6 +2748,11 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       );
     } else if (_activeViewId == 'PID_AUTOTUNE') {
       return PidAutoTuneScreen(
+        currentProject: _activeProject,
+        onProjectUpdated: _markDirtyAndAutosave,
+      );
+    } else if (_activeViewId == 'INTERACTION') {
+      return InteractionAnalysisScreen(
         currentProject: _activeProject,
         onProjectUpdated: _markDirtyAndAutosave,
       );
