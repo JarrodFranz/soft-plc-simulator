@@ -77,4 +77,33 @@ void main() {
     expect(p.tags.firstWhere((t) => t.name == 'Reject_Count').value as int, greaterThanOrEqualTo(1));
     expect(p.tags.firstWhere((t) => t.name == 'Batch_Count').value as int, 0);
   });
+
+  test('DISPATCH counter is a true one-shot: Batch_Count increments exactly once per completed batch', () {
+    final p = _batchMix();
+    final rt = SfcRuntime();
+    final sim = SimRuntime();
+    void tick(int ms) {
+      applySimRules(p, p.simRules, ms, sim);
+      executeSfcPrograms(p, ms, rt);
+    }
+    void setTag(String name, dynamic v) => p.tags.firstWhere((t) => t.name == name).value = v;
+    int batchCount() => p.tags.firstWhere((t) => t.name == 'Batch_Count').value as int;
+
+    setTag('Quality_OK', true);
+    setTag('Start_Cmd', true);
+    // Run until Batch_Count first reaches 1 (bounded so a broken chart can't hang the test).
+    var guard = 0;
+    while (batchCount() < 1 && guard < 500) {
+      tick(200);
+      guard++;
+    }
+    expect(batchCount(), 1);
+    // Prevent a new batch from starting, then keep scanning well past the DISPATCH dwell.
+    setTag('Start_Cmd', false);
+    for (var i = 0; i < 40; i++) {
+      tick(200);
+    }
+    // Must remain exactly 1 -- proves the increment fires once per batch, not once per scan.
+    expect(batchCount(), 1);
+  });
 }
