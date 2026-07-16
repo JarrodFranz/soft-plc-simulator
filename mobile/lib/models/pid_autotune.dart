@@ -309,6 +309,109 @@ List<TuningSuggestion> tuningRules(double ku, double pu) {
   ];
 }
 
+/// The resolved wiring of a PID function-block-diagram loop: where its
+/// PV/CV/SP come from, and which upstream blocks (if any) hold its writable
+/// gains, discovered by walking `program.fbdWires`/`program.fbdBlocks`.
+class PidLoopBinding {
+  final String pidBlockId;
+  final String? pvPath;
+  final String? cvPath;
+  final double? setpoint;
+  final String? kpSourceBlockId;
+  final String? kiSourceBlockId;
+  final String? kdSourceBlockId;
+
+  const PidLoopBinding({
+    required this.pidBlockId,
+    this.pvPath,
+    this.cvPath,
+    this.setpoint,
+    this.kpSourceBlockId,
+    this.kiSourceBlockId,
+    this.kdSourceBlockId,
+  });
+}
+
+/// Traces the FBD wiring of the `PID` block [pidBlockId] in [program] to find
+/// its PV/CV/SP paths and the upstream blocks driving its KP/KI/KD gains.
+///
+/// Never throws on missing or incomplete wiring: any pin that has no incoming
+/// wire (or whose source block isn't the expected type) simply resolves to a
+/// null field. This lets callers (e.g. the auto-tune panel) fall back to
+/// sensible defaults instead of crashing on a partially wired loop.
+PidLoopBinding resolvePidLoop(PlcProgram program, PlcProject project, String pidBlockId) {
+  FbdBlock? sourceOfPin(String pin) {
+    for (final wire in program.fbdWires) {
+      if (wire.toBlockId == pidBlockId && wire.toPin == pin) {
+        for (final block in program.fbdBlocks) {
+          if (block.id == wire.fromBlockId) {
+            return block;
+          }
+        }
+        return null;
+      }
+    }
+    return null;
+  }
+
+  String? tagPathIfInput(FbdBlock? block) {
+    if (block != null && block.type == 'TAG_INPUT') {
+      return block.tagBinding;
+    }
+    return null;
+  }
+
+  String? writableGainSource(FbdBlock? block) {
+    if (block != null && (block.type == 'CONST' || block.type == 'TAG_INPUT')) {
+      return block.id;
+    }
+    return null;
+  }
+
+  final pvBlock = sourceOfPin('PV');
+  final spBlock = sourceOfPin('SP');
+  final kpBlock = sourceOfPin('KP');
+  final kiBlock = sourceOfPin('KI');
+  final kdBlock = sourceOfPin('KD');
+
+  double? setpoint;
+  if (spBlock != null) {
+    if (spBlock.type == 'TAG_INPUT') {
+      final v = readPath(project, spBlock.tagBinding);
+      if (v is num) {
+        setpoint = v.toDouble();
+      }
+    } else if (spBlock.type == 'CONST') {
+      setpoint = double.tryParse(spBlock.tagBinding);
+    }
+  }
+
+  String? cvPath;
+  for (final wire in program.fbdWires) {
+    if (wire.fromBlockId == pidBlockId && wire.fromPin == 'CV') {
+      for (final block in program.fbdBlocks) {
+        if (block.id == wire.toBlockId) {
+          if (block.type == 'TAG_OUTPUT') {
+            cvPath = block.tagBinding;
+          }
+          break;
+        }
+      }
+      break;
+    }
+  }
+
+  return PidLoopBinding(
+    pidBlockId: pidBlockId,
+    pvPath: tagPathIfInput(pvBlock),
+    cvPath: cvPath,
+    setpoint: setpoint,
+    kpSourceBlockId: writableGainSource(kpBlock),
+    kiSourceBlockId: writableGainSource(kiBlock),
+    kdSourceBlockId: writableGainSource(kdBlock),
+  );
+}
+
 /// Helper to construct a TuningSuggestion from name, form, Kp, Ti, and Td.
 TuningSuggestion _makeTuning({
   required String name,

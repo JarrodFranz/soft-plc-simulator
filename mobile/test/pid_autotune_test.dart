@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/pid_autotune.dart';
+import 'package:soft_plc_mobile/data/default_projects.dart';
 
 PlcProject _lagProcess() {
   // CV (0..100) drives PV via a first-order lag toward CV, plus a small dead time.
@@ -106,6 +107,20 @@ void main() {
         expect(x.kd, 0);
       }
       expect(s.length, 6);
+    });
+  });
+
+  group('resolvePidLoop', () {
+    test('resolvePidLoop resolves the Tank Level PID demo', () {
+      final proj = DefaultProjects.all().firstWhere((p) => p.id == 'proj_tank_level_pid');
+      final prog = proj.programs.firstWhere((pr) => pr.language == 'FunctionBlockDiagram');
+      final b = resolvePidLoop(prog, proj, 'p_pid');
+      expect(b.pidBlockId, 'p_pid');
+      expect(b.pvPath, 'Level_PV');
+      expect(b.cvPath, 'Valve_CV');
+      expect(b.kpSourceBlockId, 'p_kp');
+      expect(b.kiSourceBlockId, 'p_ki');
+      expect(b.kdSourceBlockId, 'p_kd');
     });
   });
 }
