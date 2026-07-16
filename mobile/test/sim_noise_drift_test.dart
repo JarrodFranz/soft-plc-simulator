@@ -75,4 +75,64 @@ void main() {
     final b = _run(_proj([_noiseRule(dist: 'gaussian', drift: 2.0)], _tags()), 25);
     expect(a, b);
   });
+
+  // Characterization guard for the byte-identity constraint: with
+  // noiseDistribution=='uniform' and driftAmplitude==0, the engine must
+  // reproduce today's EXACT per-scan noise sequence (one xorshift draw per
+  // scan seeded from _fnv1a(rule.id), noise = (2u-1)*a). Unlike the
+  // self-determinism check above (run twice, compare), this test pins the
+  // actual values so a future accidental change to the uniform draw order,
+  // the fnv1a seed, or the noise formula fails loudly instead of silently
+  // shifting the sequence while still being self-consistent. Golden values
+  // captured from the current (correct) engine with rule id 'r', clean
+  // source X=10.0, amplitude a=1.0, 100ms scans, 20 scans.
+  test('golden: uniform + no drift pins the exact per-scan sequence', () {
+    final golden = <double>[
+      10.017265872335356,
+      9.863850557446446,
+      9.929555237509673,
+      9.928673024039872,
+      9.89767147854382,
+      9.831061328023454,
+      10.98653389513179,
+      9.19665735824887,
+      10.964733539606616,
+      10.167259971417314,
+      9.452337266982612,
+      9.025365959393179,
+      9.552057352511225,
+      10.83908297443741,
+      9.354278605048144,
+      10.306128650276486,
+      9.508422670072974,
+      10.791275451376865,
+      9.644206066300208,
+      10.683123432957363,
+    ];
+    final actual = _run(_proj([_noiseRule()], _tags()), 20);
+    expect(actual.length, golden.length);
+    expect(actual, golden);
+  });
+
+  // Drift-only composition: amplitude (targetValue) == 0 disables the noise
+  // term entirely (see the `if (a > 0)` guard in sim_engine.dart), so the
+  // output is clean + drift only. Confirms drift is actually applied (not a
+  // no-op), stays within clean +/- driftAmplitude (+ epsilon for the EMA
+  // wander's float arithmetic), and is deterministic across runs.
+  test('drift-only: amplitude 0 + driftAmplitude > 0 applies bounded, deterministic drift', () {
+    const clean = 10.0, driftAmplitude = 3.0;
+    SimRule driftOnlyRule() => SimRule(
+        id: 'r', name: 'n', behavior: 'noise', sourcePath: 'X', targetPath: 'Y',
+        targetValue: 0.0, minValue: -100, maxValue: 100,
+        noiseDistribution: 'uniform', driftAmplitude: driftAmplitude, driftPeriodSec: 30.0);
+
+    final a = _run(_proj([driftOnlyRule()], _tags()), 20);
+    final b = _run(_proj([driftOnlyRule()], _tags()), 20);
+    expect(a, b); // deterministic across runs
+
+    expect(a, isNot(everyElement(equals(clean)))); // drift is actually applied
+    for (final v in a) {
+      expect((v - clean).abs(), lessThanOrEqualTo(driftAmplitude + 1e-9));
+    }
+  });
 }
