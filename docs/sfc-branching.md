@@ -179,6 +179,31 @@ structural helper keeps the fork/join invariant intact — a fork's
 `fromStepIds` always equals the current branch tails — so the chart stays
 parseable with no dangling references after every edit.
 
+## Showcase: SFC — Batch Mix & Dispatch
+
+`proj_sfc_batchmix` (default project, `mobile/lib/data/default_projects.dart`)
+is a from-scratch showcase built entirely with the structured-authoring
+helpers above, exercising both branch shapes in one chart:
+
+- **Parallel Heat + Fill** — `Start_Cmd` forks `IDLE` into two branches at
+  once: `HEATING` (raises `Temp_PV` toward `Temp_SP`) and `FILLING` (raises
+  `Fill_Level` toward `Fill_Target`). The join at `MIXING` waits for
+  **both** branch tails, and heating is deliberately tuned slower than
+  filling so the demo actually shows the join waiting: the fill branch
+  reaches `FILL_DONE` and parks there — visibly lit but idle on Go-Online —
+  while the heat branch is still running, until the tank finally reaches
+  temperature and the join fires.
+- **Alternative quality gate** — from `MIXING`, an alternative divergence
+  routes on `Quality_OK`: the true arm goes to `DISPATCH` (drives
+  `Dispatch_Pump`, increments `Batch_Count`), the false arm to `REJECT`
+  (drives `Drain_Valve`, increments `Reject_Count`). Both arms loop back to
+  `IDLE` after their dwell, so the whole batch cycles continuously.
+- **Go-Online** during the parallel phase lights up **two** active steps
+  at once — first `HEATING` and `FILLING` together, then `FILL_DONE`
+  glowing parked next to a still-running `HEATING` once the faster fill
+  branch finishes first — the clearest on-canvas demonstration that the
+  engine's active set is a set, not a single token.
+
 ## Testing
 
 Covered by dedicated test files alongside the full existing suite:
