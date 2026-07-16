@@ -175,11 +175,10 @@ class _PidAutoTuneScreenState extends State<PidAutoTuneScreen> {
 
     writeGain('Kp', binding.kpSourceBlockId, s.kp);
     writeGain('Ki', binding.kiSourceBlockId, s.ki);
-    // PI rules leave Kd at 0 and typically have no wired Kd source; only write
-    // Kd for PID-form rules so a PI apply never zeroes an existing Kd gain.
-    if (s.form == 'PID') {
-      writeGain('Kd', binding.kdSourceBlockId, s.kd);
-    }
+    // Write Kd for every row, including PI-form ones where s.kd is 0 — this is
+    // what makes a "PI" apply produce a genuine PI loop instead of leaving a
+    // stale (possibly nonzero) derivative gain in place.
+    writeGain('Kd', binding.kdSourceBlockId, s.kd);
 
     widget.onProjectUpdated();
     setState(() {});

@@ -13,6 +13,11 @@ FbdBlock _kpBlock(PlcProject p) {
   return prog.fbdBlocks.firstWhere((b) => b.id == 'p_kp');
 }
 
+FbdBlock _kdBlock(PlcProject p) {
+  final prog = p.programs.firstWhere((pr) => pr.language == 'FunctionBlockDiagram');
+  return prog.fbdBlocks.firstWhere((b) => b.id == 'p_kd');
+}
+
 Widget _app(PlcProject project) => MaterialApp(
       home: PidAutoTuneScreen(
         currentProject: project,
@@ -57,6 +62,36 @@ void main() {
       await tester.tap(applyBtn);
       await tester.pumpAndSettle();
       expect(_kpBlock(project).tagBinding, isNot(before));
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+        'Applying a PI-form row writes Kd=0 (true PI, not a stale PID gain)',
+        (tester) async {
+      await setSurface(tester, desktopSize);
+      final project = _project();
+      await tester.pumpWidget(_app(project));
+      await tester.pumpAndSettle();
+
+      // The demo's Kd CONST block starts wired to a nonzero (PID) gain.
+      expect(double.parse(_kdBlock(project).tagBinding), isNot(0.0));
+
+      await tester.tap(find.text('Run Auto-Tune'));
+      await tester.pumpAndSettle();
+
+      // tuningRules() emits [ZN PID, ZN PI, Tyreus-Luyben PID, ...]: row index
+      // 1 is the Ziegler-Nichols PI row (form == 'PI', kd == 0).
+      final applyButtons = find.widgetWithText(ElevatedButton, 'Apply');
+      final piApplyBtn = applyButtons.at(1);
+      await tester.ensureVisible(piApplyBtn);
+      await tester.pumpAndSettle();
+      await tester.tap(piApplyBtn);
+      await tester.pumpAndSettle();
+
+      // Applying a PI row must write Kd=0 to the resolved Kd source so the
+      // loop actually behaves as PI, instead of leaving the old PID Kd wired.
+      expect(double.parse(_kdBlock(project).tagBinding), 0.0);
 
       expect(tester.takeException(), isNull);
     });
