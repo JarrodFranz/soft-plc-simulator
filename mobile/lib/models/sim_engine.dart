@@ -1,3 +1,4 @@
+import 'noise_model.dart';
 import 'project_model.dart';
 import 'tag_resolver.dart';
 import 'valve_curve.dart';
@@ -9,6 +10,8 @@ class RuleRuntime {
   int heldMs = 0;       // delayedSet: how long the condition has held
   final List<double> delayBuf = <double>[]; // deadTime: FIFO of source samples
   int? noiseState;      // noise: 32-bit xorshift PRNG state, lazily seeded
+  int? driftState;          // noise-drift: 32-bit xorshift PRNG (separate stream)
+  double driftValue = 0.0;  // current drift (EMA-filtered wander)
 }
 
 class SimRuntime {
@@ -221,14 +224,35 @@ void applySimRules(PlcProject p, List<SimRule> rules, int dtMs, SimRuntime rt) {
         if (cond && rule.sourcePath.isNotEmpty) {
           final clean = _asDouble(readPath(p, rule.sourcePath));
           final a = rule.targetValue;
-          if (a <= 0) {
-            _write(p, rule.targetPath, _clamp(clean, rule.minValue, rule.maxValue));
-            break;
+
+          // --- noise term ---
+          double noise = 0.0;
+          if (a > 0) {
+            if (rule.noiseDistribution == kNoiseGaussian) {
+              st.noiseState = _xorshift32(st.noiseState ?? _fnv1a(rule.id));
+              final u1 = st.noiseState! / 0xffffffff;
+              st.noiseState = _xorshift32(st.noiseState!);
+              final u2 = st.noiseState! / 0xffffffff;
+              noise = gaussianNoise(u1, u2, a);
+            } else {
+              st.noiseState = _xorshift32(st.noiseState ?? _fnv1a(rule.id));
+              final u = st.noiseState! / 0xffffffff;
+              noise = uniformNoise(u, a);
+            }
           }
-          st.noiseState = _xorshift32(st.noiseState ?? _fnv1a(rule.id));
-          final u = st.noiseState! / 0xffffffff; // [0,1]
-          final noise = (2 * u - 1) * a; // [-a, a]
-          _write(p, rule.targetPath, _clamp(clean + noise, rule.minValue, rule.maxValue));
+
+          // --- drift term (separate PRNG stream; skipped entirely when off) ---
+          double drift = 0.0;
+          if (rule.driftAmplitude > 0) {
+            st.driftState = _xorshift32(st.driftState ?? _fnv1a('${rule.id}#drift'));
+            final ud = st.driftState! / 0xffffffff;
+            final target = uniformNoise(ud, rule.driftAmplitude);
+            st.driftValue = driftStep(
+                st.driftValue, target, driftAlpha(dtMs, rule.driftPeriodSec));
+            drift = st.driftValue;
+          }
+
+          _write(p, rule.targetPath, _clamp(clean + noise + drift, rule.minValue, rule.maxValue));
         }
         break;
       default:
