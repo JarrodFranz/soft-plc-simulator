@@ -35,6 +35,8 @@ The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators
   - Data-driven, editable input behaviours in a dedicated **Simulated I/O** screen: `pulse`, `ramp`, `integrate`, `delayedSet`, and `setWhileCondition`, each gated by AND-combined conditions (literal or tag-vs-tag comparisons) with **per-second rates** independent of scan speed. Photo eyes blip while the belt runs, tanks fill while valves open, temperatures drift — all visible and tunable, and manual forcing always wins. An `integrate`/`ramp` rule driven by an actuator tag can also pick a **valve characteristic** (linear/equal-percentage/quick-opening) shaping how the actuator's position maps onto rate — see `docs/valve-curves.md`. A `noise` rule (deterministic bounded measurement noise) can pick its **distribution** (uniform/Gaussian) and add a slow **bounded sensor drift** (amplitude + time-constant period) on top of the fast per-scan jitter — see `docs/measurement-noise.md`.
 - **PID Auto-Tune (Relay Feedback)**:
   - A dedicated **PID Auto-Tune** panel runs a closed-loop relay-feedback experiment on a deep copy of the project's simulated process (the live loop is never disturbed), detects the resulting limit cycle, and estimates the ultimate gain `Ku` and period `Pu`. Six classic tuning-rule suggestions (Ziegler-Nichols, Tyreus-Luyben, ZN no-overshoot — each PID and PI) are computed from `Ku`/`Pu`, and **Apply** writes a chosen row's gains straight onto the loop's `CONST`/tag gain sources. Deterministic and reproducible — see `docs/pid-autotune.md`.
+- **MIMO Coupled Plant & Interaction Analysis**:
+  - The **"MIMO — Two Thermal Zones"** default project models a genuine 2×2 multivariable process — two heater/temperature zones coupled by heat conduction through a shared wall, so a setpoint step on one zone visibly disturbs the other. The **Interaction Analysis** panel runs automated open-loop step tests on a deep copy of the plant to identify the 2×2 steady-state gain matrix, computes the Relative Gain Array (`λ11`) to quantify interaction and recommend a loop pairing, and suggests static-decoupler gains (`d12 = K12/K11`, `d21 = K21/K22`) that cut cross-loop disturbance by roughly half in the shipped demo. Deterministic and non-mutating (the live loop is never disturbed) — see `docs/mimo-coupled-plant.md`.
 - **Toggleable Side Dock Tag Inspector**:
   - Searchable tag matrix with live values, quality flags, engineering units, and manual value forcing controls accessible right on the HMI screen.
 - **Tag Historian & Trend Charts**:
@@ -228,6 +230,7 @@ flutter analyze
 - [SECURITY_AND_SAFETY.md](SECURITY_AND_SAFETY.md) — Security policies and safety disclaimers.
 - [docs/protocols/](docs/protocols/) — Protocol adapter specifications (OPC UA, Modbus TCP, MQTT, DNP3).
 - [docs/trends.md](docs/trends.md) — Tag historian & trend charts (pens, the Trends section, the HMI trend component, and the trace cursor).
+- [docs/mimo-coupled-plant.md](docs/mimo-coupled-plant.md) — MIMO coupled-plant demo, gain-matrix/RGA interaction analysis, and the static decoupler.
 
 ---
 
