@@ -216,6 +216,25 @@ void main() {
     },
   );
 
+  test('existing install backfills a new default on startup path', () async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final repo = ProjectRepository(prefs);
+    // Simulate an older install: every default except the last, ledger absent.
+    final all = DefaultProjects.all();
+    final missing = all.last;
+    for (final p in all) {
+      if (p.id != missing.id) {
+        await repo.saveProject(p);
+      }
+    }
+    // The startup path now calls backfillNewDefaults() instead of seedDefaultsIfEmpty().
+    await repo.backfillNewDefaults();
+    final ids = (await repo.listProjects()).map((s) => s.id).toSet();
+    expect(ids.contains(missing.id), isTrue);
+    expect(ids.length, all.length);
+  });
+
   testWidgets(
     'shows a visible "not saved" indicator (no overflow) when persistence is genuinely unavailable',
     (tester) async {

@@ -40,6 +40,10 @@ The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators
   - **Draggable trace cursor** (touch + mouse): tap/drag a vertical scrubber to read each pen's value at any moment, with the time shown both relative (`-1m 12s`) and as wall-clock (`HH:mm:ss`). Samples are transient (never persisted); the pen configuration saves with the project.
 - **Configurable Scan Cycle Engine & Debugging**:
   - PLC-faithful scan pipeline each tick: **read/drive simulated inputs → execute ladder programs → write outputs**, with a **Scan Loop Speed Slider** (`50ms` Full Speed down to `2000ms` Slow Motion step debugging), Pause control (`⏸ / ▶`), and **Step Scan** (`⏭`) single-cycle execution. Timers advance by scan ticks, so pause/step debugging stays deterministic.
+- **Project Catalog & Persistence**:
+  - Projects (including the built-in default projects) are stored locally via `SharedPreferences`; edits autosave in the background as you work.
+  - Built-in default projects **backfill non-destructively on upgrade**: when a new release adds a default project, it appears in your catalog on the next launch without wiping any of your existing projects or edits — and a default project you previously deleted stays deleted (it is never resurrected).
+  - **Reset to Defaults** (project menu) remains the full destructive restore: it wipes every project, including your own, and reseeds only the built-in defaults.
 
 ---
 

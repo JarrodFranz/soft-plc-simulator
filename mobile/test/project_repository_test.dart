@@ -146,6 +146,30 @@ void main() {
     expect((await repo.listProjects()).any((s) => s.id == id), isFalse);
   });
 
+  test('backfillNewDefaults persists the bootstrapped ledger even when it adds nothing', () async {
+    final repo = await freshRepo();
+    // Simulate a pre-migration install where the catalog ALREADY equals the
+    // full default set (nothing left to add) but the ledger key has never
+    // been written. The first backfill call must still persist a
+    // bootstrapped ledger -- not skip persistence just because `changed`
+    // stayed false -- otherwise a later delete-then-backfill would treat the
+    // ledger as still-absent and resurrect the deleted default.
+    final all = DefaultProjects.all();
+    for (final p in all) {
+      await repo.saveProject(p);
+    }
+    expect((await repo.listProjects()).length, all.length);
+
+    await repo.backfillNewDefaults(); // adds nothing, but MUST persist the ledger
+
+    final deletedId = all.first.id;
+    await repo.deleteProject(deletedId);
+    await repo.backfillNewDefaults(); // ledger must already contain deletedId
+
+    final ids = (await repo.listProjects()).map((s) => s.id).toSet();
+    expect(ids.contains(deletedId), isFalse, reason: 'deleted default must not be resurrected');
+  });
+
   test('resetToDefaults clears the ledger and leaves the full default set once', () async {
     final repo = await freshRepo();
     await repo.backfillNewDefaults();
