@@ -486,35 +486,56 @@ void main() {
   });
 
   group('deleteSfcStepStructured fork-source (A2)', () {
-    test('deleting a fork-source step removes fork + branches + join (no orphans)',
-        () {
-      final p = PlcProgram(name: 'M', language: 'SequentialFunctionChart', rungs: []);
-      final src = addSfcStep(p, name: 'SRC'); // initial, will own the fork
-      addParallelBranch(p, src.id); // fork SRC -> [b1,b2], join -> after
-      // sanity: a fork now exists out of src
+    test(
+        'deleting a NON-INITIAL fork-source step WITH a predecessor removes '
+        'fork + branches + join + the source\'s OWN edges (no orphans)', () {
+      final p = _linear(); // s0(init) -> s1 -> s2
+      addParallelBranch(p, 's1'); // fork s1 -> [b1,b2], join -> s2
+
+      // sanity: a fork now exists out of s1, AND s1 has an incoming
+      // predecessor edge (s0 -> s1) that is NOT part of the fork/branch/join
+      // construct — this is the edge the buggy path used to leave dangling.
       expect(
         p.sfcTransitions
-            .any((t) => t.kind == 'parallelFork' && t.fromStepId == src.id),
+            .any((t) => t.kind == 'parallelFork' && t.fromStepId == 's1'),
         isTrue,
       );
-      deleteSfcStepStructured(p, src.id); // must remove the whole construct
+      expect(
+        p.sfcTransitions.any((t) =>
+            t.kind == 'single' && t.fromStepId == 's0' && t.toStepId == 's1'),
+        isTrue,
+        reason: 'sanity: s1 has a predecessor edge before the delete',
+      );
+
+      deleteSfcStepStructured(p, 's1'); // must remove the whole construct
+
       expect(p.sfcTransitions.any((t) => t.kind == 'parallelFork'), isFalse,
           reason: 'fork gone');
       expect(p.sfcTransitions.any((t) => t.kind == 'parallelJoin'), isFalse,
           reason: 'paired join gone (not orphaned)');
-      // every remaining transition references an existing step (no dangling)
+
       final ids = p.sfcSteps.map((s) => s.id).toSet();
+      expect(ids.contains('s1'), isFalse, reason: 'sanity: s1 actually removed');
+
+      // NO transition may reference a removed step id, on ANY of its id
+      // fields (fromStepId/toStepId singular, AND toStepIds/fromStepIds
+      // plural) — this is the assertion that catches the dangling
+      // predecessor edge (s0 -> s1) the pre-fix code left behind.
       for (final t in p.sfcTransitions) {
         if (t.kind == 'single') {
-          expect(ids.contains(t.fromStepId) || t.fromStepId.isEmpty, isTrue);
+          expect(ids.contains(t.fromStepId), isTrue,
+              reason: 'single ${t.id} dangling fromStepId ${t.fromStepId}');
+          expect(ids.contains(t.toStepId), isTrue,
+              reason: 'single ${t.id} dangling toStepId ${t.toStepId}');
         }
         for (final h in t.toStepIds) {
-          expect(ids.contains(h), isTrue);
+          expect(ids.contains(h), isTrue, reason: '${t.id} dangling head $h');
         }
         for (final tl in t.fromStepIds) {
-          expect(ids.contains(tl), isTrue);
+          expect(ids.contains(tl), isTrue, reason: '${t.id} dangling tail $tl');
         }
       }
+
       final region = parseSfc(p.sfcSteps, p.sfcTransitions);
       expect(region, isNotNull);
     });

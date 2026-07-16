@@ -537,9 +537,17 @@ void deleteSfcStepStructured(PlcProgram p, String stepId) {
       // Remove the fork, the join, and every transition internal to any
       // branch (singles, nested forks, nested joins). Nothing is reconnected —
       // the source step itself is being deleted, so the whole construct simply
-      // goes away.
+      // goes away. ALSO strip the source step's OWN edges (any transition with
+      // fromStepId == stepId or toStepId == stepId) — most importantly the
+      // predecessor edge INTO the fork source from outside the branch, which
+      // the sweep above (keyed on `removeSteps`, the branch subgraph) does not
+      // cover since the source step itself is never added to `removeSteps`.
+      // Mirrors the equivalent removeWhere in plain `deleteSfcStep`.
       p.sfcTransitions.removeWhere((t) {
         if (t.id == fork.id || t.id == join.id) {
+          return true;
+        }
+        if (t.fromStepId == stepId || t.toStepId == stepId) {
           return true;
         }
         switch (t.kind) {
