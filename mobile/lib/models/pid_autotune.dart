@@ -58,6 +58,23 @@ class RelayTuneResult {
   });
 }
 
+/// A single tuning rule suggestion computed from Ku and Pu.
+class TuningSuggestion {
+  final String name;
+  final String form;
+  final double kp;
+  final double ki;
+  final double kd;
+
+  const TuningSuggestion({
+    required this.name,
+    required this.form,
+    required this.kp,
+    required this.ki,
+    required this.kd,
+  });
+}
+
 double _asDouble(dynamic v) => v is num ? v.toDouble() : (v == true ? 1.0 : 0.0);
 
 /// Relative spread of a run of samples: `(max - min) / |mean|`. Returns
@@ -225,5 +242,88 @@ RelayTuneResult relayAutoTune(
     amplitude: amplitude,
     trace: trace,
     warning: null,
+  );
+}
+
+/// Computes six classic PID/PI tuning-rule suggestions from ultimate gain [ku]
+/// and ultimate period [pu] (in milliseconds).
+///
+/// Returns tuning rules from three families (Ziegler-Nichols, Tyreus-Luyben,
+/// ZN no-overshoot), each with both PID and PI variants. The engine integrates
+/// in seconds, so the period is first converted to seconds: `puS = pu / 1000`.
+///
+/// For each rule, Ki is computed as `Kp / Ti` (guarded: if `Ti <= 0`, then `Ki = 0`).
+/// For PI rules, Kd is always 0. For PID rules, Kd = Kp * Td.
+List<TuningSuggestion> tuningRules(double ku, double pu) {
+  final puS = pu / 1000.0;
+
+  return [
+    // Ziegler-Nichols PID
+    _makeTuning(
+      name: 'Ziegler-Nichols',
+      form: 'PID',
+      kp: 0.6 * ku,
+      ti: 0.5 * puS,
+      td: 0.125 * puS,
+    ),
+    // Ziegler-Nichols PI
+    _makeTuning(
+      name: 'Ziegler-Nichols',
+      form: 'PI',
+      kp: 0.45 * ku,
+      ti: 0.833 * puS,
+      td: 0.0,
+    ),
+    // Tyreus-Luyben PID
+    _makeTuning(
+      name: 'Tyreus-Luyben',
+      form: 'PID',
+      kp: ku / 2.2,
+      ti: 2.2 * puS,
+      td: puS / 6.3,
+    ),
+    // Tyreus-Luyben PI
+    _makeTuning(
+      name: 'Tyreus-Luyben',
+      form: 'PI',
+      kp: ku / 3.2,
+      ti: 2.2 * puS,
+      td: 0.0,
+    ),
+    // ZN no-overshoot PID
+    _makeTuning(
+      name: 'ZN no-overshoot',
+      form: 'PID',
+      kp: 0.2 * ku,
+      ti: 0.5 * puS,
+      td: puS / 3.0,
+    ),
+    // ZN no-overshoot PI
+    _makeTuning(
+      name: 'ZN no-overshoot',
+      form: 'PI',
+      kp: 0.13 * ku,
+      ti: 0.5 * puS,
+      td: 0.0,
+    ),
+  ];
+}
+
+/// Helper to construct a TuningSuggestion from name, form, Kp, Ti, and Td.
+TuningSuggestion _makeTuning({
+  required String name,
+  required String form,
+  required double kp,
+  required double ti,
+  required double td,
+}) {
+  final ki = ti > 0 ? kp / ti : 0.0;
+  final kd = kp * td;
+  return TuningSuggestion(
+    name: name,
+    form: form,
+    kp: kp,
+    ki: ki,
+    kd: kd,
   );
 }

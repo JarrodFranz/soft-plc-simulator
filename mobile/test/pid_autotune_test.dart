@@ -78,4 +78,34 @@ void main() {
     expect(r.converged, isFalse);
     expect(r.warning, isNotNull);
   });
+
+  group('tuningRules', () {
+    test('tuningRules golden numbers', () {
+      final s = tuningRules(10.0, 4000.0); // puS = 4.0
+      TuningSuggestion row(String name, String form) =>
+          s.firstWhere((x) => x.name == name && x.form == form);
+      // ZN PID: Kp=6.0, Ti=2.0 -> Ki=3.0, Td=0.5 -> Kd=3.0
+      final zn = row('Ziegler-Nichols', 'PID');
+      expect(zn.kp, closeTo(6.0, 1e-9));
+      expect(zn.ki, closeTo(3.0, 1e-9));
+      expect(zn.kd, closeTo(3.0, 1e-9));
+      // ZN PI: Kp=4.5, Ti=3.332 -> Ki=1.3506..., Kd=0
+      final znpi = row('Ziegler-Nichols', 'PI');
+      expect(znpi.kp, closeTo(4.5, 1e-9));
+      expect(znpi.kd, 0);
+      // Tyreus-Luyben PID: Kp=10/2.2=4.5454..., Ti=8.8 -> Ki=0.5165..., Td=4/6.3=0.6349 -> Kd=2.886...
+      final tl = row('Tyreus-Luyben', 'PID');
+      expect(tl.kp, closeTo(10 / 2.2, 1e-9));
+      expect(tl.kd, closeTo((10 / 2.2) * (4.0 / 6.3), 1e-9));
+      // ZN no-overshoot PID: Kp=2.0, Ti=2.0 -> Ki=1.0, Td=4/3 -> Kd=2.666...
+      final no = row('ZN no-overshoot', 'PID');
+      expect(no.kp, closeTo(2.0, 1e-9));
+      expect(no.kd, closeTo(2.0 * (4.0 / 3.0), 1e-9));
+      // all PI rows have kd == 0; all Ki == kp/Ti (Ti>0)
+      for (final x in s.where((x) => x.form == 'PI')) {
+        expect(x.kd, 0);
+      }
+      expect(s.length, 6);
+    });
+  });
 }
