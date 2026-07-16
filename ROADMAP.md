@@ -108,6 +108,17 @@ old flow-ordered list layout (`sfc_layout.dart`) has been retired now that
 the 2D pipeline fully supersedes it. Documented in
 [`docs/sfc-branching.md`](docs/sfc-branching.md).
 
+**SFC v2 Minors + Batch Mix & Dispatch showcase (post-ship)** ✅ — the two
+deferred v2 Minors are fixed (`addParallelBranch` now guards against
+forking from an alternative-divergence head, and deleting a fork-source
+step removes the whole fork/join construct instead of leaving a dangling
+reference), the per-column parallel join connector and internal
+`_stepKey`/`_guardFrag` helpers were de-duplicated, and a new default
+project, **SFC — Batch Mix & Dispatch**, ships as a from-scratch showcase
+of both branch shapes together (parallel Heat + Fill fork/join, then an
+alternative `Quality_OK` dispatch/reject gate). See
+[`docs/sfc-branching.md`](docs/sfc-branching.md).
+
 ---
 
 ## Phase 3.5: Structured Tag System, Simulated I/O & In-App Execution Engines ✅
