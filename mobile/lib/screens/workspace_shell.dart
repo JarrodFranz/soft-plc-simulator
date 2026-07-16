@@ -32,6 +32,7 @@ import 'sfc_editor_screen.dart';
 import 'memory_manager_screen.dart';
 import 'hmi_dashboard_builder_screen.dart';
 import 'simulated_io_screen.dart';
+import 'pid_autotune_screen.dart';
 import 'gateway_screen.dart';
 import 'softplc_settings_dialog.dart';
 
@@ -2106,6 +2107,28 @@ class WorkspaceShellState extends State<WorkspaceShell> {
                 Container(
                   margin: const EdgeInsets.only(left: 12, top: 2),
                   decoration: BoxDecoration(
+                    color: _activeViewId == 'PID_AUTOTUNE' ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(Icons.tune, size: 16, color: _activeViewId == 'PID_AUTOTUNE' ? Colors.cyanAccent : Colors.tealAccent),
+                      title: Text(
+                        'PID AUTO-TUNE',
+                        style: TextStyle(fontSize: 11, fontWeight: _activeViewId == 'PID_AUTOTUNE' ? FontWeight.bold : FontWeight.normal),
+                      ),
+                      onTap: () => _selectView(context, 'PID_AUTOTUNE'),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 8),
+
+                Container(
+                  margin: const EdgeInsets.only(left: 12, top: 2),
+                  decoration: BoxDecoration(
                     color: _activeViewId == 'GATEWAY' ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
                     borderRadius: BorderRadius.circular(4),
                   ),
@@ -2697,6 +2720,11 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       }
     } else if (_activeViewId == 'SIMIO:rules') {
       return SimulatedIoScreen(
+        currentProject: _activeProject,
+        onProjectUpdated: _markDirtyAndAutosave,
+      );
+    } else if (_activeViewId == 'PID_AUTOTUNE') {
+      return PidAutoTuneScreen(
         currentProject: _activeProject,
         onProjectUpdated: _markDirtyAndAutosave,
       );
