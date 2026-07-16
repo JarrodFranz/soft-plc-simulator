@@ -254,7 +254,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       // persist. A failure here only affects what's shown THIS session,
       // never whether autosave has somewhere to write.
       try {
-        await repo.seedDefaultsIfEmpty();
+        await repo.backfillNewDefaults();
 
         final catalog = await repo.listProjects();
         final activeId = await repo.getActiveProjectId();
