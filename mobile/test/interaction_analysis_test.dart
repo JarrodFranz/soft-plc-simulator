@@ -65,17 +65,32 @@ void main() {
     final low = computeRga(const GainMatrix(k11: 2, k12: 0.2, k21: 0.2, k22: 2, converged: true));
     expect(low.lambda11, closeTo(4 / 3.96, 1e-9));
     expect(low.pairing.toLowerCase(), contains('diagonal'));
-    // Strong interaction: K = [[1,0.9],[0.9,1]] -> det=0.19, lambda11=1/0.19=5.26... actually pick one in (0.33,0.67):
-    // K=[[1,0.8],[0.8,1]] det=0.36 lambda11=1/0.36=2.77 (still >0.67). Use K=[[1,1.2],[0.8,1]] det=1-0.96=0.04 lambda=1/0.04=25 -> high.
-    // For a mid-band lambda: K=[[1,2],[2,1]] det=1-4=-3 lambda11=1/-3=-0.333 -> off-diagonal / negative.
+    expect(low.pairing.toLowerCase(), contains('low interaction'));
+    // Off-diagonal / negative RGA: K=[[1,2],[2,1]] det=1-4=-3 lambda11=1/-3=-0.333
     final off = computeRga(const GainMatrix(k11: 1, k12: 2, k21: 2, k22: 1, converged: true));
     expect(off.lambda11, closeTo(1 / -3, 1e-9));
-    expect(off.pairing.toLowerCase(), anyOf(contains('off-diagonal'), contains('ill-conditioned')));
+    expect(off.pairing.toLowerCase(), contains('off-diagonal'));
+  });
+
+  test('computeRga flags strong interaction on the flagship MIMO plant (not "low interaction")', () {
+    // K = [[0.645,0.537],[0.537,0.645]] -> det=0.645^2-0.537^2=0.127656,
+    // lambda11=0.416025/0.127656≈3.2585: strongly interacting, diagonal pairing,
+    // decoupling recommended. Must NOT read as low interaction or ill-conditioned
+    // (the gain matrix here is well-conditioned; only a near-singular det earns
+    // "ill-conditioned").
+    final strong = computeRga(const GainMatrix(k11: 0.645, k12: 0.537, k21: 0.537, k22: 0.645, converged: true));
+    expect(strong.lambda11, greaterThan(1.5));
+    expect(strong.lambda11, closeTo(3.2585, 1e-3));
+    final p = strong.pairing.toLowerCase();
+    expect(p, anyOf(contains('significant interaction'), contains('decoupling')));
+    expect(p, isNot(contains('low interaction')));
+    expect(p, isNot(contains('ill-conditioned')));
   });
 
   test('computeRga singular matrix warns and returns NaN lambda', () {
     final s = computeRga(const GainMatrix(k11: 1, k12: 1, k21: 1, k22: 1, converged: true)); // det=0
     expect(s.warning, isNotNull);
+    expect(s.warning, contains('ill-conditioned'));
     expect(s.lambda11.isNaN, isTrue);
   });
 }

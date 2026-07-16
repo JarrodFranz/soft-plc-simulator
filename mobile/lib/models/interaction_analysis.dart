@@ -204,11 +204,18 @@ GainMatrix identifyGainMatrix(
 ///
 /// `lambda11 = (k11*k22) / det` where `det = k11*k22 - k12*k21`. A
 /// near-singular gain matrix (`|det| < 1e-9`) yields `NaN` and a warning
-/// instead of a division by ~zero. Otherwise the pairing recommendation is
-/// banded on `lambda11`: `>= 0.67` favors the diagonal pairing (low
-/// interaction), `(0.33, 0.67)` calls for decoupling, and `<= 0.33` favors
-/// the off-diagonal pairing; a `lambda11` outside `[0, 1]` additionally notes
-/// the matrix is ill-conditioned.
+/// instead of a division by ~zero — this is the only case described as
+/// "ill-conditioned", since that term means the gain matrix is near-singular,
+/// not merely that `lambda11` is far from 1.
+///
+/// Otherwise the pairing recommendation is banded on `lambda11`'s distance
+/// from the RGA ideal of 1 (perfect, non-interacting diagonal pairing):
+/// `< 0` recommends the off-diagonal pairing (negative RGA — avoid the
+/// diagonal entirely), `[0, 0.33]` also favors the off-diagonal pairing,
+/// `(0.33, 0.67)` is strong interaction near the 0.5 crossover (decoupling
+/// recommended, diagonal pairing), `[0.67, 1.5]` is low interaction (diagonal
+/// pairing), and `> 1.5` is significant interaction on the diagonal pairing
+/// (decoupling recommended).
 RgaResult computeRga(GainMatrix g) {
   final det = g.k11 * g.k22 - g.k12 * g.k21;
   if (det.abs() < 1e-9) {
@@ -222,15 +229,16 @@ RgaResult computeRga(GainMatrix g) {
   final lambda11 = (g.k11 * g.k22) / det;
 
   String pairing;
-  if (lambda11 >= 0.67) {
-    pairing = 'Diagonal: MV1→PV1, MV2→PV2 (low interaction)';
-  } else if (lambda11 > 0.33) {
-    pairing = 'Strong interaction — decoupling recommended (diagonal pairing)';
+  if (lambda11 < 0) {
+    pairing = 'Off-diagonal pairing: MV1→PV2, MV2→PV1 — negative RGA (avoid diagonal)';
+  } else if (lambda11 <= 0.33) {
+    pairing = 'Off-diagonal pairing: MV1→PV2, MV2→PV1';
+  } else if (lambda11 < 0.67) {
+    pairing = 'Strong interaction (λ near 0.5) — decoupling recommended; diagonal pairing';
+  } else if (lambda11 <= 1.5) {
+    pairing = 'Diagonal pairing: MV1→PV1, MV2→PV2 — low interaction';
   } else {
-    pairing = 'Off-diagonal: MV1→PV2, MV2→PV1';
-  }
-  if (lambda11 < 0 || lambda11 > 1) {
-    pairing = '$pairing — ill-conditioned';
+    pairing = 'Diagonal pairing: MV1→PV1, MV2→PV2 — significant interaction, decoupling recommended';
   }
 
   return RgaResult(lambda11: lambda11, pairing: pairing);
