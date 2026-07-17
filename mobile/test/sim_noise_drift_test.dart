@@ -119,6 +119,31 @@ void main() {
   // output is clean + drift only. Confirms drift is actually applied (not a
   // no-op), stays within clean +/- driftAmplitude (+ epsilon for the EMA
   // wander's float arithmetic), and is deterministic across runs.
+  test('pink differs from uniform and stays clamped', () {
+    final u = _run(_proj([_noiseRule(dist: 'uniform')], _tags()), 30);
+    final p = _run(_proj([_noiseRule(dist: 'pink')], _tags()), 30);
+    expect(p, isNot(equals(u)));
+    for (final v in p) {
+      expect(v, inInclusiveRange(-100.0, 100.0));
+    }
+  });
+
+  test('pink is deterministic: same seed -> same sequence', () {
+    final a = _run(_proj([_noiseRule(dist: 'pink')], _tags()), 25);
+    final b = _run(_proj([_noiseRule(dist: 'pink')], _tags()), 25);
+    expect(a, b);
+  });
+
+  test('pink + drift stays bounded and deterministic', () {
+    final a = _run(_proj([_noiseRule(dist: 'pink', drift: 2.0)], _tags()), 40);
+    final b = _run(_proj([_noiseRule(dist: 'pink', drift: 2.0)], _tags()), 40);
+    expect(a, b);
+    for (final v in a) {
+      expect(v.isFinite, isTrue);
+      expect(v, inInclusiveRange(-100.0, 100.0));
+    }
+  });
+
   test('drift-only: amplitude 0 + driftAmplitude > 0 applies bounded, deterministic drift', () {
     const clean = 10.0, driftAmplitude = 3.0;
     SimRule driftOnlyRule() => SimRule(
