@@ -57,4 +57,87 @@ void main() {
     expect(a1, greaterThan(a2)); // larger tau -> smaller alpha (slower)
     expect(a1, inInclusiveRange(0.0, 1.0));
   });
+
+  group('pink', () {
+    List<double> st() => List<double>.filled(kPinkStateLen, 0.0);
+
+    /// Deterministic pseudo-uniform sequence in [0,1] (no Random — pure).
+    double u(int i, int n) => ((i * 2654435761) % n) / n;
+
+    test('pinkStep is deterministic and evolves the state', () {
+      final a = st();
+      final b = st();
+      final ra = pinkStep(a, 0.5);
+      final rb = pinkStep(b, 0.5);
+      expect(ra, rb); // same state + input -> same output
+      expect(a.any((x) => x != 0.0), isTrue, reason: 'filter state must evolve');
+      expect(a, b); // state evolves identically
+    });
+
+    test('pinkStep stays finite and stable over 10k steps', () {
+      final b = st();
+      var last = 0.0;
+      for (var i = 0; i < 10000; i++) {
+        last = pinkStep(b, 2 * u(i, 9973) - 1);
+        expect(last.isFinite, isTrue);
+      }
+      for (final x in b) {
+        expect(x.isFinite, isTrue);
+      }
+    });
+
+    test('pinkNoise sample std ~= amplitude (locks kPinkNormalise)', () {
+      const n = 20000;
+      const amp = 3.0;
+      final b = st();
+      final xs = <double>[];
+      for (var i = 0; i < n; i++) {
+        xs.add(pinkNoise(b, u(i, 9973), amp));
+      }
+      final mean = xs.reduce((p, q) => p + q) / n;
+      final variance = xs.map((x) => (x - mean) * (x - mean)).reduce((p, q) => p + q) / n;
+      final std = math.sqrt(variance);
+      expect(std, closeTo(amp, amp * 0.25), reason: 'amplitude must mean output std');
+    });
+
+    test('pinkNoise scales linearly with amplitude', () {
+      final b1 = st();
+      final b2 = st();
+      for (var i = 0; i < 50; i++) {
+        final x1 = pinkNoise(b1, u(i, 9973), 1.0);
+        final x2 = pinkNoise(b2, u(i, 9973), 4.0);
+        expect(x2, closeTo(x1 * 4.0, 1e-9));
+      }
+    });
+
+    test('pink is genuinely 1/f: block-averaging retains more variance than white', () {
+      const n = 20000;
+      const block = 50;
+      final b = st();
+      final pink = <double>[];
+      final white = <double>[];
+      for (var i = 0; i < n; i++) {
+        final uu = u(i, 9973);
+        pink.add(pinkNoise(b, uu, 1.0));
+        white.add(uniformNoise(uu, 1.0));
+      }
+      double retainedRatio(List<double> xs) {
+        double varOf(List<double> v) {
+          final m = v.reduce((p, q) => p + q) / v.length;
+          return v.map((x) => (x - m) * (x - m)).reduce((p, q) => p + q) / v.length;
+        }
+
+        final blocks = <double>[];
+        for (var i = 0; i + block <= xs.length; i += block) {
+          final slice = xs.sublist(i, i + block);
+          blocks.add(slice.reduce((p, q) => p + q) / block);
+        }
+        return varOf(blocks) / varOf(xs);
+      }
+
+      // White block-means collapse (~1/block); pink retains far more LF energy.
+      expect(retainedRatio(pink), greaterThan(retainedRatio(white) * 5),
+          reason: 'pink must retain substantially more low-frequency energy than white');
+    });
+  });
 }
