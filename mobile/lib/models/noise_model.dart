@@ -19,6 +19,13 @@ const int kPinkStateLen = 7;
 /// white noise; the Kellet cascade is low-pass weighted and heavily
 /// attenuates that band, which understated the raw std and produced a
 /// constant that made pink output ~79% wider than `amplitude`.)
+///
+/// Calibrated once against a representative seed: a given rule's realised
+/// standard deviation lands within roughly ±10-15% of `amplitude` depending
+/// on the seed its id hashes to. That spread is the finite-sample variance
+/// inherent to a 1/f process (most of its energy sits at low frequencies, so
+/// a finite run's measured spread wanders more than white noise's would), not
+/// a calibration error. `amplitude` is the nominal spread, not a guarantee.
 const double kPinkNormalise = 0.5674;
 
 /// Advances the Paul Kellet one-pole cascade one step. [b] is the

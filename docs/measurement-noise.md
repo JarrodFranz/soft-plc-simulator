@@ -79,6 +79,14 @@ amplitude keeps roughly the same spread, only the time-correlation changes.
 maxValue]`, so a rule can never write further than that regardless of
 distribution.)
 
+The normalisation constant is calibrated once against a representative
+seed, so a given rule's *realised* standard deviation lands within roughly
+±10–15% of `amplitude` depending on the seed its id hashes to. That spread
+is the finite-sample variance inherent to a 1/f process — pink noise has
+most of its energy at low frequencies, so any finite run's measured spread
+wanders more than white noise's would. Treat `amplitude` as the nominal
+spread, not a precise guarantee.
+
 Pink noise composes with **drift** exactly like the other two
 distributions — drift is a separate, independent term added on top
 (`measured = clamp(clean + noise + drift, minValue, maxValue)`), so a rule
@@ -115,7 +123,7 @@ double pinkStep(List<double> b, double w) {
 Every pole coefficient has magnitude below 1, so the cascade is
 unconditionally stable — it cannot diverge regardless of how long a rule
 runs. The raw cascade output isn't unit-amplitude, so it's scaled by a
-derived normalisation constant (`kPinkNormalise`, ~1.015) so that, for white
+derived normalisation constant (`kPinkNormalise`, ~0.5674) so that, for white
 input uniform in `[-1, 1]`, the result's standard deviation is ~1.0 —
 making `amplitude` mean the output's standard deviation, matching
 Gaussian's `sigma`:
