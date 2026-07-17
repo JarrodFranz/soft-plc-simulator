@@ -237,6 +237,71 @@ void main() {
         expect(tester.takeException(), isNull);
       });
 
+      testWidgets(
+          '$sizeLabel: Measurement Noise distribution dropdown offers Pink (1/f) and selecting it updates the rule',
+          (tester) async {
+        await setSurface(tester, size);
+        final project = _projectById('proj_st_reactor');
+        await tester.pumpWidget(app(project));
+        await tester.pumpAndSettle();
+
+        await openFirstRuleEditor(tester);
+
+        // Switch behaviour to Measurement Noise.
+        await tester.tap(find.byType(DropdownButtonFormField<String>).first);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Measurement Noise').last);
+        await tester.pumpAndSettle();
+
+        final distributionDropdown = find.ancestor(
+          of: find.text('Distribution'),
+          matching: find.byType(DropdownButtonFormField<String>),
+        );
+        await tester.ensureVisible(distributionDropdown);
+        await tester.tap(distributionDropdown);
+        await tester.pumpAndSettle();
+
+        expect(find.text('Pink (1/f)'), findsOneWidget);
+
+        await tester.tap(find.text('Pink (1/f)').last);
+        await tester.pumpAndSettle();
+
+        // Save.
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Save'));
+        await tester.pumpAndSettle();
+
+        final saved = project.simRules.firstWhere((r) => r.id == 'sim0');
+        expect(saved.behavior, 'noise');
+        expect(saved.noiseDistribution, 'pink');
+
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets(
+          '$sizeLabel: a rule already set to pink displays as Pink (1/f), not Uniform (initialValue coercion guard)',
+          (tester) async {
+        await setSurface(tester, size);
+        final project = _projectById('proj_st_reactor');
+        final rule = project.simRules.firstWhere((r) => r.id == 'sim0');
+        // Pre-set the rule directly (as if loaded from a saved project) so the
+        // dropdown's initialValue must reflect it on open, without the test
+        // touching the behaviour or distribution dropdowns itself.
+        rule.behavior = 'noise';
+        rule.noiseDistribution = 'pink';
+        await tester.pumpWidget(app(project));
+        await tester.pumpAndSettle();
+
+        await openFirstRuleEditor(tester);
+
+        // Before the initialValue fix, anything-not-Gaussian was coerced to
+        // Uniform, so a rule already saved as 'pink' would incorrectly show
+        // "Uniform" here instead of "Pink (1/f)".
+        expect(find.text('Pink (1/f)'), findsOneWidget);
+        expect(find.text('Uniform'), findsNothing);
+
+        expect(tester.takeException(), isNull);
+      });
+
       testWidgets('$sizeLabel: non-noise behaviour does not show distribution/drift controls', (tester) async {
         await setSurface(tester, size);
         final project = _projectById('proj_st_reactor');
