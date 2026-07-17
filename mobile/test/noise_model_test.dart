@@ -61,8 +61,30 @@ void main() {
   group('pink', () {
     List<double> st() => List<double>.filled(kPinkStateLen, 0.0);
 
-    /// Deterministic pseudo-uniform sequence in [0,1] (no Random — pure).
-    double u(int i, int n) => ((i * 2654435761) % n) / n;
+    // The pink tests below need a genuinely WHITE input. A naive sawtooth
+    // like `((i * 2654435761) % 9973) / 9973` is equidistributed (correct
+    // std) but spectrally a single high-frequency tone, not white — the
+    // Kellet cascade is low-pass weighted and heavily attenuates that band,
+    // which would badly understate the raw std. Instead drive a pure
+    // xorshift32 stream mirroring exactly what sim_engine.dart feeds
+    // pinkNoise with in production, so the measured std/spectral properties
+    // reflect real usage.
+    int xs32(int x) {
+      x = (x ^ ((x << 13) & 0xffffffff)) & 0xffffffff;
+      x = (x ^ (x >> 17)) & 0xffffffff;
+      x = (x ^ ((x << 5) & 0xffffffff)) & 0xffffffff;
+      return x & 0xffffffff;
+    }
+
+    /// Pure white-noise uniform stream generator (no Random — deterministic).
+    /// Seeded with a fixed non-zero constant; each call advances the state.
+    double Function() whiteStream({int seed = 1}) {
+      var state = seed;
+      return () {
+        state = xs32(state);
+        return state / 0xffffffff;
+      };
+    }
 
     test('pinkStep is deterministic and evolves the state', () {
       final a = st();
@@ -76,9 +98,10 @@ void main() {
 
     test('pinkStep stays finite and stable over 10k steps', () {
       final b = st();
+      final white = whiteStream();
       var last = 0.0;
       for (var i = 0; i < 10000; i++) {
-        last = pinkStep(b, 2 * u(i, 9973) - 1);
+        last = pinkStep(b, 2 * white() - 1);
         expect(last.isFinite, isTrue);
       }
       for (final x in b) {
@@ -90,22 +113,25 @@ void main() {
       const n = 20000;
       const amp = 3.0;
       final b = st();
+      final white = whiteStream();
       final xs = <double>[];
       for (var i = 0; i < n; i++) {
-        xs.add(pinkNoise(b, u(i, 9973), amp));
+        xs.add(pinkNoise(b, white(), amp));
       }
       final mean = xs.reduce((p, q) => p + q) / n;
       final variance = xs.map((x) => (x - mean) * (x - mean)).reduce((p, q) => p + q) / n;
       final std = math.sqrt(variance);
-      expect(std, closeTo(amp, amp * 0.25), reason: 'amplitude must mean output std');
+      expect(std, closeTo(amp, amp * 0.10), reason: 'amplitude must mean output std');
     });
 
     test('pinkNoise scales linearly with amplitude', () {
       final b1 = st();
       final b2 = st();
+      final white = whiteStream();
       for (var i = 0; i < 50; i++) {
-        final x1 = pinkNoise(b1, u(i, 9973), 1.0);
-        final x2 = pinkNoise(b2, u(i, 9973), 4.0);
+        final uu = white();
+        final x1 = pinkNoise(b1, uu, 1.0);
+        final x2 = pinkNoise(b2, uu, 4.0);
         expect(x2, closeTo(x1 * 4.0, 1e-9));
       }
     });
@@ -114,10 +140,11 @@ void main() {
       const n = 20000;
       const block = 50;
       final b = st();
+      final white0 = whiteStream();
       final pink = <double>[];
       final white = <double>[];
       for (var i = 0; i < n; i++) {
-        final uu = u(i, 9973);
+        final uu = white0();
         pink.add(pinkNoise(b, uu, 1.0));
         white.add(uniformNoise(uu, 1.0));
       }

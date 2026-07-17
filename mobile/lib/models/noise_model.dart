@@ -10,11 +10,16 @@ const int kPinkStateLen = 7;
 /// Scales the raw Kellet output so that, for white input uniform in [-1,1],
 /// the result's standard deviation is ~1.0 — making `amplitude` mean the
 /// output's standard deviation, matching [gaussianNoise]'s sigma.
-/// Derived empirically: running [pinkStep] over the same 20000-sample
-/// pseudo-uniform sequence the std test uses (`_u(i, 9973)` -> white
-/// `2u-1`) gives a raw output standard deviation `s` ~= 0.9852, so
-/// kPinkNormalise = 1/s ~= 1.015.
-const double kPinkNormalise = 1.015;
+/// Derived empirically: running [pinkStep] over 20000 samples of the
+/// engine's OWN white stream (xorshift32, as used by `applySimRules` in
+/// sim_engine.dart, fed through `2u-1`) gives a raw output standard
+/// deviation `s` ~= 1.7625, so kPinkNormalise = 1/s ~= 0.5674. (A prior
+/// version of this constant, 1.015, was calibrated against a test helper
+/// that produced a spectrally non-white sawtooth ramp rather than true
+/// white noise; the Kellet cascade is low-pass weighted and heavily
+/// attenuates that band, which understated the raw std and produced a
+/// constant that made pink output ~79% wider than `amplitude`.)
+const double kPinkNormalise = 0.5674;
 
 /// Advances the Paul Kellet one-pole cascade one step. [b] is the
 /// [kPinkStateLen]-element filter state (mutated in place); [w] is white noise

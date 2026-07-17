@@ -119,6 +119,23 @@ void main() {
   // output is clean + drift only. Confirms drift is actually applied (not a
   // no-op), stays within clean +/- driftAmplitude (+ epsilon for the EMA
   // wander's float arithmetic), and is deterministic across runs.
+  test('drift-only: amplitude 0 + driftAmplitude > 0 applies bounded, deterministic drift', () {
+    const clean = 10.0, driftAmplitude = 3.0;
+    SimRule driftOnlyRule() => SimRule(
+        id: 'r', name: 'n', behavior: 'noise', sourcePath: 'X', targetPath: 'Y',
+        targetValue: 0.0, minValue: -100, maxValue: 100,
+        noiseDistribution: 'uniform', driftAmplitude: driftAmplitude, driftPeriodSec: 30.0);
+
+    final a = _run(_proj([driftOnlyRule()], _tags()), 20);
+    final b = _run(_proj([driftOnlyRule()], _tags()), 20);
+    expect(a, b); // deterministic across runs
+
+    expect(a, isNot(everyElement(equals(clean)))); // drift is actually applied
+    for (final v in a) {
+      expect((v - clean).abs(), lessThanOrEqualTo(driftAmplitude + 1e-9));
+    }
+  });
+
   test('pink differs from uniform and stays clamped', () {
     final u = _run(_proj([_noiseRule(dist: 'uniform')], _tags()), 30);
     final p = _run(_proj([_noiseRule(dist: 'pink')], _tags()), 30);
@@ -141,23 +158,6 @@ void main() {
     for (final v in a) {
       expect(v.isFinite, isTrue);
       expect(v, inInclusiveRange(-100.0, 100.0));
-    }
-  });
-
-  test('drift-only: amplitude 0 + driftAmplitude > 0 applies bounded, deterministic drift', () {
-    const clean = 10.0, driftAmplitude = 3.0;
-    SimRule driftOnlyRule() => SimRule(
-        id: 'r', name: 'n', behavior: 'noise', sourcePath: 'X', targetPath: 'Y',
-        targetValue: 0.0, minValue: -100, maxValue: 100,
-        noiseDistribution: 'uniform', driftAmplitude: driftAmplitude, driftPeriodSec: 30.0);
-
-    final a = _run(_proj([driftOnlyRule()], _tags()), 20);
-    final b = _run(_proj([driftOnlyRule()], _tags()), 20);
-    expect(a, b); // deterministic across runs
-
-    expect(a, isNot(everyElement(equals(clean)))); // drift is actually applied
-    for (final v in a) {
-      expect((v - clean).abs(), lessThanOrEqualTo(driftAmplitude + 1e-9));
     }
   });
 }
