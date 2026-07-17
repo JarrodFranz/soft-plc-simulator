@@ -12,6 +12,8 @@ class RuleRuntime {
   int? noiseState;      // noise: 32-bit xorshift PRNG state, lazily seeded
   int? driftState;          // noise-drift: 32-bit xorshift PRNG (separate stream)
   double driftValue = 0.0;  // current drift (EMA-filtered wander)
+  /// pink: Paul Kellet one-pole cascade filter memory (b0..b6).
+  final List<double> pinkState = List<double>.filled(kPinkStateLen, 0.0);
 }
 
 class SimRuntime {
@@ -234,6 +236,10 @@ void applySimRules(PlcProject p, List<SimRule> rules, int dtMs, SimRuntime rt) {
               st.noiseState = _xorshift32(st.noiseState!);
               final u2 = st.noiseState! / 0xffffffff;
               noise = gaussianNoise(u1, u2, a);
+            } else if (rule.noiseDistribution == kNoisePink) {
+              st.noiseState = _xorshift32(st.noiseState ?? _fnv1a(rule.id));
+              final u = st.noiseState! / 0xffffffff;
+              noise = pinkNoise(st.pinkState, u, a);
             } else {
               st.noiseState = _xorshift32(st.noiseState ?? _fnv1a(rule.id));
               final u = st.noiseState! / 0xffffffff;

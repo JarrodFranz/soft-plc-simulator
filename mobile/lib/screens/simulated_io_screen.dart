@@ -350,12 +350,15 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
       w.add(_numField('Min', r.minValue, (v) => r.minValue = v));
       w.add(_numField('Max', r.maxValue, (v) => r.maxValue = v));
       w.add(DropdownButtonFormField<String>(
-        initialValue: r.noiseDistribution == kNoiseGaussian ? kNoiseGaussian : kNoiseUniform,
+        initialValue: (r.noiseDistribution == kNoiseGaussian || r.noiseDistribution == kNoisePink)
+            ? r.noiseDistribution
+            : kNoiseUniform,
         isExpanded: true,
         decoration: const InputDecoration(labelText: 'Distribution', isDense: true),
         items: const [
           DropdownMenuItem(value: kNoiseUniform, child: Text('Uniform', style: TextStyle(fontSize: 12))),
           DropdownMenuItem(value: kNoiseGaussian, child: Text('Gaussian', style: TextStyle(fontSize: 12))),
+          DropdownMenuItem(value: kNoisePink, child: Text('Pink (1/f)', style: TextStyle(fontSize: 12))),
         ],
         onChanged: (v) => setDlg(() => r.noiseDistribution = v ?? kNoiseUniform),
       ));

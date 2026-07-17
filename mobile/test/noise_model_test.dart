@@ -57,4 +57,114 @@ void main() {
     expect(a1, greaterThan(a2)); // larger tau -> smaller alpha (slower)
     expect(a1, inInclusiveRange(0.0, 1.0));
   });
+
+  group('pink', () {
+    List<double> st() => List<double>.filled(kPinkStateLen, 0.0);
+
+    // The pink tests below need a genuinely WHITE input. A naive sawtooth
+    // like `((i * 2654435761) % 9973) / 9973` is equidistributed (correct
+    // std) but spectrally a single high-frequency tone, not white — the
+    // Kellet cascade is low-pass weighted and heavily attenuates that band,
+    // which would badly understate the raw std. Instead drive a pure
+    // xorshift32 stream mirroring exactly what sim_engine.dart feeds
+    // pinkNoise with in production, so the measured std/spectral properties
+    // reflect real usage.
+    int xs32(int x) {
+      x = (x ^ ((x << 13) & 0xffffffff)) & 0xffffffff;
+      x = (x ^ (x >> 17)) & 0xffffffff;
+      x = (x ^ ((x << 5) & 0xffffffff)) & 0xffffffff;
+      return x & 0xffffffff;
+    }
+
+    /// Pure white-noise uniform stream generator (no Random — deterministic).
+    /// Seeded with a fixed non-zero constant; each call advances the state.
+    double Function() whiteStream({int seed = 1}) {
+      var state = seed;
+      return () {
+        state = xs32(state);
+        return state / 0xffffffff;
+      };
+    }
+
+    test('pinkStep is deterministic and evolves the state', () {
+      final a = st();
+      final b = st();
+      final ra = pinkStep(a, 0.5);
+      final rb = pinkStep(b, 0.5);
+      expect(ra, rb); // same state + input -> same output
+      expect(a.any((x) => x != 0.0), isTrue, reason: 'filter state must evolve');
+      expect(a, b); // state evolves identically
+    });
+
+    test('pinkStep stays finite and stable over 10k steps', () {
+      final b = st();
+      final white = whiteStream();
+      var last = 0.0;
+      for (var i = 0; i < 10000; i++) {
+        last = pinkStep(b, 2 * white() - 1);
+        expect(last.isFinite, isTrue);
+      }
+      for (final x in b) {
+        expect(x.isFinite, isTrue);
+      }
+    });
+
+    test('pinkNoise sample std ~= amplitude (locks kPinkNormalise)', () {
+      const n = 20000;
+      const amp = 3.0;
+      final b = st();
+      final white = whiteStream();
+      final xs = <double>[];
+      for (var i = 0; i < n; i++) {
+        xs.add(pinkNoise(b, white(), amp));
+      }
+      final mean = xs.reduce((p, q) => p + q) / n;
+      final variance = xs.map((x) => (x - mean) * (x - mean)).reduce((p, q) => p + q) / n;
+      final std = math.sqrt(variance);
+      expect(std, closeTo(amp, amp * 0.10), reason: 'amplitude must mean output std');
+    });
+
+    test('pinkNoise scales linearly with amplitude', () {
+      final b1 = st();
+      final b2 = st();
+      final white = whiteStream();
+      for (var i = 0; i < 50; i++) {
+        final uu = white();
+        final x1 = pinkNoise(b1, uu, 1.0);
+        final x2 = pinkNoise(b2, uu, 4.0);
+        expect(x2, closeTo(x1 * 4.0, 1e-9));
+      }
+    });
+
+    test('pink is genuinely 1/f: block-averaging retains more variance than white', () {
+      const n = 20000;
+      const block = 50;
+      final b = st();
+      final white0 = whiteStream();
+      final pink = <double>[];
+      final white = <double>[];
+      for (var i = 0; i < n; i++) {
+        final uu = white0();
+        pink.add(pinkNoise(b, uu, 1.0));
+        white.add(uniformNoise(uu, 1.0));
+      }
+      double retainedRatio(List<double> xs) {
+        double varOf(List<double> v) {
+          final m = v.reduce((p, q) => p + q) / v.length;
+          return v.map((x) => (x - m) * (x - m)).reduce((p, q) => p + q) / v.length;
+        }
+
+        final blocks = <double>[];
+        for (var i = 0; i + block <= xs.length; i += block) {
+          final slice = xs.sublist(i, i + block);
+          blocks.add(slice.reduce((p, q) => p + q) / block);
+        }
+        return varOf(blocks) / varOf(xs);
+      }
+
+      // White block-means collapse (~1/block); pink retains far more LF energy.
+      expect(retainedRatio(pink), greaterThan(retainedRatio(white) * 5),
+          reason: 'pink must retain substantially more low-frequency energy than white');
+    });
+  });
 }

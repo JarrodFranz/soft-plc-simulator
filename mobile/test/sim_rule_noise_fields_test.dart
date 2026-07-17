@@ -17,6 +17,21 @@ void main() {
     expect(back.driftPeriodSec, 30.0);
   });
 
+  test('pink noiseDistribution round-trips through toJson/fromJson', () {
+    final r = SimRule(
+        id: 'r',
+        name: 'n',
+        targetPath: 'X',
+        behavior: 'noise',
+        noiseDistribution: 'pink',
+        driftAmplitude: 0.0,
+        driftPeriodSec: 60.0);
+    final json = r.toJson();
+    expect(json['noise_dist'], 'pink');
+    final back = SimRule.fromJson(json);
+    expect(back.noiseDistribution, 'pink');
+  });
+
   test('legacy SimRule JSON (no new keys) loads with defaults', () {
     final legacy = {
       'id': 'r',
