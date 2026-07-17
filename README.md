@@ -183,12 +183,14 @@ cd runtime
 cargo test
 ```
 
-#### Run Flutter Unit & Integration Tests (1389 Tests Passing)
+#### Run Flutter Unit & Integration Tests (1550 Tests Passing)
 ```bash
 cd mobile
 flutter test
 ```
-Covers the tag path resolver, simulated I/O rule behaviours, the ladder execution engine (power flow, latches, edges, TON/TOF), and end-to-end scans of the default projects (motor seal-in, conveyor jam trip, pump control).
+Covers the tag path resolver and Memory Manager value model; all four IEC 61131-3 execution engines (LD power flow/latches/edges, the FBD function-block library, the ST parser/interpreter, and the SFC multi-token engine incl. parallel fork/join) plus their editors; the simulated-process engine (analog rates, first-order lag, transport dead-time, valve curves, and deterministic noise — uniform/Gaussian/pink with bounded sensor drift); the PID relay-feedback auto-tuner and the MIMO gain-matrix/RGA interaction analysis; the four in-app protocol servers (OPC UA incl. the Basic256Sha256 security stack, Modbus TCP, MQTT + Sparkplug B, DNP3); persistence (lossless round-trip, autosave, and non-destructive default-project backfill); responsive layout at 320/360/1400 with a whole-app overflow smoke test; and end-to-end scans of every default project.
+
+Determinism is enforced by construction: the simulated engines take no clock and no randomness, so byte-identity guards (e.g. a golden noise sequence) and closed-loop settling tests are falsifiable rather than flaky. Real third-party protocol clients (the Rust `opcua`, `tokio-modbus`, `rumqttc`, and `dnp3` crates) verify wire interoperability separately — see `tool/*_e2e.sh`.
 
 #### Run Flutter UI Linter & Code Analysis (0 Errors)
 ```bash
