@@ -159,6 +159,91 @@ third-party master defaults to little-endian word order for 32-bit types,
 configure that master's endianness setting to match (most masters,
 including pymodbus and ModScan, support this).
 
+## RTU over TCP
+
+The default wire framing is classic Modbus TCP (the MBAP header described
+above). The server can instead be switched, per project, to serve **Modbus
+RTU framing carried over a plain TCP byte stream** — the same register map,
+tag database, and PDU-level function-code handling, just a different frame
+shell. Pick it from the **Framing** dropdown on the Modbus TCP card
+(`Modbus TCP` / `RTU over TCP`), editable only while hosting is stopped.
+Only **one** framing is served at a time per listening socket — a project
+can't mix both simultaneously, and switching framing takes effect on the
+next **Start hosting**.
+
+**The framing difference:**
+
+- **TCP framing** wraps every request/response in a 7-byte MBAP header
+  (transaction id, protocol id, an explicit 16-bit **length** field, unit
+  id) ahead of the PDU. The length field tells the transport exactly how
+  many more bytes to buffer for a complete frame.
+- **RTU framing** has no MBAP header at all. A frame is simply
+  `unitId + PDU + CRC-16`, with the two CRC bytes stored **low byte first**
+  (little-endian) on the wire — the classic serial Modbus RTU frame shape,
+  just carried over a TCP socket instead of RS-485/RS-232. There is no
+  length field anywhere in an RTU frame, so a stream-based transport (like
+  a TCP socket, which has no natural frame boundary of its own) must derive
+  the expected request length itself, purely from the **function code** —
+  the 8 classic function codes this server implements are either fixed at
+  8 total bytes (unit id + function code + 2 address bytes + 2
+  quantity/value bytes + 2-byte CRC) or, for the two write-multiple codes
+  (`0F`/`10`), `9 + byteCount` bytes, where `byteCount` is itself a field
+  carried a fixed 6 bytes into the frame. An unrecognized function code
+  can't have its length derived at all.
+- The CRC-16 variant is CRC-16/MODBUS: reflected, polynomial `0xA001`,
+  initial value `0xFFFF` (the standard check value for the ASCII string
+  `"123456789"` is `0x4B37`).
+
+**Resync behavior on a bad frame:** a frame whose CRC doesn't match, or
+whose function code isn't one this derivation recognizes, is dropped
+silently — the connection stays open, but nothing is sent back and any
+bytes buffered so far for that connection are discarded so the next valid
+frame can be found. This mirrors how a real RTU outstation stays silent on
+a corrupted request rather than tearing the link down; RTU masters commonly
+retry on silence rather than expecting an error response.
+
+**When to use it:** pick `RTU over TCP` when the master on the other end
+expects a serial-style Modbus RTU frame rather than an MBAP-framed TCP
+connection — the most common case is a master talking to what it believes
+is a real serial device through a **terminal server** (a serial-to-TCP
+bridge that transparently forwards raw bytes), or a test harness built
+directly against an RTU client library (as this server's own E2E proof
+does). If the master is a normal Modbus TCP client (pymodbus's
+`ModbusTcpClient`, ModScan/QModMaster in TCP mode, most SCADA historians),
+leave the framing at the default `Modbus TCP`.
+
+**Serial RTU (real RS-485/RS-232) is out of scope**, and not merely
+deferred by choice: driving an actual serial port requires a
+platform-specific serial plugin (there is no serial API in the Dart/Flutter
+SDK), which would break the pure-Dart, zero-companion-service design this
+whole protocol stack relies on (ADR-010) and is flatly impossible on iOS
+(no serial port access is exposed to app sandboxes at all). RTU **framing**
+is fully supported; RTU **transport** (an actual serial cable) is not, and
+can't be added without a fundamentally different, platform-gated
+architecture.
+
+**Machine-verified end-to-end, with a REAL third-party `tokio-modbus` RTU
+client (`tool/modbus_rtu_e2e.sh`):** a genuine Rust `tokio-modbus` crate RTU
+client, attached directly to a plain `TcpStream` transport via
+`tokio_modbus::client::rtu::attach_slave` (no MBAP layer anywhere in the
+client stack — it speaks RTU framing/CRC over the socket directly), runs
+against the Dart fixture host configured for `rtuOverTcp` framing
+(`mobile/tool/modbus_host_probe.dart <port> rtuOverTcp`) and exercises:
+`read_holding_registers`, `write_single_register` + an **independent**
+read-back asserting the exact written value, then `write_single_coil` +
+`read_coils` asserting the written value — all framed as RTU
+(`unitId + PDU + CRC-16`) rather than MBAP. Run it from the repo root
+(bash/Git Bash):
+
+```bash
+tool/modbus_rtu_e2e.sh
+```
+
+A successful run ends with `MODBUS RTU PROBE PASS`. The existing
+`tool/modbus_e2e.sh` (classic MBAP Modbus TCP) is unaffected — the two
+scripts run independent fixture hosts on different ports and can be run
+back-to-back or concurrently.
+
 ## Force-aware, silently
 
 A write to a tag that is currently **forced** in the app is accepted at the
@@ -241,8 +326,11 @@ live tags, force-aware writes, and the auto-map/manual-map editor described
 above.
 
 **Deferred (v2+):**
-- **Modbus RTU** (serial) — this is a TCP-only server; there is no
-  serial/RS-485 transport.
+- **Serial Modbus RTU** (real RS-485/RS-232) — this server has no serial
+  transport; see "RTU over TCP" above for what IS supported: RTU **framing**
+  (`unitId + PDU + CRC-16`, no MBAP header) carried over the same TCP
+  socket, selectable per project, for masters expecting a serial-style
+  frame (e.g. behind a terminal server).
 - **Top-level composite tags** (structs/arrays) are not mappable as a
   whole — only scalar `BOOL`/`INT16`/`INT32`/`FLOAT64` leaf tags can be
   assigned a Modbus address. Composite members are exposed individually as
@@ -359,6 +447,7 @@ This is a **simulator/training tool, not a safety-certified or
 conformance-tested product**. The hand-rolled server targets master
 *compatibility* (pymodbus, ModScan, QModMaster, and common SCADA stacks
 talking classic Modbus TCP), not formal Modbus Organization conformance
-testing. Do not use it to control real safety-critical equipment. Modbus
-RTU (serial) is not implemented; scalar leaf tags only (struct/array
-members are not individually addressable as a whole in v1).
+testing. Do not use it to control real safety-critical equipment. Serial
+Modbus RTU (real RS-485/RS-232) is not implemented — only RTU **framing**
+over the same TCP socket (see "RTU over TCP" above); scalar leaf tags only
+(struct/array members are not individually addressable as a whole in v1).

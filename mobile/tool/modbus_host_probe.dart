@@ -31,12 +31,20 @@
 // dependency, so this tool talks to `ModbusServer`/`parseMbap`/`buildMbap`
 // directly, reimplementing just the same small MBAP reassembly loop
 // `ModbusHost`'s `_Connection` uses — see that file for the authoritative
+// version this mirrors. Likewise, `protocols/modbus/modbus_rtu.dart` (CRC-16,
+// `buildRtu`/`parseRtu`/`rtuRequestLength`) is also pure Dart with zero
+// Flutter dependency, so the optional RTU-over-TCP framing path below
+// reimplements just the small RTU reassembly loop `ModbusHost`'s
+// `_Connection._onDataRtu` uses — see that file for the authoritative
 // version this mirrors.
 //
 // This directory (`mobile/tool/`) is analyzer-excluded per
 // `analysis_options.yaml`, but is kept clean anyway.
 //
-// Usage: dart run tool/modbus_host_probe.dart <port>
+// Usage: dart run tool/modbus_host_probe.dart <port> [tcp|rtuOverTcp]
+//   The second argument selects the wire framing, mirroring
+//   `ModbusProtocolConfig.framing`; defaults to `tcp` (classic MBAP-header
+//   Modbus TCP, unchanged from before this option existed) when omitted.
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
@@ -48,6 +56,7 @@ import 'package:soft_plc_mobile/models/signal_engine.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart' show writePath;
 import 'package:soft_plc_mobile/models/test_tag_set.dart';
 import 'package:soft_plc_mobile/protocols/modbus/modbus_pdu.dart';
+import 'package:soft_plc_mobile/protocols/modbus/modbus_rtu.dart';
 
 /// The Modbus TCP spec caps a whole ADU (MBAP header + PDU) at 260 bytes —
 /// mirrors `modbus_host.dart`'s `_maxFrameBytes` guard.
@@ -210,53 +219,111 @@ PlcProject _fixtureProject() {
 }
 
 /// Per-connection byte-frame reassembly, mirroring `ModbusHost`'s
-/// `_Connection` (see `mobile/lib/services/modbus_host.dart`): accumulate
-/// arbitrary TCP chunks; once at least 6 bytes are present, `length =
-/// (buf[4]<<8)|buf[5]` (the MBAP length field) tells us the total frame
-/// size is `6 + length`; once the buffer holds that many bytes, slice it,
-/// decode via `parseMbap`, dispatch through [handle], and write the
-/// `buildMbap`-wrapped response back.
+/// `_Connection` (see `mobile/lib/services/modbus_host.dart`): for the
+/// default `tcp` framing, accumulate arbitrary TCP chunks; once at least 6
+/// bytes are present, `length = (buf[4]<<8)|buf[5]` (the MBAP length field)
+/// tells us the total frame size is `6 + length`; once the buffer holds that
+/// many bytes, slice it, decode via `parseMbap`, dispatch through [handle],
+/// and write the `buildMbap`-wrapped response back. For `rtuOverTcp` framing,
+/// [rtuRequestLength] derives the total frame length from the function code
+/// instead (RTU carries no length field), and frames are decoded/encoded via
+/// [parseRtu]/[buildRtu] — mirroring `ModbusHost`'s `_onDataRtu` exactly.
 class _Connection {
   final Socket socket;
   final Uint8List? Function(ModbusFrame) handle;
+
+  /// Wire framing mode for this connection — `kModbusFramingTcp` (the
+  /// existing MBAP-header reassembly, unmodified) or
+  /// `kModbusFramingRtuOverTcp` (RTU framing: no MBAP header, CRC-16 framed,
+  /// function-code-derived length).
+  final String framing;
   final List<int> _buffer = [];
   bool _closed = false;
 
-  _Connection(this.socket, this.handle);
+  _Connection(this.socket, this.handle, {this.framing = kModbusFramingTcp});
 
   void onData(List<int> data) {
     if (_closed) return;
     _buffer.addAll(data);
     try {
-      while (true) {
-        if (_buffer.length < 6) {
-          return; // not even the length field yet
-        }
-        final length = (_buffer[4] << 8) | _buffer[5];
-        final totalSize = 6 + length;
-        if (length < 1 || totalSize > _maxFrameBytes) {
-          close();
-          return;
-        }
-        if (_buffer.length < totalSize) {
-          return; // wait for more bytes
-        }
-        final rawFrame = Uint8List.fromList(_buffer.sublist(0, totalSize));
-        _buffer.removeRange(0, totalSize);
-
-        final parsed = parseMbap(rawFrame);
-        if (parsed == null) {
-          close();
-          return;
-        }
-        final responsePdu = handle(parsed);
-        if (responsePdu != null) {
-          final responseFrame = buildMbap(parsed.transactionId, parsed.unitId, responsePdu);
-          socket.add(responseFrame);
-        }
+      if (framing == kModbusFramingRtuOverTcp) {
+        _onDataRtu();
+      } else {
+        _onDataTcp();
       }
     } catch (_) {
       close();
+    }
+  }
+
+  /// The original Modbus TCP (MBAP header) reassembly path — unchanged from
+  /// before the RTU-over-TCP framing option existed.
+  void _onDataTcp() {
+    while (true) {
+      if (_buffer.length < 6) {
+        return; // not even the length field yet
+      }
+      final length = (_buffer[4] << 8) | _buffer[5];
+      final totalSize = 6 + length;
+      if (length < 1 || totalSize > _maxFrameBytes) {
+        close();
+        return;
+      }
+      if (_buffer.length < totalSize) {
+        return; // wait for more bytes
+      }
+      final rawFrame = Uint8List.fromList(_buffer.sublist(0, totalSize));
+      _buffer.removeRange(0, totalSize);
+
+      final parsed = parseMbap(rawFrame);
+      if (parsed == null) {
+        close();
+        return;
+      }
+      final responsePdu = handle(parsed);
+      if (responsePdu != null) {
+        final responseFrame = buildMbap(parsed.transactionId, parsed.unitId, responsePdu);
+        socket.add(responseFrame);
+      }
+    }
+  }
+
+  /// The Modbus RTU-over-TCP reassembly path: no MBAP header, so the total
+  /// frame length is derived purely from the function code (and, for the
+  /// variable-length write-multiple codes, the byteCount field) via
+  /// [rtuRequestLength]. A bad-CRC frame (or a resync after an unsupported
+  /// function code) is dropped silently (no reply, connection stays open)
+  /// rather than closing the connection — mirrors `ModbusHost`'s
+  /// `_onDataRtu`.
+  void _onDataRtu() {
+    while (true) {
+      final buf = Uint8List.fromList(_buffer);
+      final total = rtuRequestLength(buf);
+      if (total == null) {
+        return; // need more bytes to decide the frame length
+      }
+      if (total < 0 || total > _maxFrameBytes) {
+        // Unsupported function code or an oversized/hostile frame: resync by
+        // dropping everything buffered for this connection so far.
+        _buffer.clear();
+        return;
+      }
+      if (_buffer.length < total) {
+        return; // wait for more bytes
+      }
+      final rawFrame = Uint8List.fromList(_buffer.sublist(0, total));
+      _buffer.removeRange(0, total);
+
+      final parsed = parseRtu(rawFrame);
+      if (parsed == null) {
+        // Bad CRC: drop this frame silently and keep the connection open.
+        _buffer.clear();
+        return;
+      }
+      final responsePdu = handle(parsed);
+      if (responsePdu != null) {
+        socket.add(buildRtu(parsed.unitId, responsePdu));
+      }
     }
   }
 
@@ -279,7 +346,7 @@ final List<_Connection> _connections = [];
 
 Future<void> main(List<String> args) async {
   if (args.isEmpty) {
-    stderr.writeln('usage: dart run tool/modbus_host_probe.dart <port>');
+    stderr.writeln('usage: dart run tool/modbus_host_probe.dart <port> [tcp|rtuOverTcp]');
     exit(64);
   }
   final port = int.tryParse(args[0]);
@@ -287,9 +354,15 @@ Future<void> main(List<String> args) async {
     stderr.writeln('invalid port argument: ${args[0]}');
     exit(64);
   }
+  final framing = args.length > 1 ? args[1] : kModbusFramingTcp;
+  if (framing != kModbusFramingTcp && framing != kModbusFramingRtuOverTcp) {
+    stderr.writeln('invalid framing argument: $framing (expected tcp or rtuOverTcp)');
+    exit(64);
+  }
 
   final project = _fixtureProject();
   project.protocols!.modbus!.port = port;
+  project.protocols!.modbus!.framing = framing;
   _appendGeneratedRampTestSet(project);
 
   ServerSocket serverSocket;
@@ -304,7 +377,7 @@ Future<void> main(List<String> args) async {
 
   serverSocket.listen((socket) {
     try {
-      final conn = _Connection(socket, server.handle);
+      final conn = _Connection(socket, server.handle, framing: framing);
       _connections.add(conn);
       socket.listen(
         (data) {
