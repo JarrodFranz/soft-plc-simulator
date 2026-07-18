@@ -17,10 +17,12 @@
 When exposing simulated controllers to network interfaces via the app's in-app protocol hosts (OPC UA, Modbus TCP, MQTT, DNP3 — see ADR-010 in `DECISIONS.md`), security controls must be maintained:
 
 ### 1. OPC UA Security
-- **Endpoints**:
-  - `None`: what v1 implements today — anonymous auth, no encryption. Appropriate for LAN commissioning/training only (see `docs/protocols/opcua.md`).
-  - `Basic256Sha256` / `Aes128_Sha256_RsaOaep` and user-token authentication (Username/Password, X.509 Certificates): **not yet implemented** — deferred to a later version if warranted (see ADR-010 in `DECISIONS.md`).
-- **Certificates**: None are generated or required in v1 (Security Policy `None` only); a PKI/trust-list story is deferred alongside encryption support above.
+- **Endpoints** (all advertised simultaneously; the client picks one):
+  - `None` — anonymous, unencrypted. Appropriate for LAN commissioning/training only.
+  - `Basic256Sha256` with **Sign** (HMAC-SHA256) or **SignAndEncrypt** (AES-256-CBC) — **shipped** (v3), implemented as a hand-rolled pure-Dart crypto stack (RSA-2048, AES-256-CBC, SHA-256/HMAC-SHA256, RSA-OAEP, RSA-PKCS#1-v1.5-SHA256, and the OPC UA `P_SHA256` key derivation) with no crypto FFI.
+  - **User authentication**: Anonymous and `UserNameIdentityToken` (password RSA-OAEP-decrypted and server-nonce-verified) — **shipped**. X.509 *user* tokens remain deferred.
+- **Certificates**: a self-signed RSA-2048 X.509 application-instance certificate is generated and persisted once on first run (`services/opcua_cert_store.dart`). **The private key never leaves the device and is never serialized into project JSON or an exported `.splc.json`.** Clients trust it **on first use** (auto-trust), as they would any self-signed dev certificate.
+- **Known limitations** (deliberate, documented in `docs/protocols/opcua.md`): a single app-wide certificate is reused across projects (so `applicationUri` must be app-wide stable); the `ActivateSession` signature check reuses the `CreateSession` server nonce rather than rotating a fresh nonce per activation; and a managed trust-list, certificate revocation, and `Aes128_Sha256_RsaOaep` are not implemented. Treat the hosted server as a **simulation/commissioning** endpoint, not a production-hardened one.
 
 ### 2. Modbus TCP Security
 - **Raw Modbus Warning**: Modbus TCP lacks inherent encryption or authentication.

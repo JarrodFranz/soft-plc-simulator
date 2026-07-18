@@ -25,7 +25,7 @@ Linux, and web from one source tree (`mobile/`).
   dart run flutter_native_splash:create      # regenerate splash
   ```
 - **Web** builds today: `cd mobile && flutter build web --release`.
-- 251 tests pass; `flutter analyze` is clean.
+- 1550 tests pass; `flutter analyze` is clean.
 
 ### To change the app name or bundle ID
 Bundle IDs are painful to change after first publish — decide before uploading.
