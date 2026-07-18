@@ -146,7 +146,7 @@ alternative `Quality_OK` dispatch/reject gate). See
 
 ---
 
-## Phase 4: Industrial OPC UA Server Adapter 🔄
+## Phase 4: Industrial OPC UA Server Adapter ✅
 - **Objective**: The **single app itself hosts** an OPC UA server exposing the user-chosen tags as standard OPC UA variable nodes to SCADA/any OPC UA client (**ADR-010** — no companion service; pure-Dart in-app server; mobile-first, desktop secondary).
 - **Direction change (ADR-010)**: the earlier companion-gateway route (WS16–18: a separate Rust process bridged over WebSocket — built, machine-tested, and client-verified) was **retired** when the goal was clarified to "one app hosts everything." Its lasting artifacts: the per-project **Outbound Protocols configuration** ✅ (`ProtocolSettings` with per-protocol enable + config, additive persistence) which carries over unchanged, and the **Rust `opcua` client E2E harness** ✅ (proven against the gateway; branch `feat/opcua-hardening`) which becomes the third-party verifier for the in-app server.
 - **Deliverables**:
