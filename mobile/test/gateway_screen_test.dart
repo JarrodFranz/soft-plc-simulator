@@ -978,6 +978,98 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets('renders the Framing dropdown defaulting to Modbus TCP', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, modbusTabKey);
+
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+
+      expect(find.byKey(const Key('modbus_framing_dropdown')), findsOneWidget);
+      final dropdownFinder = find.byKey(const Key('modbus_framing_dropdown'));
+      final dropdown = tester.widget<DropdownButtonFormField<String>>(dropdownFinder);
+      expect(dropdown.initialValue, 'tcp');
+      expect(find.descendant(of: dropdownFinder, matching: find.text('Modbus TCP')), findsOneWidget);
+    });
+
+    testWidgets('a project already set to rtuOverTcp displays RTU over TCP, not coerced to Modbus TCP',
+        (tester) async {
+      final project = _project();
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.modbus!.enabled = true;
+      project.protocols!.modbus!.framing = 'rtuOverTcp';
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, modbusTabKey);
+
+      final dropdown = tester.widget<DropdownButtonFormField<String>>(
+          find.byKey(const Key('modbus_framing_dropdown')));
+      expect(dropdown.initialValue, 'rtuOverTcp');
+      // Scope the text search to the dropdown itself — "Modbus TCP" also
+      // appears as the card's own title text elsewhere on screen, so a
+      // whole-tree search for it would be a false positive either way.
+      final dropdownFinder = find.byKey(const Key('modbus_framing_dropdown'));
+      expect(find.descendant(of: dropdownFinder, matching: find.text('RTU over TCP')), findsOneWidget);
+      // Guards the coercion-class bug: must NOT silently display as tcp.
+      expect(find.descendant(of: dropdownFinder, matching: find.text('Modbus TCP')), findsNothing);
+    });
+
+    testWidgets('changing the Framing dropdown updates ModbusProtocolConfig.framing', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _CountingModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, modbusTabKey);
+
+      await tester.tap(find.byKey(const Key('modbus_enable_switch')));
+      await tester.pump();
+      expect(project.protocols?.modbus?.framing, 'tcp');
+
+      await tester.ensureVisible(find.byKey(const Key('modbus_framing_dropdown')));
+      await tester.tap(find.byKey(const Key('modbus_framing_dropdown')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('RTU over TCP').last);
+      await tester.pumpAndSettle();
+
+      expect(project.protocols?.modbus?.framing, 'rtuOverTcp');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Framing dropdown is disabled while hosting is running', (tester) async {
+      final project = _project();
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.modbus!.enabled = true;
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final modbusHost = _RunningModbusHost();
+      addTearDown(modbusHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, modbusTabKey);
+
+      final dropdown = tester.widget<DropdownButtonFormField<String>>(
+          find.byKey(const Key('modbus_framing_dropdown')));
+      expect(dropdown.onChanged, isNull);
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('toggling the Modbus switch OFF hides the config again', (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
@@ -1021,6 +1113,11 @@ void main() {
       expect(find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
           findsOneWidget);
 
+      // The Framing dropdown + caption (Task 2) pushed the Regenerate button
+      // further down the card, so it may sit outside the default 800x600
+      // test viewport — scroll it into view before tapping.
+      await tester.ensureVisible(find.widgetWithText(TextButton, 'Regenerate'));
+      await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(TextButton, 'Regenerate'));
       await tester.pump();
 

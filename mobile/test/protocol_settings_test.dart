@@ -537,6 +537,25 @@ void main() {
       expect(settings.modbus, isNull);
       expect(settings.toJson().containsKey('modbus'), isFalse);
     });
+
+    test('ModbusProtocolConfig.fromJson with no framing key defaults to tcp (additive field)', () {
+      final cfg = ModbusProtocolConfig.fromJson({});
+      expect(cfg.framing, 'tcp');
+    });
+
+    test('ModbusProtocolConfig round-trips framing: rtuOverTcp through toJson/fromJson', () {
+      final cfg = ModbusProtocolConfig(
+        enabled: true,
+        port: 502,
+        map: ModbusMap(entries: []),
+        framing: 'rtuOverTcp',
+      );
+
+      expect(cfg.toJson()['framing'], 'rtuOverTcp');
+
+      final rt = ModbusProtocolConfig.fromJson(cfg.toJson());
+      expect(rt.framing, 'rtuOverTcp');
+    });
   });
 
   group('DnpProtocolConfig / ProtocolSettings.dnp3', () {

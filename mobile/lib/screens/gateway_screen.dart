@@ -690,6 +690,13 @@ class _GatewayScreenState extends State<GatewayScreen> {
     widget.onProjectUpdated();
   }
 
+  void _setModbusFraming(String value) {
+    setState(() {
+      widget.currentProject.protocols!.modbus!.framing = value;
+    });
+    widget.onProjectUpdated();
+  }
+
   void _setModbusUnitId(String value) {
     final parsed = int.tryParse(value.trim());
     if (parsed == null || parsed < 0 || parsed > 255) {
@@ -1653,6 +1660,37 @@ class _GatewayScreenState extends State<GatewayScreen> {
                             onChanged: running ? null : _setModbusByteSwap,
                           ),
                         ],
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        key: const Key('modbus_framing_dropdown'),
+                        // Whitelist fallback: only a recognized framing value
+                        // is trusted for display. A project already saved
+                        // with 'rtuOverTcp' must show as "RTU over TCP", NOT
+                        // be silently coerced to "Modbus TCP" — an unknown
+                        // string (future value, corrupted JSON) falls back to
+                        // 'tcp' instead of crashing the dropdown.
+                        initialValue: modbus.framing == 'rtuOverTcp' ? modbus.framing : 'tcp',
+                        decoration: const InputDecoration(isDense: true, labelText: 'Framing'),
+                        style: const TextStyle(fontSize: 12, color: Colors.white),
+                        dropdownColor: const Color(0xFF1E293B),
+                        items: const [
+                          DropdownMenuItem(value: 'tcp', child: Text('Modbus TCP')),
+                          DropdownMenuItem(value: 'rtuOverTcp', child: Text('RTU over TCP')),
+                        ],
+                        onChanged: running
+                            ? null
+                            : (v) {
+                                if (v == null) return;
+                                _setModbusFraming(v);
+                              },
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'RTU over TCP suits masters expecting a serial-style frame '
+                        '(e.g. behind a terminal server); Modbus TCP is the standard '
+                        'MBAP-framed transport.',
+                        style: TextStyle(color: Colors.white70, fontSize: 11),
                       ),
                       const SizedBox(height: 12),
                       Flex(
