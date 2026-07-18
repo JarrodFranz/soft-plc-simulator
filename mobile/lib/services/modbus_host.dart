@@ -19,6 +19,7 @@ import 'package:flutter/foundation.dart';
 
 import '../models/project_model.dart';
 import '../protocols/modbus/modbus_pdu.dart';
+import '../protocols/modbus/modbus_rtu.dart';
 
 /// Lifecycle status of the [ModbusHost].
 enum ModbusHostStatus { stopped, running, error }
@@ -35,10 +36,17 @@ const int _maxFrameBytes = 260;
 class _Connection {
   final Socket socket;
   final Uint8List? Function(ModbusFrame) handle;
+
+  /// Wire framing mode for this connection — `kModbusFramingTcp` (the
+  /// existing MBAP-header reassembly, unmodified) or
+  /// `kModbusFramingRtuOverTcp` (RTU framing: no MBAP header, CRC-16 framed,
+  /// function-code-derived length). Read once per connection from the
+  /// project's `ModbusProtocolConfig.framing` at accept time.
+  final String framing;
   final List<int> _buffer = [];
   bool _closed = false;
 
-  _Connection(this.socket, this.handle);
+  _Connection(this.socket, this.handle, {this.framing = kModbusFramingTcp});
 
   /// Feeds newly-arrived [data] into the reassembly buffer, then extracts
   /// and dispatches as many complete frames as are available. A single
@@ -48,43 +56,102 @@ class _Connection {
     if (_closed) return;
     _buffer.addAll(data);
     try {
-      while (true) {
-        if (_buffer.length < 6) {
-          return; // not even the length field yet
-        }
-        final length = (_buffer[4] << 8) | _buffer[5];
-        final totalSize = 6 + length;
-        if (length < 1 || totalSize > _maxFrameBytes) {
-          // Hostile/garbage size: close ONLY this connection, never crash.
-          close();
-          return;
-        }
-        if (_buffer.length < totalSize) {
-          return; // wait for more bytes
-        }
-        final rawFrame = Uint8List.fromList(_buffer.sublist(0, totalSize));
-        _buffer.removeRange(0, totalSize);
-
-        final parsed = parseMbap(rawFrame);
-        if (parsed == null) {
-          // Malformed frame (e.g. non-zero protocolId) — drop this
-          // connection rather than guess at recovery.
-          close();
-          return;
-        }
-        final responsePdu = handle(parsed);
-        if (responsePdu != null) {
-          // A `null` response means the configured unit id didn't match this
-          // request's unit id — a real outstation stays silent rather than
-          // answering on someone else's behalf, so no bytes go back at all.
-          final responseFrame = buildMbap(parsed.transactionId, parsed.unitId, responsePdu);
-          socket.add(responseFrame);
-        }
+      if (framing == kModbusFramingRtuOverTcp) {
+        _onDataRtu();
+      } else {
+        _onDataTcp();
       }
     } catch (_) {
       // A crash while reassembling/dispatching must never take down the
       // host — just drop this one connection.
       close();
+    }
+  }
+
+  /// The original Modbus TCP (MBAP header) reassembly path — byte-for-byte
+  /// unmodified from before the RTU-over-TCP framing option existed.
+  void _onDataTcp() {
+    while (true) {
+      if (_buffer.length < 6) {
+        return; // not even the length field yet
+      }
+      final length = (_buffer[4] << 8) | _buffer[5];
+      final totalSize = 6 + length;
+      if (length < 1 || totalSize > _maxFrameBytes) {
+        // Hostile/garbage size: close ONLY this connection, never crash.
+        close();
+        return;
+      }
+      if (_buffer.length < totalSize) {
+        return; // wait for more bytes
+      }
+      final rawFrame = Uint8List.fromList(_buffer.sublist(0, totalSize));
+      _buffer.removeRange(0, totalSize);
+
+      final parsed = parseMbap(rawFrame);
+      if (parsed == null) {
+        // Malformed frame (e.g. non-zero protocolId) — drop this
+        // connection rather than guess at recovery.
+        close();
+        return;
+      }
+      final responsePdu = handle(parsed);
+      if (responsePdu != null) {
+        // A `null` response means the configured unit id didn't match this
+        // request's unit id — a real outstation stays silent rather than
+        // answering on someone else's behalf, so no bytes go back at all.
+        final responseFrame = buildMbap(parsed.transactionId, parsed.unitId, responsePdu);
+        socket.add(responseFrame);
+      }
+    }
+  }
+
+  /// The Modbus RTU-over-TCP reassembly path: no MBAP header, so the total
+  /// frame length is derived purely from the function code (and, for the
+  /// variable-length write-multiple codes, the byteCount field) via
+  /// [rtuRequestLength]. A bad-CRC frame is dropped silently (no reply,
+  /// connection stays open) rather than closing the connection — RTU masters
+  /// commonly retry on silence. Unit id 0 (broadcast) is likewise never
+  /// replied to, even though [handle] still runs and any write still takes
+  /// effect — see the comment at the write-suppression check below.
+  void _onDataRtu() {
+    while (true) {
+      final buf = Uint8List.fromList(_buffer);
+      final total = rtuRequestLength(buf);
+      if (total == null) {
+        return; // need more bytes to decide the frame length
+      }
+      if (total < 0 || total > _maxFrameBytes) {
+        // Unsupported function code or an oversized/hostile frame: resync by
+        // dropping everything buffered for this connection so far.
+        _buffer.clear();
+        return;
+      }
+      if (_buffer.length < total) {
+        return; // wait for more bytes
+      }
+      final rawFrame = Uint8List.fromList(_buffer.sublist(0, total));
+      _buffer.removeRange(0, total);
+
+      final parsed = parseRtu(rawFrame);
+      if (parsed == null) {
+        // Bad CRC: drop this frame silently and keep the connection open —
+        // no reply is sent (mirrors a real RTU outstation staying silent on
+        // a corrupted request rather than tearing down the link).
+        _buffer.clear();
+        return;
+      }
+      final responsePdu = handle(parsed);
+      // Unit id 0 is the RTU broadcast address: the request is still
+      // executed (handle() ran above, so any write took effect), but a real
+      // RTU outstation MUST NOT reply to a broadcast — staying silent is
+      // part of the protocol, not an error case. Replying here would hand a
+      // master its own unexpected broadcast echo, which it would then
+      // consume as the response to whatever unicast request it sends next,
+      // desyncing every subsequent transaction on the link.
+      if (responsePdu != null && parsed.unitId != 0) {
+        socket.add(buildRtu(parsed.unitId, responsePdu));
+      }
     }
   }
 
@@ -191,6 +258,10 @@ class ModbusHost extends ChangeNotifier {
       return;
     }
     final port = modbus.port;
+    // Read once at start time, like `port`/`enabled` above — a bound socket
+    // can't switch framing mid-connection, so a project swap while running
+    // never changes how already-accepted connections are reassembled.
+    final framing = modbus.framing;
 
     try {
       final serverSocket = await ServerSocket.bind(InternetAddress.anyIPv4, port);
@@ -202,7 +273,7 @@ class ModbusHost extends ChangeNotifier {
       final server = ModbusServer(projectProvider: projectProvider);
 
       _acceptSub = serverSocket.listen(
-        (socket) => _acceptConnection(socket, server),
+        (socket) => _acceptConnection(socket, server, framing),
         onError: (Object e, StackTrace st) {
           _setStatus(ModbusHostStatus.error, error: e.toString());
         },
@@ -216,9 +287,9 @@ class ModbusHost extends ChangeNotifier {
     }
   }
 
-  void _acceptConnection(Socket socket, ModbusServer server) {
+  void _acceptConnection(Socket socket, ModbusServer server, String framing) {
     try {
-      final conn = _Connection(socket, server.handle);
+      final conn = _Connection(socket, server.handle, framing: framing);
       _connections.add(conn);
       if (!_disposed) {
         notifyListeners();

@@ -537,6 +537,38 @@ void main() {
       expect(settings.modbus, isNull);
       expect(settings.toJson().containsKey('modbus'), isFalse);
     });
+
+    test('ModbusProtocolConfig.fromJson with no framing key defaults to tcp (additive field)', () {
+      final cfg = ModbusProtocolConfig.fromJson({});
+      expect(cfg.framing, 'tcp');
+    });
+
+    test('ModbusProtocolConfig.fromJson with a non-string framing value degrades to tcp '
+        'instead of throwing', () {
+      // A corrupted/foreign project file could carry any JSON type here
+      // (e.g. a stray 0 from a bad merge/migration) — this must NOT throw a
+      // TypeError and fail the whole project load, unlike an unguarded
+      // `j['framing'] ?? 'tcp'` would for a non-null non-String value.
+      expect(() => ModbusProtocolConfig.fromJson({'framing': 0}), returnsNormally);
+      expect(ModbusProtocolConfig.fromJson({'framing': 0}).framing, 'tcp');
+      expect(ModbusProtocolConfig.fromJson({'framing': true}).framing, 'tcp');
+      expect(ModbusProtocolConfig.fromJson({'framing': <String, dynamic>{}}).framing, 'tcp');
+      expect(ModbusProtocolConfig.fromJson({'framing': <dynamic>[]}).framing, 'tcp');
+    });
+
+    test('ModbusProtocolConfig round-trips framing: rtuOverTcp through toJson/fromJson', () {
+      final cfg = ModbusProtocolConfig(
+        enabled: true,
+        port: 502,
+        map: ModbusMap(entries: []),
+        framing: 'rtuOverTcp',
+      );
+
+      expect(cfg.toJson()['framing'], 'rtuOverTcp');
+
+      final rt = ModbusProtocolConfig.fromJson(cfg.toJson());
+      expect(rt.framing, 'rtuOverTcp');
+    });
   });
 
   group('DnpProtocolConfig / ProtocolSettings.dnp3', () {

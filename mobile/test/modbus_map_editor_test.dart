@@ -81,7 +81,13 @@ void main() {
 
     expect(project.protocols!.modbus!.map.entries, isEmpty);
 
-    await tester.tap(find.widgetWithText(TextButton, 'Add entry'));
+    // The Framing dropdown + caption (Task 2) pushed "Add entry" further
+    // down the card, so it may sit outside the default 800x600 test
+    // viewport — scroll it into view before tapping.
+    final addEntryFinder0 = find.widgetWithText(TextButton, 'Add entry');
+    await tester.ensureVisible(addEntryFinder0);
+    await tester.pumpAndSettle();
+    await tester.tap(addEntryFinder0);
     await tester.pump();
 
     expect(project.protocols!.modbus!.map.entries, hasLength(1));
@@ -98,7 +104,10 @@ void main() {
     await tester.pumpAndSettle();
     await _selectModbusTab(tester);
 
-    await tester.tap(find.widgetWithText(TextButton, 'Add entry'));
+    final addEntryFinder1 = find.widgetWithText(TextButton, 'Add entry');
+    await tester.ensureVisible(addEntryFinder1);
+    await tester.pumpAndSettle();
+    await tester.tap(addEntryFinder1);
     await tester.pump();
     final entry = project.protocols!.modbus!.map.entries.first;
 
@@ -152,9 +161,12 @@ void main() {
     await tester.pumpAndSettle();
     await _selectModbusTab(tester);
 
-    await tester.tap(find.widgetWithText(TextButton, 'Add entry'));
+    final addEntryFinder2 = find.widgetWithText(TextButton, 'Add entry');
+    await tester.ensureVisible(addEntryFinder2);
+    await tester.pumpAndSettle();
+    await tester.tap(addEntryFinder2);
     await tester.pump();
-    await tester.tap(find.widgetWithText(TextButton, 'Add entry'));
+    await tester.tap(addEntryFinder2);
     await tester.pump();
     expect(project.protocols!.modbus!.map.entries, hasLength(2));
 
@@ -182,7 +194,10 @@ void main() {
     await tester.pumpAndSettle();
     await _selectModbusTab(tester);
 
-    await tester.tap(find.widgetWithText(TextButton, 'Add entry'));
+    final addEntryFinder3 = find.widgetWithText(TextButton, 'Add entry');
+    await tester.ensureVisible(addEntryFinder3);
+    await tester.pumpAndSettle();
+    await tester.tap(addEntryFinder3);
     await tester.pump();
 
     final tagFieldFinder = find.descendant(

@@ -174,6 +174,19 @@ class ModbusProtocolConfig {
   /// read.
   int unitId;
 
+  /// Wire framing mode: `'tcp'` (the default — classic Modbus TCP with an
+  /// MBAP header) or `'rtuOverTcp'` (Modbus RTU framing — no MBAP header,
+  /// CRC-16 framed, function-code-derived length — carried over a TCP byte
+  /// stream, for masters that expect a serial-style frame, e.g. behind a
+  /// terminal server). Stored as the raw string literal rather than the
+  /// `kModbusFramingTcp`/`kModbusFramingRtuOverTcp` constants from
+  /// `protocols/modbus/modbus_rtu.dart` so this pure-Dart model file doesn't
+  /// need to import the protocol layer (mirrors how `wordSwap`/`byteSwap`
+  /// are declared). Additive field — older saved projects simply don't have
+  /// `framing` in their JSON and fall back to `'tcp'` (unchanged wire
+  /// behavior) on read.
+  String framing;
+
   ModbusProtocolConfig({
     this.enabled = false,
     this.port = 502,
@@ -181,6 +194,7 @@ class ModbusProtocolConfig {
     this.wordSwap = false,
     this.byteSwap = false,
     this.unitId = 255,
+    this.framing = 'tcp',
   });
 
   factory ModbusProtocolConfig.fromJson(Map<String, dynamic> j) => ModbusProtocolConfig(
@@ -192,6 +206,7 @@ class ModbusProtocolConfig {
         wordSwap: j['word_swap'] == true,
         byteSwap: j['byte_swap'] == true,
         unitId: (j['unit_id'] as num?)?.toInt() ?? 255,
+        framing: j['framing'] is String ? j['framing'] as String : 'tcp',
       );
 
   Map<String, dynamic> toJson() => {
@@ -201,12 +216,13 @@ class ModbusProtocolConfig {
         'word_swap': wordSwap,
         'byte_swap': byteSwap,
         'unit_id': unitId,
+        'framing': framing,
       };
 
   /// Sane defaults for a project that has never configured Modbus: disabled,
   /// the standard Modbus TCP port, an auto-generated map from the project's
   /// current scalar tags, high-word-first register order, big-endian byte
-  /// order within registers, and "any" unit id.
+  /// order within registers, "any" unit id, and classic Modbus TCP framing.
   static ModbusProtocolConfig defaults(PlcProject p) => ModbusProtocolConfig(
         enabled: false,
         port: 502,
@@ -214,6 +230,7 @@ class ModbusProtocolConfig {
         wordSwap: false,
         byteSwap: false,
         unitId: 255,
+        framing: 'tcp',
       );
 }
 
