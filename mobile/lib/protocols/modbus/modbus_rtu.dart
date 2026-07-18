@@ -23,8 +23,12 @@
 //      the byte-count field those requests carry) — that is exactly what
 //      `rtuRequestLength` does, returning a tri-state result: `null` while
 //      undecidable (not enough bytes buffered yet to know), a positive byte
-//      count once decidable, or `-1` for a function code this derivation
-//      doesn't recognize (the caller should drop/resync the buffer).
+//      count once decidable (including a fixed 4 bytes for several function
+//      codes `ModbusServer` doesn't implement but whose request length is
+//      still known, so they get a clean ILLEGAL FUNCTION exception rather
+//      than silence), or `-1` when the length genuinely cannot be derived at
+//      all (the caller must drop/resync the buffer) — see `rtuRequestLength`
+//      for exactly which codes fall in each bucket.
 library modbus_rtu;
 
 import 'dart:typed_data';
@@ -97,8 +101,26 @@ ModbusFrame? parseRtu(Uint8List frame) {
 ///     byteCount at `buf[6]` isn't buffered yet).
 ///   - the total expected frame length (unit + PDU + 2-byte CRC) once it can
 ///     be determined.
-///   - `-1` for a function code this derivation doesn't recognize; the
-///     caller should drop or resync the buffer.
+///   - `-1` if the length genuinely cannot be derived from the function code
+///     alone; the caller must drop/resync the buffer, since without a known
+///     length there is no way to know where this request ends and the next
+///     one begins.
+///
+/// IMPORTANT: `-1` means "length not derivable, must resync" — it does NOT
+/// mean "function code unsupported". Several function codes this project's
+/// `ModbusServer` doesn't implement still have a well-known FIXED request
+/// length (unit + fc + 2-byte CRC = 4 bytes, no request body at all):
+/// `0x07` (Read Exception Status), `0x0B` (Get Comm Event Counter), `0x0C`
+/// (Get Comm Event Log), `0x11` (Report Server ID). For those, the frame
+/// length IS derivable, so this function returns `4` — the frame gets
+/// framed, parsed, and handed to `ModbusServer.handle`, whose `default:`
+/// case replies with a proper ILLEGAL FUNCTION exception. That is a clean,
+/// spec-correct answer a master can act on immediately, versus `-1`'s
+/// silence-until-timeout (which some discovery/identify tooling probes with
+/// exactly these codes, and which can make a perfectly reachable device look
+/// unreachable). Every OTHER unrecognized function code still returns `-1`,
+/// since its request length truly cannot be derived without decoding a body
+/// this project doesn't model.
 int? rtuRequestLength(Uint8List buf) {
   if (buf.length < 2) {
     return null;
@@ -117,6 +139,15 @@ int? rtuRequestLength(Uint8List buf) {
         return null;
       }
       return 9 + buf[6];
+    case 0x07: // Read Exception Status
+    case 0x0B: // Get Comm Event Counter
+    case 0x0C: // Get Comm Event Log
+    case 0x11: // Report Server ID
+      // Unsupported by `ModbusServer`, but the request is fixed-length (no
+      // body beyond fc): unit(1) + fc(1) + crc(2) = 4. Derivable -> frame it
+      // and let `handle` return a clean ILLEGAL FUNCTION exception instead
+      // of leaving the master to time out.
+      return 4;
     default:
       return -1;
   }

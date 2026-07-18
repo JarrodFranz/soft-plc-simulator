@@ -1681,7 +1681,9 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         onChanged: running
                             ? null
                             : (v) {
-                                if (v == null) return;
+                                if (v == null) {
+                                  return;
+                                }
                                 _setModbusFraming(v);
                               },
                       ),

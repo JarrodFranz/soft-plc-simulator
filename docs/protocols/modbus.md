@@ -188,19 +188,50 @@ next **Start hosting**.
   8 total bytes (unit id + function code + 2 address bytes + 2
   quantity/value bytes + 2-byte CRC) or, for the two write-multiple codes
   (`0F`/`10`), `9 + byteCount` bytes, where `byteCount` is itself a field
-  carried a fixed 6 bytes into the frame. An unrecognized function code
-  can't have its length derived at all.
+  carried a fixed 6 bytes into the frame. Four more function codes this
+  server doesn't implement — `07` (Read Exception Status), `0B` (Get Comm
+  Event Counter), `0C` (Get Comm Event Log), `11` (Report Server ID) — are
+  ALSO derivable: each has a fixed 4-byte request (unit id + function code +
+  2-byte CRC, no body), so the frame is still parsed and answered with a
+  proper exception (see below) rather than being treated as underivable.
+  Only a function code outside all of these buckets truly can't have its
+  length derived.
 - The CRC-16 variant is CRC-16/MODBUS: reflected, polynomial `0xA001`,
   initial value `0xFFFF` (the standard check value for the ASCII string
   `"123456789"` is `0x4B37`).
 
-**Resync behavior on a bad frame:** a frame whose CRC doesn't match, or
-whose function code isn't one this derivation recognizes, is dropped
-silently — the connection stays open, but nothing is sent back and any
-bytes buffered so far for that connection are discarded so the next valid
-frame can be found. This mirrors how a real RTU outstation stays silent on
-a corrupted request rather than tearing the link down; RTU masters commonly
-retry on silence rather than expecting an error response.
+**Unsupported function codes: exception vs. resync.** These are two
+different situations, not one:
+- A function code with a **derivable** length — every code this server
+  implements, plus the four fixed-4-byte codes above — is always framed and
+  handed to the same PDU handler both wire framings share. If the code
+  itself isn't one this server implements, the handler replies with a
+  standard **ILLEGAL FUNCTION** exception PDU (function code with the
+  high bit set + exception code `01`), framed back over RTU like any other
+  response. A master gets a clean, immediate, spec-correct answer instead of
+  a timeout — this matters for discovery/identify tooling, which commonly
+  probes with exactly these codes.
+- A function code whose length genuinely **cannot** be derived (anything
+  outside the buckets above) is where **resync** applies: the connection
+  stays open, but nothing is sent back and any bytes buffered so far for
+  that connection are discarded so the next valid frame can be found. A
+  corrupted-CRC frame is resynced the same way, silently, with the
+  connection kept open — this mirrors how a real RTU outstation stays
+  silent on a corrupted request rather than tearing the link down; RTU
+  masters commonly retry on silence rather than expecting an error
+  response.
+
+**Broadcast (unit id `0`) is always silent.** Per the Modbus RTU spec, unit
+id `0` addresses every outstation on the link at once: the request is still
+executed (a broadcast write takes effect exactly like a unicast one), but
+**no outstation may reply** — there is no single sender a multi-drop reply
+could be addressed back to. This server honors that: a request framed with
+unit id `0` runs through the normal handler (so its side effect happens),
+but the RTU path suppresses the write-back regardless of what the handler
+returns. This applies to RTU framing only; classic Modbus TCP already
+disambiguates responses by transaction id, so it keeps replying to unit id
+`0` requests as it always has (a project relying on that MBAP behavior sees
+no change).
 
 **When to use it:** pick `RTU over TCP` when the master on the other end
 expects a serial-style Modbus RTU frame rather than an MBAP-framed TCP

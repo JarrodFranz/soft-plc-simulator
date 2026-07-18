@@ -49,9 +49,21 @@ void main() {
     expect(rtuRequestLength(_b([0x01, 0x0F, 0x00, 0x00, 0x00, 0x08, 0x01])), 10);
   });
 
-  test('rtuRequestLength: null while undecidable, -1 for unsupported fc', () {
+  test('rtuRequestLength: null while undecidable, -1 for a genuinely underivable fc', () {
     expect(rtuRequestLength(_b([0x01])), isNull, reason: 'no function code yet');
     expect(rtuRequestLength(_b([])), isNull);
-    expect(rtuRequestLength(_b([0x01, 0x63])), -1, reason: 'unsupported fc');
+    expect(rtuRequestLength(_b([0x01, 0x63])), -1, reason: 'underivable fc 0x63');
+  });
+
+  test('rtuRequestLength: derivable-but-unsupported fixed-length codes return 4', () {
+    // 0x07 Read Exception Status, 0x0B Get Comm Event Counter, 0x0C Get Comm
+    // Event Log, 0x11 Report Server ID: none are implemented by
+    // `ModbusServer`, but each has a fixed 4-byte request (unit + fc + 2-byte
+    // CRC, no body) — so the length IS derivable and the frame should still
+    // be parsed and handed to `handle`, which replies with a clean ILLEGAL
+    // FUNCTION exception instead of the master timing out.
+    for (final fc in [0x07, 0x0B, 0x0C, 0x11]) {
+      expect(rtuRequestLength(_b([0x01, fc])), 4, reason: 'fc 0x${fc.toRadixString(16)}');
+    }
   });
 }

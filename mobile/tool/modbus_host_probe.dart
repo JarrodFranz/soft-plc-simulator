@@ -294,7 +294,8 @@ class _Connection {
   /// [rtuRequestLength]. A bad-CRC frame (or a resync after an unsupported
   /// function code) is dropped silently (no reply, connection stays open)
   /// rather than closing the connection — mirrors `ModbusHost`'s
-  /// `_onDataRtu`.
+  /// `_onDataRtu`. Unit id 0 (broadcast) is likewise never replied to, even
+  /// though [handle] still runs and any write still takes effect.
   void _onDataRtu() {
     while (true) {
       final buf = Uint8List.fromList(_buffer);
@@ -321,7 +322,14 @@ class _Connection {
         return;
       }
       final responsePdu = handle(parsed);
-      if (responsePdu != null) {
+      // Unit id 0 is the RTU broadcast address: the request is still
+      // executed (handle() ran above, so any write took effect), but a real
+      // RTU outstation MUST NOT reply to a broadcast — staying silent is
+      // part of the protocol, not an error case. Replying here would hand a
+      // master its own unexpected broadcast echo, which it would then
+      // consume as the response to whatever unicast request it sends next,
+      // desyncing every subsequent transaction on the link.
+      if (responsePdu != null && parsed.unitId != 0) {
         socket.add(buildRtu(parsed.unitId, responsePdu));
       }
     }

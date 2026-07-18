@@ -206,7 +206,7 @@ class ModbusProtocolConfig {
         wordSwap: j['word_swap'] == true,
         byteSwap: j['byte_swap'] == true,
         unitId: (j['unit_id'] as num?)?.toInt() ?? 255,
-        framing: j['framing'] ?? 'tcp',
+        framing: j['framing'] is String ? j['framing'] as String : 'tcp',
       );
 
   Map<String, dynamic> toJson() => {
