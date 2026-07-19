@@ -14,6 +14,7 @@ import 'dart:typed_data';
 
 import '../../models/project_model.dart';
 import '../../models/tag_resolver.dart';
+import '../../models/tag_write_gate.dart';
 import 'opcua_address_space.dart';
 import 'opcua_binary.dart';
 import 'opcua_session.dart';
@@ -570,6 +571,15 @@ class OpcUaProjectServices implements OpcUaServiceHandler {
     }
     if (!entry.isWritable) {
       return OpcUaServiceStatusCodes.badNotWritable;
+    }
+    // Write-time hard backstop (protocol-hardening workstream, Task 2): the
+    // OpcuaMap node above is a MUTABLE map that a hand-edit could re-target
+    // at the reserved System tag. `isExternallyWritable` re-checks the
+    // underlying ROOT tag itself, independent of whatever this node's own
+    // `access` claims — a hard, non-overridable rule, never a replacement
+    // for the per-node check above.
+    if (!isExternallyWritable(project, entry.tagName)) {
+      return OpcUaServiceStatusCodes.badUserAccessDenied;
     }
     final variant = value.variant;
     if (variant == null) {

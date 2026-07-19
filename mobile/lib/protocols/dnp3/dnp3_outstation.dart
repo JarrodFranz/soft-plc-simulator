@@ -47,6 +47,7 @@ import 'dart:typed_data';
 import '../../models/dnp3_map.dart';
 import '../../models/project_model.dart';
 import '../../models/tag_resolver.dart';
+import '../../models/tag_write_gate.dart';
 import 'dnp3_app.dart';
 import 'dnp3_events.dart';
 
@@ -990,7 +991,13 @@ class DnpOutstation {
     if (desired == null) {
       return DnpControlStatus.success;
     }
-    if (_isForcedSkip(project, entry.tag)) {
+    // Write-time hard backstop (protocol-hardening workstream, Task 2): DNP3
+    // map entries have NO `access` field at all (see `DnpMapEntry`), so a
+    // hand-retargeted `pointType` pointing at the reserved System tag has
+    // nothing else stopping it — `isExternallyWritable` re-checks the
+    // underlying ROOT tag itself, independent of the map. Never a
+    // replacement for the forced-tag check beside it.
+    if (_isForcedSkip(project, entry.tag) || !isExternallyWritable(project, entry.tag)) {
       return DnpControlStatus.notAuthorized;
     }
     if (execute) {
@@ -1007,7 +1014,9 @@ class DnpOutstation {
     if (entry == null) {
       return DnpControlStatus.notSupported;
     }
-    if (_isForcedSkip(project, entry.tag)) {
+    // Write-time hard backstop (protocol-hardening workstream, Task 2): see
+    // the identical comment in `_evaluateCrob` above.
+    if (_isForcedSkip(project, entry.tag) || !isExternallyWritable(project, entry.tag)) {
       return DnpControlStatus.notAuthorized;
     }
     if (execute) {

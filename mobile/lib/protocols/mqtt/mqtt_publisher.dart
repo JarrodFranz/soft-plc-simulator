@@ -49,6 +49,7 @@ import '../../models/mqtt_map.dart';
 import '../../models/project_model.dart';
 import '../../models/protocol_settings.dart';
 import '../../models/tag_resolver.dart';
+import '../../models/tag_write_gate.dart';
 import 'mqtt_sparkplug.dart';
 
 /// The Sparkplug B topic namespace prefix (`spBv1.0/<group>/<msgType>/<node>`).
@@ -588,7 +589,14 @@ class MqttPublisher {
         break;
       }
     }
-    if (entry == null || !entry.writable) {
+    // Write-time hard backstop (protocol-hardening workstream, Task 2): the
+    // MqttMap entry above is a MUTABLE map that a hand-edit could re-target
+    // at the reserved System tag. `isExternallyWritable` re-checks the
+    // underlying ROOT tag itself, independent of whatever this entry's own
+    // `writable` claims — a hard, non-overridable rule, never a replacement
+    // for the per-entry check above. Short-circuiting `||` means
+    // `entry.tag` is never touched when `entry` is null.
+    if (entry == null || !entry.writable || !isExternallyWritable(project, entry.tag)) {
       return const [];
     }
 
@@ -656,7 +664,9 @@ class MqttPublisher {
           break;
         }
       }
-      if (entry == null || !entry.writable) {
+      // Write-time hard backstop (protocol-hardening workstream, Task 2):
+      // see the identical comment in `_decodeJsonCommand` above.
+      if (entry == null || !entry.writable || !isExternallyWritable(project, entry.tag)) {
         continue;
       }
       out.add((tagPath: entry.tag, value: value));

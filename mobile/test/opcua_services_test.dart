@@ -215,6 +215,50 @@ PlcProject _buildProject() {
   return project;
 }
 
+/// Task 2 hardening fixture project: kept SEPARATE from [_buildProject]
+/// because several existing tests above pin exact Browse reference counts
+/// against that fixture's tag set — adding tags there would silently shift
+/// those counts. This one has its own reserved `System` tag (own `access`
+/// deliberately 'ReadWrite', isolating the NAME-based backstop rule from the
+/// ordinary access-field rule) and a `SimulatedOutput` tag with a
+/// deliberately writable map node (the decision-1 override carve-out).
+PlcProject _buildHardeningProject() {
+  final project = PlcProject(
+    id: 'proj_hardening',
+    name: 'Hardening Test Project',
+    controllerName: 'PLC_HARDEN',
+    tags: [
+      PlcTag(name: 'System', path: 'System', dataType: 'INT32', value: 0, ioType: 'Internal', access: 'ReadWrite'),
+      PlcTag(
+          name: 'SimOutOverride',
+          path: 'SimOutOverride',
+          dataType: 'INT32',
+          value: 9,
+          ioType: 'SimulatedOutput'),
+      PlcTag(name: 'Plain', path: 'Plain', dataType: 'INT32', value: 5, ioType: 'Internal'),
+    ],
+    structDefs: [],
+    programs: [],
+    tasks: [],
+    hmis: [],
+  );
+  project.protocols = ProtocolSettings(
+    opcua: OpcUaProtocolConfig(
+      enabled: true,
+      namespaceUri: 'urn:test:harden',
+      map: OpcuaMap(
+        namespaceUri: 'urn:test:harden',
+        nodes: [
+          OpcuaNode(nodeId: 'ns=1;s=System', tag: 'System', access: 'ReadWrite'),
+          OpcuaNode(nodeId: 'ns=1;s=SimOutOverride', tag: 'SimOutOverride', access: 'ReadWrite'),
+          OpcuaNode(nodeId: 'ns=1;s=Plain', tag: 'Plain', access: 'ReadWrite'),
+        ],
+      ),
+    ),
+  );
+  return project;
+}
+
 void main() {
   group('OpcUaAddressSpace.build', () {
     test('one Variable entry per map node, Objects folder organizes them', () {
@@ -878,6 +922,68 @@ void main() {
       secondReader.responseHeader();
       secondReader.int32();
       expect(secondReader.dataValue().variant!.value, 12345);
+    });
+  });
+
+  group('Task 2 hardening: write-time backstop', () {
+    test(
+        'Write to a WRITABLE map node pointing at the System tag is refused with Bad_UserAccessDenied, '
+        'value unchanged (the map node alone would otherwise allow this write)', () {
+      final project = _buildHardeningProject();
+      final services = OpcUaProjectServices(projectProvider: () => project);
+      final systemTag = project.tags.firstWhere((t) => t.name == 'System');
+      expect(systemTag.access, 'ReadWrite', reason: "the tag's OWN access is deliberately not ReadOnly");
+
+      final space = OpcUaAddressSpace.build(project);
+      final nodeId = space.byNodeId(const OpcNodeId.string(1, 'System'))!.nodeId;
+      final body = _writeRequestBody(toWrite: [
+        (nodeId: nodeId, attributeId: _attrValue, indexRange: null, value: const OpcVariant(typeId: 6, value: 999)),
+      ]);
+      final h = _reqHeader();
+      final resp = services.handle(_writeRequestId, body, h, _respondBuilder(h))!;
+      final reader = OpcUaReader(resp);
+      reader.nodeId();
+      reader.responseHeader();
+      expect(reader.int32(), 1);
+      expect(reader.statusCode(), _statusBadUserAccessDenied);
+      expect(readPath(project, 'System'), 0);
+    });
+
+    test('Write to a WRITABLE map node pointing at a SimulatedOutput tag still succeeds '
+        '(deliberate override survives)', () {
+      final project = _buildHardeningProject();
+      final services = OpcUaProjectServices(projectProvider: () => project);
+      final space = OpcUaAddressSpace.build(project);
+      final nodeId = space.byNodeId(const OpcNodeId.string(1, 'SimOutOverride'))!.nodeId;
+      final body = _writeRequestBody(toWrite: [
+        (nodeId: nodeId, attributeId: _attrValue, indexRange: null, value: const OpcVariant(typeId: 6, value: 321)),
+      ]);
+      final h = _reqHeader();
+      final resp = services.handle(_writeRequestId, body, h, _respondBuilder(h))!;
+      final reader = OpcUaReader(resp);
+      reader.nodeId();
+      reader.responseHeader();
+      expect(reader.int32(), 1);
+      expect(reader.statusCode(), _statusGood);
+      expect(readPath(project, 'SimOutOverride'), 321);
+    });
+
+    test('a normal Internal ReadWrite tag still writes successfully — the backstop is not over-broad', () {
+      final project = _buildHardeningProject();
+      final services = OpcUaProjectServices(projectProvider: () => project);
+      final space = OpcUaAddressSpace.build(project);
+      final nodeId = space.byNodeId(const OpcNodeId.string(1, 'Plain'))!.nodeId;
+      final body = _writeRequestBody(toWrite: [
+        (nodeId: nodeId, attributeId: _attrValue, indexRange: null, value: const OpcVariant(typeId: 6, value: 77)),
+      ]);
+      final h = _reqHeader();
+      final resp = services.handle(_writeRequestId, body, h, _respondBuilder(h))!;
+      final reader = OpcUaReader(resp);
+      reader.nodeId();
+      reader.responseHeader();
+      expect(reader.int32(), 1);
+      expect(reader.statusCode(), _statusGood);
+      expect(readPath(project, 'Plain'), 77);
     });
   });
 

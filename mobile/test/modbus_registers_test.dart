@@ -28,6 +28,14 @@ PlcProject _buildProject() {
       PlcTag(name: 'Hold32', path: 'Hold32', dataType: 'INT32', value: 0, ioType: 'Internal'),
       PlcTag(name: 'InFloat', path: 'InFloat', dataType: 'FLOAT64', value: 0.0, ioType: 'SimulatedOutput'),
       PlcTag(name: 'RoHold', path: 'RoHold', dataType: 'INT16', value: 42, ioType: 'SimulatedOutput'),
+      // Task 2 hardening fixtures ------------------------------------------
+      // Reserved System tag; its OWN `access` is deliberately 'ReadWrite'
+      // (not 'ReadOnly') so the backstop test below isolates the NAME-based
+      // rule from the ordinary access-field rule.
+      PlcTag(name: 'System', path: 'System', dataType: 'INT16', value: 0, ioType: 'Internal', access: 'ReadWrite'),
+      // A SimulatedOutput tag with a deliberately writable map entry (see
+      // below) — the carve-out (decision 1) that must survive the backstop.
+      PlcTag(name: 'SimOutOverride', path: 'SimOutOverride', dataType: 'INT16', value: 9, ioType: 'SimulatedOutput'),
     ],
     protocols: ProtocolSettings(
       modbus: ModbusProtocolConfig(
@@ -39,6 +47,10 @@ PlcProject _buildProject() {
           ModbusMapEntry(tag: 'Hold32', table: 'holding', address: 1, access: 'ReadWrite'),
           ModbusMapEntry(tag: 'InFloat', table: 'input', address: 0, access: 'ReadOnly'),
           ModbusMapEntry(tag: 'RoHold', table: 'holding', address: 10, access: 'ReadOnly'),
+          // Task 2 hardening fixtures: both deliberately 'ReadWrite' at the map level.
+          ModbusMapEntry(tag: 'System', table: 'holding', address: 20, access: 'ReadWrite'),
+          ModbusMapEntry(tag: 'System', table: 'coil', address: 5, access: 'ReadWrite'),
+          ModbusMapEntry(tag: 'SimOutOverride', table: 'holding', address: 21, access: 'ReadWrite'),
         ]),
       ),
     ),
@@ -285,6 +297,58 @@ void main() {
       final resp = server.handle(_req(_bytes([0x03, 0x00, 0x01, 0x00, 0x02])));
       final expected = encodeReadRegistersResponse(0x03, encodeInt32(123456));
       expect(resp, expected);
+    });
+  });
+
+  group('Task 2 hardening: write-time backstop', () {
+    test(
+        'FC06 write to a WRITABLE map entry pointing at the System tag is refused (illegalDataAddress), '
+        'tag unchanged — the map entry alone would otherwise allow this write', () {
+      final systemTag = project.tags.firstWhere((t) => t.name == 'System');
+      expect(systemTag.access, 'ReadWrite', reason: "the tag's OWN access is deliberately not ReadOnly");
+      final before = readPath(project, 'System');
+
+      final resp = server.handle(_req(_bytes([0x06, 0x00, 0x14, 0x03, 0xE7]))); // address 20, value 999
+      expect(resp, encodeExceptionResponse(0x06, ModbusEx.illegalDataAddress));
+      expect(readPath(project, 'System'), before);
+    });
+
+    test('FC10 (multiple write) to the System holding address is refused, tag unchanged', () {
+      final regs = encodeInt16(1234);
+      final req = _bytes([
+        0x10, 0x00, 0x14, 0x00, 0x01, 0x02, //
+        (regs[0] >> 8) & 0xFF, regs[0] & 0xFF,
+      ]);
+      final resp = server.handle(_req(req));
+      expect(resp, encodeExceptionResponse(0x10, ModbusEx.illegalDataAddress));
+      expect(readPath(project, 'System'), 0);
+    });
+
+    test('FC05 write to a WRITABLE map entry pointing at the System tag (coil address) is refused, tag unchanged',
+        () {
+      final resp = server.handle(_req(_bytes([0x05, 0x00, 0x05, 0xFF, 0x00])));
+      expect(resp, encodeExceptionResponse(0x05, ModbusEx.illegalDataAddress));
+      expect(readPath(project, 'System'), 0);
+    });
+
+    test('FC0F (multiple coil write) to the System coil address is refused, tag unchanged', () {
+      final req = _bytes([0x0F, 0x00, 0x05, 0x00, 0x01, 0x01, 0x01]);
+      final resp = server.handle(_req(req));
+      expect(resp, encodeExceptionResponse(0x0F, ModbusEx.illegalDataAddress));
+      expect(readPath(project, 'System'), 0);
+    });
+
+    test('FC06 write to a WRITABLE map entry pointing at a SimulatedOutput tag still succeeds '
+        '(deliberate override survives)', () {
+      final resp = server.handle(_req(_bytes([0x06, 0x00, 0x15, 0x00, 0x63]))); // address 21, value 99
+      expect(resp, _bytes([0x06, 0x00, 0x15, 0x00, 0x63]));
+      expect(readPath(project, 'SimOutOverride'), 99);
+    });
+
+    test('a normal Internal ReadWrite tag still writes successfully — the backstop is not over-broad', () {
+      final resp = server.handle(_req(_bytes([0x06, 0x00, 0x00, 0x00, 0x37]))); // Hold16, value 55
+      expect(resp, _bytes([0x06, 0x00, 0x00, 0x00, 0x37]));
+      expect(readPath(project, 'Hold16'), 55);
     });
   });
 

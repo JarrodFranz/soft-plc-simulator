@@ -14,6 +14,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/cip_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/tag_resolver.dart';
 import 'package:soft_plc_mobile/protocols/enip/cip.dart';
 import 'package:soft_plc_mobile/protocols/enip/cip_tags.dart';
 
@@ -94,10 +95,32 @@ void main() {
             ioType: 'Internal',
             isForced: false,
           ),
+          // Task 2 hardening fixtures ------------------------------------
+          // The reserved System tag, with its OWN `access` deliberately left
+          // 'ReadWrite' (NOT 'ReadOnly') — isolating the write-time backstop's
+          // NAME-based rule from the ordinary access-field rule. The map
+          // entry below is ALSO deliberately 'ReadWrite'. Today (pre-Task-2)
+          // this write SUCCEEDS; the backstop must refuse it with 0x0F.
+          PlcTag(
+            name: 'System',
+            path: 'System',
+            dataType: 'SystemType',
+            value: {'Cmd': 0},
+            ioType: 'Internal',
+            access: 'ReadWrite',
+          ),
+          // A SimulatedOutput tag whose map entry is deliberately set
+          // 'ReadWrite' — the carve-out (decision 1) that must survive the
+          // backstop: a user may override a SimulatedOutput to be driven by
+          // an external client.
+          PlcTag(name: 'SimOut', path: 'SimOut', dataType: 'INT16', value: 7, ioType: 'SimulatedOutput'),
         ],
         structDefs: [
           PlcStructDef(name: 'TankType', fields: [
             StructFieldDef(name: 'Level', dataType: 'INT32', defaultValue: 0),
+          ]),
+          PlcStructDef(name: 'SystemType', fields: [
+            StructFieldDef(name: 'Cmd', dataType: 'INT16', defaultValue: 0),
           ]),
         ],
         programs: [],
@@ -115,6 +138,10 @@ void main() {
         CipMapEntry(tagName: 'Forced_Tag', access: 'ReadWrite'),
         CipMapEntry(tagName: 'Tank.Level', access: 'ReadWrite'),
         CipMapEntry(tagName: 'Tank2.Level', access: 'ReadWrite'),
+        // Task 2 hardening fixtures: both deliberately 'ReadWrite' at the
+        // MAP level (see buildProject for why this matters for each).
+        CipMapEntry(tagName: 'System.Cmd', access: 'ReadWrite'),
+        CipMapEntry(tagName: 'SimOut', access: 'ReadWrite'),
       ]);
 
   group('Read Tag (0x4C)', () {
@@ -410,6 +437,63 @@ void main() {
       final decoded = decodeCipValue(kCipTypeDint, readResp.data.sublist(2));
       expect(decoded, newMemberValue,
           reason: 'subsequent read must return the newly-written value');
+    });
+
+    group('Task 2 hardening: write-time backstop', () {
+      test(
+          'a write to a WRITABLE map entry pointing at a System member is refused with 0x0F, member unchanged '
+          '(the map entry alone would otherwise allow this write)', () {
+        final project = buildProject();
+        final map = buildMap();
+        final systemTag = project.tags.firstWhere((t) => t.name == 'System');
+        expect(systemTag.access, 'ReadWrite', reason: "the tag's OWN access is deliberately not ReadOnly");
+        final before = (systemTag.value as Map)['Cmd'];
+
+        final req = CipRequest(
+          service: kCipServiceWriteTag,
+          path: [CipPathSegment.symbol('System'), CipPathSegment.symbol('Cmd')],
+          data: _writeData(kCipTypeInt, encodeCipValue(kCipTypeInt, 999)!),
+        );
+        final resp = dispatchCipService(project, map, req);
+        expect(resp.generalStatus, kCipStatusPrivilegeViolation);
+        final after = (project.tags.firstWhere((t) => t.name == 'System').value as Map)['Cmd'];
+        expect(after, before, reason: 'a refused write must never land, even partially');
+      });
+
+      test('a WRITABLE map entry pointing at a SimulatedOutput tag still succeeds (deliberate override survives)',
+          () {
+        final project = buildProject();
+        final map = buildMap();
+        final writeReq = CipRequest(
+          service: kCipServiceWriteTag,
+          path: [CipPathSegment.symbol('SimOut')],
+          data: _writeData(kCipTypeInt, encodeCipValue(kCipTypeInt, 321)!),
+        );
+        final writeResp = dispatchCipService(project, map, writeReq);
+        expect(writeResp.generalStatus, kCipStatusSuccess,
+            reason: 'a deliberate ReadWrite override on a SimulatedOutput tag must still write');
+
+        final readReq = CipRequest(
+          service: kCipServiceReadTag,
+          path: [CipPathSegment.symbol('SimOut')],
+          data: _readData(),
+        );
+        final readResp = dispatchCipService(project, map, readReq);
+        expect(decodeCipValue(kCipTypeInt, readResp.data.sublist(2)), 321);
+      });
+
+      test('a normal Internal ReadWrite tag still writes successfully — the backstop is not over-broad', () {
+        final project = buildProject();
+        final map = buildMap();
+        final writeReq = CipRequest(
+          service: kCipServiceWriteTag,
+          path: [CipPathSegment.symbol('Int16_Tag')],
+          data: _writeData(kCipTypeInt, encodeCipValue(kCipTypeInt, 4321)!),
+        );
+        final writeResp = dispatchCipService(project, map, writeReq);
+        expect(writeResp.generalStatus, kCipStatusSuccess);
+        expect(readPath(project, 'Int16_Tag'), 4321);
+      });
     });
   });
 

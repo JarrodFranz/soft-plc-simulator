@@ -59,6 +59,7 @@ import 'dart:typed_data';
 import '../../models/cip_map.dart';
 import '../../models/project_model.dart';
 import '../../models/tag_resolver.dart';
+import '../../models/tag_write_gate.dart';
 import 'cip.dart';
 
 /// The Message Router object identity (class 0x02, instance 0x01) that a
@@ -184,6 +185,16 @@ CipResponse _writeTag(PlcProject project, CipMap map, CipRequest req) {
     return _errorResponse(req.service, kCipStatusPathDestinationUnknown);
   }
   if (entry.access == 'ReadOnly') {
+    return _errorResponse(req.service, kCipStatusPrivilegeViolation);
+  }
+  // Write-time hard backstop (protocol-hardening workstream, Task 2): the
+  // CipMap entry above is a MUTABLE map that a hand-edit could re-target at
+  // the reserved System tag (or leave writable against a tag whose OWN
+  // `access` has since become 'ReadOnly'). `isExternallyWritable` re-checks
+  // the underlying tag itself, independent of whatever this entry claims —
+  // this is a hard, non-overridable rule, never a replacement for the
+  // per-entry check above.
+  if (!isExternallyWritable(project, tagName)) {
     return _errorResponse(req.service, kCipStatusPrivilegeViolation);
   }
   final dataType = dataTypeOfPath(project, tagName);

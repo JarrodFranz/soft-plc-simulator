@@ -60,6 +60,51 @@ PlcProject _fixtureProject({required String format, bool allowRemoteWrites = tru
 
 PlcTag _tag(PlcProject p, String name) => p.tags.firstWhere((t) => t.name == name);
 
+/// Task 2 hardening fixture: kept SEPARATE from [_fixtureProject] because
+/// several existing tests above pin exact birth/heartbeat message and metric
+/// COUNTS against that fixture's 3-entry map — adding entries there would
+/// silently shift those counts. This fixture has its own reserved `System`
+/// tag (mapped `writable: true` in the `MqttMap`, deliberately mismatched —
+/// DNP3-style hand-retargeting via this app's own map editor) and a
+/// `SimulatedOutput` tag with a deliberately writable map entry (the
+/// decision-1 override carve-out).
+PlcProject _hardeningFixtureProject({required String format}) {
+  final tags = [
+    PlcTag(name: 'System', path: 'System', dataType: 'BOOL', value: false, ioType: 'Internal', access: 'ReadWrite'),
+    PlcTag(name: 'SimOutOverride', path: 'SimOutOverride', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput'),
+    PlcTag(name: 'Plain', path: 'Plain', dataType: 'BOOL', value: false, ioType: 'Internal'),
+  ];
+  final map = MqttMap(entries: [
+    MqttMapEntry(tag: 'System', metric: 'System', writable: true),
+    MqttMapEntry(tag: 'SimOutOverride', metric: 'SimOutOverride', writable: true),
+    MqttMapEntry(tag: 'Plain', metric: 'Plain', writable: true),
+  ]);
+  final cfg = MqttProtocolConfig(
+    enabled: true,
+    host: 'localhost',
+    port: 1883,
+    format: format,
+    baseTopic: 'softplc',
+    groupId: 'SoftPLC',
+    edgeNodeId: 'Node1',
+    qos: 0,
+    heartbeatSeconds: 5,
+    allowRemoteWrites: true,
+    map: map,
+  );
+  return PlcProject(
+    id: 'p_harden',
+    name: 'Hardening Test Project',
+    controllerName: 'PLC_01',
+    structDefs: const [],
+    programs: const [],
+    tasks: const [],
+    hmis: const [],
+    tags: tags,
+    protocols: ProtocolSettings(mqtt: cfg),
+  );
+}
+
 void main() {
   group('birthMessages — JSON', () {
     test('retained status=ONLINE on {base}/{controller}/status', () {
@@ -546,6 +591,71 @@ void main() {
       expect(changed, hasLength(1));
       final decoded = _decodePayload(changed.single.payload);
       expect(decoded.metrics.single.value, true);
+    });
+  });
+
+  group('Task 2 hardening: write-time backstop', () {
+    test('JSON: a WRITABLE map entry pointing at the System tag is refused (empty result), tag unchanged '
+        '(the map entry alone would otherwise allow this write)', () {
+      final p = _hardeningFixtureProject(format: 'json');
+      final publisher = MqttPublisher();
+      final systemTag = _tag(p, 'System');
+      expect(systemTag.access, 'ReadWrite', reason: "the tag's OWN access is deliberately not ReadOnly");
+
+      final cmds = publisher.decodeCommand(
+        'softplc/PLC_01/tags/System/set',
+        Uint8List.fromList(utf8.encode('true')),
+        p,
+      );
+      expect(cmds, isEmpty);
+    });
+
+    test('JSON: a WRITABLE map entry pointing at a SimulatedOutput tag still succeeds '
+        '(deliberate override survives)', () {
+      final p = _hardeningFixtureProject(format: 'json');
+      final publisher = MqttPublisher();
+      final cmds = publisher.decodeCommand(
+        'softplc/PLC_01/tags/SimOutOverride/set',
+        Uint8List.fromList(utf8.encode('true')),
+        p,
+      );
+      expect(cmds, [(tagPath: 'SimOutOverride', value: true)]);
+    });
+
+    test('JSON: a normal Internal writable tag still succeeds — the backstop is not over-broad', () {
+      final p = _hardeningFixtureProject(format: 'json');
+      final publisher = MqttPublisher();
+      final cmds = publisher.decodeCommand(
+        'softplc/PLC_01/tags/Plain/set',
+        Uint8List.fromList(utf8.encode('true')),
+        p,
+      );
+      expect(cmds, [(tagPath: 'Plain', value: true)]);
+    });
+
+    test('Sparkplug: an NCMD writing the System tag (by alias) is refused (empty result), tag unchanged', () {
+      final p = _hardeningFixtureProject(format: 'sparkplug');
+      final publisher = MqttPublisher();
+      publisher.birthMessages(p, 1000); // System->alias1, SimOutOverride->alias2, Plain->alias3 (map order)
+
+      final ncmd = _encodePayload(0, 0, [
+        const _EncMetric(alias: 1, datatype: _SparkplugDatatype.boolean, value: true),
+      ]);
+      final cmds = publisher.decodeCommand('spBv1.0/SoftPLC/NCMD/Node1', ncmd, p);
+      expect(cmds, isEmpty);
+      expect(_tag(p, 'System').value, false);
+    });
+
+    test('Sparkplug: an NCMD writing a SimulatedOutput tag (by alias) still succeeds', () {
+      final p = _hardeningFixtureProject(format: 'sparkplug');
+      final publisher = MqttPublisher();
+      publisher.birthMessages(p, 1000); // System->alias1, SimOutOverride->alias2, Plain->alias3 (map order)
+
+      final ncmd = _encodePayload(0, 0, [
+        const _EncMetric(alias: 2, datatype: _SparkplugDatatype.boolean, value: true),
+      ]);
+      final cmds = publisher.decodeCommand('spBv1.0/SoftPLC/NCMD/Node1', ncmd, p);
+      expect(cmds, [(tagPath: 'SimOutOverride', value: true)]);
     });
   });
 }

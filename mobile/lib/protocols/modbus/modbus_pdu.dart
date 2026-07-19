@@ -35,6 +35,7 @@ import 'dart:typed_data';
 import '../../models/modbus_map.dart';
 import '../../models/project_model.dart';
 import '../../models/tag_resolver.dart';
+import '../../models/tag_write_gate.dart';
 
 /// Modbus exception codes (used in the 2-byte exception response body:
 /// `(functionCode | 0x80)` + this code).
@@ -490,7 +491,14 @@ class ModbusServer {
     }
     final map = _mapFor(project);
     final entry = _findEntry(project, map, 'coil', address);
-    if (entry == null || entry.access == 'ReadOnly') {
+    // Write-time hard backstop (protocol-hardening workstream, Task 2): the
+    // ModbusMap entry above is a MUTABLE map that a hand-edit could
+    // re-target at the reserved System tag. `isExternallyWritable`
+    // re-checks the underlying ROOT tag itself, independent of whatever
+    // this entry's own `access` claims — a hard, non-overridable rule,
+    // never a replacement for the per-entry check above. Short-circuiting
+    // `||` means `entry.tag` is never touched when `entry` is null.
+    if (entry == null || entry.access == 'ReadOnly' || !isExternallyWritable(project, entry.tag)) {
       return encodeExceptionResponse(fc, ModbusEx.illegalDataAddress);
     }
     if (!_isForcedSkip(project, entry.tag)) {
@@ -508,7 +516,14 @@ class ModbusServer {
     final rawValue = _u16(pdu, 3);
     final map = _mapFor(project);
     final entry = _findEntry(project, map, 'holding', address);
-    if (entry == null || entry.access == 'ReadOnly') {
+    // Write-time hard backstop (protocol-hardening workstream, Task 2): the
+    // ModbusMap entry above is a MUTABLE map that a hand-edit could
+    // re-target at the reserved System tag. `isExternallyWritable`
+    // re-checks the underlying ROOT tag itself, independent of whatever
+    // this entry's own `access` claims — a hard, non-overridable rule,
+    // never a replacement for the per-entry check above. Short-circuiting
+    // `||` means `entry.tag` is never touched when `entry` is null.
+    if (entry == null || entry.access == 'ReadOnly' || !isExternallyWritable(project, entry.tag)) {
       return encodeExceptionResponse(fc, ModbusEx.illegalDataAddress);
     }
     if (_widthForEntry(project, entry) != 1) {
@@ -549,7 +564,14 @@ class ModbusServer {
     for (var i = 0; i < qty; i++) {
       final addr = start + i;
       final entry = _findEntry(project, map, 'coil', addr);
-      if (entry == null || entry.access == 'ReadOnly') {
+      // Write-time hard backstop (protocol-hardening workstream, Task 2): the
+      // ModbusMap entry above is a MUTABLE map that a hand-edit could
+      // re-target at the reserved System tag. `isExternallyWritable`
+      // re-checks the underlying ROOT tag itself, independent of whatever
+      // this entry's own `access` claims — a hard, non-overridable rule,
+      // never a replacement for the per-entry check above. Short-circuiting
+      // `||` means `entry.tag` is never touched when `entry` is null.
+      if (entry == null || entry.access == 'ReadOnly' || !isExternallyWritable(project, entry.tag)) {
         return encodeExceptionResponse(fc, ModbusEx.illegalDataAddress);
       }
       targets[addr] = entry;
@@ -590,7 +612,14 @@ class ModbusServer {
     for (var i = 0; i < qty; i++) {
       final addr = start + i;
       final entry = _findEntry(project, map, 'holding', addr);
-      if (entry == null || entry.access == 'ReadOnly') {
+      // Write-time hard backstop (protocol-hardening workstream, Task 2): the
+      // ModbusMap entry above is a MUTABLE map that a hand-edit could
+      // re-target at the reserved System tag. `isExternallyWritable`
+      // re-checks the underlying ROOT tag itself, independent of whatever
+      // this entry's own `access` claims — a hard, non-overridable rule,
+      // never a replacement for the per-entry check above. Short-circuiting
+      // `||` means `entry.tag` is never touched when `entry` is null.
+      if (entry == null || entry.access == 'ReadOnly' || !isExternallyWritable(project, entry.tag)) {
         return encodeExceptionResponse(fc, ModbusEx.illegalDataAddress);
       }
       touched.add(entry);

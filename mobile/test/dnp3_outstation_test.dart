@@ -34,6 +34,17 @@ PlcProject _buildProject() {
       PlcTag(name: 'AiInt', path: 'AiInt', dataType: 'INT32', value: 1234, ioType: 'Internal'),
       PlcTag(name: 'AiFloat', path: 'AiFloat', dataType: 'FLOAT64', value: 3.5, ioType: 'Internal'),
       PlcTag(name: 'AoInt', path: 'AoInt', dataType: 'INT32', value: 0, ioType: 'Internal'),
+      // Task 2 hardening fixtures ------------------------------------------
+      // Reserved System tag; its OWN `access` is deliberately left at its
+      // default (DNP3 map entries have NO `access` field at all — see
+      // `dnp3_map.dart`/`DnpMapEntry` — so this backstop is the ONLY thing
+      // that can stop a hand-retargeted `pointType` from writing it).
+      PlcTag(name: 'System', path: 'System', dataType: 'BOOL', value: false, ioType: 'Internal'),
+      // A SimulatedOutput tag mapped as a control point — the carve-out
+      // (decision 1) that must survive: DNP3 has no map-level access field,
+      // so ioType=='SimulatedOutput' must still be writable via a control.
+      PlcTag(name: 'SimOutBo', path: 'SimOutBo', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput'),
+      PlcTag(name: 'SimOutAo', path: 'SimOutAo', dataType: 'INT32', value: 0, ioType: 'SimulatedOutput'),
     ],
     protocols: ProtocolSettings(
       dnp3: DnpProtocolConfig(
@@ -46,6 +57,14 @@ PlcProject _buildProject() {
           DnpMapEntry(tag: 'AiInt', pointType: 'analogInput', index: 0),
           DnpMapEntry(tag: 'AiFloat', pointType: 'analogInput', index: 1),
           DnpMapEntry(tag: 'AoInt', pointType: 'analogOutput', index: 0),
+          // Task 2 hardening fixtures: control points hand-retargeted at the
+          // reserved System tag (both a binaryOutput AND an analogOutput
+          // point, since _evaluateCrob and _evaluateAnalogOut are separate
+          // gates that must BOTH be hardened), and at SimulatedOutput tags.
+          DnpMapEntry(tag: 'System', pointType: 'binaryOutput', index: 2),
+          DnpMapEntry(tag: 'System', pointType: 'analogOutput', index: 1),
+          DnpMapEntry(tag: 'SimOutBo', pointType: 'binaryOutput', index: 3),
+          DnpMapEntry(tag: 'SimOutAo', pointType: 'analogOutput', index: 2),
         ]),
       ),
     ),
@@ -429,5 +448,44 @@ void main() {
     final iin2 = resp[3];
     expect(iin1 & DnpIin1.class2Events, DnpIin1.class2Events);
     expect(iin2 & DnpIin2.eventBufferOverflow, DnpIin2.eventBufferOverflow);
+  });
+
+  group('Task 2 hardening: write-time backstop', () {
+    test('CROB DIRECT_OPERATE on a control point hand-retargeted at the System tag is refused, tag unchanged '
+        '(DNP3 has no map-level access field — this backstop is the only thing stopping it)', () {
+      final resp = outstation.handleAppRequest(
+          _crobRequest(DnpFunc.directOperate, 1, 2, DnpControlCode.latchOn), nowMs: 0);
+      expect(_crobStatus(resp), DnpControlStatus.notAuthorized);
+      expect(readPath(project, 'System'), false);
+    });
+
+    test('g41 analog-output-block DIRECT_OPERATE on a point hand-retargeted at the System tag is refused, '
+        'tag unchanged', () {
+      final resp = outstation.handleAppRequest(_g41IntDirectOperateReq(1, 1, 555), nowMs: 0);
+      expect(_g41Status(resp), DnpControlStatus.notAuthorized);
+      expect(readPath(project, 'System'), false);
+    });
+
+    test('CROB DIRECT_OPERATE on a SimulatedOutput control point still succeeds (deliberate override survives)',
+        () {
+      final resp = outstation.handleAppRequest(
+          _crobRequest(DnpFunc.directOperate, 1, 3, DnpControlCode.latchOn), nowMs: 0);
+      expect(_crobStatus(resp), DnpControlStatus.success);
+      expect(readPath(project, 'SimOutBo'), true);
+    });
+
+    test('g41 analog-output-block DIRECT_OPERATE on a SimulatedOutput point still succeeds', () {
+      final resp = outstation.handleAppRequest(_g41IntDirectOperateReq(1, 2, 321), nowMs: 0);
+      expect(_g41Status(resp), DnpControlStatus.success);
+      expect(readPath(project, 'SimOutAo'), 321);
+    });
+
+    test('a normal Internal (non-System, non-SimulatedOutput) control point still writes successfully — '
+        'the backstop is not over-broad', () {
+      final resp = outstation.handleAppRequest(
+          _crobRequest(DnpFunc.directOperate, 1, 0, DnpControlCode.latchOn), nowMs: 0);
+      expect(_crobStatus(resp), DnpControlStatus.success);
+      expect(readPath(project, 'BoTag'), true);
+    });
   });
 }
