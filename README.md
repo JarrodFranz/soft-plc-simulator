@@ -8,11 +8,11 @@
 
 ## 🚀 Overview
 
-The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators, students, and system developers to execute IEC 61131-3 style control logic on portable mobile devices (Android/iOS) and desktop platforms. It provides a real-time scan cycle engine that **executes ladder logic for real**, a structured tag database (DUT-typed struct tags, arrays, bit-addressable members), a rule-driven simulated I/O engine, custom HMI dashboard builders, and industrial protocol adapters to expose virtual PLCs to SCADA systems like Ignition, Kepware, UAExpert, MQTT brokers, Modbus clients, DNP3 masters, and EtherNet/IP + CIP clients.
+The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators, students, and system developers to execute IEC 61131-3 style control logic on portable mobile devices (Android/iOS) and desktop platforms. It provides a real-time scan cycle engine that **executes ladder logic for real**, a structured tag database (DUT-typed struct tags, arrays, bit-addressable members), a rule-driven simulated I/O engine, custom HMI dashboard builders, and industrial protocol adapters to expose virtual PLCs to SCADA systems like Ignition, Kepware, UAExpert, MQTT brokers, Modbus clients, DNP3 masters, EtherNet/IP + CIP clients, and S7comm drivers.
 
 ---
 
-## ✨ Features & Progress (Full Protocol Suite Shipped — OPC UA, Modbus TCP, MQTT+Sparkplug B, DNP3, EtherNet/IP + CIP)
+## ✨ Features & Progress (Full Protocol Suite Shipped — OPC UA, Modbus TCP, MQTT+Sparkplug B, DNP3, EtherNet/IP + CIP, S7comm)
 
 - **ALL IEC 61131-3 Programming Languages Supported**:
   - **Structured Text (ST)**: Textual IDE with live autocomplete suggestions (`IF`, `WHILE`, `FOR`, `TON`), code templates, AST compilation, and real-time AST interpreter.
@@ -68,14 +68,14 @@ The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators
   │  - Scan pipeline: sim inputs → programs → outputs      │
   ├────────────────────────────────────────────────────────┤
   │   In-App Protocol Servers (pure Dart, dart:io sockets) │
-  │   — hosted directly by this same app, no companion —  │
-  ├───────────┬────────────┬────────────┬────────┬─────────┤
-  │  OPC UA   │ Modbus TCP │ MQTT + SpB │  DNP3  │EtherNet/│
-  │  Server   │   Server   │ Publisher  │Outstatn│ IP + CIP│
-  └───────────┴────────────┴────────────┴────────┴─────────┘
+  │   — hosted directly by this same app, no companion —   │
+  ├─────────┬─────────┬─────────┬────────┬────────┬────────┤
+  │ OPC UA  │ Modbus  │MQTT+SpB │  DNP3  │EtherNet│ S7comm │
+  │ Server  │   TCP   │Publisher│Outstatn│ IP+CIP │ Server │
+  └─────────┴─────────┴─────────┴────────┴────────┴────────┘
 ```
 
-Per **ADR-010** (`DECISIONS.md`), all five protocol servers run **in-process**
+Per **ADR-010** (`DECISIONS.md`), all six protocol servers run **in-process**
 inside this one app — there is no companion/gateway process at runtime. The
 `gateway/` Rust crate still exists in the repo, but only as a set of
 third-party reference clients used to machine-verify the in-app servers (see
@@ -150,8 +150,8 @@ flutter run -d linux
 
 ### Retired: Companion Gateway (Rust Process)
 
-> **Superseded by ADR-010.** The app hosts all five industrial protocols
-> (OPC UA, Modbus TCP, MQTT + Sparkplug B, DNP3, EtherNet/IP + CIP)
+> **Superseded by ADR-010.** The app hosts all six industrial protocols
+> (OPC UA, Modbus TCP, MQTT + Sparkplug B, DNP3, EtherNet/IP + CIP, S7comm)
 > **in-process** — there is no
 > companion process to run to expose protocols. The `gateway/` crate below is
 > kept only as a dev-time harness of third-party reference clients
@@ -182,8 +182,23 @@ probe, and tears the host down unconditionally:
 ```bash
 bash tool/enip_e2e.sh
 ```
-This is the shared Python-lane pattern the remaining protocol workstreams
-reuse. Requires Python 3.8+ on `PATH` and network access on first run.
+
+#### Run the S7comm E2E (Python probe lane)
+S7comm is verified by a real third-party **Python** client (`python-snap7`),
+sharing the same venv-isolated lane. The fixture host binds port **10102**
+rather than S7comm's standard 102, which is privileged on Linux/macOS:
+```bash
+bash tool/s7_e2e.sh   # prints "S7 PROBE PASS"
+```
+It drives connect → negotiate → read → write → **independent read-back of the
+exact written value** across two memory areas, including a single-bit round
+trip and both write-refusal paths. See
+[`docs/protocols/s7comm.md`](docs/protocols/s7comm.md).
+
+Both the EtherNet/IP and S7comm probes above run on the **same shared Python
+lane**, which the remaining protocol workstreams reuse: a venv-isolated,
+exact-pinned client environment under `tool/py/`. Either script requires Python
+3.8+ on `PATH` and network access on its first run.
 
 ---
 
@@ -195,14 +210,14 @@ cd runtime
 cargo test
 ```
 
-#### Run Flutter Unit & Integration Tests (1673 Tests Passing)
+#### Run Flutter Unit & Integration Tests (1803 Tests Passing)
 ```bash
 cd mobile
 flutter test
 ```
-Covers the tag path resolver and Memory Manager value model; all four IEC 61131-3 execution engines (LD power flow/latches/edges, the FBD function-block library, the ST parser/interpreter, and the SFC multi-token engine incl. parallel fork/join) plus their editors; the simulated-process engine (analog rates, first-order lag, transport dead-time, valve curves, and deterministic noise — uniform/Gaussian/pink with bounded sensor drift); the PID relay-feedback auto-tuner and the MIMO gain-matrix/RGA interaction analysis; the five in-app protocol servers (OPC UA incl. the Basic256Sha256 security stack, Modbus TCP, MQTT + Sparkplug B, DNP3, EtherNet/IP + CIP explicit messaging); persistence (lossless round-trip, autosave, and non-destructive default-project backfill); responsive layout at 320/360/1400 with a whole-app overflow smoke test; and end-to-end scans of every default project.
+Covers the tag path resolver and Memory Manager value model; all four IEC 61131-3 execution engines (LD power flow/latches/edges, the FBD function-block library, the ST parser/interpreter, and the SFC multi-token engine incl. parallel fork/join) plus their editors; the simulated-process engine (analog rates, first-order lag, transport dead-time, valve curves, and deterministic noise — uniform/Gaussian/pink with bounded sensor drift); the PID relay-feedback auto-tuner and the MIMO gain-matrix/RGA interaction analysis; the six in-app protocol servers (OPC UA incl. the Basic256Sha256 security stack, Modbus TCP, MQTT + Sparkplug B, DNP3, EtherNet/IP + CIP explicit messaging, S7comm); persistence (lossless round-trip, autosave, and non-destructive default-project backfill); responsive layout at 320/360/1400 with a whole-app overflow smoke test; and end-to-end scans of every default project.
 
-Determinism is enforced by construction: the simulated engines take no clock and no randomness, so byte-identity guards (e.g. a golden noise sequence) and closed-loop settling tests are falsifiable rather than flaky. Real third-party protocol clients (the Rust `opcua`, `tokio-modbus`, `rumqttc`, and `dnp3` crates, and the Python `pycomm3` library for EtherNet/IP) verify wire interoperability separately — see `tool/*_e2e.sh`.
+Determinism is enforced by construction: the simulated engines take no clock and no randomness, so byte-identity guards (e.g. a golden noise sequence) and closed-loop settling tests are falsifiable rather than flaky. Real third-party protocol clients (the Rust `opcua`, `tokio-modbus`, `rumqttc`, and `dnp3` crates, and the Python `pycomm3` and `python-snap7` libraries for EtherNet/IP and S7comm) verify wire interoperability separately — see `tool/*_e2e.sh`.
 
 #### Run Flutter UI Linter & Code Analysis (0 Errors)
 ```bash
@@ -231,7 +246,8 @@ flutter analyze
 | **Phase 11** | Task-Type Scheduler, Per-Task Watchdog & `System` Diagnostics Tag | ✅ Completed |
 | **Phase 12** | Bulk Simulated Test-Tag Generation (folders, 7-waveform signal engine, per-protocol auto-map) | ✅ Completed |
 | **Phase 13** | Tag Historian & Trend Charts — memory-only historian, Trends section, multi-pen chart + HMI component, draggable trace cursor | ✅ Completed |
-| **Phase 14** | Protocol Expansion Program — **EtherNet/IP + CIP** explicit messaging (v1) shipped in-app and E2E-proven against the real `pycomm3` client, plus the shared Python probe lane; S7comm/FINS/SLMP/BACnet remain | 🔄 Active — EtherNet/IP shipped |
+| **Phase 14** | Protocol Expansion Program — **EtherNet/IP + CIP** explicit messaging (v1) shipped in-app and E2E-proven against the real `pycomm3` client, plus the shared Python probe lane | ✅ Complete |
+| **Phase 15** | Protocol Expansion Program — **S7comm** (v1) shipped in-app (areas DB/M/I/Q, byte-offset addressing) and E2E-proven against the real `python-snap7` client through read → write → independent read-back; FINS/SLMP/BACnet remain | ✅ Complete |
 
 ---
 
@@ -243,8 +259,9 @@ flutter analyze
 - [DECISIONS.md](DECISIONS.md) — Architecture Decision Records (ADRs).
 - [DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md) — Guidelines for human & AI developers.
 - [SECURITY_AND_SAFETY.md](SECURITY_AND_SAFETY.md) — Security policies and safety disclaimers.
-- [docs/protocols/](docs/protocols/) — Protocol adapter specifications (OPC UA, Modbus TCP, MQTT, DNP3, EtherNet/IP).
+- [docs/protocols/](docs/protocols/) — Protocol adapter specifications (OPC UA, Modbus TCP, MQTT, DNP3, EtherNet/IP, S7comm).
 - [docs/protocols/ethernet-ip.md](docs/protocols/ethernet-ip.md) — EtherNet/IP + CIP explicit messaging: v1 scope, symbolic tag addressing, the `CipMap` exposure model, what is deferred to v2 and why, and the Python probe lane.
+- [docs/protocols/s7comm.md](docs/protocols/s7comm.md) — S7comm (device side): v1 scope, memory-area + byte-offset addressing, the `S7Map` exposure model, gap/partial-coverage/refusal semantics, the negotiated-PDU response budget, and the two wire details the real client settled.
 - [docs/trends.md](docs/trends.md) — Tag historian & trend charts (pens, the Trends section, the HMI trend component, and the trace cursor).
 - [docs/mimo-coupled-plant.md](docs/mimo-coupled-plant.md) — MIMO coupled-plant demo, gain-matrix/RGA interaction analysis, and the static decoupler.
 

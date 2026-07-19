@@ -8,6 +8,7 @@ import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/screens/gateway_screen.dart';
 import 'package:soft_plc_mobile/services/dnp3_host.dart';
 import 'package:soft_plc_mobile/services/enip_host.dart';
+import 'package:soft_plc_mobile/services/s7_host.dart';
 import 'package:soft_plc_mobile/services/modbus_host.dart';
 import 'package:soft_plc_mobile/services/mqtt_host.dart';
 import 'package:soft_plc_mobile/services/opcua_host.dart';
@@ -285,6 +286,7 @@ Widget _app(
       mqttHost: mqttHost ?? MqttHost(),
       dnpHost: dnpHost ?? _CountingDnpHost(),
       enipHost: enipHost ?? _CountingEnipHost(),
+      s7Host: S7Host(),
       onProjectUpdated: () {},
       hostingSupported: hostingSupported,
     ),
@@ -304,6 +306,7 @@ const Key modbusTabKey = Key('protocol_tab_modbus');
 const Key mqttTabKey = Key('protocol_tab_mqtt');
 const Key dnpTabKey = Key('protocol_tab_dnp3');
 const Key enipTabKey = Key('protocol_tab_enip');
+const Key s7TabKey = Key('protocol_tab_s7');
 
 Future<void> _selectTab(WidgetTester tester, Key tabKey) async {
   // The TabBar is `isScrollable: true` (mobile-first — see the design spec),
@@ -2367,6 +2370,7 @@ void main() {
           mqttHost: MqttHost(),
           dnpHost: _CountingDnpHost(),
           enipHost: _CountingEnipHost(),
+          s7Host: S7Host(),
           onProjectUpdated: () => updates++,
         ),
       ));
@@ -2416,6 +2420,189 @@ void main() {
       await tester.pumpAndSettle();
       await _selectTab(tester, enipTabKey);
       await tester.tap(find.byKey(const Key('enip_enable_switch')));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('S7comm card', () {
+    testWidgets('renders its enable toggle, and the port field defaults to 102', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, s7TabKey);
+
+      expect(find.byKey(const Key('s7_enable_switch')), findsOneWidget);
+      final sw = tester.widget<Switch>(find.byKey(const Key('s7_enable_switch')));
+      expect(sw.value, isFalse, reason: 'S7comm hosting is opt-in and starts disabled');
+      // The port field only exists once the card is enabled.
+      expect(find.byKey(const Key('s7_port_field')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('s7_enable_switch')));
+      await tester.pumpAndSettle();
+
+      expect(project.protocols!.s7!.enabled, isTrue);
+      expect(project.protocols!.s7!.port, 102);
+      final portField = tester.widget<TextField>(find.byKey(const Key('s7_port_field')));
+      expect(portField.controller!.text, '102');
+      expect(find.text('Default: 102'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('the privileged-port note is shown for 102 and disappears above 1023',
+        (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, s7TabKey);
+      await tester.tap(find.byKey(const Key('s7_enable_switch')));
+      await tester.pumpAndSettle();
+
+      // 102 is below 1024, so the elevation caveat must be visible.
+      expect(find.byKey(const Key('s7_privileged_port_note')), findsOneWidget);
+
+      await tester.enterText(find.byKey(const Key('s7_port_field')), '10102');
+      await tester.pumpAndSettle();
+
+      expect(project.protocols!.s7!.port, 10102);
+      expect(find.byKey(const Key('s7_privileged_port_note')), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a bind failure is surfaced as a labelled error block, not as a card that '
+        'merely failed to turn green', (tester) async {
+      final project = _project();
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.s7!.enabled = true;
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final s7Host = S7Host();
+      addTearDown(s7Host.dispose);
+
+      await tester.pumpWidget(MaterialApp(
+        home: GatewayScreen(
+          currentProject: project,
+          host: host,
+          modbusHost: _CountingModbusHost(),
+          mqttHost: MqttHost(),
+          dnpHost: _CountingDnpHost(),
+          enipHost: _CountingEnipHost(),
+          s7Host: s7Host,
+          onProjectUpdated: () {},
+        ),
+      ));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, s7TabKey);
+
+      expect(find.byKey(const Key('s7_error_banner')), findsNothing);
+
+      // A start against a project whose S7comm config is missing/disabled is
+      // the deterministic error path (no socket involved), which is what this
+      // banner has to render.
+      project.protocols!.s7!.enabled = false;
+      await s7Host.start(() => project);
+      await tester.pumpAndSettle();
+
+      expect(s7Host.status, S7HostStatus.error);
+      expect(find.byKey(const Key('s7_error_banner')), findsOneWidget);
+      expect(find.text('Not hosting — the server did not start.'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Add entry / Regenerate / delete route through onProjectUpdated', (tester) async {
+      final project = _project();
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.s7!.enabled = true;
+      project.protocols!.s7!.map.entries.clear();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      var updates = 0;
+
+      await tester.pumpWidget(MaterialApp(
+        home: GatewayScreen(
+          currentProject: project,
+          host: host,
+          modbusHost: _CountingModbusHost(),
+          mqttHost: MqttHost(),
+          dnpHost: _CountingDnpHost(),
+          enipHost: _CountingEnipHost(),
+          s7Host: S7Host(),
+          onProjectUpdated: () => updates++,
+        ),
+      ));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, s7TabKey);
+
+      expect(find.textContaining('No entries yet'), findsOneWidget);
+
+      await tester.tap(find.text('Add entry'));
+      await tester.pump();
+      expect(project.protocols!.s7!.map.entries.length, 1);
+      expect(updates, greaterThan(0));
+
+      await tester.tap(find.text('Regenerate'));
+      await tester.pump();
+      expect(project.protocols!.s7!.map.entries, isNotEmpty);
+
+      final beforeDelete = project.protocols!.s7!.map.entries.length;
+      // The S7 row carries more fields than the other protocols' rows, so at
+      // the default 800x600 test surface its delete button can sit below the
+      // fold — scroll it in before tapping, or the tap silently misses.
+      await tester.ensureVisible(find.byIcon(Icons.delete_outline).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.delete_outline).first);
+      await tester.pump();
+      expect(project.protocols!.s7!.map.entries.length, beforeDelete - 1);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 320 width with the S7comm card expanded', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      await setSurface(tester, smallPhoneSize);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, s7TabKey);
+      await tester.tap(find.byKey(const Key('s7_enable_switch')));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 360 width with the S7comm card expanded', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      await setSurface(tester, phoneSize);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, s7TabKey);
+      await tester.tap(find.byKey(const Key('s7_enable_switch')));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 1400 width with the S7comm card expanded', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      await setSurface(tester, desktopSize);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, s7TabKey);
+      await tester.tap(find.byKey(const Key('s7_enable_switch')));
       await tester.pumpAndSettle();
 
       expect(tester.takeException(), isNull);

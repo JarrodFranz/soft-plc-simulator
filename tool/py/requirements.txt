@@ -9,3 +9,19 @@
 # project's in-app EtherNet/IP host against a client that was written from
 # the CIP specification entirely independently of us.
 pycomm3==1.2.16
+
+# python-snap7 — a real, third-party S7comm client. Used by
+# `tool/py/s7_probe.py` (driven by `tool/s7_e2e.sh`) to verify this project's
+# in-app S7comm host against a client written entirely independently of us.
+#
+# At 3.x this is a PURE-PYTHON reimplementation of the protocol, NOT a wrapper
+# around the snap7 C library: the wheel is `py3-none-any` with
+# `Root-Is-Purelib: true` and carries no native binary, `snap7/connection.py`
+# opens an ordinary `socket.socket`, and `snap7/s7protocol.py` builds and
+# parses the S7 PDUs itself with `struct`. (`ctypes` still appears in
+# `snap7/client.py`, but only for the buffer types its legacy API signature
+# accepts — there is no `LoadLibrary`.) That matters for this lane's value:
+# the bytes our host is judged against come from an INDEPENDENT second
+# implementation of the wire format, not from a shared C core — and there is
+# no system package to install for the E2E to run.
+python-snap7==3.1.0

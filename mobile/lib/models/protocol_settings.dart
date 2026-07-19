@@ -14,6 +14,7 @@ import 'modbus_map.dart';
 import 'mqtt_map.dart';
 import 'opcua_map.dart';
 import 'project_model.dart';
+import 's7_map.dart';
 
 /// Default gateway WebSocket endpoint. Retained for back-compat with the
 /// legacy `ProtocolSettings.gatewayUrl` field's serialized default — the
@@ -461,6 +462,52 @@ class CipProtocolConfig {
       );
 }
 
+/// Per-project S7comm outbound-protocol configuration: whether the in-app
+/// S7comm host is enabled, the TCP port it listens on, and the tag <-> memory
+/// area/byte-offset map that decides which tags appear at which address and
+/// whether each accepts writes.
+///
+/// *** PORT 102 IS PRIVILEGED ON Linux AND macOS *** (any port below 1024
+/// is). Binding it there needs elevation, and a start attempt without it
+/// fails with a permission error rather than starting — which the Outbound
+/// Protocols card surfaces verbatim. The port is user-editable precisely so
+/// an unprivileged run can move to a high port instead; see
+/// `docs/protocols/s7comm.md`.
+class S7ProtocolConfig {
+  bool enabled;
+  int port;
+  S7Map map;
+
+  S7ProtocolConfig({
+    this.enabled = false,
+    this.port = 102,
+    required this.map,
+  });
+
+  factory S7ProtocolConfig.fromJson(Map<String, dynamic> j) => S7ProtocolConfig(
+        enabled: j['enabled'] == true,
+        port: (j['port'] as num?)?.toInt() ?? 102,
+        map: j['map'] != null
+            ? S7Map.fromJson(j['map'] as Map<String, dynamic>)
+            : S7Map(entries: []),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'enabled': enabled,
+        'port': port,
+        'map': map.toJson(),
+      };
+
+  /// Sane defaults for a project that has never configured S7comm: disabled,
+  /// the standard S7comm TCP port, and an auto-generated map packing the
+  /// project's current scalar tags into one data block.
+  static S7ProtocolConfig defaults(PlcProject p) => S7ProtocolConfig(
+        enabled: false,
+        port: 102,
+        map: S7Map.autoGenerate(p),
+      );
+}
+
 /// Per-project outbound-protocol settings: the shared gateway endpoint plus
 /// one config slot per protocol.
 ///
@@ -474,6 +521,7 @@ class ProtocolSettings {
   MqttProtocolConfig? mqtt;
   DnpProtocolConfig? dnp3;
   CipProtocolConfig? ethernetIp;
+  S7ProtocolConfig? s7;
 
   ProtocolSettings({
     this.gatewayUrl = kDefaultGatewayUrl,
@@ -482,6 +530,7 @@ class ProtocolSettings {
     this.mqtt,
     this.dnp3,
     this.ethernetIp,
+    this.s7,
   });
 
   Map<String, dynamic> toJson() => {
@@ -491,6 +540,7 @@ class ProtocolSettings {
         if (mqtt != null) 'mqtt': mqtt!.toJson(),
         if (dnp3 != null) 'dnp3': dnp3!.toJson(),
         if (ethernetIp != null) 'ethernet_ip': ethernetIp!.toJson(),
+        if (s7 != null) 's7comm': s7!.toJson(),
       };
 
   factory ProtocolSettings.fromJson(Map<String, dynamic> j) => ProtocolSettings(
@@ -502,6 +552,7 @@ class ProtocolSettings {
         ethernetIp: j['ethernet_ip'] != null
             ? CipProtocolConfig.fromJson(j['ethernet_ip'] as Map<String, dynamic>)
             : null,
+        s7: j['s7comm'] != null ? S7ProtocolConfig.fromJson(j['s7comm'] as Map<String, dynamic>) : null,
       );
 
   static ProtocolSettings defaults(PlcProject p) => ProtocolSettings(
@@ -511,5 +562,6 @@ class ProtocolSettings {
         mqtt: MqttProtocolConfig.defaults(p),
         dnp3: DnpProtocolConfig.defaults(p),
         ethernetIp: CipProtocolConfig.defaults(p),
+        s7: S7ProtocolConfig.defaults(p),
       );
 }
