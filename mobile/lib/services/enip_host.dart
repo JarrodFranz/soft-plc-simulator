@@ -18,7 +18,7 @@
 // 0x54/0x4E) routes to the connection manager, anything else routes to
 // `dispatchCipService` (Task 4). `SendUnitData` (0x70) carries *connected*
 // traffic: the Connected Address CPF item's connection id resolves the
-// open connection via `CipConnectionManager.byTargetId`, the Connected
+// open connection via `CipConnectionManager.byConnectionId`, the Connected
 // Data item's leading sequence count is tracked/echoed, and the embedded
 // CIP request is likewise dispatched via `dispatchCipService`.
 //
@@ -159,7 +159,7 @@ class _Connection {
     // RegisterSession again is starting a fresh session on this connection:
     // release any CIP connections opened under the PREVIOUS handle first, so
     // they cannot outlive the session that created them — otherwise they'd
-    // stay resolvable via `connMgr.byTargetId` (and therefore servable by
+    // stay resolvable via `connMgr.byConnectionId` (and therefore servable by
     // `SendUnitData`) even though no client can reference the old session
     // anymore.
     if (sessionHandle != null) {
@@ -285,7 +285,7 @@ class _Connection {
       return;
     }
 
-    final conn = connMgr.byTargetId(connectionId);
+    final conn = connMgr.byConnectionId(connectionId);
     if (conn == null) {
       // No open connection with this id on THIS socket's connection
       // manager — an unregistered/foreign/closed connection id. Refused at

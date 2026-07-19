@@ -159,7 +159,7 @@ const List<int> _kConnMgrPath = [0x20, 0x06, 0x24, 0x01]; // Connection Manager,
 /// `_buildForwardOpenData`, but as the on-wire request bytes `SendRRData`
 /// actually carries, rather than a pre-parsed `CipRequest`.
 Uint8List _forwardOpenCipRequest({
-  required int connIdOT,
+  required int connIdTO,
   required int connectionSerial,
   required int vendorId,
   required int originatorSerial,
@@ -167,8 +167,12 @@ Uint8List _forwardOpenCipRequest({
   final serviceData = <int>[
     0x0A, // priority/time tick
     0x0E, // timeout ticks
-    ...(ByteData(4)..setUint32(0, connIdOT, Endian.little)).buffer.asUint8List(), // O->T connection id
-    0, 0, 0, 0, // T->O connection id proposed (ignored by the target)
+    // O->T connection id: a PLACEHOLDER only. The target consumes O->T
+    // data, so the TARGET allocates this direction's id and returns it in
+    // the reply; a real client (pycomm3) sends zeros here.
+    0, 0, 0, 0,
+    // T->O connection id: allocated by the ORIGINATOR, echoed back unchanged.
+    ...(ByteData(4)..setUint32(0, connIdTO, Endian.little)).buffer.asUint8List(),
     ...(ByteData(2)..setUint16(0, connectionSerial, Endian.little)).buffer.asUint8List(),
     ...(ByteData(2)..setUint16(0, vendorId, Endian.little)).buffer.asUint8List(),
     ...(ByteData(4)..setUint32(0, originatorSerial, Endian.little)).buffer.asUint8List(),
@@ -506,7 +510,7 @@ void main() {
 
       // 2) Forward Open a connection under the first session.
       final forwardOpenReq = _forwardOpenCipRequest(
-        connIdOT: 0x1111,
+        connIdTO: 0x1111,
         connectionSerial: 0x2222,
         vendorId: 0x3333,
         originatorSerial: 0x44444444,
@@ -533,10 +537,12 @@ void main() {
       expect(foCipReply[0], kCipServiceForwardOpen | 0x80);
       expect(foCipReply[2], kCipStatusSuccess);
       // Byte layout of the Forward Open reply data (see cip_connection.dart):
-      // OT connection id at data[0:4], TO connection id (the one routed by
-      // SendUnitData/`byTargetId`) at data[4:8] — offset by the 4-byte CIP
-      // response header this codec prepends.
-      final oldConnectionId = ByteData.sublistView(foCipReply, 8, 12).getUint32(0, Endian.little);
+      // the TARGET-ALLOCATED O->T connection id — the one a connected
+      // message (`SendUnitData`) is addressed to, and the one
+      // `byConnectionId` resolves — is at data[0:4]; the echoed T->O id is
+      // at data[4:8]. Both are offset by the 4-byte CIP response header this
+      // codec prepends.
+      final oldConnectionId = ByteData.sublistView(foCipReply, 4, 8).getUint32(0, Endian.little);
       expect(oldConnectionId, kInitialTargetConnectionId);
 
       // 3) Register a SECOND session on the SAME socket — this must release

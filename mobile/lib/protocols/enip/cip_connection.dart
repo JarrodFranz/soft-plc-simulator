@@ -17,14 +17,34 @@
 // hand-rolled shifts, per this codebase's dart2js-safety convention for
 // wide values):
 //
+// WHICH SIDE ALLOCATES WHICH CONNECTION ID — the single most important
+// thing in this file, and the one detail this codec originally had
+// BACKWARDS (caught by the Task 6 real-client E2E, `tool/py/enip_probe.py`,
+// not by any of this project's own unit tests, which only ever proved the
+// codec self-consistent). The rule is: **the CONSUMER of a direction's data
+// allocates that direction's connection id.**
+//   - The TARGET (this host) consumes O->T traffic, so the TARGET allocates
+//     the **O->T** Network Connection ID. The originator sends `0` as a
+//     placeholder in the request and reads the real value out of the reply.
+//     That allocated O->T id is the id every subsequent connected message
+//     (`SendUnitData`) from the originator is addressed to, and therefore
+//     the id [CipConnectionManager.byConnectionId] looks connections up by.
+//   - The ORIGINATOR consumes T->O traffic, so the ORIGINATOR allocates the
+//     **T->O** Network Connection ID and sends it in the request; the target
+//     echoes it back unchanged.
+// Getting this backwards is silently survivable in a self-test (both sides
+// agree with themselves) and fatal against a real client: it hands the
+// originator a connection id of `0` and every connected message it then
+// sends is unroutable.
+//
 //  Forward Open (0x54) request:
 //   - Priority/Time_tick: u8
 //   - Timeout_ticks: u8
-//   - O->T Network Connection ID: u32 (chosen by the originator; echoed
+//   - O->T Network Connection ID: u32 (a placeholder — typically `0` — that
+//     this layer IGNORES: the target allocates this direction's id itself,
+//     per the rule above and the determinism requirement below)
+//   - T->O Network Connection ID: u32 (allocated by the originator; echoed
 //     back unchanged in the reply — never reinterpreted by this layer)
-//   - T->O Network Connection ID: u32 (the value the originator proposes;
-//     IGNORED — the target allocates its own, per the determinism
-//     requirement below)
 //   - Connection Serial Number: u16
 //   - Originator Vendor ID: u16
 //   - Originator Serial Number: u32
@@ -44,8 +64,9 @@
 //     out of scope for the connection manager itself.
 //
 //  Forward Open reply (success) — 26 bytes, no application reply data:
-//   - O->T Network Connection ID: u32 (echoed from the request)
-//   - T->O Network Connection ID: u32 (allocated by this layer)
+//   - O->T Network Connection ID: u32 (**allocated by this layer** — the id
+//     the originator will address its connected messages to)
+//   - T->O Network Connection ID: u32 (echoed from the request)
 //   - Connection Serial Number: u16 (echoed)
 //   - Originator Vendor ID: u16 (echoed)
 //   - Originator Serial Number: u32 (echoed)
@@ -86,7 +107,7 @@
 // `CipResponse`, using a non-zero `generalStatus` to signal failure,
 // mirroring `cip.dart`'s convention.
 //
-// Determinism: the Target-to-Originator (T->O) connection id — the only
+// Determinism: the Originator-to-Target (O->T) connection id — the only
 // connection id this layer allocates, per the echo semantics above — comes
 // from a monotonic counter seeded at `kInitialTargetConnectionId`. It is
 // never derived from `Random`, a hash, or the clock, so tests can assert
@@ -116,12 +137,15 @@ const int kCipServiceForwardClose = 0x4E;
 // `buildCipResponse`, which always writes `additionalStatusWords = 0`), so
 // the specific sub-reason is not distinguished on the wire.
 
-/// The first Target-to-Originator connection id allocated by a fresh
-/// [CipConnectionManager]. Documented as a named constant (rather than an
-/// inline literal) because determinism here is a hard requirement: tests
-/// assert exact allocated ids, so this value must never change silently by
-/// switching to a random or clock-derived source. `0` is reserved to mean
-/// "no connection" on the wire and is therefore never allocated.
+/// The first connection id allocated by a fresh [CipConnectionManager] —
+/// i.e. the first **Originator-to-Target** id, the direction whose data
+/// this target consumes and whose id it therefore allocates (see the file
+/// header). Documented as a named constant (rather than an inline literal)
+/// because determinism here is a hard requirement: tests assert exact
+/// allocated ids, so this value must never change silently by switching to
+/// a random or clock-derived source. `0` is reserved to mean "no
+/// connection" on the wire and is therefore never allocated — a real client
+/// treats a returned id of `0` as a failed Forward Open.
 const int kInitialTargetConnectionId = 1;
 
 /// Byte length of the fixed-position Forward Open request fields, before
@@ -136,14 +160,18 @@ const int _kForwardCloseFixedLen = 12;
 /// [CipConnectionManager.forwardOpen] and released by a matching
 /// [CipConnectionManager.forwardClose].
 class CipConnection {
-  /// The Originator-to-Target connection id, echoed unchanged from the
-  /// Forward Open request that created this connection.
+  /// The Originator-to-Target connection id, **allocated by**
+  /// [CipConnectionManager] from its monotonic counter (this target
+  /// consumes O->T traffic, so this target allocates its id — see the file
+  /// header). This is the id a caller looks connections up by via
+  /// [CipConnectionManager.byConnectionId]: it is the id the originator
+  /// puts in the Connected Address item of every connected message
+  /// (`SendUnitData`) it sends.
   final int connectionIdOT;
 
-  /// The Target-to-Originator connection id, allocated by
-  /// [CipConnectionManager] from its monotonic counter. This is the id a
-  /// caller looks connections up by via [CipConnectionManager.byTargetId]
-  /// (the id a connected message such as `SendUnitData` is routed by).
+  /// The Target-to-Originator connection id, echoed unchanged from the
+  /// Forward Open request that created this connection (the originator
+  /// consumes T->O traffic, so the originator allocates its id).
   final int connectionIdTO;
 
   /// Connection Serial Number, from the Forward Open request. Part of the
@@ -180,8 +208,11 @@ class CipConnection {
 /// connections; the socket host is expected to own one instance per
 /// session (or per socket) and call [releaseAll] when it dies.
 class CipConnectionManager {
-  int _nextTargetConnectionId = kInitialTargetConnectionId;
-  final Map<int, CipConnection> _byTargetId = {};
+  int _nextConnectionId = kInitialTargetConnectionId;
+
+  /// Open connections, keyed by the **O->T** connection id this manager
+  /// allocated — the id an incoming connected message is addressed to.
+  final Map<int, CipConnection> _byConnectionId = {};
 
   /// Handles a Forward Open (`0x54`) request. Always returns a
   /// [CipResponse] — never throws — using [kCipStatusNotEnoughData] if
@@ -193,10 +224,12 @@ class CipConnectionManager {
       return _errorResponse(request.service, kCipStatusNotEnoughData);
     }
     final bd = ByteData.sublistView(data);
-    final connectionIdOT = bd.getUint32(2, Endian.little);
-    // Byte offset 6 (the T->O connection id the originator proposes) is
-    // intentionally not read: this layer always allocates its own id for
-    // that direction, per the determinism requirement documented above.
+    // Byte offset 2 (the O->T connection id) is intentionally NOT read: the
+    // originator only sends a placeholder there (pycomm3, and real clients
+    // generally, send `0`) because THIS side allocates that direction's id.
+    // Reading it and echoing it back was the original bug this codec had —
+    // see the file header.
+    final connectionIdTO = bd.getUint32(6, Endian.little);
     final connectionSerial = bd.getUint16(10, Endian.little);
     final vendorId = bd.getUint16(12, Endian.little);
     final originatorSerial = bd.getUint32(14, Endian.little);
@@ -208,9 +241,9 @@ class CipConnectionManager {
       return _errorResponse(request.service, kCipStatusNotEnoughData);
     }
 
-    final connectionIdTO = _nextTargetConnectionId;
-    _nextTargetConnectionId += 1;
-    _byTargetId[connectionIdTO] = CipConnection(
+    final connectionIdOT = _nextConnectionId;
+    _nextConnectionId += 1;
+    _byConnectionId[connectionIdOT] = CipConnection(
       connectionIdOT: connectionIdOT,
       connectionIdTO: connectionIdTO,
       connectionSerial: connectionSerial,
@@ -219,8 +252,8 @@ class CipConnectionManager {
     );
 
     final reply = ByteData(26);
-    reply.setUint32(0, connectionIdOT, Endian.little);
-    reply.setUint32(4, connectionIdTO, Endian.little);
+    reply.setUint32(0, connectionIdOT, Endian.little); // Allocated by this target.
+    reply.setUint32(4, connectionIdTO, Endian.little); // Echoed from the request.
     reply.setUint16(8, connectionSerial, Endian.little);
     reply.setUint16(10, vendorId, Endian.little);
     reply.setUint32(12, originatorSerial, Endian.little);
@@ -253,20 +286,20 @@ class CipConnectionManager {
       return _errorResponse(request.service, kCipStatusNotEnoughData);
     }
 
-    int? matchedTargetId;
-    for (final entry in _byTargetId.entries) {
+    int? matchedConnectionId;
+    for (final entry in _byConnectionId.entries) {
       final conn = entry.value;
       if (conn.connectionSerial == connectionSerial &&
           conn.vendorId == vendorId &&
           conn.originatorSerial == originatorSerial) {
-        matchedTargetId = entry.key;
+        matchedConnectionId = entry.key;
         break;
       }
     }
-    if (matchedTargetId == null) {
+    if (matchedConnectionId == null) {
       return _errorResponse(request.service, kCipStatusConnectionFailure);
     }
-    _byTargetId.remove(matchedTargetId);
+    _byConnectionId.remove(matchedConnectionId);
 
     final reply = ByteData(10);
     reply.setUint16(0, connectionSerial, Endian.little);
@@ -278,18 +311,19 @@ class CipConnectionManager {
     return CipResponse(service: request.service, generalStatus: kCipStatusSuccess, data: reply.buffer.asUint8List());
   }
 
-  /// Looks up an open connection by its Target-to-Originator connection id
-  /// — the id [forwardOpen] allocated, and the id a connected message
-  /// (`SendUnitData`) is routed by. Returns `null` if no connection with
-  /// that id is currently open.
-  CipConnection? byTargetId(int targetId) => _byTargetId[targetId];
+  /// Looks up an open connection by the **Originator-to-Target** connection
+  /// id — the id [forwardOpen] allocated and returned to the originator, and
+  /// therefore the id the originator puts in the Connected Address item of
+  /// every connected message (`SendUnitData`) it sends. Returns `null` if no
+  /// connection with that id is currently open.
+  CipConnection? byConnectionId(int connectionId) => _byConnectionId[connectionId];
 
   /// Drops every open connection, e.g. when the owning session or socket
   /// dies. Does not reset the id-allocation counter: ids allocated by this
   /// manager instance stay unique for its whole lifetime, even across a
   /// `releaseAll` followed by new connections.
   void releaseAll() {
-    _byTargetId.clear();
+    _byConnectionId.clear();
   }
 
   CipResponse _errorResponse(int service, int generalStatus) =>

@@ -1,0 +1,11 @@
+# Python probe lane — third-party protocol clients used by the E2E scripts
+# under `tool/`. Versions are PINNED EXACTLY (never floating): an E2E whose
+# client library silently changes version is no longer a reproducible proof,
+# and a wire-level regression would be indistinguishable from a client-side
+# behaviour change.
+#
+# pycomm3 — a real, third-party EtherNet/IP + CIP client. Used by
+# `tool/py/enip_probe.py` (driven by `tool/enip_e2e.sh`) to verify this
+# project's in-app EtherNet/IP host against a client that was written from
+# the CIP specification entirely independently of us.
+pycomm3==1.2.16
