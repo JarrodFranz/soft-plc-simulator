@@ -46,9 +46,47 @@ void main() {
       final longDetail = 'x' * (kLogMaxDetailChars + 500);
       buf.add(_entry(t: 1, detail: longDetail));
       final stored = buf.entries.single.detail!;
-      expect(stored.length, lessThanOrEqualTo(kLogMaxDetailChars + 64));
+      expect(stored.length, lessThanOrEqualTo(kLogMaxDetailChars));
       expect(stored.length, lessThan(longDetail.length));
       expect(stored.contains('truncated'), isTrue);
+
+      // droppedChars must equal what was actually dropped: everything
+      // before the marker is what was kept.
+      final markerStart = stored.indexOf('… [truncated,');
+      expect(markerStart, greaterThanOrEqualTo(0));
+      final match = RegExp(r'truncated, (\d+) more chars\]$').firstMatch(stored)!;
+      final reportedDropped = int.parse(match.group(1)!);
+      expect(reportedDropped, longDetail.length - markerStart);
+    });
+
+    test('detail at exactly kLogMaxDetailChars is stored verbatim with no marker', () {
+      final buf = LogRingBuffer(capacity: 3);
+      final exactDetail = 'y' * kLogMaxDetailChars;
+      buf.add(_entry(t: 1, detail: exactDetail));
+      final stored = buf.entries.single.detail!;
+      expect(stored, exactDetail);
+      expect(stored.length, kLogMaxDetailChars);
+      expect(stored.contains('truncated'), isFalse);
+    });
+
+    test('detail far larger than the cap (10x) is still truncated to fit, with an accurate marker', () {
+      final buf = LogRingBuffer(capacity: 3);
+      final hugeDetail = 'z' * (kLogMaxDetailChars * 10);
+      buf.add(_entry(t: 1, detail: hugeDetail));
+      final stored = buf.entries.single.detail!;
+      expect(stored.length, lessThanOrEqualTo(kLogMaxDetailChars));
+      expect(stored.contains('truncated'), isTrue);
+
+      final markerStart = stored.indexOf('… [truncated,');
+      expect(markerStart, greaterThanOrEqualTo(0));
+      final keptLen = markerStart;
+      final match = RegExp(r'truncated, (\d+) more chars\]$').firstMatch(stored)!;
+      final reportedDropped = int.parse(match.group(1)!);
+      expect(reportedDropped, hugeDetail.length - keptLen);
+      // The digit count here (5 digits, ~40960) differs from the small
+      // overflow case above (3 digits, ~500) — this is the case that would
+      // break a fixed-width marker assumption.
+      expect(match.group(1)!.length, greaterThan(3));
     });
 
     test('empty buffer returns empty entries without throwing', () {

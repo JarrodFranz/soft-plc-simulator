@@ -66,13 +66,31 @@ class LogEntry {
   }
 }
 
+const String _kTruncateMarkerPrefix = '… [truncated, ';
+const String _kTruncateMarkerSuffix = ' more chars]';
+
 String? _truncateDetail(String? detail) {
   if (detail == null || detail.length <= kLogMaxDetailChars) {
     return detail;
   }
-  final kept = detail.substring(0, kLogMaxDetailChars);
-  final droppedChars = detail.length - kLogMaxDetailChars;
-  return '$kept… [truncated, $droppedChars more chars]';
+  // The marker embeds `droppedChars`, so its length is variable — it grows
+  // with the digit count of however much got dropped. `droppedChars` can
+  // never exceed `detail.length` (we never drop more than the input has),
+  // so the digit count of `detail.length` is a safe upper bound on the
+  // marker's digit count. Reserve the marker at that worst-case width up
+  // front; the real marker (computed from the actual `droppedChars` below)
+  // is never wider than reserved, so `kept.length + marker.length` always
+  // fits within the cap, no iteration required.
+  final maxDroppedDigits = detail.length.toString().length;
+  final reservedMarkerLen =
+      _kTruncateMarkerPrefix.length + maxDroppedDigits + _kTruncateMarkerSuffix.length;
+  var keptLen = kLogMaxDetailChars - reservedMarkerLen;
+  if (keptLen < 0) {
+    keptLen = 0;
+  }
+  final kept = detail.substring(0, keptLen);
+  final droppedChars = detail.length - keptLen;
+  return '$kept$_kTruncateMarkerPrefix$droppedChars$_kTruncateMarkerSuffix';
 }
 
 /// A bounded, oldest-first ring buffer of [LogEntry]. At capacity, the
