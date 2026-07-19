@@ -15,6 +15,7 @@ import '../data/default_projects.dart';
 import '../data/project_repository.dart';
 import '../data/project_transfer.dart';
 import '../services/dnp3_host.dart';
+import '../services/enip_host.dart';
 import '../services/modbus_host.dart';
 import '../services/mqtt_host.dart';
 import '../services/opcua_host.dart';
@@ -108,6 +109,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   final ModbusHost _modbusHost = ModbusHost();
   final MqttHost _mqttHost = MqttHost();
   final DnpHost _dnpHost = DnpHost();
+  final EnipHost _enipHost = EnipHost();
 
   // Repaint-pulse infrastructure (see live_tick.dart). `_executeScan` no
   // longer setStates the whole shell each tick — it writes the model
@@ -201,6 +203,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     _modbusHost.dispose();
     _mqttHost.dispose();
     _dnpHost.dispose();
+    _enipHost.dispose();
     _repaintThrottle.dispose();
     _liveTick.dispose();
     super.dispose();
@@ -696,6 +699,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     unawaited(_modbusHost.stop());
     unawaited(_mqttHost.disconnect());
     unawaited(_dnpHost.stop());
+    unawaited(_enipHost.stop());
     ensureSystemTag(proj);
     setState(() {
       _activeProject = proj;
@@ -918,6 +922,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _modbusHost.stop();
     await _mqttHost.disconnect();
     await _dnpHost.stop();
+    await _enipHost.stop();
 
     final blank = PlcProject(
       id: 'proj_new_${DateTime.now().millisecondsSinceEpoch}',
@@ -955,6 +960,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _modbusHost.stop();
     await _mqttHost.disconnect();
     await _dnpHost.stop();
+    await _enipHost.stop();
     final newId = await repo.duplicateProject(_activeProject.id, newName: '${_activeProject.name} Copy');
     final copy = await repo.loadProject(newId);
     if (copy == null) return;
@@ -1018,6 +1024,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _modbusHost.stop();
     await _mqttHost.disconnect();
     await _dnpHost.stop();
+    await _enipHost.stop();
     final deletedId = _activeProject.id;
     await repo.deleteProject(deletedId);
 
@@ -1078,6 +1085,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _modbusHost.stop();
     await _mqttHost.disconnect();
     await _dnpHost.stop();
+    await _enipHost.stop();
     await repo.resetToDefaults();
     final catalog = await repo.listProjects();
     var loaded = <PlcProject>[];
@@ -1205,6 +1213,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _modbusHost.stop();
     await _mqttHost.disconnect();
     await _dnpHost.stop();
+    await _enipHost.stop();
     final repo = _repo;
     if (repo != null) {
       await repo.saveProject(imported);
@@ -2763,6 +2772,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         modbusHost: _modbusHost,
         mqttHost: _mqttHost,
         dnpHost: _dnpHost,
+        enipHost: _enipHost,
         onProjectUpdated: _markDirtyAndAutosave,
       );
     }

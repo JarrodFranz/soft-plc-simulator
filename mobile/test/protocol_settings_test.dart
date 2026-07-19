@@ -8,6 +8,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:soft_plc_mobile/models/cip_map.dart';
 import 'package:soft_plc_mobile/models/dnp3_map.dart';
 import 'package:soft_plc_mobile/models/modbus_map.dart';
 import 'package:soft_plc_mobile/models/mqtt_map.dart';
@@ -671,6 +672,149 @@ void main() {
       expect(rt.modbus, isNull);
       expect(rt.mqtt, isNull);
       expect(rt.dnp3, isNotNull);
+    });
+  });
+
+  group('CipProtocolConfig / ProtocolSettings.ethernetIp (EtherNet/IP + CIP)', () {
+    test('defaults to disabled, port 44818, and an empty map', () {
+      final cfg = CipProtocolConfig(map: CipMap(entries: []));
+      expect(cfg.enabled, isFalse);
+      expect(cfg.port, 44818);
+      expect(cfg.map.entries, isEmpty);
+    });
+
+    test('CipProtocolConfig round-trips through toJson/fromJson', () {
+      final cfg = CipProtocolConfig(
+        enabled: true,
+        port: 44819,
+        map: CipMap(entries: [CipMapEntry(tagName: 'Tank.Level', access: 'ReadOnly')]),
+      );
+
+      final rt = CipProtocolConfig.fromJson(cfg.toJson());
+
+      expect(rt.enabled, isTrue);
+      expect(rt.port, 44819);
+      expect(rt.map.entries.single.tagName, 'Tank.Level');
+      expect(rt.map.entries.single.access, 'ReadOnly');
+    });
+
+    test('a project JSON without ethernet_ip loads with the feature disabled and port 44818 '
+        '(additive/back-compat)', () {
+      final settings = ProtocolSettings.fromJson({'gateway_url': kDefaultGatewayUrl});
+      expect(settings.ethernetIp, isNull);
+
+      // Prove the title's claim, not just the null check: materialize the
+      // effective config the same way the app does when a project has no
+      // ethernetIp config yet (mirrors `_ensureEnip` in gateway_screen.dart:
+      // `protocols!.ethernetIp ??= CipProtocolConfig.defaults(project)`).
+      final project = PlcProject(
+        id: 'enip_backcompat_proj',
+        name: 'ENIP Back-compat Project',
+        controllerName: 'PLC_ENIP_BC',
+        tags: const [],
+        structDefs: const [],
+        programs: const [],
+        tasks: const [],
+        hmis: const [],
+      );
+      final effective = settings.ethernetIp ?? CipProtocolConfig.defaults(project);
+      expect(effective.enabled, isFalse);
+      expect(effective.port, 44818);
+    });
+
+    test('CipProtocolConfig.fromJson tolerates a missing map key', () {
+      final cfg = CipProtocolConfig.fromJson({'enabled': true});
+      expect(cfg.enabled, isTrue);
+      expect(cfg.port, 44818);
+      expect(cfg.map.entries, isEmpty);
+    });
+
+    test('CipProtocolConfig.fromJson on a legacy record with no "port" key back-fills 44818', () {
+      final cfg = CipProtocolConfig.fromJson({'enabled': true, 'map': {'entries': []}});
+      expect(cfg.port, 44818);
+    });
+
+    test('ProtocolSettings carrying a CipProtocolConfig round-trips losslessly', () {
+      final settings = ProtocolSettings(
+        gatewayUrl: kDefaultGatewayUrl,
+        ethernetIp: CipProtocolConfig(
+          enabled: true,
+          port: 44818,
+          map: CipMap(entries: [CipMapEntry(tagName: 'A', access: 'ReadWrite')]),
+        ),
+      );
+
+      final rt = ProtocolSettings.fromJson(settings.toJson());
+
+      expect(rt.ethernetIp, isNotNull);
+      expect(rt.ethernetIp!.enabled, isTrue);
+      expect(rt.ethernetIp!.port, 44818);
+      expect(rt.ethernetIp!.map.entries.length, 1);
+    });
+
+    test('ProtocolSettings with ethernetIp == null omits the ethernet_ip key entirely', () {
+      final settings = ProtocolSettings(); // no ethernetIp
+      expect(settings.ethernetIp, isNull);
+      expect(settings.toJson().containsKey('ethernet_ip'), isFalse);
+    });
+
+    test('existing opcua/modbus/mqtt/dnp3 keys are untouched when ethernet_ip is present', () {
+      final project = PlcProject(
+        id: 'enip_mix_proj',
+        name: 'ENIP Mix Project',
+        controllerName: 'PLC_ENIP_MIX',
+        tags: const [],
+        structDefs: const [],
+        programs: const [],
+        tasks: const [],
+        hmis: const [],
+      );
+      final settings = ProtocolSettings(
+        opcua: OpcUaProtocolConfig.defaults(project),
+        ethernetIp: CipProtocolConfig(map: CipMap(entries: [])),
+      );
+
+      final json = settings.toJson();
+      expect(json.containsKey('opcua'), isTrue);
+      expect(json.containsKey('modbus'), isFalse);
+      expect(json.containsKey('mqtt'), isFalse);
+      expect(json.containsKey('dnp3'), isFalse);
+      expect(json.containsKey('ethernet_ip'), isTrue);
+
+      final rt = ProtocolSettings.fromJson(json);
+      expect(rt.opcua, isNotNull);
+      expect(rt.modbus, isNull);
+      expect(rt.mqtt, isNull);
+      expect(rt.dnp3, isNull);
+      expect(rt.ethernetIp, isNotNull);
+    });
+
+    test('ProtocolSettings.defaults builds a disabled ethernetIp config with port 44818', () {
+      final project = PlcProject(
+        id: 'enip_def_proj',
+        name: 'ENIP Defaults Project',
+        controllerName: 'PLC_ENIP_DEF',
+        tags: [
+          PlcTag(
+            name: 'Level',
+            path: 'Internal.Level',
+            dataType: 'INT16',
+            value: 0,
+            ioType: 'Internal',
+          ),
+        ],
+        structDefs: [],
+        programs: [],
+        tasks: [],
+        hmis: [],
+      );
+
+      final settings = ProtocolSettings.defaults(project);
+
+      expect(settings.ethernetIp, isNotNull);
+      expect(settings.ethernetIp!.enabled, isFalse);
+      expect(settings.ethernetIp!.port, 44818);
+      expect(settings.ethernetIp!.map.entries, isNotEmpty);
     });
   });
 }

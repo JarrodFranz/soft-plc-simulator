@@ -13,6 +13,7 @@ import 'package:soft_plc_mobile/models/signal_gen.dart';
 import 'package:soft_plc_mobile/screens/gateway_screen.dart';
 import 'package:soft_plc_mobile/screens/memory_manager_screen.dart';
 import 'package:soft_plc_mobile/services/dnp3_host.dart';
+import 'package:soft_plc_mobile/services/enip_host.dart';
 import 'package:soft_plc_mobile/services/modbus_host.dart';
 import 'package:soft_plc_mobile/services/mqtt_host.dart';
 import 'package:soft_plc_mobile/services/opcua_host.dart';
@@ -86,6 +87,7 @@ Widget _gatewayApp(PlcProject project) {
       modbusHost: ModbusHost(),
       mqttHost: MqttHost(),
       dnpHost: DnpHost(),
+      enipHost: EnipHost(),
       onProjectUpdated: () {},
     ),
   );

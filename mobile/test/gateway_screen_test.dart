@@ -7,6 +7,7 @@ import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/screens/gateway_screen.dart';
 import 'package:soft_plc_mobile/services/dnp3_host.dart';
+import 'package:soft_plc_mobile/services/enip_host.dart';
 import 'package:soft_plc_mobile/services/modbus_host.dart';
 import 'package:soft_plc_mobile/services/mqtt_host.dart';
 import 'package:soft_plc_mobile/services/opcua_host.dart';
@@ -236,6 +237,37 @@ class _RunningDnpHost extends DnpHost {
   }
 }
 
+/// A thin instrumented subclass of the REAL [EnipHost] — mirrors
+/// [_CountingModbusHost]/[_CountingDnpHost]: still binds a real
+/// (loopback, ephemeral-port) socket via the base class, but records call
+/// counts so tests can assert the UI actually invoked start/stop.
+class _CountingEnipHost extends EnipHost {
+  int startCalls = 0;
+  int stopCalls = 0;
+
+  @override
+  Future<void> start(PlcProject Function() projectProvider) async {
+    startCalls++;
+    await super.start(projectProvider);
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCalls++;
+    await super.stop();
+  }
+}
+
+class _RunningEnipHost extends EnipHost {
+  int stopCalls = 0;
+  @override
+  EnipHostStatus get status => EnipHostStatus.running;
+  @override
+  Future<void> stop() async {
+    stopCalls++;
+  }
+}
+
 Widget _app(
   PlcProject project,
   OpcUaHost host, {
@@ -243,6 +275,7 @@ Widget _app(
   ModbusHost? modbusHost,
   MqttHost? mqttHost,
   DnpHost? dnpHost,
+  EnipHost? enipHost,
 }) {
   return MaterialApp(
     home: GatewayScreen(
@@ -251,6 +284,7 @@ Widget _app(
       modbusHost: modbusHost ?? _CountingModbusHost(),
       mqttHost: mqttHost ?? MqttHost(),
       dnpHost: dnpHost ?? _CountingDnpHost(),
+      enipHost: enipHost ?? _CountingEnipHost(),
       onProjectUpdated: () {},
       hostingSupported: hostingSupported,
     ),
@@ -269,6 +303,7 @@ const Key opcuaTabKey = Key('protocol_tab_opcua');
 const Key modbusTabKey = Key('protocol_tab_modbus');
 const Key mqttTabKey = Key('protocol_tab_mqtt');
 const Key dnpTabKey = Key('protocol_tab_dnp3');
+const Key enipTabKey = Key('protocol_tab_enip');
 
 Future<void> _selectTab(WidgetTester tester, Key tabKey) async {
   // The TabBar is `isScrollable: true` (mobile-first — see the design spec),
@@ -2059,7 +2094,7 @@ void main() {
   });
 
   group('Outbound Protocols tab structure (WS-tabs)', () {
-    testWidgets('renders all four protocol tabs', (tester) async {
+    testWidgets('renders all five protocol tabs', (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -2071,14 +2106,16 @@ void main() {
       expect(find.byKey(modbusTabKey), findsOneWidget);
       expect(find.byKey(mqttTabKey), findsOneWidget);
       expect(find.byKey(dnpTabKey), findsOneWidget);
+      expect(find.byKey(enipTabKey), findsOneWidget);
       // OPC UA is the default (index 0) selected tab, so its card (with the
       // same title text, 'OPC UA') is simultaneously on-screen — scope to
       // the TabBar itself to check the tab label specifically. The other
-      // three tabs' cards aren't built yet, so their labels are unambiguous.
+      // four tabs' cards aren't built yet, so their labels are unambiguous.
       expect(find.descendant(of: find.byType(TabBar), matching: find.text('OPC UA')), findsOneWidget);
       expect(find.text('Modbus'), findsOneWidget);
       expect(find.text('MQTT'), findsOneWidget);
       expect(find.text('DNP3'), findsOneWidget);
+      expect(find.text('EtherNet/IP'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
 
@@ -2092,22 +2129,25 @@ void main() {
       addTearDown(mqttHost.dispose);
       final dnpHost = _CountingDnpHost();
       addTearDown(dnpHost.dispose);
+      final enipHost = _CountingEnipHost();
+      addTearDown(enipHost.dispose);
 
-      await tester.pumpWidget(
-          _app(project, host, modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost));
+      await tester.pumpWidget(_app(project, host,
+          modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost, enipHost: enipHost));
       await tester.pumpAndSettle();
 
       // Each protocol's enable-switch key is a stable, unique fingerprint for
       // its card, present regardless of that protocol's enabled/disabled
-      // state — exactly one of these four must be found at a time, matching
+      // state — exactly one of these five must be found at a time, matching
       // whichever tab is currently selected.
       const protocolSwitchKeys = [
         Key('opcua_enable_switch'),
         Key('modbus_enable_switch'),
         Key('mqtt_enable_switch'),
         Key('dnp_enable_switch'),
+        Key('enip_enable_switch'),
       ];
-      const tabKeys = [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey];
+      const tabKeys = [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey];
 
       for (var selected = 0; selected < tabKeys.length; selected++) {
         await _selectTab(tester, tabKeys[selected]);
@@ -2135,13 +2175,15 @@ void main() {
       addTearDown(mqttHost.dispose);
       final dnpHost = _CountingDnpHost();
       addTearDown(dnpHost.dispose);
+      final enipHost = _CountingEnipHost();
+      addTearDown(enipHost.dispose);
       await setSurface(tester, smallPhoneSize);
 
-      await tester.pumpWidget(
-          _app(project, host, modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost));
+      await tester.pumpWidget(_app(project, host,
+          modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost, enipHost: enipHost));
       await tester.pumpAndSettle();
 
-      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey]) {
+      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey]) {
         await _selectTab(tester, tabKey);
         expect(tester.takeException(), isNull);
       }
@@ -2157,13 +2199,15 @@ void main() {
       addTearDown(mqttHost.dispose);
       final dnpHost = _CountingDnpHost();
       addTearDown(dnpHost.dispose);
+      final enipHost = _CountingEnipHost();
+      addTearDown(enipHost.dispose);
       await setSurface(tester, const Size(360, 800));
 
-      await tester.pumpWidget(
-          _app(project, host, modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost));
+      await tester.pumpWidget(_app(project, host,
+          modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost, enipHost: enipHost));
       await tester.pumpAndSettle();
 
-      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey]) {
+      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey]) {
         await _selectTab(tester, tabKey);
         expect(tester.takeException(), isNull);
       }
@@ -2179,16 +2223,202 @@ void main() {
       addTearDown(mqttHost.dispose);
       final dnpHost = _CountingDnpHost();
       addTearDown(dnpHost.dispose);
+      final enipHost = _CountingEnipHost();
+      addTearDown(enipHost.dispose);
       await setSurface(tester, desktopSize);
 
-      await tester.pumpWidget(
-          _app(project, host, modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost));
+      await tester.pumpWidget(_app(project, host,
+          modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost, enipHost: enipHost));
       await tester.pumpAndSettle();
 
-      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey]) {
+      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey]) {
         await _selectTab(tester, tabKey);
         expect(tester.takeException(), isNull);
       }
+    });
+  });
+
+  group('EtherNet/IP card', () {
+    testWidgets('enable switch defaults to off and shows the disabled message', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, enipTabKey);
+
+      expect(find.byKey(const Key('enip_enable_switch')), findsOneWidget);
+      final sw = tester.widget<Switch>(find.byKey(const Key('enip_enable_switch')));
+      expect(sw.value, isFalse);
+      expect(find.textContaining('Disabled'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('enabling shows the port field (default 44818), map editor, and hosting buttons',
+        (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, enipTabKey);
+
+      await tester.tap(find.byKey(const Key('enip_enable_switch')));
+      await tester.pump();
+
+      expect(project.protocols!.ethernetIp!.enabled, isTrue);
+      expect(project.protocols!.ethernetIp!.port, 44818);
+      expect(find.text('Start hosting'), findsOneWidget);
+      expect(find.text('Stop hosting'), findsOneWidget);
+      expect(find.text('EtherNet/IP Tag Map'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Start hosting calls enipHost.start; Stop hosting calls enipHost.stop', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final enipHost = _CountingEnipHost();
+      addTearDown(enipHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, enipHost: enipHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, enipTabKey);
+
+      await tester.tap(find.byKey(const Key('enip_enable_switch')));
+      await tester.pump();
+      // Port 0 -> the OS picks an ephemeral free port, never colliding with a
+      // real port or leaking a fixed one across test runs.
+      await tester.enterText(find.widgetWithText(TextField, '44818'), '0');
+      await tester.pump();
+
+      await tester.runAsync(() async {
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Start hosting'));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await tester.pumpAndSettle();
+      expect(enipHost.startCalls, 1);
+      expect(enipHost.status, EnipHostStatus.running);
+
+      await tester.runAsync(() async {
+        await tester.tap(find.widgetWithText(OutlinedButton, 'Stop hosting'));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await tester.pumpAndSettle();
+      expect(enipHost.stopCalls, 1);
+      expect(enipHost.status, EnipHostStatus.stopped);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('disabling while hosting tears the host down (auto-stop-on-disable)', (tester) async {
+      final project = _project();
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.ethernetIp!.enabled = true;
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      final enipHost = _RunningEnipHost();
+      addTearDown(enipHost.dispose);
+
+      await tester.pumpWidget(_app(project, host, enipHost: enipHost));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, enipTabKey);
+      await tester.tap(find.byKey(const Key('enip_enable_switch')));
+      await tester.pump();
+
+      expect(enipHost.stopCalls, 1);
+      expect(project.protocols!.ethernetIp!.enabled, isFalse);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('port field edits update the project config', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, enipTabKey);
+      await tester.tap(find.byKey(const Key('enip_enable_switch')));
+      await tester.pump();
+
+      await tester.enterText(find.byType(TextField).first, '44819');
+      await tester.pump();
+
+      expect(project.protocols!.ethernetIp!.port, 44819);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Add entry / Regenerate / delete route through onProjectUpdated', (tester) async {
+      final project = _project();
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.ethernetIp!.enabled = true;
+      project.protocols!.ethernetIp!.map.entries.clear();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      var updates = 0;
+
+      await tester.pumpWidget(MaterialApp(
+        home: GatewayScreen(
+          currentProject: project,
+          host: host,
+          modbusHost: _CountingModbusHost(),
+          mqttHost: MqttHost(),
+          dnpHost: _CountingDnpHost(),
+          enipHost: _CountingEnipHost(),
+          onProjectUpdated: () => updates++,
+        ),
+      ));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, enipTabKey);
+
+      expect(find.textContaining('No entries yet'), findsOneWidget);
+
+      await tester.tap(find.text('Add entry'));
+      await tester.pump();
+      expect(project.protocols!.ethernetIp!.map.entries.length, 1);
+      expect(updates, greaterThan(0));
+
+      await tester.tap(find.text('Regenerate'));
+      await tester.pump();
+      expect(project.protocols!.ethernetIp!.map.entries, isNotEmpty);
+
+      final beforeDelete = project.protocols!.ethernetIp!.map.entries.length;
+      await tester.tap(find.byIcon(Icons.delete_outline).first);
+      await tester.pump();
+      expect(project.protocols!.ethernetIp!.map.entries.length, beforeDelete - 1);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 320 width with the EtherNet/IP card expanded', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      await setSurface(tester, smallPhoneSize);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, enipTabKey);
+      await tester.tap(find.byKey(const Key('enip_enable_switch')));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 1400 width with the EtherNet/IP card expanded', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      await setSurface(tester, desktopSize);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, enipTabKey);
+      await tester.tap(find.byKey(const Key('enip_enable_switch')));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
     });
   });
 }

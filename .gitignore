@@ -55,3 +55,10 @@ desktop.ini
 # Reference example sources (kept locally, not tracked)
 /Source/Examples/
 gateway/pki/
+
+# Python probe lane (tool/py/): the virtualenv and anything pip downloads
+# into it are build artifacts, never committed. `tool/py/requirements.txt`
+# pins the exact client-library versions instead -- see tool/enip_e2e.sh.
+tool/py/.venv/
+__pycache__/
+*.pyc
