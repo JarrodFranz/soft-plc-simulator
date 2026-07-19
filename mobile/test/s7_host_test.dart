@@ -73,8 +73,11 @@ class _ByteWaiter {
 // followed by a second one) cannot pass.
 
 /// A Connection Confirm: TPKT(4) + COTP header — LI(1) + type(1) + dstRef(2)
-/// + srcRef(2) + class(1) + two 4-byte TSAP parameters(8) = 15 — so 19 bytes.
-const int _kCcReplyLen = 19;
+/// + srcRef(2) + class(1) + TPDU-size param(3) + two 4-byte TSAP
+/// parameters(8) = 18 — so 22 bytes. (TPDU-size param is `code(1) + len(1)
+/// + value(1)` = 3 bytes; each TSAP param is `code(1) + len(1) + value(2)`
+/// = 4 bytes.)
+const int _kCcReplyLen = 22;
 
 /// A Setup Communication reply: TPKT(4) + COTP DT header(3) + S7 Ack_Data
 /// header(12) + Setup Communication parameter(8) = 27 bytes.

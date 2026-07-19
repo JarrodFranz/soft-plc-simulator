@@ -86,29 +86,36 @@ void main() {
       // round-trip-only assertion would still pass. Each reference value
       // below has two bytes that differ from each other, so a
       // little-endian implementation of any field fails this assertion:
-      //   [0]      LI = 0x0E (14): type(1)+dstRef(2)+srcRef(2)+class/opt(1)+params(8)
+      //   [0]      LI = 0x11 (17): type(1)+dstRef(2)+srcRef(2)+class/opt(1)+params(11)
       //   [1]      PDU type = 0xD0 (CC)
       //   [2..4)   dstRef = 0x5678 big-endian -> 0x56, 0x78
       //   [4..6)   srcRef = 0x1234 big-endian -> 0x12, 0x34
       //   [6]      class/option = 0x00
-      //   [7]      param code = 0xC2 (dst TSAP)
-      //   [8]      param len = 0x02
-      //   [9..11)  dstTsap = 0x0203 big-endian -> 0x02, 0x03
-      //   [11]     param code = 0xC1 (src TSAP)
-      //   [12]     param len = 0x02
-      //   [13..15) srcTsap = 0x0100 big-endian -> 0x01, 0x00
+      //   [7]      param code = 0xC0 (TPDU size)
+      //   [8]      param len = 0x01
+      //   [9]      TPDU size value = 0x0A (1024 octets)
+      //   [10]     param code = 0xC1 (src TSAP)
+      //   [11]     param len = 0x02
+      //   [12..14) srcTsap = 0x0100 big-endian -> 0x01, 0x00
+      //   [14]     param code = 0xC2 (dst TSAP)
+      //   [15]     param len = 0x02
+      //   [16..18) dstTsap = 0x0203 big-endian -> 0x02, 0x03
+      // Parameters are emitted in ascending code order (0xC0, 0xC1, 0xC2) to
+      // match universal real-controller practice; ISO 8073 itself does not
+      // make CR/CC parameter order significant (parseCotp matches by code).
       expect(
         cc,
         equals(Uint8List.fromList([
-          0x0E, 0xD0, // LI, PDU type
+          0x11, 0xD0, // LI, PDU type
           0x56, 0x78, // dstRef
           0x12, 0x34, // srcRef
           0x00, // class/option
-          0xC2, 0x02, 0x02, 0x03, // dst TSAP param: code, len, value
+          0xC0, 0x01, 0x0A, // TPDU size param: code, len, value
           0xC1, 0x02, 0x01, 0x00, // src TSAP param: code, len, value
+          0xC2, 0x02, 0x02, 0x03, // dst TSAP param: code, len, value
         ])),
       );
-      expect(cc.length, 15); // 1 (LI) + 14 (declared header)
+      expect(cc.length, 18); // 1 (LI) + 17 (declared header)
 
       final parsed = parseCotp(cc);
       expect(parsed, isNotNull);

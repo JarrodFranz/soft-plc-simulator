@@ -116,7 +116,10 @@ if ! "${VENV_PY}" -m pip install --quiet --disable-pip-version-check -r "${PY_DI
   log "hand-rolled client -- a real third-party client is the entire point."
   exit 1
 fi
-"${VENV_PY}" -c "import snap7; print('[e2e] python-snap7 import OK')"
+if ! "${VENV_PY}" -c "import snap7; print('[e2e] python-snap7 import OK')"; then
+  log "FAILED: python-snap7 failed to import from the venv (see traceback above)."
+  exit 1
+fi
 
 # --- Dart fixture host ----------------------------------------------------
 log "starting Dart S7comm fixture host on port ${PORT} (log: ${DART_LOG})..."

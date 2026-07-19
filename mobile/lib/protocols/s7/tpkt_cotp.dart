@@ -71,8 +71,17 @@ const int kCotpParamSrcTsap = 0xC1;
 /// Destination TSAP parameter code.
 const int kCotpParamDstTsap = 0xC2;
 
-/// TPDU size parameter code (value not currently exposed by this codec).
+/// TPDU size parameter code. Emitted by [buildCotpConnectConfirm] with value
+/// [kCotpTpduSizeCode1024] — parsing this parameter's value is not currently
+/// exposed by this codec (only the CR/CC's TSAPs are, via [parseCotp]).
 const int kCotpParamTpduSize = 0xC0;
+
+/// TPDU-size code value meaning "1024 octets" (ISO 8073 encodes TPDU size as
+/// log2(octets), so 1024 = 2^10 -> code 10 = 0x0A). Emitted in the CC so a
+/// strict client never falls back to the un-negotiated 128-octet class-0
+/// default, which would be too small for a negotiated 480-byte S7 PDU
+/// (Task 4's Read/Write Var replies).
+const int kCotpTpduSizeCode1024 = 0x0A;
 
 // --- TPKT --------------------------------------------------------------------
 
@@ -260,6 +269,23 @@ CotpPacket? parseCotp(Uint8List frame) {
 /// standard S7 TSAP width. The length indicator (byte 0) is computed to
 /// match the actual header content emitted, so the result always
 /// round-trips through [parseCotp].
+///
+/// The variable part also emits a `0xC0` TPDU-size parameter (value
+/// [kCotpTpduSizeCode1024], 1024 octets). ISO 8073's class-0 default is a
+/// 128-octet TPDU when the responder does not negotiate one; that is fine
+/// for today's ~27-byte Setup Communication reply, but would be too small
+/// once Read/Write Var replies grow to the negotiated 480-byte S7 PDU, so
+/// this codec negotiates a real size up front rather than relying on the
+/// un-negotiated default.
+///
+/// Parameter order in the variable part is `0xC0` (TPDU size), then `0xC1`
+/// (source TSAP), then `0xC2` (destination TSAP) — ascending by code. ISO
+/// 8073 defines the CR/CC variable part as an unordered set of `code, len,
+/// value` TLVs (this codec's own [parseCotp] matches by code, never by
+/// position, so a different order would still parse correctly), but real
+/// controllers and lightweight drivers alike emit ascending order
+/// universally, and this codec matches that practice so nothing that
+/// (non-conformantly) parses a CC at fixed offsets trips over us.
 Uint8List buildCotpConnectConfirm({
   required int srcRef,
   required int dstRef,
@@ -267,8 +293,9 @@ Uint8List buildCotpConnectConfirm({
   required int dstTsap,
 }) {
   final params = <int>[
-    kCotpParamDstTsap, 0x02, (dstTsap >> 8) & 0xFF, dstTsap & 0xFF,
+    kCotpParamTpduSize, 0x01, kCotpTpduSizeCode1024,
     kCotpParamSrcTsap, 0x02, (srcTsap >> 8) & 0xFF, srcTsap & 0xFF,
+    kCotpParamDstTsap, 0x02, (dstTsap >> 8) & 0xFF, dstTsap & 0xFF,
   ];
   const fixedFieldsLen = 1 + 2 + 2 + 1; // type + dstRef + srcRef + class/option
   final li = fixedFieldsLen + params.length;

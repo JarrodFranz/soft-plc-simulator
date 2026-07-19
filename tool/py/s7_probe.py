@@ -46,12 +46,16 @@ from snap7.client import Client
 RACK = 0
 SLOT = 2
 
-# The negotiated PDU length must land inside the band this device documents
-# (`kS7MinPduLength` .. `kS7MaxPduLength` in mobile/lib/protocols/s7/s7_pdu.dart).
-# Anything outside it means our Setup Communication reply parameter is not
-# being read the way we build it.
-MIN_PDU_LENGTH = 240
-MAX_PDU_LENGTH = 480
+# The negotiated PDU length must land EXACTLY on this device's documented
+# maximum (`kS7MaxPduLength` in mobile/lib/protocols/s7/s7_pdu.dart). This
+# client's own default proposal (see `client.pdu_length` before connect(),
+# printed at step 3 below) is already 480, i.e. AT this device's maximum, so
+# an exact match here is necessary to prove the reply parameter is read at
+# the correct offset/byte-order, but it is NOT sufficient on its own to prove
+# the server-side clamp itself fired (that would need a proposal ABOVE 480,
+# which this snap7 version never sends by default -- see the note printed at
+# step 3).
+EXPECTED_PDU_LENGTH = 480
 
 # How long any single snap7 socket operation may block, in milliseconds. Every
 # request this probe issues is a single round trip against a loopback fixture
@@ -92,6 +96,15 @@ def run(host: str, port: int) -> None:
     client = Client()
     bound_timeouts(client)
 
+    # snap7's own proposed PDU length, read BEFORE connect() overwrites
+    # `client.pdu_length` with the NEGOTIATED value from our reply. This is
+    # what the client actually sent in its Setup Communication request, for
+    # the record -- printed so a future snap7 version proposing something
+    # other than this device's maximum is visible rather than silently
+    # making the exact-480 assertion below vacuous.
+    proposed_pdu_length = getattr(client, "pdu_length", None)
+    print(f"[probe] snap7's own proposed PDU length (pre-connect): {proposed_pdu_length!r}")
+
     # --- Step 1: connect (COTP CR/CC + S7 Setup Communication) ------------
     try:
         client.connect(host, RACK, SLOT, tcp_port=port)
@@ -119,13 +132,18 @@ def run(host: str, port: int) -> None:
             f"{pdu_length!r}, which is not an integer",
         )
         check(
-            MIN_PDU_LENGTH <= pdu_length <= MAX_PDU_LENGTH,
+            pdu_length == EXPECTED_PDU_LENGTH,
             f"STEP 3 (negotiated PDU length): the client parsed {pdu_length} out "
-            f"of our Setup Communication reply, outside this device's documented "
-            f"band [{MIN_PDU_LENGTH}, {MAX_PDU_LENGTH}] -- the reply parameter "
-            f"layout or its byte order does not match what the client reads",
+            f"of our Setup Communication reply, not this device's documented "
+            f"maximum ({EXPECTED_PDU_LENGTH}) -- either the reply parameter's "
+            f"layout/byte order does not match what the client reads, or the "
+            f"server-side clamp to kS7MaxPduLength did not fire as expected "
+            f"(snap7 proposed {proposed_pdu_length!r})",
         )
-        print(f"[probe] step 3 OK: negotiated PDU length is {pdu_length}")
+        print(
+            f"[probe] step 3 OK: negotiated PDU length is {pdu_length} "
+            f"(snap7 proposed {proposed_pdu_length!r})"
+        )
     finally:
         # --- Step 4: clean teardown ---------------------------------------
         try:
