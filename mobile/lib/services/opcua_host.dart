@@ -23,6 +23,7 @@ import '../protocols/opcua/opcua_session.dart';
 import '../protocols/opcua/opcua_services.dart';
 import '../protocols/opcua/opcua_transport.dart';
 import 'app_logger.dart';
+import 'drop_log_gate.dart';
 import 'opcua_cert_store.dart';
 
 /// Lifecycle status of the [OpcUaHost].
@@ -49,7 +50,16 @@ class _Connection {
   /// protocol behaviour, it only observes it.
   final AppLogger? logger;
 
-  _Connection(this.socket, this.session, this.nowMs, {this.logger});
+  /// This connection's view of the host's first-occurrence WARN gate.
+  final ConnectionDropLog dropLog;
+
+  _Connection(
+    this.socket,
+    this.session,
+    this.nowMs, {
+    required this.dropLog,
+    this.logger,
+  });
 
   /// The 3-character OPC UA message type ('HEL', 'OPN', 'MSG', 'CLO') at the
   /// front of every frame, for the per-frame DEBUG entry. Non-printable bytes
@@ -104,10 +114,11 @@ class _Connection {
         );
         if (outFrames.isEmpty) {
           // The session consumed the message and produced nothing — the OPC
-          // UA equivalent of the other hosts' parsed-but-unserved drop.
-          logger?.logLazy(
-            kLogSourceOpcUa,
-            LogLevel.debug,
+          // UA equivalent of the other hosts' parsed-but-unserved drop. The
+          // FIRST such silence is a WARN so a session serving nothing
+          // announces itself at the default level; repeats are DEBUG.
+          dropLog.drop(
+            'opcua-no-reply',
             () => 'No reply produced for a ${_messageType(frame)} message of '
                 '${frame.length} bytes.',
           );
@@ -126,9 +137,19 @@ class _Connection {
           return;
         }
       }
-    } catch (_) {
+    } catch (e, st) {
       // A crash while reassembling/dispatching must never take down the
-      // host — just drop this one connection.
+      // host — just drop this one connection. The BEHAVIOUR is unchanged;
+      // only the record is new, so the operator no longer sees a bare
+      // "Client disconnected" with no cause. Fires at most once per
+      // connection, so an always-on WARN costs nothing.
+      logger?.log(
+        kLogSourceOpcUa,
+        LogLevel.warn,
+        'Dropping a client: an internal error occurred while reassembling or '
+        'dispatching its data.',
+        detail: '$e\n$st',
+      );
       close();
     }
   }
@@ -192,6 +213,11 @@ class OpcUaHost extends ChangeNotifier {
   /// constructed without one behaves exactly as it did before this parameter
   /// existed.
   OpcUaHost({OpcUaCertStore? certStore, this.logger}) : _certStore = certStore;
+
+  /// Host-wide first-occurrence WARN policy for dropped requests, shared by
+  /// every accepted connection so a client in a reconnect loop cannot re-arm
+  /// the WARN on each new socket. See `drop_log_gate.dart`.
+  late final DropLogGate _dropGate = DropLogGate(kLogSourceOpcUa, logger);
 
   final OpcUaCertStore? _certStore;
 
@@ -336,9 +362,20 @@ class OpcUaHost extends ChangeNotifier {
     try {
       project = projectProvider();
     } catch (e) {
+      // Always-on: hosting did not start, and without this the operator gets
+      // an error status with no recorded cause — while the "not enabled"
+      // branch just below has been logged all along.
+      logger?.log(
+        kLogSourceOpcUa,
+        LogLevel.error,
+        'Not started: the current project could not be read.',
+        detail: e.toString(),
+      );
       _setStatus(OpcUaHostStatus.error, error: 'Could not read the current project: $e');
       return;
     }
+    // A fresh run re-announces a still-broken configuration.
+    _dropGate.reset();
 
     final opcua = project.protocols?.opcua;
     if (opcua == null || !opcua.enabled) {
@@ -538,6 +575,7 @@ class OpcUaHost extends ChangeNotifier {
         socket,
         session,
         () => _clock.elapsedMilliseconds,
+        dropLog: _dropGate.forConnection(),
         logger: logger,
       );
       _connections.add(conn);

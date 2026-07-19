@@ -39,6 +39,7 @@ import '../protocols/enip/cip_connection.dart';
 import '../protocols/enip/cip_tags.dart';
 import '../protocols/enip/enip_encap.dart';
 import 'app_logger.dart';
+import 'drop_log_gate.dart';
 
 /// Lifecycle status of the [EnipHost].
 enum EnipHostStatus { stopped, running, error }
@@ -87,13 +88,21 @@ class _Connection {
   /// protocol behaviour, it only observes it.
   final AppLogger? logger;
 
-  _Connection(this.socket, {this.logger});
+  /// This connection's view of the host's first-occurrence WARN gate.
+  final ConnectionDropLog dropLog;
+
+  _Connection(this.socket, {required this.dropLog, this.logger});
 
   /// Records a request this connection PARSED but did not SERVE (or refused
-  /// at the encapsulation layer). DEBUG (off by default) and lazy: a
-  /// mis-configured client can hit these paths on every scan cycle.
-  void _logDrop(String Function() build) {
-    logger?.logLazy(kLogSourceEnip, LogLevel.debug, build);
+  /// at the encapsulation layer).
+  ///
+  /// The FIRST drop of a given [reason] on this connection is a WARN, so a
+  /// host refusing everything announces itself at the default level; every
+  /// repeat is DEBUG (off by default) and lazy, because a mis-configured
+  /// client can hit these paths on every scan cycle. See `drop_log_gate.dart`
+  /// for the reconnect-loop bound on that first WARN.
+  void _logDrop(String reason, String Function() build) {
+    dropLog.drop(reason, build);
   }
 
   /// Feeds newly-arrived [data] into the reassembly buffer, then extracts
@@ -148,9 +157,19 @@ class _Connection {
         _buffer.removeRange(0, total);
         _handleFrame(frame, header, projectProvider, allocateSessionHandle);
       }
-    } catch (_) {
+    } catch (e, st) {
       // A crash while reassembling/dispatching must never take down the
-      // host — just drop this one connection.
+      // host — just drop this one connection. The BEHAVIOUR is unchanged;
+      // only the record is new, so the operator no longer sees a bare
+      // "Client disconnected" with no cause. Fires at most once per
+      // connection, so an always-on WARN costs nothing.
+      logger?.log(
+        kLogSourceEnip,
+        LogLevel.warn,
+        'Dropping a client: an internal error occurred while reassembling or '
+        'dispatching its data.',
+        detail: '$e\n$st',
+      );
       close();
     }
   }
@@ -171,7 +190,9 @@ class _Connection {
     switch (header.command) {
       case kEnipCommandNop:
         // NOP elicits no response, per spec.
-        _logDrop(() => 'No reply sent for a NOP command, as the '
+        // Correct protocol behaviour, not a failure — never promoted to
+        // WARN. See `ConnectionDropLog.specSilence`.
+        dropLog.specSilence(() => 'No reply sent for a NOP command, as the '
             'specification requires.');
         return;
       case kEnipCommandRegisterSession:
@@ -187,7 +208,8 @@ class _Connection {
         _handleSendUnitData(header, data, projectProvider);
         return;
       default:
-        _logDrop(() => 'Refused an unsupported encapsulation command '
+        _logDrop('enip-unsupported-command',
+          () => 'Refused an unsupported encapsulation command '
             '${_hex(header.command)}.');
         socket.add(_reply(header, _kEncapStatusUnsupportedCommand, Uint8List(0)));
     }
@@ -238,7 +260,8 @@ class _Connection {
       sessionHandle = null;
       return;
     }
-    _logDrop(() => 'Ignored an UnRegisterSession naming session handle '
+    _logDrop('enip-foreign-unregister',
+          () => 'Ignored an UnRegisterSession naming session handle '
         '${header.sessionHandle}, which is not the one registered on this '
         'connection (${sessionHandle ?? 'none'}).');
   }
@@ -249,7 +272,8 @@ class _Connection {
     PlcProject Function() projectProvider,
   ) {
     if (sessionHandle == null || header.sessionHandle != sessionHandle) {
-      _logDrop(() => 'Refused a SendRRData: session handle '
+      _logDrop('enip-rr-bad-session',
+          () => 'Refused a SendRRData: session handle '
           '${header.sessionHandle} is not the one registered on this '
           'connection (${sessionHandle ?? 'none'}).');
       socket.add(_reply(header, _kEncapStatusInvalidSessionHandle, Uint8List(0)));
@@ -258,14 +282,16 @@ class _Connection {
     // 4-byte Interface Handle + 2-byte Timeout precede the CPF item list in
     // both SendRRData and SendUnitData request/response bodies.
     if (data.length < 6) {
-      _logDrop(() => 'Refused a SendRRData: its body is only ${data.length} '
+      _logDrop('enip-rr-short-body',
+          () => 'Refused a SendRRData: its body is only ${data.length} '
           'bytes, too short for the interface handle and timeout fields.');
       socket.add(_reply(header, _kEncapStatusIncorrectData, Uint8List(0)));
       return;
     }
     final items = parseCpf(Uint8List.sublistView(data, 6));
     if (items == null) {
-      _logDrop(() => 'Refused a SendRRData: its CPF item list could not be '
+      _logDrop('enip-rr-bad-cpf',
+          () => 'Refused a SendRRData: its CPF item list could not be '
           'parsed.');
       socket.add(_reply(header, _kEncapStatusIncorrectData, Uint8List(0)));
       return;
@@ -278,14 +304,16 @@ class _Connection {
       }
     }
     if (cipBytes == null) {
-      _logDrop(() => 'Refused a SendRRData: it carries no Unconnected Data '
+      _logDrop('enip-rr-no-uc-item',
+          () => 'Refused a SendRRData: it carries no Unconnected Data '
           'CPF item (${items.length} item(s) present).');
       socket.add(_reply(header, _kEncapStatusIncorrectData, Uint8List(0)));
       return;
     }
     final req = parseCipRequest(cipBytes);
     if (req == null) {
-      _logDrop(() => 'Refused a SendRRData: its embedded CIP request '
+      _logDrop('enip-rr-bad-cip',
+          () => 'Refused a SendRRData: its embedded CIP request '
           '(${cipBytes!.length} bytes) could not be parsed.');
       socket.add(_reply(header, _kEncapStatusIncorrectData, Uint8List(0)));
       return;
@@ -322,14 +350,16 @@ class _Connection {
     PlcProject Function() projectProvider,
   ) {
     if (sessionHandle == null || header.sessionHandle != sessionHandle) {
-      _logDrop(() => 'Refused a SendUnitData: session handle '
+      _logDrop('enip-unit-bad-session',
+          () => 'Refused a SendUnitData: session handle '
           '${header.sessionHandle} is not the one registered on this '
           'connection (${sessionHandle ?? 'none'}).');
       socket.add(_reply(header, _kEncapStatusInvalidSessionHandle, Uint8List(0)));
       return;
     }
     if (data.length < 6) {
-      _logDrop(() => 'Refused a SendUnitData: its body is only '
+      _logDrop('enip-unit-short-body',
+          () => 'Refused a SendUnitData: its body is only '
           '${data.length} bytes, too short for the interface handle and '
           'timeout fields.');
       socket.add(_reply(header, _kEncapStatusIncorrectData, Uint8List(0)));
@@ -337,7 +367,8 @@ class _Connection {
     }
     final items = parseCpf(Uint8List.sublistView(data, 6));
     if (items == null) {
-      _logDrop(() => 'Refused a SendUnitData: its CPF item list could not be '
+      _logDrop('enip-unit-bad-cpf',
+          () => 'Refused a SendUnitData: its CPF item list could not be '
           'parsed.');
       socket.add(_reply(header, _kEncapStatusIncorrectData, Uint8List(0)));
       return;
@@ -353,7 +384,8 @@ class _Connection {
       }
     }
     if (connectionId == null || connectedData == null || connectedData.length < 2) {
-      _logDrop(() => 'Refused a SendUnitData: it lacks a usable Connected '
+      _logDrop('enip-unit-no-conn-item',
+          () => 'Refused a SendUnitData: it lacks a usable Connected '
           'Address and/or Connected Data CPF item.');
       socket.add(_reply(header, _kEncapStatusIncorrectData, Uint8List(0)));
       return;
@@ -361,7 +393,8 @@ class _Connection {
 
     final conn = connMgr.byConnectionId(connectionId);
     if (conn == null) {
-      _logDrop(() => 'Refused a SendUnitData: connection id $connectionId is '
+      _logDrop('enip-unit-unknown-conn',
+          () => 'Refused a SendUnitData: connection id $connectionId is '
           'not open on this connection.');
       // No open connection with this id on THIS socket's connection
       // manager — an unregistered/foreign/closed connection id. Refused at
@@ -382,7 +415,8 @@ class _Connection {
 
     final CipResponse resp;
     if (req == null) {
-      _logDrop(() => 'Refused a connected request: its embedded CIP request '
+      _logDrop('enip-conn-bad-cip',
+          () => 'Refused a connected request: its embedded CIP request '
           '(${cipBytes.length} bytes) could not be parsed.');
       resp = CipResponse(service: 0x00, generalStatus: kCipStatusServiceNotSupported, data: Uint8List(0));
     } else {
@@ -500,6 +534,11 @@ class EnipHost extends ChangeNotifier {
 
   EnipHost({this.logger});
 
+  /// Host-wide first-occurrence WARN policy for dropped requests, shared by
+  /// every accepted connection so a client in a reconnect loop cannot re-arm
+  /// the WARN on each new socket. See `drop_log_gate.dart`.
+  late final DropLogGate _dropGate = DropLogGate(kLogSourceEnip, logger);
+
   ServerSocket? _serverSocket;
   final List<_Connection> _connections = [];
   StreamSubscription<Socket>? _acceptSub;
@@ -558,9 +597,20 @@ class EnipHost extends ChangeNotifier {
     try {
       project = projectProvider();
     } catch (e) {
+      // Always-on: hosting did not start, and without this the operator gets
+      // an error status with no recorded cause — while the "not enabled"
+      // branch just below has been logged all along.
+      logger?.log(
+        kLogSourceEnip,
+        LogLevel.error,
+        'Not started: the current project could not be read.',
+        detail: e.toString(),
+      );
       _setStatus(EnipHostStatus.error, error: 'Could not read the current project: $e');
       return;
     }
+    // A fresh run re-announces a still-broken configuration.
+    _dropGate.reset();
 
     final enip = project.protocols?.ethernetIp;
     if (enip == null || !enip.enabled) {
@@ -621,7 +671,11 @@ class EnipHost extends ChangeNotifier {
 
   void _acceptConnection(Socket socket, PlcProject Function() projectProvider) {
     try {
-      final conn = _Connection(socket, logger: logger);
+      final conn = _Connection(
+        socket,
+        dropLog: _dropGate.forConnection(),
+        logger: logger,
+      );
       _connections.add(conn);
       logger?.log(
         kLogSourceEnip,

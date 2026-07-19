@@ -27,6 +27,7 @@ import 'package:soft_plc_mobile/protocols/mqtt/mqtt_codec.dart';
 import 'package:soft_plc_mobile/protocols/s7/s7_pdu.dart';
 import 'package:soft_plc_mobile/protocols/s7/tpkt_cotp.dart';
 import 'package:soft_plc_mobile/services/app_logger.dart';
+import 'package:soft_plc_mobile/services/drop_log_gate.dart';
 import 'package:soft_plc_mobile/services/mqtt_host.dart';
 import 'package:soft_plc_mobile/services/s7_host.dart';
 
@@ -63,13 +64,20 @@ bool _mentions(LogEntry e, String needle) {
 
 // --- S7 fixtures ------------------------------------------------------------
 
-PlcProject Function() _s7Project({int port = 0}) {
+PlcProject Function() _s7Project({int port = 0, bool forceRunning = false}) {
   final project = PlcProject(
     id: 'proj_host_logging_s7',
     name: 'Host Logging S7',
     controllerName: 'PLC_LOG',
     tags: [
-      PlcTag(name: 'Running', path: 'Internal.Running', dataType: 'BOOL', value: false, ioType: 'Internal'),
+      PlcTag(
+        name: 'Running',
+        path: 'Internal.Running',
+        dataType: 'BOOL',
+        value: false,
+        ioType: 'Internal',
+        isForced: forceRunning,
+      ),
     ],
     structDefs: [],
     programs: [],
@@ -126,6 +134,34 @@ Uint8List _unsupportedFunctionFrame(int function) {
     rosctr: kS7RosctrJob,
     pduReference: 0x0400,
     parameter: Uint8List.fromList([function, 0x00]),
+  );
+  return buildTpkt(buildCotpData(s7));
+}
+
+/// A well-formed S7 Write Var Job targeting DB1.DBX0.0 — the address the
+/// fixture maps the `Running` tag to.
+Uint8List _writeBitFrame({bool value = true}) {
+  final parameter = Uint8List.fromList([
+    ...buildVarParameter(function: kS7FunctionWriteVar, itemCount: 1),
+    ...buildS7Item(
+      transportSize: kS7TransportSizeBit,
+      count: 1,
+      dbNumber: 1,
+      area: kS7AreaDataBlock,
+      byteOffset: 0,
+      bitOffset: 0,
+    ),
+  ]);
+  final data = buildDataItem(
+    returnCode: kS7ReturnSuccess,
+    transportSize: kS7DataTransportBit,
+    data: Uint8List.fromList([value ? 0x01 : 0x00]),
+  );
+  final s7 = buildS7(
+    rosctr: kS7RosctrJob,
+    pduReference: 0x0500,
+    parameter: parameter,
+    data: data,
   );
   return buildTpkt(buildCotpData(s7));
 }
@@ -224,27 +260,14 @@ class _FakeBroker {
 
 void main() {
   group('S7Host — the silent-drop closure', () {
-    test('an unsupported ROSCTR is logged at debug, naming the offending code', () async {
-      final logger = AppLogger();
-      logger.setSourceLevel(kLogSourceS7, LogLevel.debug);
-      final host = S7Host(logger: logger);
-      await host.start(_s7Project());
-      final socket = await _establishedS7Client(host);
-
-      socket.add(_rosctrFrame(kS7RosctrUserdata));
-      await socket.flush();
-
-      final entry = await _waitForEntry(
-        logger,
-        (e) => e.source == kLogSourceS7 && _mentions(e, 'rosctr') && _mentions(e, '0x07'),
-      );
-      expect(entry.level, LogLevel.debug);
-
-      socket.destroy();
-      await host.stop();
-    });
-
-    test('at the default info level that same drop records no such entry', () async {
+    // *** WHY THE FIRST DROP IS A WARN ***
+    // At the default `info` level a DEBUG-only drop is diagnosable but not
+    // self-announcing: the operator has to already suspect S7 and know to
+    // raise that source. A host discarding every request it receives is an
+    // ERROR condition, so its first occurrence is always-on; the second and
+    // subsequent identical discards are frame detail, so they are DEBUG.
+    test('the FIRST unsupported ROSCTR warns at the DEFAULT level, and the '
+        'second does not', () async {
       final logger = AppLogger(); // kLogSourceS7 stays at the default: info
       expect(logger.sourceLevel(kLogSourceS7), LogLevel.info);
       final host = S7Host(logger: logger);
@@ -253,10 +276,83 @@ void main() {
 
       socket.add(_rosctrFrame(kS7RosctrUserdata));
       await socket.flush();
+      final first = await _waitForEntry(
+        logger,
+        (e) => e.source == kLogSourceS7 && _mentions(e, 'rosctr') && _mentions(e, '0x07'),
+      );
+      expect(first.level, LogLevel.warn,
+          reason: 'the first drop of a reason must announce itself');
+
+      // The SECOND drop of the SAME reason on the SAME connection is frame
+      // detail, so it is DEBUG — and therefore invisible at `info`.
+      socket.add(_rosctrFrame(kS7RosctrUserdata));
+      await socket.flush();
       await _settle();
 
       expect(
-        logger.entries.where((e) => _mentions(e, 'rosctr')),
+        logger.entries.where((e) => _mentions(e, 'rosctr')).length,
+        1,
+        reason: 'repeats must be DEBUG, so only the first entry is recorded '
+            'at the default level',
+      );
+
+      socket.destroy();
+      await host.stop();
+    });
+
+    test('at debug the repeat IS recorded, naming the offending code', () async {
+      final logger = AppLogger();
+      logger.setSourceLevel(kLogSourceS7, LogLevel.debug);
+      final host = S7Host(logger: logger);
+      await host.start(_s7Project());
+      final socket = await _establishedS7Client(host);
+
+      socket.add(_rosctrFrame(kS7RosctrUserdata));
+      await socket.flush();
+      await _settle(200);
+      socket.add(_rosctrFrame(kS7RosctrUserdata));
+      await socket.flush();
+      await _settle();
+
+      final drops = logger.entries
+          .where((e) =>
+              e.source == kLogSourceS7 && _mentions(e, 'rosctr') && _mentions(e, '0x07'))
+          .toList();
+      expect(drops.length, 2);
+      expect(drops[0].level, LogLevel.warn);
+      expect(drops[1].level, LogLevel.debug);
+
+      socket.destroy();
+      await host.stop();
+    });
+
+    // *** THE VERBOSITY GATE STILL GATES ***
+    // This can no longer be asserted with "the drop is absent at info" — the
+    // first drop is now a WARN by design. It is asserted instead against an
+    // entry that is UNAMBIGUOUSLY frame detail: the per-request DEBUG line
+    // that names the job function and its parameter/data byte counts. That
+    // line is emitted for every Job alike, served or not, so its absence at
+    // `info` (while the drop WARN is present) proves the gate is real.
+    test('the per-request DEBUG detail is gated off at the default level', () async {
+      final logger = AppLogger();
+      final host = S7Host(logger: logger);
+      await host.start(_s7Project());
+      final socket = await _establishedS7Client(host);
+
+      socket.add(_unsupportedFunctionFrame(0x99));
+      await socket.flush();
+
+      // The drop itself is always-on...
+      final drop = await _waitForEntry(
+        logger,
+        (e) => e.source == kLogSourceS7 && _mentions(e, 'function') && _mentions(e, '0x99'),
+      );
+      expect(drop.level, LogLevel.warn);
+      await _settle();
+
+      // ...but the per-frame detail behind it is not.
+      expect(
+        logger.entries.where((e) => _mentions(e, 'parameter bytes')),
         isEmpty,
         reason: 'the verbosity gate must actually gate, not always log',
       );
@@ -265,7 +361,7 @@ void main() {
       await host.stop();
     });
 
-    test('an unsupported S7 function code is logged at debug, naming the code', () async {
+    test('at debug the per-request detail appears alongside the drop', () async {
       final logger = AppLogger();
       logger.setSourceLevel(kLogSourceS7, LogLevel.debug);
       final host = S7Host(logger: logger);
@@ -275,29 +371,108 @@ void main() {
       socket.add(_unsupportedFunctionFrame(0x99));
       await socket.flush();
 
-      final entry = await _waitForEntry(
+      final detail = await _waitForEntry(
         logger,
-        (e) => e.source == kLogSourceS7 && _mentions(e, 'function') && _mentions(e, '0x99'),
+        (e) => e.source == kLogSourceS7 && _mentions(e, 'parameter bytes'),
       );
-      expect(entry.level, LogLevel.debug);
+      expect(detail.level, LogLevel.debug);
+      expect(logger.entries.where((e) => _mentions(e, '0x99')), isNotEmpty);
 
       socket.destroy();
       await host.stop();
     });
 
-    test('at the default info level the unsupported function records no entry', () async {
+    // *** THE RECONNECT-LOOP BOUND ***
+    // Per-connection dedup alone would re-arm the WARN on every reconnect, so
+    // a client looping connect/fail/disconnect would flood the buffer by
+    // another route. The host-wide per-reason budget bounds that.
+    test('a reconnect loop cannot emit more than the per-reason WARN budget',
+        () async {
+      final logger = AppLogger();
+      final host = S7Host(logger: logger);
+      await host.start(_s7Project());
+
+      // Comfortably more reconnects than the budget allows.
+      for (var i = 0; i < kMaxDropWarnsPerReason + 3; i++) {
+        final socket = await _establishedS7Client(host);
+        socket.add(_rosctrFrame(kS7RosctrUserdata));
+        await socket.flush();
+        await _settle(150);
+        socket.destroy();
+        await _settle(100);
+      }
+
+      final warns = logger.entries
+          .where((e) =>
+              e.source == kLogSourceS7 &&
+              e.level == LogLevel.warn &&
+              _mentions(e, 'rosctr'))
+          .toList();
+      expect(warns.length, kMaxDropWarnsPerReason,
+          reason: 'a fresh socket per reconnect must not re-arm the WARN '
+              'without bound');
+
+      await host.stop();
+    });
+  });
+
+  group('S7Host — write refusal is visible', () {
+    test('a Write Var refused for a forced tag records an always-on warn',
+        () async {
+      final logger = AppLogger(); // default level: info
+      final host = S7Host(logger: logger);
+      await host.start(_s7Project(forceRunning: true));
+      final socket = await _establishedS7Client(host);
+
+      socket.add(_writeBitFrame());
+      await socket.flush();
+
+      final entry = await _waitForEntry(
+        logger,
+        (e) => e.source == kLogSourceS7 && _mentions(e, 'refused a write var'),
+      );
+      expect(entry.level, LogLevel.warn);
+      // The S7 reply code cannot distinguish forced from ReadOnly, and never
+      // names the tag — so the entry reports the ADDRESS and both candidate
+      // reasons rather than overstating what the wire said.
+      expect(_mentions(entry, 'db1'), isTrue);
+      expect(_mentions(entry, 'forced'), isTrue);
+
+      socket.destroy();
+      await host.stop();
+    });
+
+    test('an accepted Write Var records no refusal', () async {
       final logger = AppLogger();
       final host = S7Host(logger: logger);
       await host.start(_s7Project());
       final socket = await _establishedS7Client(host);
 
-      socket.add(_unsupportedFunctionFrame(0x99));
+      socket.add(_writeBitFrame());
       await socket.flush();
       await _settle();
 
-      expect(logger.entries.where((e) => _mentions(e, '0x99')), isEmpty);
+      expect(logger.entries.where((e) => _mentions(e, 'refused a write var')), isEmpty);
 
       socket.destroy();
+      await host.stop();
+    });
+  });
+
+  group('S7Host — an unreadable project is never silent', () {
+    test('a throwing projectProvider records an always-on entry', () async {
+      final logger = AppLogger();
+      final host = S7Host(logger: logger);
+
+      await host.start(() => throw StateError('no project loaded'));
+
+      expect(host.status, S7HostStatus.error);
+      final entry = logger.entries.firstWhere(
+        (e) => e.source == kLogSourceS7 && _mentions(e, 'could not be read'),
+      );
+      expect(entry.level.index >= LogLevel.warn.index, isTrue);
+      expect(_mentions(entry, 'no project loaded'), isTrue);
+
       await host.stop();
     });
   });

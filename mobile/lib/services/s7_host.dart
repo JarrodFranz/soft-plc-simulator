@@ -52,10 +52,12 @@ import 'package:flutter/foundation.dart';
 import '../models/app_log.dart';
 import '../models/project_model.dart';
 import '../models/s7_map.dart';
+import '../protocols/s7/s7_area_image.dart';
 import '../protocols/s7/s7_pdu.dart';
 import '../protocols/s7/s7_services.dart';
 import '../protocols/s7/tpkt_cotp.dart';
 import 'app_logger.dart';
+import 'drop_log_gate.dart';
 
 /// Lifecycle status of the [S7Host].
 enum S7HostStatus { stopped, running, error }
@@ -117,16 +119,22 @@ class _Connection {
   /// protocol behaviour, it only observes it.
   final AppLogger? logger;
 
-  _Connection(this.socket, this.localRef, this.logger);
+  /// This connection's view of the host's first-occurrence WARN gate.
+  final ConnectionDropLog dropLog;
+
+  _Connection(this.socket, this.localRef, this.logger, this.dropLog);
 
   /// Records a request this connection PARSED but did not SERVE. Every such
   /// site used to be a bare `return;` with no reply and no record — the
-  /// failure mode this instrumentation exists to close. DEBUG (off by
-  /// default) and lazy, because a mis-configured client can hit these paths
-  /// on every poll cycle: eager formatting would cost a string per frame even
-  /// with the level disabled, and a WARN would evict the rest of the buffer.
-  void _logDrop(String Function() build) {
-    logger?.logLazy(kLogSourceS7, LogLevel.debug, build);
+  /// failure mode this instrumentation exists to close.
+  ///
+  /// The FIRST drop of a given [reason] on this connection is a WARN, so a
+  /// host serving nothing announces itself at the default level; every repeat
+  /// is DEBUG (off by default) and lazy, because a mis-configured client can
+  /// hit these paths on every poll cycle. See `drop_log_gate.dart` for the
+  /// reconnect-loop bound on that first WARN.
+  void _logDrop(String reason, String Function() build) {
+    dropLog.drop(reason, build);
   }
 
   /// Feeds newly-arrived [data] into the reassembly buffer, then extracts
@@ -180,9 +188,20 @@ class _Connection {
         _buffer.removeRange(0, total);
         _handleFrame(frame, projectProvider);
       }
-    } catch (_) {
+    } catch (e, st) {
       // A crash while reassembling/dispatching must never take down the
-      // host — just drop this one connection.
+      // host — just drop this one connection. The BEHAVIOUR is unchanged;
+      // only the record is new. Without it the operator sees a bare "Client
+      // disconnected" with no cause, which is a smaller instance of exactly
+      // the silent failure this instrumentation exists to eliminate. Fires
+      // at most once per connection, so an always-on WARN costs nothing.
+      logger?.log(
+        kLogSourceS7,
+        LogLevel.warn,
+        'Dropping a client: an internal error occurred while reassembling or '
+        'dispatching its data.',
+        detail: '$e\n$st',
+      );
       close();
     }
   }
@@ -195,8 +214,9 @@ class _Connection {
     final cotpBytes = Uint8List.sublistView(frame, kTpktHeaderLen);
     final cotp = parseCotp(cotpBytes);
     if (cotp == null) {
-      _logDrop(() => 'Dropped a frame: its COTP TPDU could not be parsed '
-          '(${cotpBytes.length} bytes).');
+      _logDrop('cotp-unparseable',
+          () => 'Dropped a frame: its COTP TPDU could not be parsed '
+              '(${cotpBytes.length} bytes).');
       return;
     }
     if (cotp.pduType == kCotpCr) {
@@ -206,8 +226,9 @@ class _Connection {
     if (cotp.pduType == kCotpDt) {
       if (!cotpEstablished) {
         // Data before the COTP connection was confirmed.
-        _logDrop(() => 'Dropped an S7 message: it arrived before this '
-            'client completed the COTP connection handshake.');
+        _logDrop('cotp-not-established',
+            () => 'Dropped an S7 message: it arrived before this '
+                'client completed the COTP connection handshake.');
         return;
       }
       _handleS7(cotp.payload, projectProvider);
@@ -215,8 +236,9 @@ class _Connection {
     }
     // Any other COTP TPDU type (e.g. CC — which a server receives only from
     // a misbehaving peer) is not served here.
-    _logDrop(() => 'Dropped a frame: unsupported COTP TPDU type '
-        '${_hex(cotp.pduType)}.');
+    _logDrop('cotp-unsupported-type',
+        () => 'Dropped a frame: unsupported COTP TPDU type '
+            '${_hex(cotp.pduType)}.');
   }
 
   /// Answers a COTP Connection Request with a Connection Confirm. The CC's
@@ -248,28 +270,32 @@ class _Connection {
   void _handleS7(Uint8List s7Bytes, PlcProject Function() projectProvider) {
     final msg = parseS7(s7Bytes);
     if (msg == null) {
-      _logDrop(() => 'Dropped a message: it is not a parseable S7 PDU '
-          '(${s7Bytes.length} bytes).');
+      _logDrop('s7-unparseable',
+          () => 'Dropped a message: it is not a parseable S7 PDU '
+              '(${s7Bytes.length} bytes).');
       return;
     }
     if (msg.header.rosctr != kS7RosctrJob) {
       // THE motivating drop site: a client whose driver speaks a ROSCTR this
       // device does not serve got no reply and left no trace, while the
       // Outbound Protocols card still read "Running, Clients: 1".
-      _logDrop(() => 'Dropped a message: unsupported ROSCTR '
-          '${_hex(msg.header.rosctr)} (only Job ${_hex(kS7RosctrJob)} is '
-          'served).');
+      _logDrop('s7-unsupported-rosctr',
+          () => 'Dropped a message: unsupported ROSCTR '
+              '${_hex(msg.header.rosctr)} (only Job ${_hex(kS7RosctrJob)} is '
+              'served).');
       return;
     }
     if (msg.parameter.isEmpty) {
-      _logDrop(() => 'Dropped a Job: it carries no parameter block.');
+      _logDrop('s7-empty-parameter',
+          () => 'Dropped a Job: it carries no parameter block.');
       return;
     }
     if (msg.parameter[0] == kS7FunctionSetupCommunication) {
       final setup = parseSetupCommunication(msg.parameter);
       if (setup == null) {
-        _logDrop(() => 'Dropped a Setup Communication job: its parameter '
-            'block could not be parsed.');
+        _logDrop('s7-setup-unparseable',
+            () => 'Dropped a Setup Communication job: its parameter '
+                'block could not be parsed.');
         return;
       }
       _handleSetupCommunication(msg.header.pduReference, setup);
@@ -305,12 +331,88 @@ class _Connection {
     if (reply == null) {
       // The second motivating drop site: not a function this device serves,
       // or a malformed request — previously no reply and no record.
-      _logDrop(() => 'Dropped a Job: unsupported or malformed function '
-          '${_hex(msg.parameter[0])} (Read Var ${_hex(kS7FunctionReadVar)} '
-          'and Write Var ${_hex(kS7FunctionWriteVar)} are served).');
+      _logDrop('s7-unsupported-function',
+          () => 'Dropped a Job: unsupported or malformed function '
+              '${_hex(msg.parameter[0])} (Read Var ${_hex(kS7FunctionReadVar)} '
+              'and Write Var ${_hex(kS7FunctionWriteVar)} are served).');
       return;
     }
+    _logWriteRefusals(msg, reply);
     socket.add(buildTpkt(buildCotpData(reply)));
+  }
+
+  /// Records any Write Var item this device REFUSED, by inspecting the reply
+  /// it is about to send. Always-on (WARN): a SCADA write that is silently
+  /// swallowed is the same class of failure as a silently dropped request.
+  ///
+  /// *** WHY THIS READS THE REPLY RATHER THAN THE REFUSAL ITSELF ***
+  /// The refusal is DECIDED in `protocols/s7/s7_area_image.dart`'s
+  /// `applyAreaWrite`, which returns rich `S7WriteResult`s naming the tag and
+  /// distinguishing `refusedForced` from `refusedReadOnly`. But that list is
+  /// consumed inside `s7_services.dart` (a pure codec, which must NOT be
+  /// handed a logger — that is the wrong dependency direction) and collapsed
+  /// by `s7WriteReturnCode` into ONE byte per item. So the only thing that
+  /// reaches this host is [kS7ReturnAccessDenied], which:
+  ///   * does not name the tag, and
+  ///   * maps BOTH refusal reasons onto the same code.
+  /// This entry therefore reports the S7 ADDRESS the client asked to write
+  /// and names both candidate reasons, rather than overstating what the wire
+  /// actually tells us.
+  ///
+  /// Guarded end-to-end: this is pure observation, so a fault in it must not
+  /// reach `onData`'s catch and drop the client.
+  void _logWriteRefusals(S7Message request, Uint8List reply) {
+    final log = logger;
+    if (log == null) {
+      return;
+    }
+    try {
+      if (request.parameter.isEmpty ||
+          request.parameter[0] != kS7FunctionWriteVar) {
+        return;
+      }
+      final varParam = parseVarParameter(request.parameter);
+      if (varParam == null) {
+        return;
+      }
+      final replyMsg = parseS7(reply);
+      if (replyMsg == null) {
+        return;
+      }
+      // One return-code byte per item, in request order — see
+      // `buildWriteResponseData`.
+      final codes = replyMsg.data;
+      final count = varParam.items.length < codes.length
+          ? varParam.items.length
+          : codes.length;
+      for (var i = 0; i < count; i++) {
+        if (codes[i] != kS7ReturnAccessDenied) {
+          continue;
+        }
+        final item = varParam.items[i];
+        log.logLazy(
+          kLogSourceS7,
+          LogLevel.warn,
+          () => 'Refused a Write Var item: the write to '
+              '${_itemAddress(item)} was answered access-denied '
+              '(${_hex(kS7ReturnAccessDenied)}).',
+          detail: () => 'The addressed tag is FORCED, or its S7 map entry is '
+              'ReadOnly. The S7 reply code is the same for both, so this '
+              'entry cannot say which — check the tag at that address.',
+        );
+      }
+    } catch (_) {
+      // Observation only: never let a logging fault change what this
+      // connection does with the reply it already built.
+    }
+  }
+
+  /// A `DB1.DBB4.2`-style rendering of the address one Write Var item names,
+  /// for the refusal entry above.
+  String _itemAddress(S7Item item) {
+    final area = s7AreaNameForCode(item.area) ?? 'area ${_hex(item.area)}';
+    final where = area == kS7AreaNameDb ? '$area${item.dbNumber}' : area;
+    return '$where byte ${item.byteOffset}.${item.bitOffset}';
   }
 
   /// The S7 area map currently configured for [project], or an EMPTY map if
@@ -402,6 +504,11 @@ class S7Host extends ChangeNotifier {
 
   S7Host({this.logger});
 
+  /// Host-wide first-occurrence WARN policy for dropped requests, shared by
+  /// every accepted connection so a client in a reconnect loop cannot re-arm
+  /// the WARN on each new socket. See `drop_log_gate.dart`.
+  late final DropLogGate _dropGate = DropLogGate(kLogSourceS7, logger);
+
   ServerSocket? _serverSocket;
   final List<_Connection> _connections = [];
   StreamSubscription<Socket>? _acceptSub;
@@ -466,9 +573,20 @@ class S7Host extends ChangeNotifier {
     try {
       project = projectProvider();
     } catch (e) {
+      // Always-on: hosting did not start, and without this the operator gets
+      // an error status with no recorded cause — while the "not enabled"
+      // branch just below has been logged all along.
+      logger?.log(
+        kLogSourceS7,
+        LogLevel.error,
+        'Not started: the current project could not be read.',
+        detail: e.toString(),
+      );
       _setStatus(S7HostStatus.error, error: 'Could not read the current project: $e');
       return;
     }
+    // A fresh run re-announces a still-broken configuration.
+    _dropGate.reset();
 
     final s7 = project.protocols?.s7;
     if (s7 == null || !s7.enabled) {
@@ -534,7 +652,12 @@ class S7Host extends ChangeNotifier {
 
   void _acceptConnection(Socket socket, PlcProject Function() projectProvider) {
     try {
-      final conn = _Connection(socket, _allocateLocalRef(), logger);
+      final conn = _Connection(
+        socket,
+        _allocateLocalRef(),
+        logger,
+        _dropGate.forConnection(),
+      );
       _connections.add(conn);
       logger?.log(
         kLogSourceS7,

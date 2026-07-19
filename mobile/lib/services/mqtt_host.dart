@@ -354,6 +354,15 @@ class MqttHost extends ChangeNotifier {
     try {
       project = projectProvider();
     } catch (e) {
+      // Always-on: the connection attempt did not happen, and without this
+      // the operator gets an error status with no recorded cause — while the
+      // "not enabled" branch just below has been logged all along.
+      logger?.log(
+        kLogSourceMqtt,
+        LogLevel.error,
+        'Not connecting: the current project could not be read.',
+        detail: e.toString(),
+      );
       _setStatus(MqttHostStatus.error, error: 'Could not read the current project: $e');
       return;
     }
@@ -563,6 +572,16 @@ class MqttHost extends ChangeNotifier {
     try {
       project = projectProvider();
     } catch (e) {
+      // Always-on, and more severe than the start-time case: this drops a
+      // LIVE broker connection. Without a record the operator sees only a
+      // reconnect cycle with no stated cause.
+      logger?.log(
+        kLogSourceMqtt,
+        LogLevel.error,
+        'Dropping the broker connection: the current project could not be '
+        'read after CONNACK.',
+        detail: e.toString(),
+      );
       _dropAndReconnect('Could not read the current project: $e');
       return;
     }

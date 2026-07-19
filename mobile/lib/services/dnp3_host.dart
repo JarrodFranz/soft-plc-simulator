@@ -31,6 +31,7 @@ import '../protocols/dnp3/dnp3_link.dart';
 import '../protocols/dnp3/dnp3_outstation.dart';
 import '../protocols/dnp3/dnp3_transport.dart';
 import 'app_logger.dart';
+import 'drop_log_gate.dart';
 
 /// Lifecycle status of the [DnpHost].
 enum DnpHostStatus { stopped, running, error }
@@ -85,20 +86,27 @@ class _Connection {
   /// protocol behaviour, it only observes it.
   final AppLogger? logger;
 
+  /// This connection's view of the host's first-occurrence WARN gate.
+  final ConnectionDropLog dropLog;
+
   _Connection(
     this.socket,
     this.outstation, {
     required this.outstationAddress,
     required this.masterAddress,
+    required this.dropLog,
     this.logger,
   });
 
-  /// Records a frame this connection PARSED but did not SERVE. DEBUG (off by
-  /// default) and lazy: a master polling a wrong link address hits this on
-  /// every poll, so neither the formatting cost nor the buffer pressure of a
-  /// WARN is acceptable here.
-  void _logDrop(String Function() build) {
-    logger?.logLazy(kLogSourceDnp3, LogLevel.debug, build);
+  /// Records a frame this connection PARSED but did not SERVE.
+  ///
+  /// The FIRST drop of a given [reason] on this connection is a WARN, so an
+  /// outstation answering nothing announces itself at the default level;
+  /// every repeat is DEBUG (off by default) and lazy, because a master
+  /// polling a wrong link address hits this on every poll. See
+  /// `drop_log_gate.dart` for the reconnect-loop bound on that first WARN.
+  void _logDrop(String reason, String Function() build) {
+    dropLog.drop(reason, build);
   }
 
   /// Feeds newly-arrived [data] into the link-layer reassembly buffer, then
@@ -127,9 +135,19 @@ class _Connection {
         if (_closed) return;
         _handleFrame(frame);
       }
-    } catch (_) {
+    } catch (e, st) {
       // A crash while reassembling/dispatching must never take down the
-      // host — just drop this one connection.
+      // host — just drop this one connection. The BEHAVIOUR is unchanged;
+      // only the record is new, so the operator no longer sees a bare
+      // "Client disconnected" with no cause. Fires at most once per
+      // connection, so an always-on WARN costs nothing.
+      logger?.log(
+        kLogSourceDnp3,
+        LogLevel.warn,
+        'Dropping a client: an internal error occurred while reassembling or '
+        'dispatching its data.',
+        detail: '$e\n$st',
+      );
       close();
     }
   }
@@ -141,9 +159,10 @@ class _Connection {
       // configured link address are processed). A master configured with the
       // wrong outstation address lands here on every single poll and used to
       // get no reply and leave no record.
-      _logDrop(() => 'Dropped a link frame: destination address '
-          '${frame.dest} is not this outstation address '
-          '($outstationAddress).');
+      _logDrop('dnp3-wrong-destination',
+          () => 'Dropped a link frame: destination address '
+              '${frame.dest} is not this outstation address '
+              '($outstationAddress).');
       return;
     }
     logger?.logLazy(
@@ -161,7 +180,9 @@ class _Connection {
     if (response.isEmpty) {
       // A CONFIRM (function code 0) yields an empty response fragment —
       // CONFIRMs never get a reply of their own.
-      _logDrop(() => 'No reply sent for an application fragment of '
+      // Correct protocol behaviour, not a failure — never promoted to WARN.
+      // See `ConnectionDropLog.specSilence`.
+      dropLog.specSilence(() => 'No reply sent for an application fragment of '
           '${appFragment.length} bytes (function '
           '${_hex(appFragment.length > 1 ? appFragment[1] : 0)}); a CONFIRM '
           'is never answered.');
@@ -269,6 +290,11 @@ class DnpHost extends ChangeNotifier {
 
   DnpHost({this.logger});
 
+  /// Host-wide first-occurrence WARN policy for dropped requests, shared by
+  /// every accepted connection so a master in a reconnect loop cannot re-arm
+  /// the WARN on each new socket. See `drop_log_gate.dart`.
+  late final DropLogGate _dropGate = DropLogGate(kLogSourceDnp3, logger);
+
   ServerSocket? _serverSocket;
   final List<_Connection> _connections = [];
   StreamSubscription<Socket>? _acceptSub;
@@ -328,9 +354,20 @@ class DnpHost extends ChangeNotifier {
     try {
       project = projectProvider();
     } catch (e) {
+      // Always-on: hosting did not start, and without this the operator gets
+      // an error status with no recorded cause — while the "not enabled"
+      // branch just below has been logged all along.
+      logger?.log(
+        kLogSourceDnp3,
+        LogLevel.error,
+        'Not started: the current project could not be read.',
+        detail: e.toString(),
+      );
       _setStatus(DnpHostStatus.error, error: 'Could not read the current project: $e');
       return;
     }
+    // A fresh run re-announces a still-broken configuration.
+    _dropGate.reset();
 
     final dnp3 = project.protocols?.dnp3;
     if (dnp3 == null || !dnp3.enabled) {
@@ -421,6 +458,7 @@ class DnpHost extends ChangeNotifier {
         outstationAddress: outstationAddress,
         masterAddress: masterAddress,
         logger: logger,
+        dropLog: _dropGate.forConnection(),
       );
       _connections.add(conn);
       logger?.log(
