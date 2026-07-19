@@ -1,7 +1,7 @@
 // Byte-exact fixtures for the CIP messaging codec
 // (mobile/lib/protocols/enip/cip.dart): request/response envelopes, EPATH
 // segment parsing/building (including the ANSI Extended Symbol segment used
-// for Logix-style symbolic tag addressing), and the CIP data-type codec.
+// for symbolic (named) tag addressing, including member paths), and the CIP data-type codec.
 // Verified against public CIP specification material.
 import 'dart:typed_data';
 
@@ -129,6 +129,19 @@ void main() {
 
     test('parseEpath returns null on an empty buffer with nonzero wordLen', () {
       expect(parseEpath(Uint8List(0), 1), isNull);
+    });
+
+    test('parseEpath returns null (no throw) when segment nameLen overruns the path region', () {
+      // Construct a buffer where the outer bulk length check (data.length >= byteLen)
+      // passes, but a segment's inner nameLen field claims more bytes than remain
+      // within the path boundary. The buffer is exactly 4 bytes; wordLen=2 means
+      // 4 bytes total path, so the outer check passes. But the symbol segment
+      // has 0x91 (ANSI Extended Symbol), 0xFF (nameLen=255), followed by 2 data
+      // bytes. The inner check should catch that nameLen (255) far exceeds what
+      // remains in the path region (only 2 bytes left after the header).
+      final buffer = _u8([0x91, 0xFF, 0x41, 0x42]);
+      expect(buffer.length, 4);
+      expect(parseEpath(buffer, 2), isNull);
     });
   });
 
