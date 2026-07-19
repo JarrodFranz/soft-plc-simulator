@@ -17,6 +17,8 @@ import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/s7_map.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 import 'package:soft_plc_mobile/protocols/s7/s7_area_image.dart';
+import 'package:soft_plc_mobile/protocols/s7/s7_pdu.dart';
+import 'package:soft_plc_mobile/protocols/s7/s7_services.dart';
 
 void main() {
   PlcProject buildProject() => PlcProject(
@@ -438,6 +440,7 @@ void main() {
         final refused = results.where((r) => r.tag == 'System.Cmd');
         expect(refused, isNotEmpty);
         expect(refused.single.status, isNot(S7WriteStatus.written));
+        expect(s7WriteReturnCode(results), kS7ReturnAccessDenied);
       });
 
       test('a WRITABLE map entry pointing at a SimulatedOutput tag still succeeds (deliberate override survives)',
