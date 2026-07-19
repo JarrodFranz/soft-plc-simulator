@@ -29,6 +29,29 @@ void main() {
     expect([e('Level').table, e('Level').address, e('Level').access], ['input', 0, 'ReadOnly']);
   });
 
+  test('marks the reserved System tag read-only by name, even if its own access is left at the default ReadWrite', () {
+    final p = PlcProject(id: 'x', name: 'X', controllerName: 'C', structDefs: const [],
+      programs: const [], tasks: const [], hmis: const [], tags: [
+        PlcTag(
+          name: 'System',
+          path: 'System',
+          dataType: 'SYSTEM',
+          value: {'ScanCount': 0, 'Running': false},
+          ioType: 'Internal',
+          // access intentionally left at its default 'ReadWrite', to prove
+          // the name-based rule -- not the access field -- is what forces
+          // this read-only.
+        ),
+      ]);
+    final m = ModbusMap.autoGenerate(p);
+    final scanCount = m.entries.firstWhere((e) => e.tag == 'System.ScanCount');
+    expect(scanCount.table, 'input');
+    expect(scanCount.access, 'ReadOnly');
+    final running = m.entries.firstWhere((e) => e.tag == 'System.Running');
+    expect(running.table, 'discrete');
+    expect(running.access, 'ReadOnly');
+  });
+
   test('array tags expand into per-element entries; unregistered struct tags stay skipped', () {
     final p = PlcProject(id: 'x', name: 'X', controllerName: 'C', structDefs: const [],
       programs: const [], tasks: const [], hmis: const [], tags: [

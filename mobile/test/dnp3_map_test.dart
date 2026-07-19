@@ -152,6 +152,25 @@ void main() {
       expect(analogOutputs.single.tag, 'A1');
       expect(analogOutputs.single.index, 0);
     });
+
+    test('marks the reserved System tag read-only by name, even if its own access is left at the default ReadWrite', () {
+      final project = buildProject();
+      project.tags.add(PlcTag(
+        name: 'System',
+        path: 'System',
+        dataType: 'SYSTEM',
+        value: {'ScanCount': 0, 'Running': false},
+        ioType: 'Internal',
+        // access intentionally left at its default 'ReadWrite', to prove
+        // the name-based rule -- not the access field -- is what forces
+        // this read-only.
+      ));
+      final m = DnpMap.autoGenerate(project);
+      final scanCount = m.entries.firstWhere((e) => e.tag == 'System.ScanCount');
+      expect(scanCount.pointType, 'analogInput');
+      final running = m.entries.firstWhere((e) => e.tag == 'System.Running');
+      expect(running.pointType, 'binaryInput');
+    });
   });
 
   group('DnpMapEntry / DnpMap json round-trip', () {

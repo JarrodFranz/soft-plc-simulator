@@ -11,6 +11,7 @@
 
 import 'project_model.dart';
 import 'tag_resolver.dart';
+import 'tag_write_gate.dart';
 
 /// One DNP3 point-map entry, binding a project tag to an index within one
 /// of the four DNP3 point types.
@@ -103,8 +104,7 @@ class DnpMap {
       if (skipTypes.contains(dataType) || !scalarTypes.contains(dataType)) {
         continue;
       }
-      final root = rootTagOf(p, leaf.path);
-      final ro = root?.ioType == 'SimulatedOutput' || root?.access == 'ReadOnly';
+      final ro = !defaultsExternallyWritable(p, leaf.path);
       final String pointType;
       if (dataType == 'BOOL') {
         pointType = ro ? 'binaryInput' : 'binaryOutput';

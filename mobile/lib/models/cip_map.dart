@@ -21,8 +21,8 @@
 // from services and widgets alike without pulling Flutter into model code.
 
 import 'project_model.dart';
-import 'system_tags.dart';
 import 'tag_resolver.dart';
+import 'tag_write_gate.dart';
 
 /// One CIP tag-map entry: a project tag's (possibly dotted/indexed) resolver
 /// path, exposed under that same name for symbolic/named tag addressing,
@@ -96,10 +96,7 @@ class CipMap {
       if (leaf.dataType == 'STRING') {
         continue;
       }
-      final root = rootTagOf(p, leaf.path);
-      final readOnly = root?.ioType == 'SimulatedOutput' ||
-          root?.access == 'ReadOnly' ||
-          root?.name == kSystemTagName;
+      final readOnly = !defaultsExternallyWritable(p, leaf.path);
       entries.add(CipMapEntry(
         tagName: leaf.path,
         access: readOnly ? 'ReadOnly' : 'ReadWrite',

@@ -176,6 +176,26 @@ void main() {
       }
     });
 
+    test('marks the reserved System tag ReadOnly by name, even if its own access is left at the default ReadWrite', () {
+      final p = buildProject();
+      p.tags.add(PlcTag(
+        name: 'System',
+        path: 'System',
+        dataType: 'SYSTEM',
+        value: {'ScanCount': 0, 'Running': false},
+        ioType: 'Internal',
+        // access intentionally left at its default 'ReadWrite', to prove
+        // the name-based rule -- not the access field -- is what forces
+        // this ReadOnly.
+      ));
+      final m = S7Map.autoGenerate(p);
+      final sysEntries = m.entries.where((e) => e.tag.startsWith('System.'));
+      expect(sysEntries, isNotEmpty);
+      for (final e in sysEntries) {
+        expect(e.access, 'ReadOnly');
+      }
+    });
+
     test('skips STRING leaves entirely', () {
       final m = S7Map.autoGenerate(buildProject());
       expect(m.entries.any((e) => e.tag == 'Batch_Id'), isFalse);

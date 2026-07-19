@@ -32,6 +32,7 @@
 
 import 'project_model.dart';
 import 'tag_resolver.dart';
+import 'tag_write_gate.dart';
 
 /// Data-block area code.
 const String kS7AreaNameDb = 'DB';
@@ -187,8 +188,7 @@ class S7Map {
       if (width == null) {
         continue;
       }
-      final root = rootTagOf(p, leaf.path);
-      final rw = root?.ioType != 'SimulatedOutput' && root?.access != 'ReadOnly';
+      final rw = defaultsExternallyWritable(p, leaf.path);
       final access = rw ? 'ReadWrite' : 'ReadOnly';
 
       int byteOffset;

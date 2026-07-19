@@ -10,6 +10,7 @@
 
 import 'project_model.dart';
 import 'tag_resolver.dart';
+import 'tag_write_gate.dart';
 
 /// One Modbus register-map entry, binding a project tag to an address in one
 /// of the four Modbus data tables.
@@ -110,8 +111,7 @@ class ModbusMap {
       if (skipTypes.contains(dataType) || !scalarTypes.contains(dataType)) {
         continue;
       }
-      final root = rootTagOf(p, leaf.path);
-      final rw = root?.ioType != 'SimulatedOutput' && root?.access != 'ReadOnly';
+      final rw = defaultsExternallyWritable(p, leaf.path);
       final access = rw ? 'ReadWrite' : 'ReadOnly';
       final String table;
       final int advance;

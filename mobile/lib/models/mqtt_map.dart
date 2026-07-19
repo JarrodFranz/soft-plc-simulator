@@ -10,6 +10,7 @@
 
 import 'project_model.dart';
 import 'tag_resolver.dart';
+import 'tag_write_gate.dart';
 
 /// One MQTT tag<->metric map entry, binding a project tag to a published
 /// metric name.
@@ -86,7 +87,7 @@ class MqttMap {
       }
       final root = rootTagOf(p, leaf.path);
       final rootFolder = root?.folder ?? '';
-      final writable = root?.ioType != 'SimulatedOutput' && root?.access != 'ReadOnly';
+      final writable = defaultsExternallyWritable(p, leaf.path);
       entries.add(MqttMapEntry(
         tag: leaf.path,
         metric: rootFolder.isEmpty ? leaf.path : '$rootFolder/${leaf.path}',

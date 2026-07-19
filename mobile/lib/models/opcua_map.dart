@@ -9,6 +9,7 @@
 
 import 'project_model.dart';
 import 'tag_resolver.dart';
+import 'tag_write_gate.dart';
 
 /// One OPC UA `Variable` node, bound to a project tag by name.
 ///
@@ -94,7 +95,7 @@ class OpcuaMap {
     final nodes = <OpcuaNode>[];
     for (final leaf in scalarLeaves(p)) {
       final root = rootTagOf(p, leaf.path);
-      final readOnly = root?.ioType == 'SimulatedOutput' || root?.access == 'ReadOnly';
+      final readOnly = !defaultsExternallyWritable(p, leaf.path);
       final access = readOnly ? 'ReadOnly' : 'ReadWrite';
       final rootName = leaf.path.split(RegExp(r'[.\[]')).first;
       final suffix = leaf.path.substring(rootName.length);
