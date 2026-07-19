@@ -9,3 +9,9 @@
 # project's in-app EtherNet/IP host against a client that was written from
 # the CIP specification entirely independently of us.
 pycomm3==1.2.16
+
+# python-snap7 — a real, third-party S7comm client (a Python wrapper around
+# the snap7 C library, whose native binary ships with the wheel). Used by
+# `tool/py/s7_probe.py` (driven by `tool/s7_e2e.sh`) to verify this project's
+# in-app S7comm host against a client written entirely independently of us.
+python-snap7==3.1.0
