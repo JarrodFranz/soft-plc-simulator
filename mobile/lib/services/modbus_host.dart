@@ -257,16 +257,18 @@ class _Connection {
   /// *** WHAT THE RESPONSE PDU CAN AND CANNOT TELL US ***
   /// The refusal is DECIDED in `protocols/modbus/modbus_pdu.dart`, a pure
   /// codec that must NOT be handed a logger, and all this host receives back
-  /// is the response PDU. That means:
-  ///   * a READ-ONLY (or unmapped) address surfaces as an `illegal data
-  ///     address` exception, which IS visible here — but the two causes share
-  ///     one exception code, and the tag name never appears in the PDU; and
-  ///   * a FORCED tag is skipped by `_isForcedSkip` and answered with an
-  ///     ordinary SUCCESS echo, so it is INVISIBLE in the response PDU and
-  ///     cannot be logged from here at all without duplicating the codec's
-  ///     force logic in this file.
+  /// is the response PDU. A READ-ONLY address, an UNMAPPED address, and (as
+  /// of the protocol-hardening workstream's Task 3) a write to a FORCED tag
+  /// all surface as the same `illegal data address` exception — visible
+  /// here, but the three causes share one exception code, and the tag name
+  /// never appears in the PDU, so this entry cannot say which of the three
+  /// it was. (Before Task 3, a forced-tag write was invisible here too — it
+  /// got an ordinary SUCCESS echo instead of any exception. That silent
+  /// deceptive-success path is gone now: every refused write, forced or
+  /// not, is an exception PDU this method observes.)
   /// This entry therefore reports the function code and the exception, and
-  /// names both candidate causes, rather than overstating what the wire says.
+  /// names all three candidate causes, rather than overstating what the
+  /// wire says.
   ///
   /// Guarded end-to-end: this is pure observation, so a fault in it must not
   /// reach `onData`'s catch and drop the client.
@@ -296,9 +298,9 @@ class _Connection {
             '${_hex(ex)}.',
         detail: () => ex == _exIllegalDataAddress
             ? 'Illegal data address: the addressed register/coil is not in '
-                'this project\'s Modbus map, or its map entry is ReadOnly. '
-                'The exception code is the same for both, so this entry '
-                'cannot say which.'
+                'this project\'s Modbus map, its map entry is ReadOnly, or '
+                'its underlying tag is currently forced. The exception code '
+                'is the same for all three, so this entry cannot say which.'
             : 'The request was rejected before any value changed.',
       );
     } catch (_) {

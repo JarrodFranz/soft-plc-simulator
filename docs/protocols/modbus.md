@@ -41,11 +41,10 @@ Full design rationale: `docs/superpowers/specs/2026-07-08-in-app-modbus-tcp-serv
    "Reads never fail" below.
 7. **Write** a coil or holding register mapped `ReadWrite` — it applies
    through the same force-aware path as any other write. Writing an
-   address mapped `ReadOnly`, or one not in the map at all, returns
-   exception code `02` (Illegal Data Address). Writing a tag that is
-   currently **forced** in the app is accepted at the wire level (a normal
-   success response is returned) but silently discarded server-side — see
-   "Force-aware, silently" below.
+   address mapped `ReadOnly`, one not in the map at all, or one whose
+   underlying tag is currently **forced** in the app, all return exception
+   code `02` (Illegal Data Address) and never touch the tag — see
+   "Force-aware, visibly" below.
 8. Tap **Stop hosting** to close the listener; the app is otherwise
    byte-identical to a build with Modbus TCP never enabled.
 
@@ -275,21 +274,49 @@ A successful run ends with `MODBUS RTU PROBE PASS`. The existing
 scripts run independent fixture hosts on different ports and can be run
 back-to-back or concurrently.
 
-## Force-aware, silently
+## Force-aware, visibly
 
-A write to a tag that is currently **forced** in the app is accepted at the
-protocol level — the server still returns the normal success response
-(the FC05/06 echo, or the FC0F/10 start+quantity echo) — but the write
-itself is silently discarded; the forced value is not overwritten. This
-differs deliberately from the OPC UA server's behavior (which refuses a
-forced write visibly with `Bad_UserAccessDenied`): the classic Modbus wire
-protocol has no rich per-write status equivalent to an OPC UA
-`StatusCode`, so a visible refusal isn't available without either lying
-about a different exception code (misleading) or breaking wire
-compatibility with masters that don't expect an exception on an
-otherwise-valid write. Forcing always wins over an external master's write
-either way — the difference is only in what the master's response tells it
-happened.
+A write to a tag that is currently **forced** in the app is refused —
+the server answers a Modbus exception PDU (function code with the high bit
+set + exception code `02`, Illegal Data Address — the same code an
+unmapped or `ReadOnly` address gets) instead of applying the write; the
+forced value is never overwritten. This applies to all four write function
+codes (`05`/`06`/`0F`/`10`); for the two multi-element codes, a forced tag
+anywhere in the batch refuses the **whole** request atomically, exactly
+like the existing unmapped/`ReadOnly`/reserved-tag checks — no partial
+write ever lands.
+
+**This is a deliberate wire-behaviour change** (protocol-hardening
+workstream, Task 3). Before it, a forced write was silently discarded
+while the server still answered with the *normal success echo* — the
+master had no way to tell its write never took effect, a deceptive-success
+bug identical in shape to two other issues this same hardening workstream
+fixed elsewhere (a CIP forced-root member-write bypass, and an EtherNet/IP
+reply using the wrong connection-id direction). Modbus was the last of the
+four in-app protocol servers to still answer a forced write with anything
+other than a visible refusal — OPC UA already used `Bad_UserAccessDenied`,
+and CIP/EtherNet/IP already refuse visibly too.
+
+**Why exception code `02` (Illegal Data Address) and not `04` (Server
+Device Failure):** classic Modbus has no "access denied"/"write refused"
+exception code of its own to reach for. `04` reads as the more literally
+accurate "this device failed to service the request", but this server
+already answers `02` for the two other reasons a write can be refused
+(unmapped address, `ReadOnly` map entry) — the master-visible behavior "you
+can't write this right now" is the same in all three cases, and a master
+has no way to distinguish forced/`ReadOnly`/unmapped from the exception
+code alone regardless of which is chosen, so **consistency** with the
+existing refusal code was preferred over a technically-finer-grained but
+practically indistinguishable second code. `02` also round-trips cleanly
+through a real third-party client library (proven below) — `tokio-modbus`
+decodes it to its own named `ExceptionCode::IllegalDataAddress` variant,
+the same well-defined path as `04`'s `ServerDeviceFailure`, so neither
+choice risked confusing or breaking a real master; `02` was kept for the
+consistency reason above.
+
+Forcing always wins over an external master's write either way — the
+difference from before this fix is only in what the master's response now
+correctly tells it happened.
 
 Forcing is **scalar-only**: the Force toggle (Tag Inspector) is only ever
 offered for scalar leaf tags, never for a struct/array-typed root tag. A
@@ -406,9 +433,11 @@ above.
   big-endian register packing, LSB-first bit packing) —
   `mobile/test/modbus_pdu_test.dart`.
 - The register-file handler against a live project's tag DB: reads that
-  never fail on unmapped gaps, force-aware silent-skip writes, atomic
-  multi-register write rules, and every exception path (`01`/`02`/`03`
-  on illegal function/address/value) — `mobile/test/modbus_registers_test.dart`.
+  never fail on unmapped gaps, force-aware writes that now refuse visibly
+  (exception `02`, atomically for the multi-element codes) rather than
+  silently discarding and echoing success, atomic multi-register write
+  rules, and every exception path (`01`/`02`/`03` on illegal
+  function/address/value) — `mobile/test/modbus_registers_test.dart`.
 - Dotted struct-member map entries (e.g. `Motor.Speed`): correct register
   width/type resolution through the full path (not a top-level-name-only
   match) and correct force-gating against the path's root tag —
@@ -438,12 +467,18 @@ register file, not a value frozen at connect time — then
 fixture's `Forced_Bool` tag has a live `value` of `false` but
 `isForced: true`/`forcedValue: true`, so reading `true` back is only
 possible if the register handler is actually consulting the force-aware
-resolver, not the tag's raw value — and finally **`read_holding_registers`
-across the two registers a dotted struct-member entry (`Motor.Speed`, an
-`INT32` field) occupies, decoded big-endian high-word-first and asserted
-against the fixture's known value** — proof a struct-member map entry
-resolves its type and value through the full path at the correct register
-width.
+resolver, not the tag's raw value — then **`write_single_coil` on that same
+forced coil and assert the call returns `Err(ExceptionCode::IllegalDataAddress)`,
+not `Ok(())`** (protocol-hardening workstream Task 3's machine-proof: the
+real `tokio-modbus` client library decodes the exception PDU into its own
+named `ExceptionCode::IllegalDataAddress` variant rather than a transport
+error or a silent success, and a follow-up `read_coils` on the same address
+confirms the forced value was never overwritten by the refused write) —
+and finally **`read_holding_registers` across the two registers a dotted
+struct-member entry (`Motor.Speed`, an `INT32` field) occupies, decoded
+big-endian high-word-first and asserted against the fixture's known
+value** — proof a struct-member map entry resolves its type and value
+through the full path at the correct register width.
 
 Run it from the repo root (bash/Git Bash):
 
