@@ -6,26 +6,28 @@
 // completes the COTP Connection Request -> Connection Confirm and S7 Setup
 // Communication handshake.
 //
-// WHY THIS EXISTS BEFORE ANY READ/WRITE LOGIC: every S7comm unit test in this
-// repo so far exercises frames our own codec built, which proves
-// self-consistency, not conformance. This fixture is where a client written
-// independently of us reads our wire bytes — and it runs at Task 3, not at the
-// end, so a misread specification detail in the CR/CC or Setup Communication
-// layout surfaces before anything is built on top of it. Read Var / Write Var
-// coverage is added to this fixture in Task 5.
+// WHY A REAL CLIENT RUNS AT ALL: every S7comm unit test in this repo
+// exercises frames our own codec built, which proves self-consistency, not
+// conformance. This fixture is where a client written independently of us
+// reads our wire bytes. It ran at Task 3 for connect+negotiate — before any
+// read/write logic existed — and now also serves Read Var / Write Var, so the
+// probe can prove a full read -> write -> independent read-back.
 //
 // IMPORTANT: this does NOT import `services/s7_host.dart`. `S7Host extends
 // ChangeNotifier` (`package:flutter/foundation.dart`), which transitively
 // pulls in Flutter/`dart:ui` machinery unavailable under a plain `dart run`
 // (only `flutter test`'s harness provides a `dart:ui` shim, and this must run
 // as a standalone process) — see `mobile/tool/enip_host_probe.dart`, whose
-// identical note this mirrors. The S7comm codec
-// (`protocols/s7/tpkt_cotp.dart`, `protocols/s7/s7_pdu.dart`) is pure Dart
-// with zero Flutter dependency, so this tool talks to it directly,
-// reimplementing just the same small TPKT reassembly + dispatch loop
-// `S7Host`'s `_Connection` uses — see `mobile/lib/services/s7_host.dart` for
-// the authoritative version this mirrors. If the two ever diverge, that file
-// wins and this one must be updated to match.
+// identical note this mirrors.
+//
+// *** HOW THIS STAYS FAITHFUL TO THE SHIPPED HOST ***
+// The COTP/Setup path below mirrors `S7Host._Connection` line for line (that
+// file is authoritative; if the two ever diverge, it wins). The Read Var /
+// Write Var path is NOT mirrored at all — it is SHARED: both this fixture and
+// `S7Host` call the single pure `dispatchS7VarJob`
+// (`protocols/s7/s7_services.dart`), which builds every response byte. So the
+// bytes `python-snap7` validates here are, by construction rather than by
+// diff, the same bytes the shipped app puts on the wire.
 //
 // This directory (`mobile/tool/`) is analyzer-excluded per
 // `analysis_options.yaml`, but is kept clean anyway.
@@ -35,8 +37,120 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/protocol_settings.dart';
+import 'package:soft_plc_mobile/models/s7_map.dart';
 import 'package:soft_plc_mobile/protocols/s7/s7_pdu.dart';
+import 'package:soft_plc_mobile/protocols/s7/s7_services.dart';
 import 'package:soft_plc_mobile/protocols/s7/tpkt_cotp.dart';
+
+// --- Fixture tag values the probe asserts against ---------------------------
+//
+// These are the values `tool/py/s7_probe.py` expects to READ before it writes
+// anything. Keep the two files in step: the probe names each constant it
+// depends on in a comment.
+
+/// `Running` — DB1 byte 0, bit 0. Starts FALSE so the probe's bit write to
+/// TRUE is an observable change.
+const bool _runningInitialValue = false;
+
+/// `Alarm` — DB1 byte 0, bit 3. Starts TRUE. Sharing byte 0 with `Running` is
+/// deliberate: it proves a single-bit write does not disturb its neighbours.
+const bool _alarmInitialValue = true;
+
+/// `Count16` — DB1 bytes 2..3 (INT16). A value whose two bytes DIFFER, so a
+/// byte-order error cannot pass unnoticed: 0x1234.
+const int _count16InitialValue = 0x1234;
+
+/// `Speed` — DB1 bytes 4..7 (INT32), all four bytes distinct.
+const int _speedInitialValue = 0x01020304;
+
+/// `Level` — DB1 bytes 8..11 (FLOAT64 narrowed to a 4-byte S7 REAL). Exactly
+/// representable in float32, so the narrowing does not blur the assertion.
+const double _levelInitialValue = 12.5;
+
+/// `Total64` — DB1 bytes 16..23 (INT64).
+const int _total64InitialValue = 0x0102030405060708;
+
+/// `Temp` — DB1 bytes 24..25 (INT16), mapped ReadOnly: the probe asserts a
+/// write here is REFUSED and the value is unchanged.
+const int _tempInitialValue = 250;
+
+/// `Forced_Speed` — DB1 bytes 28..31 (INT32), mapped ReadWrite but FORCED, so
+/// the refusal must come from the force check rather than the map's access
+/// mode. Reads see the FORCED value.
+const int _forcedSpeedLive = 1;
+const int _forcedSpeedForced = 777;
+
+/// `MFlag` — M byte 0, bit 1 (merker area, NOT a data block).
+const bool _mFlagInitialValue = false;
+
+/// `MCount` — M bytes 2..3 (INT16), the multi-byte numeric in the second area.
+const int _mCountInitialValue = 0x0A0B;
+
+/// Builds the fixture project the E2E probe expects: two AREAS (a data block
+/// and the merker area), BOOL bits sharing a byte, multi-byte numerics whose
+/// bytes all differ, plus a ReadOnly entry and a forced tag for the refusal
+/// paths. Offsets are pinned EXPLICITLY here rather than taken from
+/// `S7Map.autoGenerate`, so the probe can address literal byte offsets and a
+/// future change to the auto-layout cannot silently move them.
+PlcProject _fixtureProject() {
+  final project = PlcProject(
+    id: 'proj_s7_e2e_fixture',
+    name: 'S7comm E2E Fixture',
+    controllerName: 'PLC_E2E',
+    tags: [
+      PlcTag(name: 'Running', path: 'Internal.Running', dataType: 'BOOL', value: _runningInitialValue, ioType: 'Internal'),
+      PlcTag(name: 'Alarm', path: 'Internal.Alarm', dataType: 'BOOL', value: _alarmInitialValue, ioType: 'Internal'),
+      PlcTag(name: 'Count16', path: 'Internal.Count16', dataType: 'INT16', value: _count16InitialValue, ioType: 'Internal'),
+      PlcTag(name: 'Speed', path: 'Internal.Speed', dataType: 'INT32', value: _speedInitialValue, ioType: 'Internal'),
+      PlcTag(name: 'Level', path: 'Internal.Level', dataType: 'FLOAT64', value: _levelInitialValue, ioType: 'Internal'),
+      PlcTag(name: 'Total64', path: 'Internal.Total64', dataType: 'INT64', value: _total64InitialValue, ioType: 'Internal'),
+      PlcTag(name: 'Temp', path: 'Inputs.Temp', dataType: 'INT16', value: _tempInitialValue, ioType: 'Internal'),
+      PlcTag(
+        name: 'Forced_Speed',
+        path: 'Internal.Forced_Speed',
+        dataType: 'INT32',
+        value: _forcedSpeedLive,
+        ioType: 'Internal',
+        isForced: true,
+        forcedValue: _forcedSpeedForced,
+      ),
+      PlcTag(name: 'MFlag', path: 'Internal.MFlag', dataType: 'BOOL', value: _mFlagInitialValue, ioType: 'Internal'),
+      PlcTag(name: 'MCount', path: 'Internal.MCount', dataType: 'INT16', value: _mCountInitialValue, ioType: 'Internal'),
+    ],
+    structDefs: [],
+    programs: [],
+    tasks: [],
+    hmis: [],
+  );
+
+  project.protocols = ProtocolSettings.defaults(project);
+  project.protocols!.s7 = S7ProtocolConfig(
+    enabled: true,
+    port: 102, // overwritten in main() with the real bound port before use
+    map: S7Map(entries: [
+      // --- DB1 ---------------------------------------------------------
+      S7MapEntry(tag: 'Running', area: kS7AreaNameDb, dbNumber: 1, byteOffset: 0, bitOffset: 0),
+      S7MapEntry(tag: 'Alarm', area: kS7AreaNameDb, dbNumber: 1, byteOffset: 0, bitOffset: 3),
+      S7MapEntry(tag: 'Count16', area: kS7AreaNameDb, dbNumber: 1, byteOffset: 2),
+      S7MapEntry(tag: 'Speed', area: kS7AreaNameDb, dbNumber: 1, byteOffset: 4),
+      S7MapEntry(tag: 'Level', area: kS7AreaNameDb, dbNumber: 1, byteOffset: 8),
+      // Byte 12..15 is deliberately UNMAPPED — a gap, which must read 0x00
+      // and discard writes.
+      S7MapEntry(tag: 'Total64', area: kS7AreaNameDb, dbNumber: 1, byteOffset: 16),
+      // Mapped ReadOnly: a write here must be refused, value unchanged.
+      S7MapEntry(tag: 'Temp', area: kS7AreaNameDb, dbNumber: 1, byteOffset: 24, access: 'ReadOnly'),
+      // Mapped ReadWrite but the TAG is forced: the refusal must come from
+      // the force check in `applyAreaWrite`, not from the access mode.
+      S7MapEntry(tag: 'Forced_Speed', area: kS7AreaNameDb, dbNumber: 1, byteOffset: 28),
+      // --- Merker area (a SECOND area, with no data-block number) -------
+      S7MapEntry(tag: 'MFlag', area: kS7AreaNameMerker, dbNumber: 0, byteOffset: 0, bitOffset: 1),
+      S7MapEntry(tag: 'MCount', area: kS7AreaNameMerker, dbNumber: 0, byteOffset: 2),
+    ]),
+  );
+  return project;
+}
 
 /// Hostile/garbage frame-size guard — mirrors `s7_host.dart`. The TPKT
 /// `length` field is a u16 counting the whole packet.
@@ -65,7 +179,7 @@ class _Connection {
 
   _Connection(this.socket, this.localRef);
 
-  void onData(List<int> data) {
+  void onData(List<int> data, PlcProject Function() projectProvider) {
     if (_closed) {
       return;
     }
@@ -91,14 +205,14 @@ class _Connection {
         }
         final frame = Uint8List.fromList(_buffer.sublist(0, total));
         _buffer.removeRange(0, total);
-        _handleFrame(frame);
+        _handleFrame(frame, projectProvider);
       }
     } catch (_) {
       close();
     }
   }
 
-  void _handleFrame(Uint8List frame) {
+  void _handleFrame(Uint8List frame, PlcProject Function() projectProvider) {
     final cotp = parseCotp(Uint8List.sublistView(frame, kTpktHeaderLen));
     if (cotp == null) {
       return;
@@ -111,7 +225,7 @@ class _Connection {
       if (!cotpEstablished) {
         return;
       }
-      _handleS7(cotp.payload);
+      _handleS7(cotp.payload, projectProvider);
       return;
     }
   }
@@ -129,7 +243,7 @@ class _Connection {
     socket.add(buildTpkt(cc));
   }
 
-  void _handleS7(Uint8List s7Bytes) {
+  void _handleS7(Uint8List s7Bytes, PlcProject Function() projectProvider) {
     final msg = parseS7(s7Bytes);
     if (msg == null) {
       return;
@@ -137,7 +251,23 @@ class _Connection {
     if (msg.header.rosctr != kS7RosctrJob) {
       return;
     }
-    if (msg.parameter.isEmpty || msg.parameter[0] != kS7FunctionSetupCommunication) {
+    if (msg.parameter.isEmpty) {
+      return;
+    }
+    if (msg.parameter[0] != kS7FunctionSetupCommunication) {
+      // Read Var / Write Var — the SHARED definition, byte-for-byte the one
+      // `S7Host` uses (see this file's header).
+      final project = projectProvider();
+      final reply = dispatchS7VarJob(
+        project,
+        project.protocols?.s7?.map ?? S7Map(entries: []),
+        msg,
+        negotiatedPduLength: negotiatedPduLength,
+      );
+      if (reply == null) {
+        return;
+      }
+      socket.add(buildTpkt(buildCotpData(reply)));
       return;
     }
     final setup = parseSetupCommunication(msg.parameter);
@@ -198,6 +328,8 @@ Future<void> main(List<String> args) async {
     exit(64);
   }
 
+  final project = _fixtureProject();
+
   ServerSocket serverSocket;
   try {
     serverSocket = await ServerSocket.bind(InternetAddress.anyIPv4, port);
@@ -205,6 +337,7 @@ Future<void> main(List<String> args) async {
     stderr.writeln('FAILED TO BIND: $e');
     exit(1);
   }
+  project.protocols!.s7!.port = serverSocket.port;
 
   serverSocket.listen((socket) {
     try {
@@ -213,7 +346,7 @@ Future<void> main(List<String> args) async {
       socket.listen(
         (data) {
           try {
-            conn.onData(data);
+            conn.onData(data, () => project);
           } catch (_) {
             conn.close();
           }

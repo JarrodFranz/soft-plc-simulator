@@ -459,6 +459,32 @@ int dataTransportForItemTransport(int itemTransportSize) {
   return kS7DataTransportByteWord;
 }
 
+/// Width, in BYTES, of one element of an ITEM-SPECIFICATION transport size
+/// (`kS7TransportSize*`) — what an item's `count` field counts. Returns 0 for
+/// an unrecognized transport size so a caller can reject the item rather than
+/// guess a length (never throws).
+///
+/// [kS7TransportSizeBit] reports 1: a BIT item always addresses exactly one
+/// bit, carried in one byte, and its `count` is a BIT count rather than an
+/// element count — callers special-case it (see `protocols/s7/s7_services.dart`).
+int s7ItemElementBytes(int itemTransportSize) {
+  switch (itemTransportSize) {
+    case kS7TransportSizeBit:
+    case kS7TransportSizeByte:
+    case kS7TransportSizeChar:
+      return 1;
+    case kS7TransportSizeWord:
+    case kS7TransportSizeInt:
+      return 2;
+    case kS7TransportSizeDword:
+    case kS7TransportSizeDint:
+    case kS7TransportSizeReal:
+      return 4;
+    default:
+      return 0;
+  }
+}
+
 /// A decoded Read/Write Var item specification.
 class S7Item {
   final int transportSize;
@@ -606,32 +632,32 @@ S7VarParameter? parseVarParameter(Uint8List parameter) {
 /// [s7DataLengthIsInBits]. The declared length always describes the REAL
 /// payload and never counts the pad byte.
 ///
-/// **[kS7DataTransportBit] is a special case within "BITS":** it addresses
-/// exactly one bit carried in one data byte, so its declared length must be
-/// [bitCount] (a bit COUNT, not `data.length * 8`) — a single-bit item
-/// declares `1`, never `8`. [kS7DataTransportByteWord] is unaffected and
-/// keeps declaring `data.length * 8` regardless of [bitCount]. [bitCount]
-/// defaults to 1, matching the only shape this device ever emits for a BIT
-/// item (one BOOL per item); [kS7DataTransportOctetString] and every other
-/// transport size ignore [bitCount] entirely.
+/// **[kS7DataTransportBit] declares `data.length * 8`, exactly like
+/// [kS7DataTransportByteWord] — a single-bit item carried in one byte
+/// declares `8`, NOT a bit count of `1`.** THIS WAS SETTLED BY THE REAL
+/// CLIENT, against an earlier version of this function that declared a bit
+/// count. `tool/py/s7_probe.py` step 6 drives a genuine single-bit read
+/// through `python-snap7`, which recovers a data item's payload as
+/// `declared_length ~/ 8` for every transport size except `0x00`/`0x09`. A
+/// declared length of `1` therefore yielded it ZERO payload bytes and the bit
+/// value was lost; `8` yields the one byte it expects. snap7's own write path
+/// is symmetric (it sends `len(data) * 8` for a BIT item too).
+///
+/// Declaring `8` is also the strictly safer choice for any OTHER client: a
+/// client that treats the field as a true bit count recovers
+/// `(8 + 7) ~/ 8 == 1` byte, which is right, whereas a `~/ 8` client recovers
+/// 0 bytes from a declared `1`, which is not. Do not "restore" the bit-count
+/// form on the strength of specification prose alone — re-run the probe.
 Uint8List buildDataItem({
   required int returnCode,
   required int transportSize,
   required Uint8List data,
-  int bitCount = 1,
 }) {
   final padded = data.length.isOdd ? data.length + 1 : data.length;
   final out = Uint8List(kS7DataItemHeaderLen + padded);
   out[0] = returnCode & 0xFF;
   out[1] = transportSize & 0xFF;
-  int declared;
-  if (transportSize == kS7DataTransportBit) {
-    declared = bitCount;
-  } else if (s7DataLengthIsInBits(transportSize)) {
-    declared = data.length * 8;
-  } else {
-    declared = data.length;
-  }
+  final declared = s7DataLengthIsInBits(transportSize) ? data.length * 8 : data.length;
   ByteData.sublistView(out, 2, 4).setUint16(0, declared & 0xFFFF, Endian.big);
   out.setRange(kS7DataItemHeaderLen, kS7DataItemHeaderLen + data.length, data);
   return out;

@@ -10,6 +10,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/cip_map.dart';
 import 'package:soft_plc_mobile/models/dnp3_map.dart';
+import 'package:soft_plc_mobile/models/s7_map.dart';
 import 'package:soft_plc_mobile/models/modbus_map.dart';
 import 'package:soft_plc_mobile/models/mqtt_map.dart';
 import 'package:soft_plc_mobile/models/opcua_map.dart';
@@ -815,6 +816,145 @@ void main() {
       expect(settings.ethernetIp!.enabled, isFalse);
       expect(settings.ethernetIp!.port, 44818);
       expect(settings.ethernetIp!.map.entries, isNotEmpty);
+    });
+  });
+
+  group('S7ProtocolConfig / ProtocolSettings.s7 (S7comm)', () {
+    /// A bare project the effective-config assertions can be materialized
+    /// against.
+    PlcProject bareProject(String id) => PlcProject(
+          id: id,
+          name: 'S7 Test Project',
+          controllerName: 'PLC_S7',
+          tags: [
+            PlcTag(
+              name: 'Level',
+              path: 'Internal.Level',
+              dataType: 'INT16',
+              value: 0,
+              ioType: 'Internal',
+            ),
+          ],
+          structDefs: const [],
+          programs: const [],
+          tasks: const [],
+          hmis: const [],
+        );
+
+    test('S7ProtocolConfig defaults to disabled on port 102', () {
+      final cfg = S7ProtocolConfig(map: S7Map(entries: []));
+      expect(cfg.enabled, isFalse);
+      expect(cfg.port, 102);
+    });
+
+    test('S7ProtocolConfig round-trips through toJson/fromJson', () {
+      final cfg = S7ProtocolConfig(
+        enabled: true,
+        port: 10102,
+        map: S7Map(entries: [
+          S7MapEntry(
+            tag: 'Level',
+            area: kS7AreaNameMerker,
+            dbNumber: 0,
+            byteOffset: 6,
+            bitOffset: 3,
+            access: 'ReadOnly',
+          ),
+        ]),
+      );
+      final rt = S7ProtocolConfig.fromJson(cfg.toJson());
+      expect(rt.enabled, isTrue);
+      expect(rt.port, 10102);
+      expect(rt.map.entries, hasLength(1));
+      expect(rt.map.entries.first.tag, 'Level');
+      expect(rt.map.entries.first.area, kS7AreaNameMerker);
+      expect(rt.map.entries.first.byteOffset, 6);
+      expect(rt.map.entries.first.bitOffset, 3);
+      expect(rt.map.entries.first.access, 'ReadOnly');
+    });
+
+    test('a project JSON without s7comm loads with the feature DISABLED and port 102 '
+        '(additive/back-compat)', () {
+      final settings = ProtocolSettings.fromJson({'gateway_url': kDefaultGatewayUrl});
+      expect(settings.s7, isNull);
+
+      // Prove the title's claim rather than just the null check: materialize
+      // the effective config exactly the way the app does for a project that
+      // has no S7 config yet (mirrors `_ensureS7` in gateway_screen.dart:
+      // `protocols!.s7 ??= S7ProtocolConfig.defaults(project)`), and assert
+      // BOTH properties.
+      final effective = settings.s7 ?? S7ProtocolConfig.defaults(bareProject('s7_backcompat_proj'));
+      expect(effective.enabled, isFalse, reason: 'an unconfigured project must not host S7comm');
+      expect(effective.port, 102, reason: 'the standard S7comm port is the default');
+    });
+
+    test('a project JSON whose s7comm block is present round-trips through PlcProject', () {
+      final project = bareProject('s7_rt_proj');
+      project.protocols = ProtocolSettings(
+        s7: S7ProtocolConfig(
+          enabled: true,
+          port: 10102,
+          map: S7Map(entries: [
+            S7MapEntry(tag: 'Level', area: kS7AreaNameDb, dbNumber: 1, byteOffset: 4),
+          ]),
+        ),
+      );
+      final rt = PlcProject.fromJson(jsonDecode(jsonEncode(project.toJson())) as Map<String, dynamic>);
+      expect(rt.protocols!.s7, isNotNull);
+      expect(rt.protocols!.s7!.enabled, isTrue);
+      expect(rt.protocols!.s7!.port, 10102);
+      expect(rt.protocols!.s7!.map.entries.single.byteOffset, 4);
+    });
+
+    test('S7ProtocolConfig.fromJson tolerates a missing map key', () {
+      final cfg = S7ProtocolConfig.fromJson({'enabled': true});
+      expect(cfg.enabled, isTrue);
+      expect(cfg.map.entries, isEmpty);
+    });
+
+    test('S7ProtocolConfig.fromJson on a record with no "port" key back-fills 102', () {
+      final cfg = S7ProtocolConfig.fromJson({'enabled': true, 'map': {'entries': []}});
+      expect(cfg.port, 102);
+    });
+
+    test('ProtocolSettings with s7 == null omits the s7comm key entirely', () {
+      final settings = ProtocolSettings(opcua: OpcUaProtocolConfig.defaults(bareProject('s7_omit_proj')));
+      expect(settings.s7, isNull);
+      expect(settings.toJson().containsKey('s7comm'), isFalse);
+    });
+
+    test('SIBLING protocol keys are untouched when s7comm is present', () {
+      final project = bareProject('s7_siblings_proj');
+      final settings = ProtocolSettings(
+        opcua: OpcUaProtocolConfig.defaults(project),
+        ethernetIp: CipProtocolConfig(map: CipMap(entries: [])),
+        s7: S7ProtocolConfig(map: S7Map(entries: [])),
+      );
+
+      final json = settings.toJson();
+      expect(json.containsKey('opcua'), isTrue);
+      expect(json.containsKey('modbus'), isFalse);
+      expect(json.containsKey('mqtt'), isFalse);
+      expect(json.containsKey('dnp3'), isFalse);
+      expect(json.containsKey('ethernet_ip'), isTrue);
+      expect(json.containsKey('s7comm'), isTrue);
+
+      final rt = ProtocolSettings.fromJson(json);
+      expect(rt.opcua, isNotNull);
+      expect(rt.modbus, isNull);
+      expect(rt.mqtt, isNull);
+      expect(rt.dnp3, isNull);
+      expect(rt.ethernetIp, isNotNull);
+      expect(rt.s7, isNotNull);
+    });
+
+    test('ProtocolSettings.defaults builds a disabled s7 config with port 102 and a '
+        'populated map', () {
+      final settings = ProtocolSettings.defaults(bareProject('s7_def_proj'));
+      expect(settings.s7, isNotNull);
+      expect(settings.s7!.enabled, isFalse);
+      expect(settings.s7!.port, 102);
+      expect(settings.s7!.map.entries, isNotEmpty);
     });
   });
 }

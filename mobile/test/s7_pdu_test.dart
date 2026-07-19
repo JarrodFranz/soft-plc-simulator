@@ -420,26 +420,31 @@ void main() {
       );
     });
 
-    test('a BIT (0x03) item declares a BIT COUNT of 1, not data.length * 8', () {
+    // *** SETTLED BY THE REAL CLIENT — DO NOT "CORRECT" THIS BACK ***
+    // An earlier version declared a BIT item's length as a bit COUNT (1 for
+    // a single bit). `tool/py/s7_probe.py` step 6 drove a genuine single-bit
+    // read through `python-snap7`, which slices a data item's payload as
+    // `declared ~/ 8`: a declared `1` gave it ZERO bytes and the bit value
+    // was lost. It wants `data.length * 8`. See `buildDataItem`'s doc
+    // comment for the full reasoning, including why 8 is also the safer
+    // choice for a client that reads the field as a true bit count.
+    test('a BIT (0x03) item declares data.length * 8, as the real client requires', () {
       final item = buildDataItem(
         returnCode: kS7ReturnSuccess,
         transportSize: kS7DataTransportBit,
         data: Uint8List.fromList([0x01]),
       );
-      // A single-bit item carries 1 bit in 1 data byte and must declare 1 —
-      // NOT 8 (that would be `data.length * 8`, the BYTE/WORD unit, wrongly
-      // applied to a BIT item). Then padded to an even byte count.
       expect(item[0], kS7ReturnSuccess);
       expect(item[1], kS7DataTransportBit);
       expect(item[2], 0x00);
-      expect(item[3], 0x01);
+      expect(item[3], 0x08, reason: '1 data byte * 8 == 8, BIG-ENDIAN');
       expect(item[4], 0x01);
       expect(item[5], 0x00, reason: 'pad byte');
       expect(item.length, 6);
     });
 
-    test('a BIT item declares 1 while an equivalent-sized 0x04 item declares in bits — '
-        'the two units must never be conflated', () {
+    test('BIT and BYTE/WORD both declare in BITS, and OCTET STRING in BYTES — '
+        'the units must never be conflated', () {
       final bitItem = buildDataItem(
         returnCode: kS7ReturnSuccess,
         transportSize: kS7DataTransportBit,
@@ -450,10 +455,17 @@ void main() {
         transportSize: kS7DataTransportByteWord,
         data: Uint8List.fromList([0, 0, 0, 0, 0, 0, 0, 0]), // 8 bytes
       );
+      final octetItem = buildDataItem(
+        returnCode: kS7ReturnSuccess,
+        transportSize: kS7DataTransportOctetString,
+        data: Uint8List.fromList([0, 0, 0, 0, 0, 0, 0, 0]), // 8 bytes
+      );
       final declaredBit = ByteData.sublistView(bitItem, 2, 4).getUint16(0, Endian.big);
       final declaredByteWord = ByteData.sublistView(byteWordItem, 2, 4).getUint16(0, Endian.big);
-      expect(declaredBit, 1, reason: 'a single-bit item declares a bit COUNT of 1');
+      final declaredOctet = ByteData.sublistView(octetItem, 2, 4).getUint16(0, Endian.big);
+      expect(declaredBit, 8, reason: '1 byte * 8 == 8 bits');
       expect(declaredByteWord, 64, reason: '8 bytes * 8 == 64 bits for the BYTE/WORD unit');
+      expect(declaredOctet, 8, reason: 'OCTET STRING counts BYTES, not bits');
     });
 
     test('an OCTET STRING (0x09) item carries its length in BYTES', () {

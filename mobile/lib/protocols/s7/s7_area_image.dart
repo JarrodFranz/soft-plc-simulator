@@ -46,6 +46,28 @@ import 'dart:typed_data';
 import '../../models/project_model.dart';
 import '../../models/s7_map.dart';
 import '../../models/tag_resolver.dart';
+import 's7_pdu.dart';
+
+/// Maps an on-the-wire S7 area CODE (`kS7Area*` in `s7_pdu.dart`) to this
+/// project's area NAME (`kS7AreaName*` in `models/s7_map.dart`), or `null`
+/// for an area this version does not serve — notably the timer (`0x1D`) and
+/// counter (`0x1C`) areas, whose S5TIME/BCD encodings have no equivalent in
+/// this app's tag model. A `null` result must become a per-item error return
+/// code, never an exception.
+String? s7AreaNameForCode(int areaCode) {
+  switch (areaCode) {
+    case kS7AreaDataBlock:
+      return kS7AreaNameDb;
+    case kS7AreaMerker:
+      return kS7AreaNameMerker;
+    case kS7AreaInputs:
+      return kS7AreaNameInputs;
+    case kS7AreaOutputs:
+      return kS7AreaNameOutputs;
+    default:
+      return null;
+  }
+}
 
 /// Upper bound on the number of bytes [readAreaImage] will ever materialize
 /// in one call. Comfortably above the largest PDU this device negotiates, so

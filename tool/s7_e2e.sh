@@ -14,12 +14,22 @@
 #   the client considers the session connected and that the PDU length IT
 #   parsed out of OUR reply is a sane negotiated value, then disconnects.
 #
-# DELIBERATELY LIMITED AT THIS STAGE: this script covers connect + negotiate
-# ONLY. Read Var / Write Var do not exist yet -- they arrive in Task 4, and
-# this probe is extended to full read / write / independent read-back in
-# Task 5. Running the real client THIS early is the entire point of the
-# ordering: the connect handshake is the part built purely from specification
-# text, so it is proved before anything is layered on top of it.
+# COVERAGE: connect + negotiate, then a full Read Var -> Write Var ->
+# INDEPENDENT read-back across two memory areas (a data block and the merker
+# area), including a single-bit round trip, an odd-length read, gap semantics
+# and both write-refusal paths (ReadOnly map entry, forced tag).
+#
+# The connect/negotiate half of that ran on its own, against a host with no
+# read/write logic at all, before any was written -- the handshake is the part
+# built purely from specification text, so it was proved before anything was
+# layered on top of it.
+#
+# WHY THE FIXTURE HOST PROVES THE SHIPPED HOST: every Read Var / Write Var
+# response byte is produced by ONE shared pure function
+# (`dispatchS7VarJob`, mobile/lib/protocols/s7/s7_services.dart) that both the
+# fixture host and `mobile/lib/services/s7_host.dart` call. The bytes this
+# client validates are, by construction rather than by diff, the bytes the app
+# emits.
 #
 # This follows the shared Python-lane pattern established by
 # `tool/enip_e2e.sh` (see that file's header): a pure-Dart fixture host that

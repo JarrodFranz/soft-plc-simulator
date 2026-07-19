@@ -13,16 +13,25 @@
 // header (`total = kEnipHeaderLen + header.length`). Copying that line
 // unchanged from next door shifts every frame boundary on this socket.
 //
-// *** SCOPE AT THIS TASK ***
-// This host serves exactly two exchanges: a COTP Connection Request (CR)
-// answered with a Connection Confirm (CC), and an S7 Setup Communication
-// job answered with its Ack_Data reply. Read Var / Write Var arrive in
-// Task 4 together with the tag map and byte-image services they need;
-// until then an S7 job carrying any other function is dropped (see
-// `_handleS7`). That ordering is deliberate: a real third-party client
-// (`python-snap7`, driven by `tool/s7_e2e.sh`) proves this handshake on
-// the wire BEFORE any read/write logic is written, so a misread wire
-// detail cannot hide behind a self-consistent unit suite.
+// *** SCOPE ***
+// This host serves a COTP Connection Request (CR) answered with a Connection
+// Confirm (CC), an S7 Setup Communication job answered with its Ack_Data
+// reply, and Read Var / Write Var jobs answered from the project's tags via
+// the S7 area map. Any other S7 function is dropped without a reply.
+//
+// *** THE READ/WRITE RESPONSE BYTES ARE NOT BUILT HERE ***
+// Every response byte for Read Var and Write Var comes from
+// `protocols/s7/s7_services.dart`'s `dispatchS7VarJob`, which the E2E fixture
+// host (`mobile/tool/s7_host_probe.dart`) calls too. The real third-party
+// client (`python-snap7`, driven by `tool/s7_e2e.sh`) can only be pointed at
+// the fixture — this class extends `ChangeNotifier` and cannot run under a
+// plain `dart run` — so sharing ONE definition is what makes that proof apply
+// to the shipped host, instead of relying on two hand-written copies staying
+// byte-identical.
+//
+// Force-aware and access-aware write refusal is NOT re-implemented here: it
+// lives in `applyAreaWrite` (`protocols/s7/s7_area_image.dart`), checked
+// against the ROOT tag, and every write this host performs routes through it.
 //
 // Per-connection state (one per accepted socket): whether the COTP
 // connection has been established, the peer's TSAPs as sent in its CR, and
@@ -40,7 +49,10 @@ import 'dart:io';
 // would be flagged as unnecessary by the analyzer.
 import 'package:flutter/foundation.dart';
 
+import '../models/project_model.dart';
+import '../models/s7_map.dart';
 import '../protocols/s7/s7_pdu.dart';
+import '../protocols/s7/s7_services.dart';
 import '../protocols/s7/tpkt_cotp.dart';
 
 /// Lifecycle status of the [S7Host].
@@ -99,7 +111,7 @@ class _Connection {
   /// and dispatches as many complete TPKT frames as are available. A single
   /// socket `data` event may contain a partial frame, exactly one frame, or
   /// several frames back-to-back — all three are handled here.
-  void onData(List<int> data) {
+  void onData(List<int> data, PlcProject Function() projectProvider) {
     if (_closed) {
       return;
     }
@@ -133,7 +145,7 @@ class _Connection {
         }
         final frame = Uint8List.fromList(_buffer.sublist(0, total));
         _buffer.removeRange(0, total);
-        _handleFrame(frame);
+        _handleFrame(frame, projectProvider);
       }
     } catch (_) {
       // A crash while reassembling/dispatching must never take down the
@@ -146,7 +158,7 @@ class _Connection {
   /// TPDU this codec cannot parse (`parseCotp` returns `null`) or does not
   /// serve is dropped silently, leaving the connection open — a frame we do
   /// not understand is not itself grounds to hang up on a client.
-  void _handleFrame(Uint8List frame) {
+  void _handleFrame(Uint8List frame, PlcProject Function() projectProvider) {
     final cotpBytes = Uint8List.sublistView(frame, kTpktHeaderLen);
     final cotp = parseCotp(cotpBytes);
     if (cotp == null) {
@@ -160,7 +172,7 @@ class _Connection {
       if (!cotpEstablished) {
         return; // data before the COTP connection was confirmed
       }
-      _handleS7(cotp.payload);
+      _handleS7(cotp.payload, projectProvider);
       return;
     }
     // Any other COTP TPDU type (e.g. CC — which a server receives only from
@@ -186,12 +198,14 @@ class _Connection {
     socket.add(buildTpkt(cc));
   }
 
-  /// Dispatches the S7 message carried by a COTP data TPDU. At this task the
-  /// only served function is Setup Communication; a malformed message, a
-  /// non-Job ROSCTR, or any other function is dropped without a reply (Read
-  /// Var / Write Var, and the error replies their failure modes need, arrive
-  /// in Task 4 with the tag map and byte-image services they operate on).
-  void _handleS7(Uint8List s7Bytes) {
+  /// Dispatches the S7 message carried by a COTP data TPDU: Setup
+  /// Communication, Read Var and Write Var are served; a malformed message, a
+  /// non-Job ROSCTR, or any other function is dropped without a reply.
+  ///
+  /// [projectProvider] is called FRESH here, on every message, so a project
+  /// swap while this socket is open serves the NEW project rather than a
+  /// stale snapshot.
+  void _handleS7(Uint8List s7Bytes, PlcProject Function() projectProvider) {
     final msg = parseS7(s7Bytes);
     if (msg == null) {
       return;
@@ -199,15 +213,42 @@ class _Connection {
     if (msg.header.rosctr != kS7RosctrJob) {
       return;
     }
-    if (msg.parameter.isEmpty || msg.parameter[0] != kS7FunctionSetupCommunication) {
+    if (msg.parameter.isEmpty) {
       return;
     }
-    final setup = parseSetupCommunication(msg.parameter);
-    if (setup == null) {
+    if (msg.parameter[0] == kS7FunctionSetupCommunication) {
+      final setup = parseSetupCommunication(msg.parameter);
+      if (setup == null) {
+        return;
+      }
+      _handleSetupCommunication(msg.header.pduReference, setup);
       return;
     }
-    _handleSetupCommunication(msg.header.pduReference, setup);
+
+    final PlcProject project;
+    try {
+      project = projectProvider();
+    } catch (_) {
+      return; // cannot read the project — drop rather than crash the socket
+    }
+    final reply = dispatchS7VarJob(
+      project,
+      _currentMap(project),
+      msg,
+      negotiatedPduLength: negotiatedPduLength,
+    );
+    if (reply == null) {
+      return; // not a function this device serves, or a malformed request
+    }
+    socket.add(buildTpkt(buildCotpData(reply)));
   }
+
+  /// The S7 area map currently configured for [project], or an EMPTY map if
+  /// S7comm hosting has since been disabled/removed from the project out from
+  /// under a still-open socket. An empty map exposes nothing: every byte then
+  /// reads as a gap (`0x00`) and every write is discarded — never a
+  /// null-deref, and never the previous project's tags.
+  S7Map _currentMap(PlcProject project) => project.protocols?.s7?.map ?? S7Map(entries: []);
 
   /// Answers a Setup Communication job. Every negotiated value moves DOWN
   /// from the client's proposal, never up: the PDU length via
@@ -323,14 +364,41 @@ class S7Host extends ChangeNotifier {
     return ref;
   }
 
-  /// Starts listening for S7comm clients on [port]. Pass `0` to bind an
-  /// ephemeral port (the actual port is reflected in [endpointUrl]). Safe to
-  /// call when already running: it returns without rebinding, since a bound
-  /// socket cannot change port without a restart.
-  Future<void> start({required int port}) async {
+  /// Starts hosting `projectProvider()`'s current project's S7comm
+  /// configuration. Requires `protocols.s7` to be non-null AND `enabled`;
+  /// otherwise moves to [S7HostStatus.error] with an explanatory message and
+  /// returns without binding a socket.
+  ///
+  /// [projectProvider] is called fresh on every dispatched request, so a
+  /// project swap while the server is running is safe — but the *port* and
+  /// *enabled* flag are read once, at start time, since a bound socket
+  /// cannot change port without a restart.
+  ///
+  /// *** BINDING THE DEFAULT PORT 102 REQUIRES PRIVILEGE ON Linux/macOS ***
+  /// (it is below 1024). A `ServerSocket.bind` denial there is caught below
+  /// and surfaced through [status]/[lastError] — this method NEVER reports
+  /// running on a bind it did not get — so the Outbound Protocols card shows
+  /// the failure instead of appearing to start. Editing the port to a value
+  /// above 1023 is the unprivileged workaround.
+  Future<void> start(PlcProject Function() projectProvider) async {
     if (_status == S7HostStatus.running) {
       return; // already running; caller should stop() first to change port
     }
+    final PlcProject project;
+    try {
+      project = projectProvider();
+    } catch (e) {
+      _setStatus(S7HostStatus.error, error: 'Could not read the current project: $e');
+      return;
+    }
+
+    final s7 = project.protocols?.s7;
+    if (s7 == null || !s7.enabled) {
+      _setStatus(S7HostStatus.error, error: 'S7comm is not enabled for this project.');
+      return;
+    }
+    final port = s7.port;
+
     try {
       final serverSocket = await ServerSocket.bind(InternetAddress.anyIPv4, port);
       _serverSocket = serverSocket;
@@ -339,7 +407,7 @@ class S7Host extends ChangeNotifier {
       _endpointUrl = 's7-tcp://$host:${serverSocket.port}';
 
       _acceptSub = serverSocket.listen(
-        _acceptConnection,
+        (socket) => _acceptConnection(socket, projectProvider),
         onError: (Object e, StackTrace st) {
           _setStatus(S7HostStatus.error, error: e.toString());
         },
@@ -354,7 +422,7 @@ class S7Host extends ChangeNotifier {
     }
   }
 
-  void _acceptConnection(Socket socket) {
+  void _acceptConnection(Socket socket, PlcProject Function() projectProvider) {
     try {
       final conn = _Connection(socket, _allocateLocalRef());
       _connections.add(conn);
@@ -365,7 +433,7 @@ class S7Host extends ChangeNotifier {
       socket.listen(
         (data) {
           try {
-            conn.onData(data);
+            conn.onData(data, projectProvider);
           } catch (_) {
             _dropConnection(conn);
           }
