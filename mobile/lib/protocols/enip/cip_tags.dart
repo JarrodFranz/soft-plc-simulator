@@ -67,11 +67,37 @@ import 'cip.dart';
 const int _kMessageRouterClassId = 0x02;
 const int _kMessageRouterInstanceId = 0x01;
 
+/// The minimum on-wire cost, in bytes, of ONE embedded item in a Multiple
+/// Service Packet reply: its 2-byte reply-offset-list entry plus the 4-byte
+/// `buildCipResponse` header of a data-less (error) response body. This is the
+/// amount reserved per still-to-come item when budgeting a connected batch
+/// against the negotiated connection size — the reply's item count must equal
+/// the request's, so every remaining item needs at least this much room even
+/// if it can only carry an error status. Mirrors `kS7DataItemHeaderLen`'s role
+/// in `s7_services.dart`'s Read Var budget.
+const int kCipMspItemHeaderLen = 6;
+
+/// The fixed, non-per-item overhead of a Multiple Service Packet reply: the
+/// 2-byte service-count field plus the 4-byte outer `buildCipResponse` header
+/// that wraps the whole reply. The per-item budget subtracts this from the
+/// connection size before charging items.
+const int _kCipMspReplyFixedOverhead = 6;
+
 /// Dispatches a parsed [CipRequest] against [project]'s tags, exposed
 /// through [map], and returns the [CipResponse] to send back. Handles Read
 /// Tag (0x4C), Write Tag (0x4D), and the Multiple Service Packet (0x0A); any
 /// other service code returns 0x08 (Service Not Supported). Never throws.
-CipResponse dispatchCipService(PlcProject project, CipMap map, CipRequest req) {
+///
+/// [responseBudget] is the negotiated Forward Open **T->O connection size**
+/// (bytes) when this request arrives over a CONNECTED send (`SendUnitData`),
+/// or `null` for an UNCONNECTED (UCMM / `SendRRData`) send, which has no
+/// negotiated size and is therefore unbounded. It bounds only the Multiple
+/// Service Packet reply: a batch whose embedded responses would overrun the
+/// connection size the client agreed to has its over-budget items answered
+/// with 0x11 (Reply Data Too Large) rather than emitting an oversized frame.
+/// A batch that fits the budget — and every non-MSP service — is byte-
+/// identical whether or not a budget is supplied.
+CipResponse dispatchCipService(PlcProject project, CipMap map, CipRequest req, {int? responseBudget}) {
   try {
     switch (req.service) {
       case kCipServiceReadTag:
@@ -79,7 +105,7 @@ CipResponse dispatchCipService(PlcProject project, CipMap map, CipRequest req) {
       case kCipServiceWriteTag:
         return _writeTag(project, map, req);
       case kCipServiceMultipleServicePacket:
-        return _multipleServicePacket(project, map, req);
+        return _multipleServicePacket(project, map, req, responseBudget);
       default:
         return _errorResponse(req.service, kCipStatusServiceNotSupported);
     }
@@ -247,7 +273,7 @@ CipResponse _writeTag(PlcProject project, CipMap map, CipRequest req) {
 /// of one bad embedded request — a malformed embedded request or an
 /// embedded service returning a non-zero status only affects that request's
 /// own response entry.
-CipResponse _multipleServicePacket(PlcProject project, CipMap map, CipRequest req) {
+CipResponse _multipleServicePacket(PlcProject project, CipMap map, CipRequest req, int? responseBudget) {
   final path = req.path;
   final isRouterPath = path.length == 2 &&
       path[0].kind == CipPathSegmentKind.classId &&
@@ -294,7 +320,48 @@ CipResponse _multipleServicePacket(PlcProject project, CipMap map, CipRequest re
     responses.add(dispatchCipService(project, map, embeddedReq));
   }
 
-  final bodies = responses.map(buildCipResponse).toList();
+  // Build the embedded response bodies. On a CONNECTED send `responseBudget`
+  // is the Forward Open T->O connection size (bytes) the client negotiated;
+  // the batch reply must not exceed it. The budget mirrors the S7 Read Var
+  // fix (`s7_services.dart buildReadVarResponse`): each item's on-wire cost is
+  // charged at admission, and `remainingItems * kCipMspItemHeaderLen` is
+  // reserved for the mandatory items still to come — the reply's item count
+  // must equal the request's, so no item can simply be dropped. An item that
+  // does not fit is answered with 0x11 (Reply Data Too Large), a header-only
+  // error body, rather than an oversized frame. On an UNCONNECTED (UCMM) send
+  // `responseBudget` is null and every body is emitted verbatim — unbounded
+  // and byte-identical to a batch that fits its budget.
+  final bodies = <Uint8List>[];
+  if (responseBudget == null) {
+    for (final r in responses) {
+      bodies.add(buildCipResponse(r));
+    }
+  } else {
+    // The finished CIP response is `2 (count field) + offset list + bodies`
+    // wrapped in `buildCipResponse`'s 4-byte header, so the fixed overhead the
+    // per-item budget must leave room for is those 6 bytes; each item then
+    // costs its 2-byte reply offset entry plus its body (`kCipMspItemHeaderLen`
+    // is that minimum, a header-only error item).
+    final maxItemBytes = responseBudget - _kCipMspReplyFixedOverhead;
+    var used = 0;
+    for (var i = 0; i < responses.length; i++) {
+      final reserved = (responses.length - i - 1) * kCipMspItemHeaderLen;
+      final remaining = maxItemBytes - used - reserved;
+      var body = buildCipResponse(responses[i]);
+      final itemCost = 2 + body.length;
+      if (itemCost > remaining) {
+        body = buildCipResponse(CipResponse(
+          service: responses[i].service,
+          generalStatus: kCipStatusReplyDataTooLarge,
+          data: Uint8List(0),
+        ));
+        used += kCipMspItemHeaderLen;
+      } else {
+        used += itemCost;
+      }
+      bodies.add(body);
+    }
+  }
   final replyOffsets = <int>[];
   // Offsets are relative to the START of the offset list (offsetListStart),
   // and the embedded response bodies begin right after that list itself —
@@ -315,7 +382,14 @@ CipResponse _multipleServicePacket(PlcProject project, CipMap map, CipRequest re
   // bits. If the reply (or any individual offset) would exceed 0xFFFF, a
   // wrapped offset would silently corrupt the reply framing — fail the
   // whole batch with a non-zero status instead of emitting it.
-  if (cursor > 0xFFFF || replyOffsets.any((o) => o > 0xFFFF)) {
+  //
+  // `cursor` is the count-and-bodies span; the CIP response this method
+  // actually emits is `cursor + 6` bytes (2-byte count field + the 4-byte
+  // outer `buildCipResponse` header). The bound is therefore `0xFFFF - 6`,
+  // not `0xFFFF`: admitting a `cursor` in `(0xFFFF - 6, 0xFFFF]` builds a
+  // frame whose own length runs past 0xFFFF, a self-inconsistency the outer
+  // `buildEnipFrame` length recomputation does not catch.
+  if (cursor > 0xFFFF - 6 || replyOffsets.any((o) => o > 0xFFFF)) {
     return _errorResponse(req.service, kCipStatusEmbeddedListError);
   }
 

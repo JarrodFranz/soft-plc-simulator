@@ -201,6 +201,12 @@ early in the list cannot starve its successors into pushing the finished
 message past the PDU. `test/s7_services_test.dart` pins the boundary from both
 sides at 480 and at the 240-byte floor.
 
+This **charge-at-admission-plus-reserve-for-the-rest** shape is the shared
+reference for the size budgets the other in-app hosts apply against their own
+negotiated limits: EtherNet/IP applies the identical shape to the Multiple
+Service Packet reply against the Forward Open connection size (see
+`docs/protocols/ethernet-ip.md`, *Response-size budget on connected sends*).
+
 ---
 
 ## Port 102 is a privileged port

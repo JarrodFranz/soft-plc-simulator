@@ -38,6 +38,27 @@ Uint8List _embeddedRequest(int service, List<CipPathSegment> path, Uint8List dat
   return Uint8List.fromList([service, pathWords, ...pathBytes, ...data]);
 }
 
+/// Builds a Multiple Service Packet request payload from [embedded] requests:
+/// count (u16), the offset list (u16 each, relative to the offset-list start),
+/// then the embedded requests. Mirrors the wire layout in `cip_tags.dart`'s
+/// header.
+Uint8List _buildMsp(List<Uint8List> embedded) {
+  final count = embedded.length;
+  final out = BytesBuilder();
+  out.add(_u16le(count));
+  // Offsets are relative to the offset-list start; the embedded requests begin
+  // right after the (count * 2)-byte offset list itself.
+  var running = count * 2;
+  for (final e in embedded) {
+    out.add(_u16le(running));
+    running += e.length;
+  }
+  for (final e in embedded) {
+    out.add(e);
+  }
+  return out.toBytes();
+}
+
 void main() {
   PlcProject buildProject() => PlcProject(
         id: 'cip_tags_proj',
@@ -627,6 +648,107 @@ void main() {
         returnsNormally,
       );
       expect(resp.generalStatus, isNot(kCipStatusSuccess));
+    });
+  });
+
+  group('Multiple Service Packet connection-size budget', () {
+    final routerPath = [CipPathSegment.classId(0x02), CipPathSegment.instanceId(0x01)];
+
+    test('a connected batch over a 500-byte connection is trimmed to <= 500 bytes; over-budget items carry 0x11; UCMM is unbounded', () {
+      final project = buildProject();
+      final map = buildMap();
+      // 50 embedded Read Tag requests for an 8-byte LINT tag: each success
+      // reply body is 14 bytes, so the whole unbounded reply is ~806 bytes
+      // (the audit measured ~792 for its own fill) — far over 500.
+      final embedded = List.generate(
+        50,
+        (_) => _embeddedRequest(kCipServiceReadTag, [CipPathSegment.symbol('Int64_Tag')], _readData()),
+      );
+      final data = _buildMsp(embedded);
+      final req = CipRequest(service: kCipServiceMultipleServicePacket, path: routerPath, data: data);
+
+      // Unconnected (UCMM / no budget): unchanged and unbounded — every item
+      // succeeds and the reply exceeds 500 bytes.
+      final unbounded = dispatchCipService(project, map, req);
+      expect(unbounded.generalStatus, kCipStatusSuccess);
+      expect(buildCipResponse(unbounded).length, greaterThan(500));
+      expect(_readU16(unbounded.data, 0), 50);
+      final uOffLast = _readU16(unbounded.data, 2 + (50 - 1) * 2);
+      expect(unbounded.data.sublist(2 + uOffLast)[2], kCipStatusSuccess);
+
+      // Connected over a 500-byte connection: the emitted CIP response must fit
+      // the negotiated connection size.
+      final bounded = dispatchCipService(project, map, req, responseBudget: 500);
+      expect(bounded.generalStatus, kCipStatusSuccess);
+      final replyLen = buildCipResponse(bounded).length;
+      expect(replyLen, lessThanOrEqualTo(500));
+      expect(replyLen, greaterThan(400)); // not trivially empty
+      // The reply's item count still matches the request's — no item dropped.
+      expect(_readU16(bounded.data, 0), 50);
+      // The first item still succeeds; the last (over-budget) item is 0x11.
+      final off0 = _readU16(bounded.data, 2);
+      expect(bounded.data.sublist(2 + off0)[2], kCipStatusSuccess);
+      final offLast = _readU16(bounded.data, 2 + (50 - 1) * 2);
+      expect(bounded.data.sublist(2 + offLast)[2], kCipStatusReplyDataTooLarge);
+    });
+
+    test('a connected batch that fits the budget is byte-identical to the unbudgeted reply', () {
+      final project = buildProject();
+      final map = buildMap();
+      final req0 = _embeddedRequest(kCipServiceReadTag, [CipPathSegment.symbol('Bool_Tag')], _readData());
+      final req1 = _embeddedRequest(kCipServiceReadTag, [CipPathSegment.symbol('Int32_Tag')], _readData());
+      final data = _buildMsp([req0, req1]);
+      final req = CipRequest(service: kCipServiceMultipleServicePacket, path: routerPath, data: data);
+
+      final unbounded = dispatchCipService(project, map, req);
+      final bounded = dispatchCipService(project, map, req, responseBudget: 500);
+
+      expect(bounded.generalStatus, unbounded.generalStatus);
+      expect(bounded.data, unbounded.data); // exact same bytes under budget
+      expect(unbounded.data.length, 23); // matches the exact-length test above
+    });
+
+    test('the reply-cursor guard refuses a batch whose cursor reaches 0xFFFF - 5 (u16 offset-frame tighten)', () {
+      // Two 1-char-named tags so each embedded request (8 bytes) is SMALLER
+      // than its reply body, letting the reply cursor grow to the u16 boundary
+      // before the request-side offsets (also u16) would overflow. 4090 LINT
+      // reads (body 14) + 9 INT reads (body 8):
+      //   cursor = count*2 + sum(bodies)
+      //          = 4099*2 + (4090*14 + 9*8) = 8198 + 57332 = 65530 = 0xFFFF - 5
+      // The pre-tighten guard (`cursor > 0xFFFF`) admitted 65530; the tightened
+      // guard (`cursor > 0xFFFF - 6`) refuses it, because the emitted CIP
+      // response is `cursor + 6` bytes and would otherwise be self-inconsistent.
+      final project = PlcProject(
+        id: 'cip_u16',
+        name: 'u16',
+        controllerName: 'PLC',
+        tags: [
+          PlcTag(name: 'A', path: 'A', dataType: 'INT64', value: 1, ioType: 'Internal'),
+          PlcTag(name: 'B', path: 'B', dataType: 'INT16', value: 1, ioType: 'Internal'),
+        ],
+        structDefs: [],
+        programs: [],
+        tasks: [],
+        hmis: [],
+      );
+      final map = CipMap(entries: [
+        CipMapEntry(tagName: 'A', access: 'ReadWrite'),
+        CipMapEntry(tagName: 'B', access: 'ReadWrite'),
+      ]);
+      final embedded = <Uint8List>[
+        for (var i = 0; i < 4090; i++)
+          _embeddedRequest(kCipServiceReadTag, [CipPathSegment.symbol('A')], _readData()),
+        for (var i = 0; i < 9; i++)
+          _embeddedRequest(kCipServiceReadTag, [CipPathSegment.symbol('B')], _readData()),
+      ];
+      final data = _buildMsp(embedded);
+      // Unbounded (no budget): the u16 reply-cursor guard alone decides.
+      final resp = dispatchCipService(
+        project,
+        map,
+        CipRequest(service: kCipServiceMultipleServicePacket, path: routerPath, data: data),
+      );
+      expect(resp.generalStatus, kCipStatusEmbeddedListError);
     });
   });
 

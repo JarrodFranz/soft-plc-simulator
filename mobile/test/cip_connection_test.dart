@@ -145,6 +145,40 @@ void main() {
       expect(secondAllocatedId, kInitialTargetConnectionId + 1);
     });
 
+    test('parses and stores the T->O connection size from the Network Connection Parameters word', () {
+      final manager = CipConnectionManager();
+      // T->O Network Connection Parameters: redundant-owner 0, connection type
+      // point-to-point (bits 13-14 = 0b10 -> 0x4000), variable size (bit 9 ->
+      // 0x0200), connection size 500 bytes (0x01F4 in the low 9 bits). Only the
+      // low 9 bits are the size; the upper bits must NOT leak into it.
+      const toParams = 0x4000 | 0x0200 | 0x01F4; // 0x43F4 -> size 500
+      // A DIFFERENT O->T size (400 = 0x0190, still within the 9-bit size
+      // field) proves the target stores the T->O direction's size for its
+      // reply budget, not the O->T request size.
+      const otParams = 0x4000 | 0x0200 | 0x0190; // 0x4590 -> size 400
+      final request = CipRequest(
+        service: 0x54,
+        path: [CipPathSegment.classId(0x06), CipPathSegment.instanceId(1)],
+        data: _buildForwardOpenData(
+          connIdTO: 0x1,
+          connectionSerial: 0x1,
+          vendorId: 0x1,
+          originatorSerial: 0x1,
+          otParams: otParams,
+          toParams: toParams,
+        ),
+      );
+
+      final response = manager.forwardOpen(request);
+      expect(response.generalStatus, kCipStatusSuccess);
+
+      final conn = manager.byConnectionId(kInitialTargetConnectionId);
+      expect(conn, isNotNull);
+      // The reply budget uses the T->O size (what the target SENDS) = 500.
+      expect(conn!.connectionSizeTO, 500);
+      expect(conn.connectionSizeOT, 400);
+    });
+
     test('a truncated Forward Open request returns an error status, not a throw', () {
       final manager = CipConnectionManager();
       final request = CipRequest(service: 0x54, path: [CipPathSegment.classId(0x06)], data: _u8([0x0A, 0x0E, 0x01, 0x02]));

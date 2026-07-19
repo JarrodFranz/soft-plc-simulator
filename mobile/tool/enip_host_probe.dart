@@ -356,7 +356,9 @@ class _Connection {
       resp = CipResponse(service: 0x00, generalStatus: kCipStatusServiceNotSupported, data: Uint8List(0));
     } else {
       final project = projectProvider();
-      resp = dispatchCipService(project, _currentMap(project), req);
+      // Connected send: bound the reply to the negotiated T->O connection
+      // size (mirrors enip_host.dart); UCMM stays unbounded.
+      resp = dispatchCipService(project, _currentMap(project), req, responseBudget: conn.connectionSizeTO);
     }
 
     final respBytes = buildCipResponse(resp);
