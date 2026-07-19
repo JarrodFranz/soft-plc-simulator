@@ -427,6 +427,38 @@ bool s7DataLengthIsInBits(int transportSize) {
   return transportSize == kS7DataTransportBit || transportSize == kS7DataTransportByteWord;
 }
 
+/// Maps an ITEM-SPECIFICATION transport size (`kS7TransportSize*`, e.g. the
+/// value found in a parsed [S7Item.transportSize]) to the corresponding
+/// DATA-ITEM transport size (`kS7DataTransport*`) used by [buildDataItem],
+/// [parseWriteDataItems] and [s7DataLengthIsInBits].
+///
+/// *** WHY THIS EXISTS: THE TWO TRANSPORT-SIZE FAMILIES NUMERICALLY COLLIDE
+/// ***. `kS7TransportSize*` (item-spec: BIT=0x01, BYTE=0x02, CHAR=0x03,
+/// WORD=0x04, INT=0x05, DWORD=0x06, DINT=0x07, REAL=0x08) and
+/// `kS7DataTransport*` (data-item: NULL=0x00, BIT=0x03, BYTE/WORD=0x04,
+/// OCTET_STRING=0x09) are DIFFERENT numbering schemes that happen to share
+/// some numeric values by accident. Passing an item-spec transport size
+/// straight into [s7DataLengthIsInBits] or [buildDataItem] — the natural
+/// mistake, since a parsed [S7Item.transportSize] is right there on the
+/// request — silently gives the WRONG answer for BIT: item-spec BIT is
+/// 0x01, which is not [kS7DataTransportBit] (0x03), so a caller who skips
+/// this mapping will treat a BIT item as an unrecognized/byte-unit
+/// transport instead of a bit-unit one. Always convert with this function
+/// before crossing from item-spec land into data-item land.
+///
+/// Returns [kS7DataTransportBit] for [kS7TransportSizeBit] (item BIT 0x01
+/// -> data BIT 0x03, NOT data 0x01); [kS7DataTransportByteWord] for every
+/// other recognized item-spec size (BYTE, CHAR, WORD, INT, DWORD, DINT,
+/// REAL all transport as BYTE/WORD data items); and, for an unrecognized
+/// [itemTransportSize], [kS7DataTransportByteWord] as a safe default (never
+/// throws, never returns a nonsense value).
+int dataTransportForItemTransport(int itemTransportSize) {
+  if (itemTransportSize == kS7TransportSizeBit) {
+    return kS7DataTransportBit;
+  }
+  return kS7DataTransportByteWord;
+}
+
 /// A decoded Read/Write Var item specification.
 class S7Item {
   final int transportSize;
@@ -573,16 +605,33 @@ S7VarParameter? parseVarParameter(Uint8List parameter) {
 /// for [kS7DataTransportOctetString] (0x09) and everything else — see
 /// [s7DataLengthIsInBits]. The declared length always describes the REAL
 /// payload and never counts the pad byte.
+///
+/// **[kS7DataTransportBit] is a special case within "BITS":** it addresses
+/// exactly one bit carried in one data byte, so its declared length must be
+/// [bitCount] (a bit COUNT, not `data.length * 8`) — a single-bit item
+/// declares `1`, never `8`. [kS7DataTransportByteWord] is unaffected and
+/// keeps declaring `data.length * 8` regardless of [bitCount]. [bitCount]
+/// defaults to 1, matching the only shape this device ever emits for a BIT
+/// item (one BOOL per item); [kS7DataTransportOctetString] and every other
+/// transport size ignore [bitCount] entirely.
 Uint8List buildDataItem({
   required int returnCode,
   required int transportSize,
   required Uint8List data,
+  int bitCount = 1,
 }) {
   final padded = data.length.isOdd ? data.length + 1 : data.length;
   final out = Uint8List(kS7DataItemHeaderLen + padded);
   out[0] = returnCode & 0xFF;
   out[1] = transportSize & 0xFF;
-  final declared = s7DataLengthIsInBits(transportSize) ? data.length * 8 : data.length;
+  int declared;
+  if (transportSize == kS7DataTransportBit) {
+    declared = bitCount;
+  } else if (s7DataLengthIsInBits(transportSize)) {
+    declared = data.length * 8;
+  } else {
+    declared = data.length;
+  }
   ByteData.sublistView(out, 2, 4).setUint16(0, declared & 0xFFFF, Endian.big);
   out.setRange(kS7DataItemHeaderLen, kS7DataItemHeaderLen + data.length, data);
   return out;

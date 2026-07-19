@@ -315,6 +315,51 @@ void main() {
       expect(results.length, 3);
     });
 
+    // THE CASE A HOISTED REFUSAL CHECK WOULD SILENTLY BREAK: two BOOLs
+    // sharing one byte, one forced and one not. The correct behaviour is a
+    // PER-ENTRY decision — the forced bit is protected while its non-forced
+    // neighbour in the SAME byte still updates. A refactor that hoists the
+    // refusal check out of the per-entry loop (checking it once per byte
+    // instead of once per entry) would turn this into either a force bypass
+    // (both bits update) or an over-broad refusal (neither bit updates), and
+    // without this test the suite would stay green either way.
+    test('two BOOLs in the same byte: a FORCED bit is protected, its neighbour still updates', () {
+      final p = buildProject();
+      final flag3 = p.tags.firstWhere((t) => t.name == 'Flag3');
+      writePath(p, 'Flag3', false);
+      writePath(p, 'Flag5', false);
+      flag3.isForced = true;
+      flag3.forcedValue = false;
+      // Byte 0: bit3 = Flag3 (forced), bit5 = Flag5 (not forced). The
+      // incoming byte sets BOTH bits.
+      final results = applyAreaWrite(p, buildMap(), 'DB', 1, 0, toBytes([0x28]));
+      expect(readPath(p, 'Flag3'), isFalse, reason: 'the forced bit must stay unchanged even though the incoming byte set it');
+      expect(readPath(p, 'Flag5'), isTrue, reason: 'the non-forced neighbour in the SAME byte must still update');
+      final flag3Result = results.firstWhere((r) => r.tag == 'Flag3');
+      final flag5Result = results.firstWhere((r) => r.tag == 'Flag5');
+      expect(flag3Result.status, S7WriteStatus.refusedForced);
+      expect(flag5Result.status, S7WriteStatus.written);
+    });
+
+    test('two BOOLs in the same byte: a ReadOnly bit is protected, its neighbour still updates', () {
+      final p = buildProject();
+      final m = S7Map(entries: [
+        S7MapEntry(tag: 'Flag3', area: 'DB', dbNumber: 1, byteOffset: 0, bitOffset: 3, access: 'ReadOnly'),
+        S7MapEntry(tag: 'Flag5', area: 'DB', dbNumber: 1, byteOffset: 0, bitOffset: 5),
+      ]);
+      writePath(p, 'Flag3', false);
+      writePath(p, 'Flag5', false);
+      // Byte 0: bit3 = Flag3 (ReadOnly), bit5 = Flag5 (writable). The
+      // incoming byte sets BOTH bits.
+      final results = applyAreaWrite(p, m, 'DB', 1, 0, toBytes([0x28]));
+      expect(readPath(p, 'Flag3'), isFalse, reason: 'the ReadOnly bit must stay unchanged even though the incoming byte set it');
+      expect(readPath(p, 'Flag5'), isTrue, reason: 'the writable neighbour in the SAME byte must still update');
+      final flag3Result = results.firstWhere((r) => r.tag == 'Flag3');
+      final flag5Result = results.firstWhere((r) => r.tag == 'Flag5');
+      expect(flag3Result.status, S7WriteStatus.refusedReadOnly);
+      expect(flag5Result.status, S7WriteStatus.written);
+    });
+
     test('malformed / out-of-range write arguments never throw', () {
       final p = buildProject();
       final m = buildMap();

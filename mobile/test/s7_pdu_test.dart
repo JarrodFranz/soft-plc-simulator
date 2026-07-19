@@ -420,20 +420,40 @@ void main() {
       );
     });
 
-    test('a BIT (0x03) item carries its length in BITS', () {
+    test('a BIT (0x03) item declares a BIT COUNT of 1, not data.length * 8', () {
       final item = buildDataItem(
         returnCode: kS7ReturnSuccess,
         transportSize: kS7DataTransportBit,
         data: Uint8List.fromList([0x01]),
       );
-      // 1 byte == 8 bits, then padded to an even byte count.
+      // A single-bit item carries 1 bit in 1 data byte and must declare 1 —
+      // NOT 8 (that would be `data.length * 8`, the BYTE/WORD unit, wrongly
+      // applied to a BIT item). Then padded to an even byte count.
       expect(item[0], kS7ReturnSuccess);
       expect(item[1], kS7DataTransportBit);
       expect(item[2], 0x00);
-      expect(item[3], 0x08);
+      expect(item[3], 0x01);
       expect(item[4], 0x01);
       expect(item[5], 0x00, reason: 'pad byte');
       expect(item.length, 6);
+    });
+
+    test('a BIT item declares 1 while an equivalent-sized 0x04 item declares in bits — '
+        'the two units must never be conflated', () {
+      final bitItem = buildDataItem(
+        returnCode: kS7ReturnSuccess,
+        transportSize: kS7DataTransportBit,
+        data: Uint8List.fromList([0x01]),
+      );
+      final byteWordItem = buildDataItem(
+        returnCode: kS7ReturnSuccess,
+        transportSize: kS7DataTransportByteWord,
+        data: Uint8List.fromList([0, 0, 0, 0, 0, 0, 0, 0]), // 8 bytes
+      );
+      final declaredBit = ByteData.sublistView(bitItem, 2, 4).getUint16(0, Endian.big);
+      final declaredByteWord = ByteData.sublistView(byteWordItem, 2, 4).getUint16(0, Endian.big);
+      expect(declaredBit, 1, reason: 'a single-bit item declares a bit COUNT of 1');
+      expect(declaredByteWord, 64, reason: '8 bytes * 8 == 64 bits for the BYTE/WORD unit');
     });
 
     test('an OCTET STRING (0x09) item carries its length in BYTES', () {
@@ -528,6 +548,39 @@ void main() {
       ]);
       expect(data, equals(Uint8List.fromList([0xFF, 0x03, 0x05])));
       expect(data.length, 3, reason: 'exactly one byte per item');
+    });
+  });
+
+  // --- Item-spec -> data-item transport size mapping ------------------------
+  //
+  // The two transport-size families numerically collide: item-spec BIT is
+  // 0x01, but data-item BIT is 0x03. A caller that forwards a parsed
+  // S7Item.transportSize straight into buildDataItem/s7DataLengthIsInBits
+  // without going through this mapping will silently mistreat BIT items.
+  group('dataTransportForItemTransport — item-spec/data-item collision', () {
+    test('item BIT (0x01) maps to data BIT (0x03), NOT to 0x01', () {
+      final mapped = dataTransportForItemTransport(kS7TransportSizeBit);
+      expect(mapped, kS7DataTransportBit);
+      expect(mapped, isNot(kS7TransportSizeBit));
+    });
+
+    test('every non-BIT item-spec size maps to data BYTE/WORD (0x04)', () {
+      for (final size in [
+        kS7TransportSizeByte,
+        kS7TransportSizeChar,
+        kS7TransportSizeWord,
+        kS7TransportSizeInt,
+        kS7TransportSizeDword,
+        kS7TransportSizeDint,
+        kS7TransportSizeReal,
+      ]) {
+        expect(dataTransportForItemTransport(size), kS7DataTransportByteWord);
+      }
+    });
+
+    test('an unrecognized item-spec size falls back to data BYTE/WORD, never throws', () {
+      expect(() => dataTransportForItemTransport(0xEE), returnsNormally);
+      expect(dataTransportForItemTransport(0xEE), kS7DataTransportByteWord);
     });
   });
 }
