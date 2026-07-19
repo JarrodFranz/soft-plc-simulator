@@ -25,10 +25,12 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../models/app_log.dart';
 import '../models/project_model.dart';
 import '../protocols/dnp3/dnp3_link.dart';
 import '../protocols/dnp3/dnp3_outstation.dart';
 import '../protocols/dnp3/dnp3_transport.dart';
+import 'app_logger.dart';
 
 /// Lifecycle status of the [DnpHost].
 enum DnpHostStatus { stopped, running, error }
@@ -60,6 +62,11 @@ const int _responseLinkControl = 0x44;
 /// than an unbounded frame size — capping total pending bytes closes both.
 const int _maxPendingBytes = 4096;
 
+/// `0x1f`-style formatting for a wire code, so a dropped-frame log entry
+/// names the offending byte in the same notation the specification (and
+/// every master's own log) uses.
+String _hex(int v) => '0x${v.toRadixString(16).padLeft(2, '0').toUpperCase()}';
+
 /// One accepted TCP connection: owns the socket, the link-layer reassembly
 /// buffer, and the transport-segment reassembler used to turn arbitrary
 /// TCP-chunked bytes back into complete APPLICATION fragments.
@@ -73,12 +80,26 @@ class _Connection {
   bool _closed = false;
   int _pendingBytes = 0;
 
+  /// Optional diagnostics sink. Null (the default for a bare host) makes
+  /// every log call in this class a no-op — instrumentation NEVER changes
+  /// protocol behaviour, it only observes it.
+  final AppLogger? logger;
+
   _Connection(
     this.socket,
     this.outstation, {
     required this.outstationAddress,
     required this.masterAddress,
+    this.logger,
   });
+
+  /// Records a frame this connection PARSED but did not SERVE. DEBUG (off by
+  /// default) and lazy: a master polling a wrong link address hits this on
+  /// every poll, so neither the formatting cost nor the buffer pressure of a
+  /// WARN is acceptable here.
+  void _logDrop(String Function() build) {
+    logger?.logLazy(kLogSourceDnp3, LogLevel.debug, build);
+  }
 
   /// Feeds newly-arrived [data] into the link-layer reassembly buffer, then
   /// dispatches every complete frame it yields. Guarded end-to-end: any
@@ -89,6 +110,12 @@ class _Connection {
       _pendingBytes += data.length;
       if (_pendingBytes > _maxPendingBytes) {
         // Hostile/never-resolving flood: close ONLY this connection.
+        logger?.logLazy(
+          kLogSourceDnp3,
+          LogLevel.warn,
+          () => 'Closing a client: $_pendingBytes buffered bytes yielded no '
+              'complete link frame.',
+        );
         close();
         return;
       }
@@ -111,9 +138,20 @@ class _Connection {
     if (frame.dest != outstationAddress) {
       // Not addressed to this outstation — silently ignore (per the DNP3
       // outstation brief: only frames whose DESTINATION matches our
-      // configured link address are processed).
+      // configured link address are processed). A master configured with the
+      // wrong outstation address lands here on every single poll and used to
+      // get no reply and leave no record.
+      _logDrop(() => 'Dropped a link frame: destination address '
+          '${frame.dest} is not this outstation address '
+          '($outstationAddress).');
       return;
     }
+    logger?.logLazy(
+      kLogSourceDnp3,
+      LogLevel.debug,
+      () => 'Link frame from ${frame.src}: control '
+          '${_hex(frame.control)}, ${frame.userData.length} user-data bytes.',
+    );
     final appFragment = _transport.addSegment(frame.userData);
     if (appFragment == null) {
       return; // Waiting on more transport segments of a multi-segment fragment.
@@ -123,6 +161,10 @@ class _Connection {
     if (response.isEmpty) {
       // A CONFIRM (function code 0) yields an empty response fragment —
       // CONFIRMs never get a reply of their own.
+      _logDrop(() => 'No reply sent for an application fragment of '
+          '${appFragment.length} bytes (function '
+          '${_hex(appFragment.length > 1 ? appFragment[1] : 0)}); a CONFIRM '
+          'is never answered.');
       return;
     }
     final responseFrames = _buildResponseFrames(
@@ -221,6 +263,12 @@ Future<String> _bestDisplayHost() async {
 /// Fully opt-in: until [start] is called, this class does nothing and the
 /// app behaves exactly as it does today.
 class DnpHost extends ChangeNotifier {
+  /// Optional diagnostics sink. Deliberately NULLABLE: a host constructed
+  /// without one behaves exactly as it did before this parameter existed.
+  final AppLogger? logger;
+
+  DnpHost({this.logger});
+
   ServerSocket? _serverSocket;
   final List<_Connection> _connections = [];
   StreamSubscription<Socket>? _acceptSub;
@@ -286,6 +334,11 @@ class DnpHost extends ChangeNotifier {
 
     final dnp3 = project.protocols?.dnp3;
     if (dnp3 == null || !dnp3.enabled) {
+      logger?.log(
+        kLogSourceDnp3,
+        LogLevel.warn,
+        'Not started: DNP3 is not enabled for this project.',
+      );
       _setStatus(DnpHostStatus.error, error: 'DNP3 is not enabled for this project.');
       return;
     }
@@ -311,11 +364,24 @@ class DnpHost extends ChangeNotifier {
       _acceptSub = serverSocket.listen(
         (socket) => _acceptConnection(socket, outstation, outstationAddress, masterAddress),
         onError: (Object e, StackTrace st) {
+          logger?.log(
+            kLogSourceDnp3,
+            LogLevel.error,
+            'The listening socket reported an error.',
+            detail: e.toString(),
+          );
           _setStatus(DnpHostStatus.error, error: e.toString());
         },
         cancelOnError: false,
       );
 
+      logger?.log(
+        kLogSourceDnp3,
+        LogLevel.info,
+        'Listening on port ${serverSocket.port} (outstation address '
+        '$outstationAddress, master address $masterAddress).',
+        detail: _endpointUrl,
+      );
       _setStatus(DnpHostStatus.running);
       _outstation = outstation;
       _tick = Timer.periodic(const Duration(milliseconds: _tickPeriodMs), (_) {
@@ -327,6 +393,17 @@ class DnpHost extends ChangeNotifier {
       });
     } catch (e) {
       _serverSocket = null;
+      final privileged = port > 0 && port < 1024;
+      logger?.log(
+        kLogSourceDnp3,
+        LogLevel.error,
+        privileged
+            ? 'Could not bind port $port. Ports below 1024 require elevated '
+                'privileges on Linux/macOS — choose a port above 1023 to run '
+                'unprivileged.'
+            : 'Could not bind port $port.',
+        detail: e.toString(),
+      );
       _setStatus(DnpHostStatus.error, error: e.toString());
     }
   }
@@ -343,8 +420,15 @@ class DnpHost extends ChangeNotifier {
         outstation,
         outstationAddress: outstationAddress,
         masterAddress: masterAddress,
+        logger: logger,
       );
       _connections.add(conn);
+      logger?.log(
+        kLogSourceDnp3,
+        LogLevel.info,
+        'Master connected (${_connections.length} connected).',
+        detail: _peerLabel(socket),
+      );
       if (!_disposed) {
         notifyListeners();
       }
@@ -380,8 +464,25 @@ class DnpHost extends ChangeNotifier {
 
   void _dropConnection(_Connection conn) {
     conn.close();
-    if (_connections.remove(conn) && !_disposed) {
-      notifyListeners();
+    if (_connections.remove(conn)) {
+      logger?.log(
+        kLogSourceDnp3,
+        LogLevel.info,
+        'Master disconnected (${_connections.length} connected).',
+      );
+      if (!_disposed) {
+        notifyListeners();
+      }
+    }
+  }
+
+  /// A best-effort `address:port` label for a peer. Never throws — a socket
+  /// can already be gone by the time this runs.
+  String? _peerLabel(Socket socket) {
+    try {
+      return '${socket.remoteAddress.address}:${socket.remotePort}';
+    } catch (_) {
+      return null;
     }
   }
 
@@ -465,6 +566,7 @@ class DnpHost extends ChangeNotifier {
     }
     _connections.clear();
 
+    final wasBound = _serverSocket != null;
     try {
       await _serverSocket?.close();
     } catch (_) {
@@ -472,6 +574,9 @@ class DnpHost extends ChangeNotifier {
     }
     _serverSocket = null;
     _endpointUrl = null;
+    if (wasBound) {
+      logger?.log(kLogSourceDnp3, LogLevel.info, 'Stopped hosting.');
+    }
     _tick?.cancel();
     _tick = null;
     _outstation = null;

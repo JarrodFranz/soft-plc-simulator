@@ -15,12 +15,14 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../models/app_log.dart';
 import '../models/project_model.dart';
 import '../models/protocol_settings.dart';
 import '../protocols/opcua/opcua_secure_channel.dart';
 import '../protocols/opcua/opcua_session.dart';
 import '../protocols/opcua/opcua_services.dart';
 import '../protocols/opcua/opcua_transport.dart';
+import 'app_logger.dart';
 import 'opcua_cert_store.dart';
 
 /// Lifecycle status of the [OpcUaHost].
@@ -42,7 +44,25 @@ class _Connection {
   final List<int> _buffer = [];
   bool _closed = false;
 
-  _Connection(this.socket, this.session, this.nowMs);
+  /// Optional diagnostics sink. Null (the default for a bare host) makes
+  /// every log call in this class a no-op — instrumentation NEVER changes
+  /// protocol behaviour, it only observes it.
+  final AppLogger? logger;
+
+  _Connection(this.socket, this.session, this.nowMs, {this.logger});
+
+  /// The 3-character OPC UA message type ('HEL', 'OPN', 'MSG', 'CLO') at the
+  /// front of every frame, for the per-frame DEBUG entry. Non-printable bytes
+  /// are rendered as '?' so a hostile frame can never inject control
+  /// characters into the log.
+  static String _messageType(Uint8List frame) {
+    final out = StringBuffer();
+    for (var i = 0; i < 3 && i < frame.length; i++) {
+      final b = frame[i];
+      out.writeCharCode(b >= 0x20 && b < 0x7F ? b : 0x3F);
+    }
+    return out.toString();
+  }
 
   /// Feeds newly-arrived [data] into the reassembly buffer, then extracts
   /// and dispatches as many complete frames as are available. A single
@@ -61,6 +81,12 @@ class _Connection {
         final size = _buffer[4] | (_buffer[5] << 8) | (_buffer[6] << 16) | (_buffer[7] << 24);
         if (size < kMessageHeaderLen || size > _maxFrameBytes) {
           // Hostile/garbage size: close ONLY this connection, never crash.
+          logger?.logLazy(
+            kLogSourceOpcUa,
+            LogLevel.warn,
+            () => 'Closing a client: its message header declared an unusable '
+                'size of $size bytes.',
+          );
           close();
           return;
         }
@@ -70,10 +96,32 @@ class _Connection {
         final frame = Uint8List.fromList(_buffer.sublist(0, size));
         _buffer.removeRange(0, size);
         final outFrames = session.onBytes(frame, nowMs());
+        logger?.logLazy(
+          kLogSourceOpcUa,
+          LogLevel.debug,
+          () => 'Message ${_messageType(frame)}: ${frame.length} bytes in, '
+              '${outFrames.length} frame(s) out.',
+        );
+        if (outFrames.isEmpty) {
+          // The session consumed the message and produced nothing — the OPC
+          // UA equivalent of the other hosts' parsed-but-unserved drop.
+          logger?.logLazy(
+            kLogSourceOpcUa,
+            LogLevel.debug,
+            () => 'No reply produced for a ${_messageType(frame)} message of '
+                '${frame.length} bytes.',
+          );
+        }
         for (final out in outFrames) {
           socket.add(out);
         }
         if (session.shouldClose) {
+          logger?.log(
+            kLogSourceOpcUa,
+            LogLevel.warn,
+            'Closing a client: the session asked for the connection to be '
+            'torn down (a protocol error, or a client-requested close).',
+          );
           close();
           return;
         }
@@ -140,9 +188,14 @@ class OpcUaHost extends ChangeNotifier {
   /// at a temp directory). `null` (the production default) resolves to a
   /// fresh `OpcUaCertStore()` — the real app-support-directory store — the
   /// first time an identity is needed.
-  OpcUaHost({OpcUaCertStore? certStore}) : _certStore = certStore;
+  /// [logger] is an optional diagnostics sink. Deliberately NULLABLE: a host
+  /// constructed without one behaves exactly as it did before this parameter
+  /// existed.
+  OpcUaHost({OpcUaCertStore? certStore, this.logger}) : _certStore = certStore;
 
   final OpcUaCertStore? _certStore;
+
+  final AppLogger? logger;
 
   ServerSocket? _serverSocket;
   final List<_Connection> _connections = [];
@@ -289,6 +342,11 @@ class OpcUaHost extends ChangeNotifier {
 
     final opcua = project.protocols?.opcua;
     if (opcua == null || !opcua.enabled) {
+      logger?.log(
+        kLogSourceOpcUa,
+        LogLevel.warn,
+        'Not started: OPC UA is not enabled for this project.',
+      );
       _setStatus(OpcUaHostStatus.error, error: 'OPC UA is not enabled for this project.');
       return;
     }
@@ -321,6 +379,13 @@ class OpcUaHost extends ChangeNotifier {
         );
       } catch (e) {
         _appIdentity = null;
+        logger?.log(
+          kLogSourceOpcUa,
+          LogLevel.error,
+          'Not started: security is enabled but the application certificate '
+          'could not be generated or loaded.',
+          detail: e.toString(),
+        );
         _setStatus(
           OpcUaHostStatus.error,
           error: 'OPC UA security is enabled but the application certificate '
@@ -351,9 +416,23 @@ class OpcUaHost extends ChangeNotifier {
       _acceptSub = serverSocket.listen(
         (socket) => _acceptConnection(socket, info, services, opcua),
         onError: (Object e, StackTrace st) {
+          logger?.log(
+            kLogSourceOpcUa,
+            LogLevel.error,
+            'The listening socket reported an error.',
+            detail: e.toString(),
+          );
           _setStatus(OpcUaHostStatus.error, error: e.toString());
         },
         cancelOnError: false,
+      );
+
+      logger?.log(
+        kLogSourceOpcUa,
+        LogLevel.info,
+        'Listening on port ${serverSocket.port} '
+        '(security modes: ${opcua.securityModes.join(', ')}).',
+        detail: endpoint,
       );
 
       _clock
@@ -366,6 +445,17 @@ class OpcUaHost extends ChangeNotifier {
       _setStatus(OpcUaHostStatus.running);
     } catch (e) {
       _serverSocket = null;
+      final privileged = port > 0 && port < 1024;
+      logger?.log(
+        kLogSourceOpcUa,
+        LogLevel.error,
+        privileged
+            ? 'Could not bind port $port. Ports below 1024 require elevated '
+                'privileges on Linux/macOS — choose a port above 1023 to run '
+                'unprivileged.'
+            : 'Could not bind port $port.',
+        detail: e.toString(),
+      );
       _setStatus(OpcUaHostStatus.error, error: e.toString());
     }
   }
@@ -444,8 +534,24 @@ class OpcUaHost extends ChangeNotifier {
         allowAnonymous: config.allowAnonymous,
         secureChannel: channel,
       );
-      final conn = _Connection(socket, session, () => _clock.elapsedMilliseconds);
+      final conn = _Connection(
+        socket,
+        session,
+        () => _clock.elapsedMilliseconds,
+        logger: logger,
+      );
       _connections.add(conn);
+      // COUNTS ONLY — never a username, never a password, never the
+      // credential map itself. The whole point of logging an authentication
+      // path is the OUTCOME, not the secret.
+      logger?.log(
+        kLogSourceOpcUa,
+        LogLevel.info,
+        'Client connected (${_connections.length} connected; anonymous login '
+        '${config.allowAnonymous ? 'allowed' : 'not allowed'}, '
+        '${config.credentials.length} credential(s) configured).',
+        detail: _peerLabel(socket),
+      );
       if (!_disposed) {
         notifyListeners();
       }
@@ -481,8 +587,25 @@ class OpcUaHost extends ChangeNotifier {
 
   void _dropConnection(_Connection conn) {
     conn.close();
-    if (_connections.remove(conn) && !_disposed) {
-      notifyListeners();
+    if (_connections.remove(conn)) {
+      logger?.log(
+        kLogSourceOpcUa,
+        LogLevel.info,
+        'Client disconnected (${_connections.length} connected).',
+      );
+      if (!_disposed) {
+        notifyListeners();
+      }
+    }
+  }
+
+  /// A best-effort `address:port` label for a peer. Never throws — a socket
+  /// can already be gone by the time this runs.
+  String? _peerLabel(Socket socket) {
+    try {
+      return '${socket.remoteAddress.address}:${socket.remotePort}';
+    } catch (_) {
+      return null;
     }
   }
 
@@ -506,6 +629,7 @@ class OpcUaHost extends ChangeNotifier {
     }
     _connections.clear();
 
+    final wasBound = _serverSocket != null;
     try {
       await _serverSocket?.close();
     } catch (_) {
@@ -513,6 +637,9 @@ class OpcUaHost extends ChangeNotifier {
     }
     _serverSocket = null;
     _endpointUrl = null;
+    if (wasBound) {
+      logger?.log(kLogSourceOpcUa, LogLevel.info, 'Stopped hosting.');
+    }
     _setStatus(OpcUaHostStatus.stopped);
   }
 

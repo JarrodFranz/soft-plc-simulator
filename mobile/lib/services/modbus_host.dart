@@ -17,9 +17,11 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../models/app_log.dart';
 import '../models/project_model.dart';
 import '../protocols/modbus/modbus_pdu.dart';
 import '../protocols/modbus/modbus_rtu.dart';
+import 'app_logger.dart';
 
 /// Lifecycle status of the [ModbusHost].
 enum ModbusHostStatus { stopped, running, error }
@@ -29,6 +31,11 @@ enum ModbusHostStatus { stopped, running, error }
 /// larger is bogus and closes just that connection rather than being
 /// buffered indefinitely.
 const int _maxFrameBytes = 260;
+
+/// `0x1f`-style formatting for a wire code, so a dropped-request log entry
+/// names the offending byte in the same notation the specification (and
+/// every client's own log) uses.
+String _hex(int v) => '0x${v.toRadixString(16).padLeft(2, '0').toUpperCase()}';
 
 /// One accepted TCP connection: owns the socket and the byte-accumulation
 /// buffer used to reassemble whole MBAP+PDU frames out of arbitrary TCP
@@ -46,7 +53,25 @@ class _Connection {
   final List<int> _buffer = [];
   bool _closed = false;
 
-  _Connection(this.socket, this.handle, {this.framing = kModbusFramingTcp});
+  /// Optional diagnostics sink. Null (the default for a bare host) makes
+  /// every log call in this class a no-op — instrumentation NEVER changes
+  /// protocol behaviour, it only observes it.
+  final AppLogger? logger;
+
+  _Connection(
+    this.socket,
+    this.handle, {
+    this.framing = kModbusFramingTcp,
+    this.logger,
+  });
+
+  /// Records a request this connection PARSED but did not SERVE. DEBUG (off
+  /// by default) and lazy: a mis-configured master can hit these paths on
+  /// every poll cycle, so neither the formatting cost nor the buffer
+  /// pressure of a WARN is acceptable here.
+  void _logDrop(String Function() build) {
+    logger?.logLazy(kLogSourceModbus, LogLevel.debug, build);
+  }
 
   /// Feeds newly-arrived [data] into the reassembly buffer, then extracts
   /// and dispatches as many complete frames as are available. A single
@@ -79,6 +104,12 @@ class _Connection {
       final totalSize = 6 + length;
       if (length < 1 || totalSize > _maxFrameBytes) {
         // Hostile/garbage size: close ONLY this connection, never crash.
+        logger?.logLazy(
+          kLogSourceModbus,
+          LogLevel.warn,
+          () => 'Closing a client: its MBAP header declared an unusable '
+              'length of $length bytes.',
+        );
         close();
         return;
       }
@@ -92,10 +123,22 @@ class _Connection {
       if (parsed == null) {
         // Malformed frame (e.g. non-zero protocolId) — drop this
         // connection rather than guess at recovery.
+        logger?.log(
+          kLogSourceModbus,
+          LogLevel.warn,
+          'Closing a client: its MBAP header was malformed (a non-zero '
+          'protocol id, or a truncated frame).',
+        );
         close();
         return;
       }
+      _logRequest(parsed, rawFrame.length);
       final responsePdu = handle(parsed);
+      if (responsePdu == null) {
+        _logDrop(() => 'Dropped a request: unit id ${parsed.unitId} is not '
+            'the configured unit id, so no reply was sent (function '
+            '${_hex(parsed.pdu.isEmpty ? 0 : parsed.pdu[0])}).');
+      }
       if (responsePdu != null) {
         // A `null` response means the configured unit id didn't match this
         // request's unit id — a real outstation stays silent rather than
@@ -124,6 +167,10 @@ class _Connection {
       if (total < 0 || total > _maxFrameBytes) {
         // Unsupported function code or an oversized/hostile frame: resync by
         // dropping everything buffered for this connection so far.
+        final function = buf.length > 1 ? buf[1] : 0;
+        _logDrop(() => 'Dropped ${buf.length} buffered RTU byte(s): '
+            'unsupported function code ${_hex(function)} (or an oversized '
+            'frame), so the frame length could not be derived.');
         _buffer.clear();
         return;
       }
@@ -138,10 +185,21 @@ class _Connection {
         // Bad CRC: drop this frame silently and keep the connection open —
         // no reply is sent (mirrors a real RTU outstation staying silent on
         // a corrupted request rather than tearing down the link).
+        _logDrop(() => 'Dropped an RTU frame of ${rawFrame.length} bytes: '
+            'its CRC-16 did not check out, so no reply was sent.');
         _buffer.clear();
         return;
       }
+      _logRequest(parsed, rawFrame.length);
       final responsePdu = handle(parsed);
+      if (responsePdu == null) {
+        _logDrop(() => 'Dropped an RTU request: unit id ${parsed.unitId} is '
+            'not the configured unit id, so no reply was sent (function '
+            '${_hex(parsed.pdu.isEmpty ? 0 : parsed.pdu[0])}).');
+      } else if (parsed.unitId == 0) {
+        _logDrop(() => 'Answered nothing to an RTU broadcast (unit id 0), as '
+            'the protocol requires; the request itself was executed.');
+      }
       // Unit id 0 is the RTU broadcast address: the request is still
       // executed (handle() ran above, so any write took effect), but a real
       // RTU outstation MUST NOT reply to a broadcast — staying silent is
@@ -153,6 +211,18 @@ class _Connection {
         socket.add(buildRtu(parsed.unitId, responsePdu));
       }
     }
+  }
+
+  /// Per-request function code and byte count — DEBUG, off by default, and
+  /// lazy so a polling master pays nothing for it when the level is disabled.
+  void _logRequest(ModbusFrame frame, int frameBytes) {
+    logger?.logLazy(
+      kLogSourceModbus,
+      LogLevel.debug,
+      () => 'Request: function '
+          '${_hex(frame.pdu.isEmpty ? 0 : frame.pdu[0])}, unit '
+          '${frame.unitId}, $frameBytes frame bytes.',
+    );
   }
 
   void close() {
@@ -206,6 +276,12 @@ Future<String> _bestDisplayHost() async {
 /// Fully opt-in: until [start] is called, this class does nothing and the
 /// app behaves exactly as it does today.
 class ModbusHost extends ChangeNotifier {
+  /// Optional diagnostics sink. Deliberately NULLABLE: a host constructed
+  /// without one behaves exactly as it did before this parameter existed.
+  final AppLogger? logger;
+
+  ModbusHost({this.logger});
+
   ServerSocket? _serverSocket;
   final List<_Connection> _connections = [];
   StreamSubscription<Socket>? _acceptSub;
@@ -254,6 +330,11 @@ class ModbusHost extends ChangeNotifier {
 
     final modbus = project.protocols?.modbus;
     if (modbus == null || !modbus.enabled) {
+      logger?.log(
+        kLogSourceModbus,
+        LogLevel.warn,
+        'Not started: Modbus TCP is not enabled for this project.',
+      );
       _setStatus(ModbusHostStatus.error, error: 'Modbus TCP is not enabled for this project.');
       return;
     }
@@ -275,22 +356,51 @@ class ModbusHost extends ChangeNotifier {
       _acceptSub = serverSocket.listen(
         (socket) => _acceptConnection(socket, server, framing),
         onError: (Object e, StackTrace st) {
+          logger?.log(
+            kLogSourceModbus,
+            LogLevel.error,
+            'The listening socket reported an error.',
+            detail: e.toString(),
+          );
           _setStatus(ModbusHostStatus.error, error: e.toString());
         },
         cancelOnError: false,
       );
 
+      logger?.log(
+        kLogSourceModbus,
+        LogLevel.info,
+        'Listening on port ${serverSocket.port} ($framing framing).',
+        detail: _endpointUrl,
+      );
       _setStatus(ModbusHostStatus.running);
     } catch (e) {
       _serverSocket = null;
+      final privileged = port > 0 && port < 1024;
+      logger?.log(
+        kLogSourceModbus,
+        LogLevel.error,
+        privileged
+            ? 'Could not bind port $port. Ports below 1024 require elevated '
+                'privileges on Linux/macOS — choose a port above 1023 to run '
+                'unprivileged.'
+            : 'Could not bind port $port.',
+        detail: e.toString(),
+      );
       _setStatus(ModbusHostStatus.error, error: e.toString());
     }
   }
 
   void _acceptConnection(Socket socket, ModbusServer server, String framing) {
     try {
-      final conn = _Connection(socket, server.handle, framing: framing);
+      final conn = _Connection(socket, server.handle, framing: framing, logger: logger);
       _connections.add(conn);
+      logger?.log(
+        kLogSourceModbus,
+        LogLevel.info,
+        'Client connected (${_connections.length} connected).',
+        detail: _peerLabel(socket),
+      );
       if (!_disposed) {
         notifyListeners();
       }
@@ -326,8 +436,25 @@ class ModbusHost extends ChangeNotifier {
 
   void _dropConnection(_Connection conn) {
     conn.close();
-    if (_connections.remove(conn) && !_disposed) {
-      notifyListeners();
+    if (_connections.remove(conn)) {
+      logger?.log(
+        kLogSourceModbus,
+        LogLevel.info,
+        'Client disconnected (${_connections.length} connected).',
+      );
+      if (!_disposed) {
+        notifyListeners();
+      }
+    }
+  }
+
+  /// A best-effort `address:port` label for a peer. Never throws — a socket
+  /// can already be gone by the time this runs.
+  String? _peerLabel(Socket socket) {
+    try {
+      return '${socket.remoteAddress.address}:${socket.remotePort}';
+    } catch (_) {
+      return null;
     }
   }
 
@@ -346,6 +473,7 @@ class ModbusHost extends ChangeNotifier {
     }
     _connections.clear();
 
+    final wasBound = _serverSocket != null;
     try {
       await _serverSocket?.close();
     } catch (_) {
@@ -353,6 +481,9 @@ class ModbusHost extends ChangeNotifier {
     }
     _serverSocket = null;
     _endpointUrl = null;
+    if (wasBound) {
+      logger?.log(kLogSourceModbus, LogLevel.info, 'Stopped hosting.');
+    }
     _setStatus(ModbusHostStatus.stopped);
   }
 

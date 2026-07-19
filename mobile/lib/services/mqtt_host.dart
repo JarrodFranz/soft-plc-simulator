@@ -112,11 +112,13 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../models/app_log.dart';
 import '../models/project_model.dart';
 import '../models/protocol_settings.dart';
 import '../models/tag_resolver.dart';
 import '../protocols/mqtt/mqtt_codec.dart';
 import '../protocols/mqtt/mqtt_publisher.dart';
+import 'app_logger.dart';
 import 'notify_throttle.dart';
 
 /// Lifecycle status of the [MqttHost]. `connecting` (absent from the
@@ -252,7 +254,16 @@ class MqttHost extends ChangeNotifier {
   @visibleForTesting
   final int Function()? nowMsOverride;
 
-  MqttHost({this.pingIntervalOverride, this.nowMsOverride}) {
+  /// Optional diagnostics sink. Deliberately NULLABLE: a host constructed
+  /// without one behaves exactly as it did before this parameter existed.
+  ///
+  /// *** THE BROKER PASSWORD MUST NEVER REACH THIS SINK. *** Every log call
+  /// in this class records an OUTCOME ("the broker refused the connection")
+  /// and never the credential, and never a whole packet/descriptor object
+  /// that could carry one. See `_password`'s own doc above.
+  final AppLogger? logger;
+
+  MqttHost({this.pingIntervalOverride, this.nowMsOverride, this.logger}) {
     _throttle = NotifyThrottle(() => notifyListeners(), window: const Duration(milliseconds: 250));
   }
 
@@ -349,12 +360,26 @@ class MqttHost extends ChangeNotifier {
 
     final cfg = project.protocols?.mqtt;
     if (cfg == null || !cfg.enabled) {
+      logger?.log(
+        kLogSourceMqtt,
+        LogLevel.warn,
+        'Not connecting: MQTT is not enabled for this project.',
+      );
       _setStatus(MqttHostStatus.error, error: 'MQTT is not enabled for this project.');
       return;
     }
 
     _setStatus(MqttHostStatus.connecting);
     _endpointUrl = '${cfg.tls ? 'mqtts' : 'mqtt'}://${cfg.host}:${cfg.port}';
+    // Endpoint and whether a username was configured — an OUTCOME-shaped
+    // fact. The password is never named, quoted, or length-hinted here.
+    logger?.log(
+      kLogSourceMqtt,
+      LogLevel.info,
+      'Connecting to the broker (attempt ${_reconnectAttempt + 1}, '
+      '${cfg.username.trim().isEmpty ? 'no username configured' : 'username auth'}).',
+      detail: _endpointUrl,
+    );
 
     // Fresh per-attempt state — see the file doc comment, "bdSeq ordering",
     // for why a brand-new MqttPublisher (and a fresh frame guard/packet-id
@@ -412,6 +437,12 @@ class MqttHost extends ChangeNotifier {
       );
     } catch (e) {
       _socket = null;
+      logger?.log(
+        kLogSourceMqtt,
+        LogLevel.error,
+        'Could not connect to the broker.',
+        detail: e.toString(),
+      );
       _setStatus(MqttHostStatus.error, error: e.toString());
       _scheduleReconnect();
     }
@@ -430,6 +461,11 @@ class MqttHost extends ChangeNotifier {
     try {
       final packets = _guard.onData(data);
       if (packets == null) {
+        logger?.log(
+          kLogSourceMqtt,
+          LogLevel.warn,
+          'Dropped the connection: the broker declared an oversized frame.',
+        );
         _dropAndReconnect('The broker sent an oversized frame.');
         return;
       }
@@ -476,7 +512,15 @@ class MqttHost extends ChangeNotifier {
       default:
         // An unrecognized/reserved packet type (or a byte stream that isn't
         // MQTT at all) is a protocol violation from this host's
-        // perspective — drop rather than guess at recovery.
+        // perspective — drop rather than guess at recovery. Naming the type
+        // is the whole difference between "it keeps reconnecting" and a
+        // diagnosable cause.
+        logger?.logLazy(
+          kLogSourceMqtt,
+          LogLevel.warn,
+          () => 'Dropped the connection: the broker sent an unrecognized '
+              'packet type $type (${packet.length} bytes).',
+        );
         _dropAndReconnect('The broker sent an unrecognized packet.');
     }
   }
@@ -487,10 +531,26 @@ class MqttHost extends ChangeNotifier {
     }
     final connack = parseConnack(packet);
     if (connack == null) {
+      logger?.log(
+        kLogSourceMqtt,
+        LogLevel.warn,
+        'Dropped the connection: the broker sent a malformed CONNACK.',
+      );
       _dropAndReconnect('The broker sent a malformed CONNACK.');
       return;
     }
     if (connack.returnCode != 0) {
+      // *** OUTCOME ONLY. *** Return code 4 is bad username/password and 5 is
+      // not-authorized; the credential itself is NEVER recorded — not the
+      // password, not its length, not a masked form of it.
+      final code = connack.returnCode;
+      logger?.logLazy(
+        kLogSourceMqtt,
+        LogLevel.warn,
+        () => 'The broker refused the connection (CONNACK code $code'
+            '${code == 4 ? ' — username/password rejected' : ''}'
+            '${code == 5 ? ' — not authorized' : ''}).',
+      );
       _dropAndReconnect('The broker refused the connection (code ${connack.returnCode}).');
       return;
     }
@@ -543,27 +603,60 @@ class MqttHost extends ChangeNotifier {
 
     _startKeepAliveTimer();
     _startTickTimer(project);
+    logger?.log(
+      kLogSourceMqtt,
+      LogLevel.info,
+      'Connected: the broker accepted the connection '
+      '(${filters.length} command topic filter(s) subscribed).',
+      detail: _endpointUrl,
+    );
     _setStatus(MqttHostStatus.running);
   }
 
   void _handlePublish(Uint8List packet) {
     final pub = parsePublish(packet);
     if (pub == null) {
+      logger?.log(
+        kLogSourceMqtt,
+        LogLevel.warn,
+        'Dropped the connection: the broker sent a malformed PUBLISH.',
+      );
       _dropAndReconnect('The broker sent a malformed PUBLISH.');
       return;
     }
+    // Topic and sizes only — a command PAYLOAD is never logged. It is
+    // attacker/operator-controlled content of unbounded size, and dumping a
+    // whole inbound message is exactly how a secret ends up in a log.
+    logger?.logLazy(
+      kLogSourceMqtt,
+      LogLevel.debug,
+      () => 'Inbound PUBLISH on "${pub.topic}" '
+          '(${pub.payload.length} payload bytes, QoS ${pub.qos}).',
+    );
     if (pub.qos > 0 && pub.packetId != null) {
       _socket?.add(_encodePuback(pub.packetId!));
     }
 
     final projectProvider = _projectProvider;
     if (projectProvider == null) {
+      logger?.logLazy(
+        kLogSourceMqtt,
+        LogLevel.debug,
+        () => 'Dropped an inbound message on "${pub.topic}": no project is '
+            'currently loaded.',
+      );
       return;
     }
     final PlcProject project;
     try {
       project = projectProvider();
-    } catch (_) {
+    } catch (e) {
+      logger?.log(
+        kLogSourceMqtt,
+        LogLevel.warn,
+        'Dropped an inbound message: the current project could not be read.',
+        detail: e.toString(),
+      );
       return;
     }
 
@@ -586,12 +679,31 @@ class MqttHost extends ChangeNotifier {
     }
 
     if (project.protocols?.mqtt?.allowRemoteWrites != true) {
+      // A WRITE REFUSAL — always on, because an operator wondering why a
+      // remote command "does nothing" needs to see it without first raising
+      // the verbosity. Topic only; never the payload.
+      logger?.logLazy(
+        kLogSourceMqtt,
+        LogLevel.warn,
+        () => 'Remote write refused on "${pub.topic}": remote writes are '
+            'disabled for this project.',
+      );
       return;
     }
 
     final commands = _publisher.decodeCommand(pub.topic, pub.payload, project);
     for (final cmd in commands) {
       if (_isForcedSkip(project, cmd.tagPath)) {
+        // A WRITE REFUSAL: the forcing engineer's value keeps winning, and
+        // MQTT has no synchronous response channel to say so — so the log is
+        // the only place this can ever surface. Tag path only; never the
+        // value the remote publisher tried to write.
+        logger?.logLazy(
+          kLogSourceMqtt,
+          LogLevel.warn,
+          () => 'Remote write refused on tag "${cmd.tagPath}": the tag is '
+              'forced.',
+        );
         continue;
       }
       writePath(project, cmd.tagPath, cmd.value);
@@ -697,6 +809,12 @@ class MqttHost extends ChangeNotifier {
     if (_stopping || _disposed) {
       return;
     }
+    logger?.log(
+      kLogSourceMqtt,
+      LogLevel.warn,
+      'Disconnected from the broker; a reconnect is scheduled.',
+      detail: error?.toString(),
+    );
     _teardownConnectionOnly();
     _setStatus(MqttHostStatus.error, error: error?.toString() ?? 'Connection to the broker was closed.');
     _scheduleReconnect();
@@ -830,8 +948,12 @@ class MqttHost extends ChangeNotifier {
     } catch (_) {
       // Ignore — best-effort graceful notice only.
     }
+    final wasConnected = _socket != null;
     _teardownConnectionOnly();
     _clock.stop();
+    if (wasConnected) {
+      logger?.log(kLogSourceMqtt, LogLevel.info, 'Disconnected from the broker.');
+    }
     _setStatus(MqttHostStatus.stopped);
   }
 

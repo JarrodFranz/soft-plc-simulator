@@ -49,11 +49,13 @@ import 'dart:io';
 // would be flagged as unnecessary by the analyzer.
 import 'package:flutter/foundation.dart';
 
+import '../models/app_log.dart';
 import '../models/project_model.dart';
 import '../models/s7_map.dart';
 import '../protocols/s7/s7_pdu.dart';
 import '../protocols/s7/s7_services.dart';
 import '../protocols/s7/tpkt_cotp.dart';
+import 'app_logger.dart';
 
 /// Lifecycle status of the [S7Host].
 enum S7HostStatus { stopped, running, error }
@@ -73,6 +75,11 @@ const int _maxFrameBytes = 0xFFFF;
 /// negotiated DOWN from the client's proposal and never up — a client
 /// asking for more parallel jobs than this gets this value instead.
 const int _kMaxAmq = 8;
+
+/// `0x1f`-style formatting for a wire code, so a dropped-request log entry
+/// names the offending byte in the same notation the specification (and
+/// every client's own log) uses.
+String _hex(int v) => '0x${v.toRadixString(16).padLeft(2, '0').toUpperCase()}';
 
 /// One accepted TCP connection: owns the socket, the byte-accumulation
 /// buffer used to reassemble whole TPKT frames out of arbitrary TCP
@@ -105,7 +112,22 @@ class _Connection {
   /// the clock) so the handshake stays deterministic and testable.
   final int localRef;
 
-  _Connection(this.socket, this.localRef);
+  /// Optional diagnostics sink. Null (the default for a bare host) makes
+  /// every log call in this class a no-op — instrumentation NEVER changes
+  /// protocol behaviour, it only observes it.
+  final AppLogger? logger;
+
+  _Connection(this.socket, this.localRef, this.logger);
+
+  /// Records a request this connection PARSED but did not SERVE. Every such
+  /// site used to be a bare `return;` with no reply and no record — the
+  /// failure mode this instrumentation exists to close. DEBUG (off by
+  /// default) and lazy, because a mis-configured client can hit these paths
+  /// on every poll cycle: eager formatting would cost a string per frame even
+  /// with the level disabled, and a WARN would evict the rest of the buffer.
+  void _logDrop(String Function() build) {
+    logger?.logLazy(kLogSourceS7, LogLevel.debug, build);
+  }
 
   /// Feeds newly-arrived [data] into the reassembly buffer, then extracts
   /// and dispatches as many complete TPKT frames as are available. A single
@@ -127,6 +149,11 @@ class _Connection {
           // Cannot happen — `headerBytes` is always exactly kTpktHeaderLen
           // long — but never trust wire-derived control flow to be
           // unreachable; close only this connection rather than assume.
+          logger?.log(
+            kLogSourceS7,
+            LogLevel.warn,
+            'Closing a client: its TPKT header could not be parsed.',
+          );
           close();
           return;
         }
@@ -137,6 +164,12 @@ class _Connection {
           // Hostile/garbage length field (including 0 and 1, which would
           // make the loop consume nothing and spin forever): close ONLY
           // this connection.
+          logger?.logLazy(
+            kLogSourceS7,
+            LogLevel.warn,
+            () => 'Closing a client: its TPKT frame declared an unusable '
+                'length of $total bytes.',
+          );
           close();
           return;
         }
@@ -162,6 +195,8 @@ class _Connection {
     final cotpBytes = Uint8List.sublistView(frame, kTpktHeaderLen);
     final cotp = parseCotp(cotpBytes);
     if (cotp == null) {
+      _logDrop(() => 'Dropped a frame: its COTP TPDU could not be parsed '
+          '(${cotpBytes.length} bytes).');
       return;
     }
     if (cotp.pduType == kCotpCr) {
@@ -170,13 +205,18 @@ class _Connection {
     }
     if (cotp.pduType == kCotpDt) {
       if (!cotpEstablished) {
-        return; // data before the COTP connection was confirmed
+        // Data before the COTP connection was confirmed.
+        _logDrop(() => 'Dropped an S7 message: it arrived before this '
+            'client completed the COTP connection handshake.');
+        return;
       }
       _handleS7(cotp.payload, projectProvider);
       return;
     }
     // Any other COTP TPDU type (e.g. CC — which a server receives only from
     // a misbehaving peer) is not served here.
+    _logDrop(() => 'Dropped a frame: unsupported COTP TPDU type '
+        '${_hex(cotp.pduType)}.');
   }
 
   /// Answers a COTP Connection Request with a Connection Confirm. The CC's
@@ -208,28 +248,53 @@ class _Connection {
   void _handleS7(Uint8List s7Bytes, PlcProject Function() projectProvider) {
     final msg = parseS7(s7Bytes);
     if (msg == null) {
+      _logDrop(() => 'Dropped a message: it is not a parseable S7 PDU '
+          '(${s7Bytes.length} bytes).');
       return;
     }
     if (msg.header.rosctr != kS7RosctrJob) {
+      // THE motivating drop site: a client whose driver speaks a ROSCTR this
+      // device does not serve got no reply and left no trace, while the
+      // Outbound Protocols card still read "Running, Clients: 1".
+      _logDrop(() => 'Dropped a message: unsupported ROSCTR '
+          '${_hex(msg.header.rosctr)} (only Job ${_hex(kS7RosctrJob)} is '
+          'served).');
       return;
     }
     if (msg.parameter.isEmpty) {
+      _logDrop(() => 'Dropped a Job: it carries no parameter block.');
       return;
     }
     if (msg.parameter[0] == kS7FunctionSetupCommunication) {
       final setup = parseSetupCommunication(msg.parameter);
       if (setup == null) {
+        _logDrop(() => 'Dropped a Setup Communication job: its parameter '
+            'block could not be parsed.');
         return;
       }
       _handleSetupCommunication(msg.header.pduReference, setup);
       return;
     }
+    logger?.logLazy(
+      kLogSourceS7,
+      LogLevel.debug,
+      () => 'Job function ${_hex(msg.parameter[0])}, '
+          '${msg.parameter.length} parameter bytes, '
+          '${msg.data.length} data bytes.',
+    );
 
     final PlcProject project;
     try {
       project = projectProvider();
-    } catch (_) {
-      return; // cannot read the project — drop rather than crash the socket
+    } catch (e) {
+      // Cannot read the project — drop rather than crash the socket.
+      logger?.log(
+        kLogSourceS7,
+        LogLevel.warn,
+        'Dropped a job: the current project could not be read.',
+        detail: e.toString(),
+      );
+      return;
     }
     final reply = dispatchS7VarJob(
       project,
@@ -238,7 +303,12 @@ class _Connection {
       negotiatedPduLength: negotiatedPduLength,
     );
     if (reply == null) {
-      return; // not a function this device serves, or a malformed request
+      // The second motivating drop site: not a function this device serves,
+      // or a malformed request — previously no reply and no record.
+      _logDrop(() => 'Dropped a Job: unsupported or malformed function '
+          '${_hex(msg.parameter[0])} (Read Var ${_hex(kS7FunctionReadVar)} '
+          'and Write Var ${_hex(kS7FunctionWriteVar)} are served).');
+      return;
     }
     socket.add(buildTpkt(buildCotpData(reply)));
   }
@@ -324,6 +394,14 @@ Future<String> _bestDisplayHost() async {
 /// Fully opt-in: until [start] is called, this class does nothing and the
 /// app behaves exactly as it does today.
 class S7Host extends ChangeNotifier {
+  /// Optional diagnostics sink, so the in-app Logs window can show why a
+  /// client's requests are going unanswered. Deliberately NULLABLE: a host
+  /// constructed without one behaves byte-for-byte as it did before this
+  /// parameter existed, and every log call site is null-guarded.
+  final AppLogger? logger;
+
+  S7Host({this.logger});
+
   ServerSocket? _serverSocket;
   final List<_Connection> _connections = [];
   StreamSubscription<Socket>? _acceptSub;
@@ -394,6 +472,11 @@ class S7Host extends ChangeNotifier {
 
     final s7 = project.protocols?.s7;
     if (s7 == null || !s7.enabled) {
+      logger?.log(
+        kLogSourceS7,
+        LogLevel.warn,
+        'Not started: S7comm is not enabled for this project.',
+      );
       _setStatus(S7HostStatus.error, error: 'S7comm is not enabled for this project.');
       return;
     }
@@ -409,23 +492,56 @@ class S7Host extends ChangeNotifier {
       _acceptSub = serverSocket.listen(
         (socket) => _acceptConnection(socket, projectProvider),
         onError: (Object e, StackTrace st) {
+          logger?.log(
+            kLogSourceS7,
+            LogLevel.error,
+            'The listening socket reported an error.',
+            detail: e.toString(),
+          );
           _setStatus(S7HostStatus.error, error: e.toString());
         },
         cancelOnError: false,
       );
 
+      logger?.log(
+        kLogSourceS7,
+        LogLevel.info,
+        'Listening on port ${serverSocket.port}.',
+        detail: _endpointUrl,
+      );
       _setStatus(S7HostStatus.running);
     } catch (e) {
       _serverSocket = null;
       _endpointUrl = null;
+      // *** THE PORT-102 PRIVILEGE CASE ***
+      // The S7comm default port is below 1024, which Linux/macOS reserve for
+      // privileged processes. Without this note the operator sees only a
+      // bare "permission denied" and no way to act on it.
+      final privileged = port > 0 && port < 1024;
+      logger?.log(
+        kLogSourceS7,
+        LogLevel.error,
+        privileged
+            ? 'Could not bind port $port. Ports below 1024 require elevated '
+                'privileges on Linux/macOS — choose a port above 1023 to run '
+                'unprivileged.'
+            : 'Could not bind port $port.',
+        detail: e.toString(),
+      );
       _setStatus(S7HostStatus.error, error: e.toString());
     }
   }
 
   void _acceptConnection(Socket socket, PlcProject Function() projectProvider) {
     try {
-      final conn = _Connection(socket, _allocateLocalRef());
+      final conn = _Connection(socket, _allocateLocalRef(), logger);
       _connections.add(conn);
+      logger?.log(
+        kLogSourceS7,
+        LogLevel.info,
+        'Client connected (${_connections.length} connected).',
+        detail: _peerLabel(socket),
+      );
       if (!_disposed) {
         notifyListeners();
       }
@@ -461,8 +577,26 @@ class S7Host extends ChangeNotifier {
 
   void _dropConnection(_Connection conn) {
     conn.close();
-    if (_connections.remove(conn) && !_disposed) {
-      notifyListeners();
+    if (_connections.remove(conn)) {
+      logger?.log(
+        kLogSourceS7,
+        LogLevel.info,
+        'Client disconnected (${_connections.length} connected).',
+      );
+      if (!_disposed) {
+        notifyListeners();
+      }
+    }
+  }
+
+  /// A best-effort `address:port` label for a peer, for the connect entry's
+  /// detail. Never throws — a socket can already be gone by the time this
+  /// runs.
+  String? _peerLabel(Socket socket) {
+    try {
+      return '${socket.remoteAddress.address}:${socket.remotePort}';
+    } catch (_) {
+      return null;
     }
   }
 
@@ -481,6 +615,7 @@ class S7Host extends ChangeNotifier {
     }
     _connections.clear();
 
+    final wasBound = _serverSocket != null;
     try {
       await _serverSocket?.close();
     } catch (_) {
@@ -488,6 +623,9 @@ class S7Host extends ChangeNotifier {
     }
     _serverSocket = null;
     _endpointUrl = null;
+    if (wasBound) {
+      logger?.log(kLogSourceS7, LogLevel.info, 'Stopped hosting.');
+    }
     _setStatus(S7HostStatus.stopped);
   }
 
