@@ -174,8 +174,12 @@ int _readBigEndianUint(List<int> bytes) {
 ///
 /// Returns `null` — and never throws — on any malformed input: an empty
 /// buffer, a length indicator that overruns [frame], a CR/CC header too
-/// short to hold its fixed fields, or a parameter whose declared length
-/// overruns the declared header.
+/// short to hold its fixed fields, a parameter whose declared length
+/// overruns the declared header, or a PDU type outside CR/CC/DT (this
+/// codec's supported set). An unrecognized PDU type is real, on-wire input
+/// this codec simply does not implement — per this codec's parse contract,
+/// that yields `null` (not a partially-populated [CotpPacket]) so the
+/// socket host can drop the frame.
 CotpPacket? parseCotp(Uint8List frame) {
   if (frame.isEmpty) {
     return null;
@@ -240,10 +244,11 @@ CotpPacket? parseCotp(Uint8List frame) {
     return CotpPacket(pduType: pduType, payload: payload);
   }
 
-  // Unrecognized PDU type: return it with whatever trails the declared
-  // header as payload, but no refs/TSAPs (those are CR/CC-specific).
-  final payload = frame.length > headerEnd ? Uint8List.fromList(frame.sublist(headerEnd)) : Uint8List(0);
-  return CotpPacket(pduType: pduType, payload: payload);
+  // Unrecognized PDU type: this codec only understands CR/CC/DT. Returning
+  // null (rather than a partially-populated CotpPacket) matches this
+  // codebase's parse-function convention and lets the socket host drop the
+  // frame instead of acting on a PDU type it can't interpret.
+  return null;
 }
 
 /// Builds a COTP Connection Confirm (CC, [kCotpCc]) TPDU. v1 is a

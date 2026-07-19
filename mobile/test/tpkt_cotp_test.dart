@@ -78,12 +78,36 @@ void main() {
       expect(packet.srcTsap, 0x0304);
     });
 
-    test('buildCotpConnectConfirm emits pduType 0xD0 with a correct length indicator, and round-trips through parseCotp', () {
+    test('buildCotpConnectConfirm emits exact literal bytes for every multi-byte field (byte-order canary), and round-trips through parseCotp', () {
       final cc = buildCotpConnectConfirm(srcRef: 0x1234, dstRef: 0x5678, srcTsap: 0x0100, dstTsap: 0x0203);
-      // header content = type(1) + dstRef(2) + srcRef(2) + class/option(1)
-      //                  + dstTsap param(2+2) + srcTsap param(2+2) = 14 = 0x0E.
-      expect(cc[0], 0x0E);
-      expect(cc[1], 0xD0);
+      // Literal expected bytes at every offset -- NOT just a round-trip.
+      // A coordinated endianness bug present identically in both
+      // buildCotpConnectConfirm and parseCotp would cancel out and a
+      // round-trip-only assertion would still pass. Each reference value
+      // below has two bytes that differ from each other, so a
+      // little-endian implementation of any field fails this assertion:
+      //   [0]      LI = 0x0E (14): type(1)+dstRef(2)+srcRef(2)+class/opt(1)+params(8)
+      //   [1]      PDU type = 0xD0 (CC)
+      //   [2..4)   dstRef = 0x5678 big-endian -> 0x56, 0x78
+      //   [4..6)   srcRef = 0x1234 big-endian -> 0x12, 0x34
+      //   [6]      class/option = 0x00
+      //   [7]      param code = 0xC2 (dst TSAP)
+      //   [8]      param len = 0x02
+      //   [9..11)  dstTsap = 0x0203 big-endian -> 0x02, 0x03
+      //   [11]     param code = 0xC1 (src TSAP)
+      //   [12]     param len = 0x02
+      //   [13..15) srcTsap = 0x0100 big-endian -> 0x01, 0x00
+      expect(
+        cc,
+        equals(Uint8List.fromList([
+          0x0E, 0xD0, // LI, PDU type
+          0x56, 0x78, // dstRef
+          0x12, 0x34, // srcRef
+          0x00, // class/option
+          0xC2, 0x02, 0x02, 0x03, // dst TSAP param: code, len, value
+          0xC1, 0x02, 0x01, 0x00, // src TSAP param: code, len, value
+        ])),
+      );
       expect(cc.length, 15); // 1 (LI) + 14 (declared header)
 
       final parsed = parseCotp(cc);
@@ -93,6 +117,32 @@ void main() {
       expect(parsed.dstRef, 0x5678);
       expect(parsed.srcTsap, 0x0100);
       expect(parsed.dstTsap, 0x0203);
+    });
+  });
+
+  group('TPKT boundary', () {
+    test('buildTpkt clamps an oversized payload and keeps the declared length field self-consistent with the actual emitted bytes', () {
+      // total = kTpktHeaderLen + payload.length would be 4 + 65535 = 65539,
+      // which overflows the u16 length field. buildTpkt must clamp so the
+      // declared length always matches the bytes actually present in the
+      // frame -- a self-inconsistent frame (declared length != actual byte
+      // count) is worse than a truncated one, since a socket host trusts
+      // the declared length to find the next frame boundary. (This exact
+      // class of bug -- length field masked while the full payload was
+      // still copied -- was found and fixed in the EtherNet/IP codec.)
+      final payload = Uint8List.fromList(List<int>.generate(0xFFFF, (i) => i & 0xFF));
+      final framed = buildTpkt(payload);
+
+      final declaredLength = ByteData.sublistView(framed, 2, 4).getUint16(0, Endian.big);
+      expect(declaredLength, 0xFFFF);
+      expect(framed.length, declaredLength);
+
+      const expectedPayloadLen = 0xFFFF - kTpktHeaderLen;
+      expect(framed.length, kTpktHeaderLen + expectedPayloadLen);
+      expect(
+        framed.sublist(kTpktHeaderLen),
+        equals(payload.sublist(0, expectedPayloadLen)),
+      );
     });
   });
 
@@ -138,6 +188,20 @@ void main() {
 
     test('parseCotp returns null for an empty buffer', () {
       expect(parseCotp(Uint8List(0)), isNull);
+    });
+
+    test('parseCotp returns null for an unrecognized-but-well-formed COTP PDU type, and never throws', () {
+      // 0x80 is ISO 8073 Disconnect Request (DR): a real, defined COTP PDU
+      // type that this codec simply does not implement (only CR/CC/DT are
+      // supported). The parse contract is that unrecognized input yields
+      // null -- not a partially-populated CotpPacket -- so a later socket
+      // host can drop the frame instead of acting on a PDU type it can't
+      // interpret. LI=0x02 declares a well-formed 2-byte header (type +
+      // one trailing byte), so this is not truncated/malformed by any
+      // other measure -- only the PDU type itself is unsupported.
+      final bytes = Uint8List.fromList([0x02, 0x80, 0x00]);
+      expect(() => parseCotp(bytes), returnsNormally);
+      expect(parseCotp(bytes), isNull);
     });
   });
 }
