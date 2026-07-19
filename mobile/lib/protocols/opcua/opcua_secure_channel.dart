@@ -500,6 +500,22 @@ class OpcSecureChannel {
     }
   }
 
+  /// The exact on-wire byte length a [buildSecuredMsg] chunk carrying a
+  /// [bodyLength]-byte plaintext service body would occupy — pure arithmetic,
+  /// no keys, no allocation, no side effects. Mirrors the framing below so a
+  /// caller can honor a negotiated send-buffer ceiling BEFORE committing a
+  /// sequence number. For [OpcSecurityMode.none] this equals the plain
+  /// [buildMsgChunk] frame length; for Sign / SignAndEncrypt it adds the
+  /// symmetric padding + HMAC (AES-CBC does not change the length).
+  int securedMsgLength(int bodyLength) {
+    if (messageSecurityMode == OpcSecurityMode.none) {
+      return kChunkHeaderLen + 4 + 8 + bodyLength;
+    }
+    const headerSize = kChunkHeaderLen + 4; // 12 + tokenId(4) = 16
+    final padding = _symPadding(bodyLength);
+    return headerSize + 8 + bodyLength + padding.length + kSymSignatureSize;
+  }
+
   /// Builds a secured (Sign / SignAndEncrypt) MSG chunk carrying [body] (the
   /// plaintext service-response body, WITHOUT its sequence header). Signs with
   /// the server signing key and, for SignAndEncrypt, encrypts to the server
