@@ -82,6 +82,18 @@ void main() {
             ioType: 'Internal',
             isForced: true,
           ),
+          // Fix B regression fixture: a composite ROOT tag that is NOT forced.
+          // This tests that a member path beneath a non-forced root can be
+          // written successfully, in contrast to Tank (which is forced and
+          // must refuse all writes).
+          PlcTag(
+            name: 'Tank2',
+            path: 'Tank2',
+            dataType: 'TankType',
+            value: {'Level': 100},
+            ioType: 'Internal',
+            isForced: false,
+          ),
         ],
         structDefs: [
           PlcStructDef(name: 'TankType', fields: [
@@ -102,6 +114,7 @@ void main() {
         CipMapEntry(tagName: 'Locked_Tag', access: 'ReadOnly'),
         CipMapEntry(tagName: 'Forced_Tag', access: 'ReadWrite'),
         CipMapEntry(tagName: 'Tank.Level', access: 'ReadWrite'),
+        CipMapEntry(tagName: 'Tank2.Level', access: 'ReadWrite'),
       ]);
 
   group('Read Tag (0x4C)', () {
@@ -286,7 +299,9 @@ void main() {
 
       // A value with a fractional part not exactly representable in a
       // 32-bit float exposes the narrowing conversion (see cip.dart's
-      // encodeCipValue/decodeCipValue docs on REAL 0xCA).
+      // encodeCipValue/decodeCipValue docs on REAL 0xCA). The value 3.14159
+      // has a float32 round-trip error of approximately 1.2e-8, confirming
+      // that the narrowing genuinely occurred.
       const newValue = 3.14159;
       final writeReq = CipRequest(
         service: kCipServiceWriteTag,
@@ -304,9 +319,15 @@ void main() {
       final readResp = dispatchCipService(project, map, readReq);
       expect(readResp.generalStatus, kCipStatusSuccess);
       final decoded = decodeCipValue(kCipTypeReal, readResp.data.sublist(2)) as double;
-      // Tolerance, not exact equality — the value was narrowed to single
-      // precision on write and widened back on read.
-      expect(decoded, closeTo(newValue, 0.0001));
+      // Tightened tolerance: 1e-6 is small enough to be meaningful for a
+      // float32 round-trip, yet large enough for safe floating-point comparison.
+      // The looseness of the old 0.0001 tolerance (1e-4) could not distinguish
+      // a real narrowing conversion from no narrowing at all.
+      expect(decoded, closeTo(newValue, 1e-6));
+      // Explicit proof that narrowing occurred: the round-tripped value must
+      // differ from the original double. A non-narrowing implementation (one
+      // that preserved the full 64-bit double) would fail this assertion.
+      expect(decoded, isNot(equals(newValue)));
     });
 
     test('malformed (too-short) write data never throws and leaves the tag unchanged', () {
@@ -350,6 +371,45 @@ void main() {
       expect(resp.generalStatus, kCipStatusPrivilegeViolation);
       final after = (project.tags.firstWhere((t) => t.name == 'Tank').value as Map)['Level'];
       expect(after, before, reason: 'member write into a forced root must never land');
+    });
+
+    test(
+        'Fix B regression: a write to a MEMBER path beneath a non-forced ROOT tag succeeds and updates the member',
+        () {
+      final project = buildProject();
+      final map = buildMap();
+
+      // `Tank2` is a composite root tag with `isForced: false` (see
+      // buildProject). This contrasts with the forced `Tank` tag above:
+      // a write to the MEMBER path `Tank2.Level` should succeed, not be
+      // refused. The forced-write refusal in Fix 1 must not over-broadly
+      // reject legitimate member writes beneath non-forced roots.
+      final tank2Tag = project.tags.firstWhere((t) => t.name == 'Tank2');
+      expect(tank2Tag.isForced, isFalse);
+      final before = (tank2Tag.value as Map)['Level'];
+      expect(before, 100); // fixture value, sanity-checked before the write attempt
+
+      const newMemberValue = 42;
+      final writeReq = CipRequest(
+        service: kCipServiceWriteTag,
+        path: [CipPathSegment.symbol('Tank2'), CipPathSegment.symbol('Level')],
+        data: _writeData(kCipTypeDint, encodeCipValue(kCipTypeDint, newMemberValue)!),
+      );
+      final writeResp = dispatchCipService(project, map, writeReq);
+      expect(writeResp.generalStatus, kCipStatusSuccess,
+          reason: 'write to non-forced composite member must succeed');
+
+      // Verify the member value changed by reading it back.
+      final readReq = CipRequest(
+        service: kCipServiceReadTag,
+        path: [CipPathSegment.symbol('Tank2'), CipPathSegment.symbol('Level')],
+        data: _readData(),
+      );
+      final readResp = dispatchCipService(project, map, readReq);
+      expect(readResp.generalStatus, kCipStatusSuccess);
+      final decoded = decodeCipValue(kCipTypeDint, readResp.data.sublist(2));
+      expect(decoded, newMemberValue,
+          reason: 'subsequent read must return the newly-written value');
     });
   });
 
