@@ -20,10 +20,18 @@ range of clients that can talk to this simulator.
 The program roadmap requires each protocol's spec to confirm its reference
 client *before* the plan is written. Verified on this machine, not assumed:
 
-- `python-snap7==3.1.0` installs from PyPI.
-- Its **bundled native snap7 library loads on Windows** — this was the real
-  risk, since `python-snap7` is a wrapper over a C library and earlier versions
-  required a separately-installed binary.
+- `python-snap7==3.1.0` installs from PyPI and imports cleanly on Windows.
+- **Correction, established during implementation:** this spec originally
+  recorded that a *bundled native snap7 C library* loads on Windows, and treated
+  that as the main risk. That was wrong. Inspecting the installed 3.1.0 package
+  shows a `py3-none-any` wheel with `Root-Is-Purelib: true`, no `.dll`/`.so`/
+  `.dylib` in its RECORD, an ordinary `socket.socket` in `snap7/connection.py`,
+  and `snap7/s7protocol.py` building and parsing S7 PDUs itself with `struct`.
+  `ctypes` appears only for buffer types in a legacy API signature — there is no
+  `LoadLibrary` anywhere. **It is a pure-Python reimplementation.**
+  This *strengthens* the proof rather than weakening it: the bytes our host is
+  judged against come from a genuinely independent second implementation of the
+  wire format, not from a C core we might both be deriving from.
 - `snap7.client.Client` exposes exactly the operations v1 needs:
   - `connect(address: str, rack: int, slot: int, tcp_port: int = 102)`
   - `read_area(area, db_number, start, size, word_len=None) -> bytearray`
