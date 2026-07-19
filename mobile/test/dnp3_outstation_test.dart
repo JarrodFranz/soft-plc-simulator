@@ -214,6 +214,60 @@ List<(int, int)> _decodeEventObjectGroups(Uint8List objData) {
   return groups;
 }
 
+/// One event point extracted by [_decodeAllEventPoints]: which (group,
+/// variation) bucket it landed in, its own index (from the index-prefixed
+/// header), and its raw per-point payload (flags + value + time — see
+/// [_eventPointSizes]).
+class _DecodedEventPoint {
+  final int group;
+  final int variation;
+  final int index;
+  final Uint8List payload;
+  _DecodedEventPoint(this.group, this.variation, this.index, this.payload);
+}
+
+/// Walks a full response object-payload stream that may interleave static
+/// range-qualified objects (Class 0) with index-prefixed event objects — the
+/// shape a paged Task 4 read produces when it carries both — and extracts
+/// every EVENT point's own (group, variation, index, payload). Unlike
+/// [_decodeResponseObjects] (which stops the instant it meets an object shape
+/// it doesn't recognize), this walker knows how to skip PAST a static object
+/// it doesn't care about (via [_knownSizes]) so it can keep going to find the
+/// event objects that follow. Never throws on a well-formed stream; stops (as
+/// [_decodeResponseObjects] does) the moment it meets a header shape neither
+/// map recognizes.
+List<_DecodedEventPoint> _decodeAllEventPoints(Uint8List objData) {
+  final list = <_DecodedEventPoint>[];
+  var offset = 0;
+  while (offset < objData.length) {
+    final decoded = decodeObjectHeader(objData, offset);
+    if (decoded == null) {
+      break;
+    }
+    final h = decoded.header;
+    var pos = decoded.nextOffset;
+    final eventSize = _eventPointSizes[(h.group, h.variation)];
+    if (eventSize != null && h.count != null) {
+      for (var i = 0; i < h.count!; i++) {
+        final idx = objData[pos] | (objData[pos + 1] << 8);
+        pos += 2;
+        final payload = Uint8List.fromList(objData.sublist(pos, pos + eventSize));
+        pos += eventSize;
+        list.add(_DecodedEventPoint(h.group, h.variation, idx, payload));
+      }
+      offset = pos;
+      continue;
+    }
+    final staticSize = _knownSizes[(h.group, h.variation)];
+    if (staticSize == null || h.start == null || h.stop == null) {
+      break;
+    }
+    final count = h.stop! - h.start! + 1;
+    offset = pos + count * staticSize;
+  }
+  return list;
+}
+
 void main() {
   late PlcProject project;
   late DnpOutstation outstation;
@@ -526,6 +580,39 @@ void main() {
       );
     }
 
+    // Builds a project of [count] contiguous analogInput INT32 points (same
+    // shape as [buildAnalogProject]) where the indices named as keys in
+    // [eventClassByIndex] additionally carry that eventClass (1/2/3) so a
+    // change to them is captured by the event engine — used by the paged-read
+    // event-flush and read-supersession tests below, which need a read big
+    // enough to page AND carrying Class 1/2/3 events in the same fragment set.
+    PlcProject buildAnalogEventProject(int count, Map<int, int> eventClassByIndex) {
+      final tags = <PlcTag>[];
+      final entries = <DnpMapEntry>[];
+      for (var i = 0; i < count; i++) {
+        tags.add(PlcTag(name: 'Ai$i', path: 'Ai$i', dataType: 'INT32', value: i, ioType: 'Internal'));
+        entries.add(DnpMapEntry(
+          tag: 'Ai$i',
+          pointType: 'analogInput',
+          index: i,
+          eventClass: eventClassByIndex[i] ?? 0,
+        ));
+      }
+      return PlcProject(
+        id: 'bigEvt',
+        name: 'BIGEVT',
+        controllerName: 'C',
+        structDefs: const [],
+        programs: const [],
+        tasks: const [],
+        hmis: const [],
+        tags: tags,
+        protocols: ProtocolSettings(
+          dnp3: DnpProtocolConfig(enabled: true, map: DnpMap(entries: entries)),
+        ),
+      );
+    }
+
     // Drives the full CONFIRM-gated multi-fragment exchange: sends the read,
     // then a solicited CONFIRM (matching the last fragment's sequence) for each
     // non-final fragment, collecting every emitted fragment in order.
@@ -664,6 +751,173 @@ void main() {
       expect(resp.length, lessThan(kDnpMaxAppFragment));
       expect(resp[0], 0xC0 | 1, reason: 'FIR|FIN|seq=1, CON clear');
       expect(resp[1], DnpFunc.response);
+    });
+
+    test(
+        'a paged read carrying Class 1/2/3 events delivers every event exactly once; '
+        "the final fragment's CONFIRM flushes them (a later read does not re-deliver)", () {
+      // 1000 analogInput points force multi-fragment paging (same bound as the
+      // FIR/FIN test above); 5 of them also carry an eventClass spread across
+      // all three event classes, so this read's static payload AND its event
+      // payload both have to survive being split across fragment boundaries —
+      // exercising the "all fragments already sent" CONFIRM branch in
+      // `_confirmSolicited`, which every other Task 4 test leaves untouched
+      // because they only ever read pure-static data.
+      final eventClassByIndex = {10: 1, 250: 2, 500: 3, 750: 1, 999: 2};
+      final project = buildAnalogEventProject(1000, eventClassByIndex);
+      final os = DnpOutstation(projectProvider: () => project);
+      os.detectChanges(0); // baseline (no events yet)
+      final newValues = <int, int>{};
+      eventClassByIndex.forEach((idx, _) {
+        newValues[idx] = 9000 + idx;
+        writePath(project, 'Ai$idx', newValues[idx]!);
+      });
+      os.detectChanges(1); // one event per changed point, in its own class
+
+      // Combined g60v1..v4 read: static (Class 0) AND all three event classes,
+      // the same request shape as the "combined g60v1..v4 read" test above.
+      final req = frag(0xC3, DnpFunc.read, [60, 1, 0x06, 60, 2, 0x06, 60, 3, 0x06, 60, 4, 0x06]);
+      var resp = os.handleAppRequest(req, nowMs: 1);
+      final frags = <Uint8List>[resp];
+      while ((resp[0] & 0x40) == 0) {
+        final seq = resp[0] & 0x0F;
+        resp = os.handleAppRequest(Uint8List.fromList([0xC0 | seq, DnpFunc.confirm]), nowMs: 1);
+        frags.add(resp);
+      }
+      expect(frags.length, greaterThan(1), reason: '1000 points + events must overrun one fragment');
+      for (final f in frags) {
+        expect(f.length, lessThanOrEqualTo(kDnpMaxAppFragment));
+      }
+      // The final fragment still carries events awaiting flush, so it must
+      // still request CONFIRM even though it's the last one.
+      expect((frags.last[0] & 0x20) != 0, isTrue, reason: 'final fragment still awaits its flush CONFIRM');
+
+      // Reassemble the static payload (existing helper) and check every point,
+      // changed or not, is present exactly once with its current value.
+      final values = reassembleAnalogInts(frags);
+      expect(values.length, 1000, reason: 'every static point delivered exactly once');
+      for (var i = 0; i < 1000; i++) {
+        final expected = newValues[i] ?? i;
+        expect(values[i], expected, reason: 'point $i present with its current value');
+      }
+
+      // Reassemble the events: every changed point must appear exactly once,
+      // as a g32v3 (analog input event) point, carrying its new value.
+      Uint8List concatObjects(List<Uint8List> fs) {
+        final b = BytesBuilder();
+        for (final f in fs) {
+          b.add(f.sublist(4));
+        }
+        return b.toBytes();
+      }
+
+      final eventPoints =
+          _decodeAllEventPoints(concatObjects(frags)).where((p) => p.group == 32 && p.variation == 3).toList();
+      final seenIndices = <int>{};
+      for (final p in eventPoints) {
+        expect(seenIndices.contains(p.index), isFalse, reason: 'event index ${p.index} delivered twice');
+        seenIndices.add(p.index);
+      }
+      expect(seenIndices, newValues.keys.toSet(), reason: 'every changed point delivered exactly once, none dropped');
+      for (final p in eventPoints) {
+        expect(_decodeI32(p.payload), newValues[p.index], reason: 'event for point ${p.index} carries its new value');
+      }
+
+      // The drive loop above stops the instant FIN is seen — it never CONFIRMs
+      // the final fragment itself. That CONFIRM is what actually flushes the
+      // events (`_confirmSolicited`'s "all fragments already sent" branch).
+      final lastSeq = frags.last[0] & 0x0F;
+      final afterFinalConfirm =
+          os.handleAppRequest(Uint8List.fromList([0xC0 | lastSeq, DnpFunc.confirm]), nowMs: 1);
+      expect(afterFinalConfirm, isEmpty, reason: 'a solicited CONFIRM never itself gets a reply');
+
+      // A subsequent read for the same event classes must NOT re-deliver the
+      // now-flushed events — proving the flush actually happened, not merely
+      // that CON went low on the last fragment.
+      final req2 = frag(0xC0, DnpFunc.read, [60, 1, 0x06, 60, 2, 0x06, 60, 3, 0x06, 60, 4, 0x06]);
+      final frags2 = driveRead(os, req2, nowMs: 2);
+      final eventPoints2 =
+          _decodeAllEventPoints(concatObjects(frags2)).where((p) => p.group == 32 && p.variation == 3).toList();
+      expect(eventPoints2, isEmpty, reason: 'events already flushed; a later read must not resend them');
+    });
+
+    test('a new read supersedes an in-flight paged read without losing or duplicating its data', () {
+      // Same shape of project as the event-flush test above: 1000 analog
+      // points (forces paging) with a handful carrying events across all
+      // three classes.
+      final eventClassByIndex = {5: 1, 15: 2, 25: 3, 35: 1};
+      final project = buildAnalogEventProject(1000, eventClassByIndex);
+      final os = DnpOutstation(projectProvider: () => project);
+      os.detectChanges(0);
+      final newValues = <int, int>{};
+      eventClassByIndex.forEach((idx, _) {
+        newValues[idx] = 7000 + idx;
+        writePath(project, 'Ai$idx', newValues[idx]!);
+      });
+      os.detectChanges(1);
+
+      // First read (seq=1): consume only its first fragment plus ONE CONFIRM
+      // (releasing fragment 2) — deliberately do NOT drive it to completion,
+      // so the paged read is genuinely still in-flight (mid-cursor) when the
+      // new read arrives.
+      final req1 = frag(0xC1, DnpFunc.read, [60, 1, 0x06, 60, 2, 0x06, 60, 3, 0x06, 60, 4, 0x06]);
+      final firstFrag = os.handleAppRequest(req1, nowMs: 2);
+      expect(firstFrag[0] & 0x40, 0, reason: 'first read must page (more than one fragment)');
+      final firstSeq = firstFrag[0] & 0x0F;
+      final secondFrag = os.handleAppRequest(Uint8List.fromList([0xC0 | firstSeq, DnpFunc.confirm]), nowMs: 2);
+      expect(secondFrag, isNotEmpty, reason: 'the matching CONFIRM releases the 2nd fragment');
+      expect(secondFrag[0] & 0x40, 0, reason: 'still not final — the first read stays genuinely in-flight');
+
+      // A brand-new read (seq=5) arrives while the first is still paged.
+      final req2 = frag(0xC5, DnpFunc.read, [60, 1, 0x06, 60, 2, 0x06, 60, 3, 0x06, 60, 4, 0x06]);
+      final newFirstFrag = os.handleAppRequest(req2, nowMs: 3);
+      expect(newFirstFrag[0] & 0x80, 0x80, reason: 'new read returns a well-formed FIRST fragment (FIR set)');
+      expect(newFirstFrag[0] & 0x0F, 5, reason: "new read carries its own sequence, unaffected by the old cursor");
+
+      // Drive the new read to completion by CONFIRMing from the fragment
+      // already obtained above (req2 itself must be sent only once — it was
+      // already sent, producing newFirstFrag).
+      final manualFrags = <Uint8List>[newFirstFrag];
+      var resp = newFirstFrag;
+      while ((resp[0] & 0x40) == 0) {
+        final seq = resp[0] & 0x0F;
+        resp = os.handleAppRequest(Uint8List.fromList([0xC0 | seq, DnpFunc.confirm]), nowMs: 3);
+        expect(resp, isNotEmpty, reason: 'the new read cursor is not corrupted by the superseded one');
+        manualFrags.add(resp);
+      }
+      expect(manualFrags.length, greaterThan(1), reason: 'the new read itself must still page');
+      for (var i = 0; i < manualFrags.length; i++) {
+        expect(manualFrags[i][0] & 0x0F, (5 + i) & 0x0F, reason: 'fragment $i sequence increments cleanly from 5');
+      }
+
+      // Full static set present exactly once, in order, reflecting current values.
+      final values = reassembleAnalogInts(manualFrags);
+      expect(values.length, 1000);
+      for (var i = 0; i < 1000; i++) {
+        final expected = newValues[i] ?? i;
+        expect(values[i], expected, reason: 'point $i present with its current value, once');
+      }
+
+      // The events from the changes made before the FIRST (superseded) read
+      // are still available — `pull()` never removes them from the buffer,
+      // and the superseded read's cursor was discarded before it ever reached
+      // its flush-on-CONFIRM branch — so the new read must still deliver
+      // every one of them, exactly once: nothing lost to the supersession.
+      final objBytes = BytesBuilder();
+      for (final f in manualFrags) {
+        objBytes.add(f.sublist(4));
+      }
+      final eventPoints =
+          _decodeAllEventPoints(objBytes.toBytes()).where((p) => p.group == 32 && p.variation == 3).toList();
+      final seenIndices = <int>{};
+      for (final p in eventPoints) {
+        expect(seenIndices.contains(p.index), isFalse, reason: 'event index ${p.index} delivered twice');
+        seenIndices.add(p.index);
+      }
+      expect(seenIndices, newValues.keys.toSet(), reason: 'no event lost to the superseded read; none duplicated');
+      for (final p in eventPoints) {
+        expect(_decodeI32(p.payload), newValues[p.index], reason: 'event for point ${p.index} carries its value');
+      }
     });
   });
 }
