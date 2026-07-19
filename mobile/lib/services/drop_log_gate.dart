@@ -71,8 +71,9 @@ class DropLogGate {
 
   /// True if a WARN slot was successfully claimed for [reason] on a
   /// connection whose already-warned set is [connectionSeen]. Mutates both
-  /// [connectionSeen] and the host-wide budget, so it is called ONLY when an
-  /// entry is actually going to be recorded.
+  /// [connectionSeen] and the host-wide budget, so it must be called ONLY when
+  /// a WARN would actually be recorded — [ConnectionDropLog.drop] enforces
+  /// that with an [AppLogger.isEnabled] check before it calls this.
   bool _claimWarn(Set<String> connectionSeen, String reason) {
     if (!connectionSeen.add(reason)) {
       return false; // this connection already warned about this reason
@@ -109,6 +110,17 @@ class ConnectionDropLog {
     if (logger == null) {
       // Claim nothing and touch no state: a bare host must be indistinguishable
       // from one built before this class existed.
+      return;
+    }
+    if (!logger.isEnabled(_gate.source, LogLevel.warn)) {
+      // The source is configured ABOVE warn (e.g. error-only), so a WARN would
+      // be built and then discarded. Claiming a slot for an entry nobody will
+      // ever see would silently burn the announcement budget, so claim
+      // nothing: fall straight through to the frame-detail level, which this
+      // configuration also discards. (Unreachable from today's UI, which only
+      // offers debug/info — this keeps `_claimWarn`'s stated invariant true
+      // rather than true-by-luck.)
+      logger.logLazy(_gate.source, LogLevel.debug, build);
       return;
     }
     final level = _gate._claimWarn(_warned, reason) ? LogLevel.warn : LogLevel.debug;

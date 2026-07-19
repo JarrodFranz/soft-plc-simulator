@@ -119,6 +119,7 @@ import '../models/tag_resolver.dart';
 import '../protocols/mqtt/mqtt_codec.dart';
 import '../protocols/mqtt/mqtt_publisher.dart';
 import 'app_logger.dart';
+import 'drop_log_gate.dart';
 import 'notify_throttle.dart';
 
 /// Lifecycle status of the [MqttHost]. `connecting` (absent from the
@@ -263,6 +264,25 @@ class MqttHost extends ChangeNotifier {
   /// that could carry one. See `_password`'s own doc above.
   final AppLogger? logger;
 
+  /// This host's first-occurrence WARN gate for write refusals.
+  ///
+  /// *** WHY REFUSALS ARE GATED HERE AND NOT ELSEWHERE ***
+  /// Modbus and S7 refuse a write with a synchronous EXCEPTION RESPONSE the
+  /// client actually sees, which paces the offender. MQTT has NO response
+  /// channel at all — a Sparkplug NCMD/DCMD writer polling at 1 Hz against a
+  /// project with `allowRemoteWrites: false` never learns it is being refused
+  /// and never stops. One always-on WARN per inbound PUBLISH would evict the
+  /// entire 2000-entry ring buffer in ~33 minutes at 1 Hz (~3 minutes at
+  /// 10 Hz), destroying every other source's history — the exact "makes the
+  /// log useless in practice" failure `drop_log_gate.dart` exists to prevent.
+  /// So the first few refusals of each kind still announce at WARN, and the
+  /// repeats fall to DEBUG.
+  late final DropLogGate _dropGate = DropLogGate(kLogSourceMqtt, logger);
+
+  /// The current broker connection's view of [_dropGate]. Re-armed per
+  /// connection, exactly like the listening hosts do per accepted socket.
+  late ConnectionDropLog _dropLog = _dropGate.forConnection();
+
   MqttHost({this.pingIntervalOverride, this.nowMsOverride, this.logger}) {
     _throttle = NotifyThrottle(() => notifyListeners(), window: const Duration(milliseconds: 250));
   }
@@ -333,6 +353,9 @@ class MqttHost extends ChangeNotifier {
     _projectProvider = projectProvider;
     _password = password;
     _reconnectAttempt = 0;
+    // A fresh start re-announces a still-broken configuration, mirroring the
+    // `start()`-time reset every listening host does.
+    _dropGate.reset();
     if (!_clock.isRunning) {
       _clock
         ..reset()
@@ -425,6 +448,7 @@ class MqttHost extends ChangeNotifier {
       }
 
       _socket = socket;
+      _dropLog = _dropGate.forConnection();
       final connectPacket = encodeConnect(
         clientId: _clientId(cfg, project),
         keepAliveSecs: _keepAliveSecs,
@@ -698,12 +722,14 @@ class MqttHost extends ChangeNotifier {
     }
 
     if (project.protocols?.mqtt?.allowRemoteWrites != true) {
-      // A WRITE REFUSAL — always on, because an operator wondering why a
-      // remote command "does nothing" needs to see it without first raising
-      // the verbosity. Topic only; never the payload.
-      logger?.logLazy(
-        kLogSourceMqtt,
-        LogLevel.warn,
+      // A WRITE REFUSAL: an operator wondering why a remote command "does
+      // nothing" needs to see this without first raising the verbosity, so the
+      // FIRST few announce at WARN. But a remote publisher gets no response
+      // from MQTT and so never stops, which is why this goes through the drop
+      // gate rather than logging one WARN per PUBLISH — see `_dropGate`.
+      // Topic only; never the payload.
+      _dropLog.drop(
+        'mqtt-remote-writes-disabled',
         () => 'Remote write refused on "${pub.topic}": remote writes are '
             'disabled for this project.',
       );
@@ -717,9 +743,8 @@ class MqttHost extends ChangeNotifier {
         // MQTT has no synchronous response channel to say so — so the log is
         // the only place this can ever surface. Tag path only; never the
         // value the remote publisher tried to write.
-        logger?.logLazy(
-          kLogSourceMqtt,
-          LogLevel.warn,
+        _dropLog.drop(
+          'mqtt-forced-tag',
           () => 'Remote write refused on tag "${cmd.tagPath}": the tag is '
               'forced.',
         );

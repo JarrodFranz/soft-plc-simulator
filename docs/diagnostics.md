@@ -33,7 +33,7 @@ Open **Logs** from the left dock. The screen has three parts:
   level** dropdown (TRACE/DEBUG/INFO/WARN/ERROR — hides anything below the
   selected severity), a **Live tail** switch, and **Clear** (empties the
   buffer).
-- **Sources** and **Per-source verbosity (DEBUG/TRACE)** — two collapsed-by-
+- **Sources** and **Per-source verbosity (DEBUG)** — two collapsed-by-
   default disclosure panels. Sources lets you narrow the view to one or more
   sources (a multi-select — none selected means "show all"). Verbosity is
   covered below.

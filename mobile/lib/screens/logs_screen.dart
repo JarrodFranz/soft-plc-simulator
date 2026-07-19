@@ -23,8 +23,10 @@
 // per-source verbosity panel, and the screen's own `Scaffold`/`AppBar` are
 // built once by `State.build()` and are not inside the `ListenableBuilder`,
 // so they never rebuild on a tick. Only that inner call site invokes
-// `LiveTickScope.of(context)`, and only while live-tail is ON (see below) —
-// this is the "wrap only the leaf" pattern the doc comment calls for.
+// `LiveTickScope.of(context)`, and only while live-tail is ON (while it is
+// OFF the builder is handed a never-notifying `Listenable` instead, so
+// nothing is subscribed to the tick at all) — this is the "wrap only the
+// leaf" pattern the doc comment calls for.
 //
 // ── LIVE-TAIL ON vs OFF ──────────────────────────────────────────────────
 // ON (the default): every tick pulse re-reads `logger.entries`, re-applies
@@ -79,6 +81,22 @@ String _formatTime(int tMs) {
   String three(int n) => n.toString().padLeft(3, '0');
   return '${two(dt.hour)}:${two(dt.minute)}:${two(dt.second)}.${three(dt.millisecond)}';
 }
+
+/// A [Listenable] that never notifies. Handed to the log list's
+/// `ListenableBuilder` while live-tail is OFF, so the frozen state occupies
+/// the same widget slot with the same `runtimeType` as the live state without
+/// subscribing to anything — see `_buildLogList` for why that matters.
+class _NeverNotifies implements Listenable {
+  const _NeverNotifies();
+
+  @override
+  void addListener(VoidCallback listener) {}
+
+  @override
+  void removeListener(VoidCallback listener) {}
+}
+
+const Listenable _kFrozenListenable = _NeverNotifies();
 
 class LogsScreen extends StatefulWidget {
   final AppLogger logger;
@@ -305,7 +323,7 @@ class _LogsScreenState extends State<LogsScreen> {
       data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
       child: ExpansionTile(
         title: const Text(
-          'Per-source verbosity (DEBUG/TRACE)',
+          'Per-source verbosity (DEBUG)',
           style: TextStyle(fontSize: 13, color: Colors.white70),
         ),
         initiallyExpanded: _verbosityExpanded,
@@ -349,19 +367,39 @@ class _LogsScreenState extends State<LogsScreen> {
   /// live-tail is on; while it's off, this builds once from `_frozenRaw` and
   /// is not wired to the tick at all.
   Widget _buildLogList(BuildContext context) {
-    if (_liveTail) {
-      final tick = LiveTickScope.of(context);
-      return ListenableBuilder(
-        listenable: tick,
-        builder: (context, _) {
-          final raw = widget.logger.entries;
-          final filtered = _applyFilter(raw);
-          _followTail();
-          return _buildListBody(raw, filtered);
-        },
-      );
-    }
-    return _buildListBody(_frozenRaw, _applyFilter(_frozenRaw));
+    // *** WHY BOTH STATES GO THROUGH A ListenableBuilder ***
+    // Returning a `ListenableBuilder` in one state and a bare list in the
+    // other would put two DIFFERENT `runtimeType`s in the same slot.
+    // `Widget.canUpdate` compares `runtimeType`, so toggling live-tail would
+    // deactivate this subtree and inflate a fresh one: the `ListView`'s
+    // `Scrollable` is disposed, its `ScrollPosition` goes with it, and the
+    // replacement gets `createScrollPosition(oldPosition: null)`. A
+    // `ScrollController` does NOT carry an offset across that — only
+    // `oldPosition` absorption or `PageStorage` (which needs a
+    // `PageStorageKey` on the path, and there is none) does — so the list
+    // would land at offset 0. That is exactly backwards: an operator flips
+    // live-tail OFF to keep reading where they are, and would instead be
+    // thrown to the OLDEST entry in a 2000-entry buffer.
+    //
+    // So the widget TYPE is constant and only the `listenable` changes.
+    // `ListenableBuilder.didUpdateWidget` re-subscribes cleanly, the element
+    // (and with it the `ScrollPosition`) is preserved, and the good property
+    // that nothing is subscribed to the tick while frozen is kept intact:
+    // `LiveTickScope.of(context)` is not even called in the frozen state, and
+    // `_kFrozenListenable` never notifies anyone.
+    final listenable = _liveTail ? LiveTickScope.of(context) : _kFrozenListenable;
+    return ListenableBuilder(
+      listenable: listenable,
+      builder: (context, _) {
+        if (!_liveTail) {
+          return _buildListBody(_frozenRaw, _applyFilter(_frozenRaw));
+        }
+        final raw = widget.logger.entries;
+        final filtered = _applyFilter(raw);
+        _followTail();
+        return _buildListBody(raw, filtered);
+      },
+    );
   }
 
   Widget _buildListBody(List<LogEntry> raw, List<LogEntry> filtered) {

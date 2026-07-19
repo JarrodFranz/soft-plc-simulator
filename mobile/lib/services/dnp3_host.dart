@@ -27,6 +27,7 @@ import 'package:flutter/foundation.dart';
 
 import '../models/app_log.dart';
 import '../models/project_model.dart';
+import '../protocols/dnp3/dnp3_app.dart';
 import '../protocols/dnp3/dnp3_link.dart';
 import '../protocols/dnp3/dnp3_outstation.dart';
 import '../protocols/dnp3/dnp3_transport.dart';
@@ -178,14 +179,32 @@ class _Connection {
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     final response = outstation.handleAppRequest(appFragment, nowMs: nowMs);
     if (response.isEmpty) {
+      // *** WHY THIS GUARDS ON THE FUNCTION CODE, NOT ON EMPTINESS ***
       // A CONFIRM (function code 0) yields an empty response fragment —
-      // CONFIRMs never get a reply of their own.
-      // Correct protocol behaviour, not a failure — never promoted to WARN.
-      // See `ConnectionDropLog.specSilence`.
-      dropLog.specSilence(() => 'No reply sent for an application fragment of '
-          '${appFragment.length} bytes (function '
-          '${_hex(appFragment.length > 1 ? appFragment[1] : 0)}); a CONFIRM '
-          'is never answered.');
+      // CONFIRMs never get a reply of their own. That is correct protocol
+      // behaviour, not a failure, so it is spec-mandated silence and is never
+      // promoted to WARN (see `ConnectionDropLog.specSilence`).
+      //
+      // But "the outstation returned nothing" and "the request was a CONFIRM"
+      // are not the same fact. Keying the exemption on emptiness would mean
+      // any FUTURE outstation path that returns empty for a request it cannot
+      // serve gets silently filed as spec-mandated silence and can never
+      // announce itself — precisely the silent drop this whole feature exists
+      // to close. So only a real CONFIRM takes the exemption; anything else
+      // that yields no reply falls through to the first-occurrence WARN.
+      final functionCode = appFragment.length > 1 ? appFragment[1] : -1;
+      if (functionCode == DnpFunc.confirm) {
+        dropLog.specSilence(() => 'No reply sent for an application fragment of '
+            '${appFragment.length} bytes (function ${_hex(functionCode)}); a '
+            'CONFIRM is never answered.');
+      } else {
+        _logDrop(
+          'dnp3-empty-response',
+          () => 'Dropped an application fragment of ${appFragment.length} '
+              'bytes: the outstation produced no response for function '
+              '${functionCode < 0 ? 'n/a' : _hex(functionCode)}.',
+        );
+      }
       return;
     }
     final responseFrames = _buildResponseFrames(

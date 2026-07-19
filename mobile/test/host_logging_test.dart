@@ -19,15 +19,23 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/app_log.dart';
+import 'package:soft_plc_mobile/models/cip_map.dart';
+import 'package:soft_plc_mobile/models/dnp3_map.dart';
 import 'package:soft_plc_mobile/models/mqtt_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/models/s7_map.dart';
+import 'package:soft_plc_mobile/protocols/dnp3/dnp3_app.dart';
+import 'package:soft_plc_mobile/protocols/dnp3/dnp3_link.dart';
+import 'package:soft_plc_mobile/protocols/dnp3/dnp3_transport.dart';
+import 'package:soft_plc_mobile/protocols/enip/enip_encap.dart';
 import 'package:soft_plc_mobile/protocols/mqtt/mqtt_codec.dart';
 import 'package:soft_plc_mobile/protocols/s7/s7_pdu.dart';
 import 'package:soft_plc_mobile/protocols/s7/tpkt_cotp.dart';
 import 'package:soft_plc_mobile/services/app_logger.dart';
+import 'package:soft_plc_mobile/services/dnp3_host.dart';
 import 'package:soft_plc_mobile/services/drop_log_gate.dart';
+import 'package:soft_plc_mobile/services/enip_host.dart';
 import 'package:soft_plc_mobile/services/mqtt_host.dart';
 import 'package:soft_plc_mobile/services/s7_host.dart';
 
@@ -256,6 +264,91 @@ class _FakeBroker {
     }
     await server.close();
   }
+}
+
+// --- DNP3 fixtures ----------------------------------------------------------
+
+PlcProject _dnp3Project({int port = 0}) {
+  final project = PlcProject(
+    id: 'proj_host_logging_dnp3',
+    name: 'Host Logging DNP3',
+    controllerName: 'PLC_LOG',
+    tags: [
+      PlcTag(name: 'Speed', path: 'Internal.Speed', dataType: 'INT32', value: 1234, ioType: 'Internal'),
+    ],
+    structDefs: [],
+    programs: [],
+    tasks: [],
+    hmis: [],
+  );
+  project.protocols = ProtocolSettings.defaults(project);
+  project.protocols!.dnp3 = DnpProtocolConfig(
+    enabled: true,
+    port: port,
+    outstationAddress: _kDnp3Outstation,
+    masterAddress: _kDnp3Master,
+    map: DnpMap(entries: [DnpMapEntry(tag: 'Speed', pointType: 'analogInput', index: 0)]),
+  );
+  return project;
+}
+
+const int _kDnp3Outstation = 1024;
+const int _kDnp3Master = 1;
+
+/// A fully link- and transport-framed application CONFIRM (function code 0) —
+/// the request a real master sends to acknowledge a response, and which an
+/// outstation must never answer.
+Uint8List _dnp3ConfirmFrame({int seq = 0}) {
+  final appFragment = Uint8List.fromList([
+    0xC0 | (seq & 0x0F), // APP_CONTROL: FIR|FIN, sequence
+    DnpFunc.confirm,
+  ]);
+  final segment = buildTransport(seq, fir: true, fin: true, appData: appFragment);
+  return buildLinkFrame(
+    control: 0xC4,
+    dest: _kDnp3Outstation,
+    src: _kDnp3Master,
+    userData: segment,
+  );
+}
+
+// --- EtherNet/IP fixtures ---------------------------------------------------
+
+PlcProject _enipProject({int port = 0}) {
+  final project = PlcProject(
+    id: 'proj_host_logging_enip',
+    name: 'Host Logging ENIP',
+    controllerName: 'PLC_LOG',
+    tags: [
+      PlcTag(name: 'Speed', path: 'Internal.Speed', dataType: 'INT16', value: 1234, ioType: 'Internal'),
+    ],
+    structDefs: [],
+    programs: [],
+    tasks: [],
+    hmis: [],
+  );
+  project.protocols = ProtocolSettings.defaults(project);
+  project.protocols!.ethernetIp = CipProtocolConfig(
+    enabled: true,
+    port: port,
+    map: CipMap(entries: [CipMapEntry(tagName: 'Speed', access: 'ReadWrite')]),
+  );
+  return project;
+}
+
+/// A NOP encapsulation frame — a keepalive that elicits no response by spec.
+Uint8List _enipNopFrame() {
+  return buildEnipFrame(
+    EnipHeader(
+      command: kEnipCommandNop,
+      length: 0,
+      sessionHandle: 0,
+      status: 0,
+      senderContext: Uint8List(8),
+      options: 0,
+    ),
+    Uint8List(0),
+  );
 }
 
 void main() {
@@ -598,6 +691,151 @@ void main() {
       await host.disconnect();
       host.dispose();
       await broker.close();
+    });
+
+    // *** WHY REFUSALS MUST BE BOUNDED, NOT MERELY LOGGED ***
+    // Modbus and S7 refuse a write with a synchronous exception response, so
+    // the client is paced by the protocol itself. MQTT has NO response
+    // channel: a Sparkplug NCMD/DCMD writer polling against a project with
+    // `allowRemoteWrites: false` never learns it is being refused and never
+    // stops. One always-on WARN per inbound PUBLISH would evict a 2000-entry
+    // ring buffer in ~33 minutes at 1 Hz, destroying every other source's
+    // history — the log would still be "correct" and completely useless. So
+    // the refusal goes through the same first-occurrence gate as every other
+    // drop site.
+    test('repeated refused writes emit a BOUNDED number of warns, not one per '
+        'message', () async {
+      final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final broker = _FakeBroker(server, onConnect: (b) => b.sendConnack(0));
+
+      final logger = AppLogger(); // default level: info
+      final host = MqttHost(logger: logger);
+      await host.connect(_mqttProject(port: server.port), password: '');
+
+      await _waitForEntry(logger, (e) => e.source == kLogSourceMqtt && _mentions(e, 'connected'));
+
+      // Comfortably more refusals than the budget allows, exactly as a 1 Hz
+      // command writer would produce.
+      const publishes = kMaxDropWarnsPerReason + 12;
+      for (var i = 0; i < publishes; i++) {
+        broker.sendRaw(encodePublish(
+          topic: 'softplc/SoftPLC/Node1/cmd/Speed',
+          payload: Uint8List.fromList('{"value":$i}'.codeUnits),
+          qos: 0,
+          retain: false,
+        ));
+        await _settle(30);
+      }
+      await _settle();
+
+      final warns = logger.entries
+          .where((e) =>
+              e.source == kLogSourceMqtt &&
+              e.level == LogLevel.warn &&
+              _mentions(e, 'refused'))
+          .toList();
+      expect(warns, isNotEmpty,
+          reason: 'the refusal must still ANNOUNCE itself at the default level');
+      expect(warns.length, lessThanOrEqualTo(kMaxDropWarnsPerReason),
+          reason: 'a publisher with no response channel must not be able to '
+              'evict the whole buffer one WARN at a time');
+
+      await host.disconnect();
+      host.dispose();
+      await broker.close();
+    });
+  });
+
+  // *** WHY specSilence NEEDS ITS OWN TESTS ***
+  // `specSilence` is the ONE exemption from the first-occurrence WARN. If it
+  // were ever applied too widely, a real silent drop would be filed as
+  // spec-mandated silence and would never announce itself — invisibly undoing
+  // the entire point of this feature. So the exemption is asserted directly:
+  // these protocol-correct silences must produce NO warn at the default level.
+  group('specSilence — protocol-mandated silence never warns', () {
+    test('a DNP3 CONFIRM (which is never answered) produces no warn', () async {
+      final logger = AppLogger(); // kLogSourceDnp3 stays at the default: info
+      final host = DnpHost(logger: logger);
+      await host.start(() => _dnp3Project());
+
+      final endpoint = Uri.parse(host.endpointUrl!.replaceFirst('dnp3://', 'tcp://'));
+      final socket = await Socket.connect('127.0.0.1', endpoint.port);
+      socket.listen((_) {}, onError: (Object _, StackTrace __) {}, cancelOnError: false);
+
+      // Several CONFIRMs — a repeat must not sneak past on a second reason
+      // either.
+      for (var i = 0; i < 4; i++) {
+        socket.add(_dnp3ConfirmFrame(seq: i));
+        await socket.flush();
+        await _settle(80);
+      }
+      await _settle();
+
+      expect(
+        logger.entries
+            .where((e) => e.source == kLogSourceDnp3 && e.level.index >= LogLevel.warn.index)
+            .toList(),
+        isEmpty,
+        reason: 'a CONFIRM is correct protocol behaviour — warning about it '
+            'would train an operator to ignore the warnings that matter',
+      );
+
+      socket.destroy();
+      await host.stop();
+    });
+
+    test('an EtherNet/IP NOP (which elicits no response) produces no warn', () async {
+      final logger = AppLogger(); // kLogSourceEnip stays at the default: info
+      final host = EnipHost(logger: logger);
+      await host.start(() => _enipProject());
+
+      final endpoint = Uri.parse(host.endpointUrl!.replaceFirst('enip-tcp://', 'tcp://'));
+      final socket = await Socket.connect('127.0.0.1', endpoint.port);
+      socket.listen((_) {}, onError: (Object _, StackTrace __) {}, cancelOnError: false);
+
+      for (var i = 0; i < 4; i++) {
+        socket.add(_enipNopFrame());
+        await socket.flush();
+        await _settle(80);
+      }
+      await _settle();
+
+      expect(
+        logger.entries
+            .where((e) => e.source == kLogSourceEnip && e.level.index >= LogLevel.warn.index)
+            .toList(),
+        isEmpty,
+        reason: 'a NOP elicits no response per spec — staying silent IS the '
+            'correct answer, so it must never be promoted to WARN',
+      );
+
+      socket.destroy();
+      await host.stop();
+    });
+
+    test('at debug the DNP3 CONFIRM silence IS recorded, as frame detail', () async {
+      final logger = AppLogger();
+      logger.setSourceLevel(kLogSourceDnp3, LogLevel.debug);
+      final host = DnpHost(logger: logger);
+      await host.start(() => _dnp3Project());
+
+      final endpoint = Uri.parse(host.endpointUrl!.replaceFirst('dnp3://', 'tcp://'));
+      final socket = await Socket.connect('127.0.0.1', endpoint.port);
+      socket.listen((_) {}, onError: (Object _, StackTrace __) {}, cancelOnError: false);
+
+      socket.add(_dnp3ConfirmFrame(seq: 0));
+      await socket.flush();
+
+      final entry = await _waitForEntry(
+        logger,
+        (e) => e.source == kLogSourceDnp3 && _mentions(e, 'confirm is never answered'),
+      );
+      expect(entry.level, LogLevel.debug,
+          reason: 'spec-mandated silence is pure frame detail: visible when '
+              'asked for, never announced');
+
+      socket.destroy();
+      await host.stop();
     });
   });
 }
