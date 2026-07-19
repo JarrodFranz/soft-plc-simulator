@@ -364,3 +364,264 @@ Uint8List buildSetupCommunicationReply({
   ByteData.sublistView(out, 6, 8).setUint16(0, pduLength & 0xFFFF, Endian.big);
   return out;
 }
+
+// --- Read/Write Var item specification ---------------------------------------
+//
+// An item specification is a fixed 12-byte block (all multi-byte fields
+// BIG-ENDIAN):
+//   0x12  variable specification marker
+//   0x0A  length of the 10 bytes that follow
+//   0x10  syntax id (S7ANY)
+//   u8    transport size
+//   u16   count
+//   u16   DB number
+//   u8    area
+//   u24   address, encoding `byteOffset * 8 + bitOffset`
+//
+// The 24-bit address packs the bit offset into the low three bits, so the
+// byte offset is `address >> 3` and the bit offset is `address & 0x07`.
+
+/// Leading marker byte of a variable specification.
+const int kS7VarSpecMarker = 0x12;
+
+/// The `length of following` byte of a variable specification: the 10 bytes
+/// after the marker and this byte.
+const int kS7VarSpecFollowingLen = 0x0A;
+
+/// S7ANY addressing syntax id — the only syntax this codec supports.
+const int kS7SyntaxIdS7Any = 0x10;
+
+/// Total length, in bytes, of one item specification: the 2 leading bytes
+/// plus [kS7VarSpecFollowingLen] (10) = 12.
+const int kS7ItemSpecLen = 12;
+
+// --- Data transport sizes (response/write DATA items) ------------------------
+//
+// These live in a DIFFERENT namespace from the item-specification transport
+// sizes (`kS7TransportSize*`, 0x01..0x08) above. They appear in the second
+// byte of a data item and — critically — determine the UNIT of the item's
+// length field.
+
+/// Null data transport: no data follows. Used on error items.
+const int kS7DataTransportNull = 0x00;
+
+/// BIT data transport. The data item's length field is in BITS.
+const int kS7DataTransportBit = 0x03;
+
+/// BYTE/WORD data transport. The data item's length field is in BITS.
+const int kS7DataTransportByteWord = 0x04;
+
+/// OCTET STRING data transport. The data item's length field is in BYTES.
+const int kS7DataTransportOctetString = 0x09;
+
+/// Length, in bytes, of a data item's fixed header: `returnCode`(1) +
+/// `transportSize`(1) + `length`(2).
+const int kS7DataItemHeaderLen = 4;
+
+/// True if [transportSize] declares its data item's length field in BITS
+/// (rather than bytes). Getting this backwards is a classic S7
+/// implementation error: [kS7DataTransportBit] (0x03) and
+/// [kS7DataTransportByteWord] (0x04) count BITS, while
+/// [kS7DataTransportOctetString] (0x09) counts BYTES.
+bool s7DataLengthIsInBits(int transportSize) {
+  return transportSize == kS7DataTransportBit || transportSize == kS7DataTransportByteWord;
+}
+
+/// A decoded Read/Write Var item specification.
+class S7Item {
+  final int transportSize;
+  final int count;
+  final int dbNumber;
+  final int area;
+  final int byteOffset;
+  final int bitOffset;
+
+  S7Item({
+    required this.transportSize,
+    required this.count,
+    required this.dbNumber,
+    required this.area,
+    required this.byteOffset,
+    required this.bitOffset,
+  });
+
+  /// The packed 24-bit wire address: `byteOffset * 8 + bitOffset`.
+  int get bitAddress => byteOffset * 8 + bitOffset;
+}
+
+/// Builds one 12-byte item specification. [count], [dbNumber] and the 24-bit
+/// address are all BIG-ENDIAN; the address encodes
+/// `byteOffset * 8 + bitOffset`.
+Uint8List buildS7Item({
+  required int transportSize,
+  required int count,
+  required int dbNumber,
+  required int area,
+  required int byteOffset,
+  int bitOffset = 0,
+}) {
+  final out = Uint8List(kS7ItemSpecLen);
+  out[0] = kS7VarSpecMarker;
+  out[1] = kS7VarSpecFollowingLen;
+  out[2] = kS7SyntaxIdS7Any;
+  out[3] = transportSize & 0xFF;
+  ByteData.sublistView(out, 4, 6).setUint16(0, count & 0xFFFF, Endian.big);
+  ByteData.sublistView(out, 6, 8).setUint16(0, dbNumber & 0xFFFF, Endian.big);
+  out[8] = area & 0xFF;
+  final address = (byteOffset * 8 + bitOffset) & 0xFFFFFF;
+  out[9] = (address >> 16) & 0xFF; // BIG-ENDIAN: most significant byte first
+  out[10] = (address >> 8) & 0xFF;
+  out[11] = address & 0xFF;
+  return out;
+}
+
+/// Parses one item specification starting at [offset] in [buffer]. All
+/// multi-byte fields are BIG-ENDIAN; the 24-bit address is split back into
+/// `byteOffset` (`address >> 3`) and `bitOffset` (`address & 0x07`).
+///
+/// Returns `null` — and never throws — if fewer than [kS7ItemSpecLen] bytes
+/// remain at [offset], if [offset] is negative, or if the marker / following
+/// length / syntax id bytes are not the expected S7ANY values.
+S7Item? parseS7Item(Uint8List buffer, [int offset = 0]) {
+  if (offset < 0 || buffer.length - offset < kS7ItemSpecLen) {
+    return null;
+  }
+  if (buffer[offset] != kS7VarSpecMarker) {
+    return null;
+  }
+  if (buffer[offset + 1] != kS7VarSpecFollowingLen) {
+    return null;
+  }
+  if (buffer[offset + 2] != kS7SyntaxIdS7Any) {
+    return null;
+  }
+  final count = ByteData.sublistView(buffer, offset + 4, offset + 6).getUint16(0, Endian.big);
+  final dbNumber = ByteData.sublistView(buffer, offset + 6, offset + 8).getUint16(0, Endian.big);
+  final address = (buffer[offset + 9] << 16) | (buffer[offset + 10] << 8) | buffer[offset + 11];
+  return S7Item(
+    transportSize: buffer[offset + 3],
+    count: count,
+    dbNumber: dbNumber,
+    area: buffer[offset + 8],
+    byteOffset: address >> 3,
+    bitOffset: address & 0x07,
+  );
+}
+
+/// Alias of [parseS7Item] under the name the implementation plan uses. Read
+/// Var and Write Var share one item-specification layout, so there is a
+/// single parser behind both names.
+S7Item? parseReadItem(Uint8List buffer, [int offset = 0]) => parseS7Item(buffer, offset);
+
+// --- Read/Write Var parameter -------------------------------------------------
+
+/// A decoded Read Var / Write Var parameter block: the function code and the
+/// item specifications that follow it.
+class S7VarParameter {
+  final int function;
+  final List<S7Item> items;
+
+  S7VarParameter({required this.function, required this.items});
+}
+
+/// Builds the 2-byte leading parameter of a Read Var / Write Var message (or
+/// of its response): the function code, then the item count. For a request
+/// the caller appends [buildS7Item] blocks; for a Read Var RESPONSE the data
+/// section carries the data items instead, and for a Write Var RESPONSE the
+/// data section carries one return-code byte per item
+/// ([buildWriteResponseData]).
+Uint8List buildVarParameter({required int function, required int itemCount}) {
+  return Uint8List.fromList([function & 0xFF, itemCount & 0xFF]);
+}
+
+/// Parses a Read Var / Write Var request parameter: function code, item
+/// count, then exactly that many [kS7ItemSpecLen]-byte item
+/// specifications.
+///
+/// Returns `null` — and never throws — if [parameter] is shorter than the
+/// 2-byte header, if it does not carry as many complete items as its count
+/// declares, or if any item fails to parse.
+S7VarParameter? parseVarParameter(Uint8List parameter) {
+  if (parameter.length < 2) {
+    return null;
+  }
+  final function = parameter[0];
+  final itemCount = parameter[1];
+  if (parameter.length < 2 + itemCount * kS7ItemSpecLen) {
+    return null;
+  }
+  final items = <S7Item>[];
+  for (var i = 0; i < itemCount; i++) {
+    final item = parseS7Item(parameter, 2 + i * kS7ItemSpecLen);
+    if (item == null) {
+      return null;
+    }
+    items.add(item);
+  }
+  return S7VarParameter(function: function, items: items);
+}
+
+// --- Data items ----------------------------------------------------------------
+
+/// Builds one response/write DATA item: `returnCode` u8, `transportSize` u8,
+/// `length` u16 BIG-ENDIAN, then [data], padded with a trailing `0x00` when
+/// [data] has an odd length so the item always occupies an EVEN number of
+/// bytes.
+///
+/// **The length field's UNIT depends on [transportSize]**: BITS for
+/// [kS7DataTransportBit] (0x03) and [kS7DataTransportByteWord] (0x04), BYTES
+/// for [kS7DataTransportOctetString] (0x09) and everything else — see
+/// [s7DataLengthIsInBits]. The declared length always describes the REAL
+/// payload and never counts the pad byte.
+Uint8List buildDataItem({
+  required int returnCode,
+  required int transportSize,
+  required Uint8List data,
+}) {
+  final padded = data.length.isOdd ? data.length + 1 : data.length;
+  final out = Uint8List(kS7DataItemHeaderLen + padded);
+  out[0] = returnCode & 0xFF;
+  out[1] = transportSize & 0xFF;
+  final declared = s7DataLengthIsInBits(transportSize) ? data.length * 8 : data.length;
+  ByteData.sublistView(out, 2, 4).setUint16(0, declared & 0xFFFF, Endian.big);
+  out.setRange(kS7DataItemHeaderLen, kS7DataItemHeaderLen + data.length, data);
+  return out;
+}
+
+/// Splits the DATA section of a Write Var request into one raw payload per
+/// item, honouring each item's own transport size for the length UNIT and
+/// skipping the inter-item pad byte after an odd-length payload.
+///
+/// Returns `null` — and never throws — if the section does not contain
+/// [itemCount] complete data items.
+List<Uint8List>? parseWriteDataItems(Uint8List data, int itemCount) {
+  if (itemCount < 0) {
+    return null;
+  }
+  final out = <Uint8List>[];
+  var offset = 0;
+  for (var i = 0; i < itemCount; i++) {
+    if (data.length - offset < kS7DataItemHeaderLen) {
+      return null;
+    }
+    final transportSize = data[offset + 1];
+    final declared = ByteData.sublistView(data, offset + 2, offset + 4).getUint16(0, Endian.big);
+    final payloadLen = s7DataLengthIsInBits(transportSize) ? (declared + 7) ~/ 8 : declared;
+    final start = offset + kS7DataItemHeaderLen;
+    if (data.length - start < payloadLen) {
+      return null;
+    }
+    out.add(Uint8List.fromList(data.sublist(start, start + payloadLen)));
+    offset = start + (payloadLen.isOdd ? payloadLen + 1 : payloadLen);
+  }
+  return out;
+}
+
+/// Builds the DATA section of a Write Var response: exactly one return-code
+/// byte per item, in request order. One bad item therefore never fails the
+/// others — each carries its own code ([kS7ReturnSuccess],
+/// [kS7ReturnObjectDoesNotExist], [kS7ReturnAddressOutOfRange],
+/// [kS7ReturnAccessDenied]).
+Uint8List buildWriteResponseData(List<int> returnCodes) {
+  return Uint8List.fromList(returnCodes.map((c) => c & 0xFF).toList());
+}

@@ -240,4 +240,294 @@ void main() {
       expect(negotiatePduLength(-5), kS7MinPduLength);
     });
   });
+
+  // --- Read/Write Var item specification (Task 4) --------------------------
+  //
+  // Layout (all multi-byte fields BIG-ENDIAN):
+  //   0x12  variable specification
+  //   0x0A  length of the following bytes
+  //   0x10  syntax id (S7ANY)
+  //   u8    transport size
+  //   u16   count
+  //   u16   DB number
+  //   u8    area
+  //   u24   address == byteOffset * 8 + bitOffset
+  group('S7 item specification', () {
+    test('buildS7Item emits the literal 12-byte layout with a 24-bit address', () {
+      final item = buildS7Item(
+        transportSize: kS7TransportSizeInt,
+        count: 0x0102,
+        dbNumber: 0x0304,
+        area: kS7AreaDataBlock,
+        byteOffset: 4,
+        bitOffset: 3,
+      );
+      // 4 * 8 + 3 == 35 == 0x000023.
+      expect(
+        item,
+        equals(Uint8List.fromList([
+          0x12, 0x0A, 0x10,
+          kS7TransportSizeInt,
+          0x01, 0x02, // count, BIG-ENDIAN (bytes differ)
+          0x03, 0x04, // db number, BIG-ENDIAN (bytes differ)
+          kS7AreaDataBlock,
+          0x00, 0x00, 0x23, // address = byteOffset * 8 + bitOffset
+        ])),
+      );
+      expect(item.length, kS7ItemSpecLen);
+    });
+
+    test('the 24-bit address is BIG-ENDIAN across all three bytes', () {
+      // byteOffset 8192 -> 8192 * 8 == 65536 == 0x010000.
+      final item = buildS7Item(
+        transportSize: kS7TransportSizeByte,
+        count: 1,
+        dbNumber: 1,
+        area: kS7AreaDataBlock,
+        byteOffset: 8192,
+      );
+      expect(item.sublist(9, 12), equals([0x01, 0x00, 0x00]));
+
+      // byteOffset 0x1234 (4660) -> * 8 == 37280 == 0x0091A0.
+      final item2 = buildS7Item(
+        transportSize: kS7TransportSizeByte,
+        count: 1,
+        dbNumber: 1,
+        area: kS7AreaDataBlock,
+        byteOffset: 0x1234,
+        bitOffset: 0,
+      );
+      expect(item2.sublist(9, 12), equals([0x00, 0x91, 0xA0]));
+    });
+
+    test('parseS7Item decodes a hand-built item, splitting the address back into byte/bit', () {
+      final wire = Uint8List.fromList([
+        0x12, 0x0A, 0x10,
+        kS7TransportSizeBit,
+        0x00, 0x01,
+        0x00, 0x07, // DB 7
+        kS7AreaDataBlock,
+        0x00, 0x00, 0x23, // 35 -> byteOffset 4, bitOffset 3
+      ]);
+      final item = parseS7Item(wire);
+      expect(item, isNotNull);
+      expect(item!.transportSize, kS7TransportSizeBit);
+      expect(item.count, 1);
+      expect(item.dbNumber, 7);
+      expect(item.area, kS7AreaDataBlock);
+      expect(item.byteOffset, 4);
+      expect(item.bitOffset, 3);
+      expect(item.bitAddress, 4 * 8 + 3);
+    });
+
+    test('parseReadItem is the brief-named alias of parseS7Item', () {
+      final wire = buildS7Item(
+        transportSize: kS7TransportSizeWord,
+        count: 2,
+        dbNumber: 9,
+        area: kS7AreaMerker,
+        byteOffset: 10,
+      );
+      final item = parseReadItem(wire);
+      expect(item, isNotNull);
+      expect(item!.dbNumber, 9);
+      expect(item.byteOffset, 10);
+      expect(item.bitOffset, 0);
+    });
+
+    test('parseS7Item returns null (never throws) on malformed input', () {
+      expect(parseS7Item(Uint8List(0)), isNull);
+      expect(parseS7Item(Uint8List.fromList([0x12, 0x0A])), isNull);
+      // Wrong specification byte.
+      final bad = buildS7Item(
+        transportSize: kS7TransportSizeInt, count: 1, dbNumber: 1,
+        area: kS7AreaDataBlock, byteOffset: 0,
+      );
+      bad[0] = 0x13;
+      expect(parseS7Item(bad), isNull);
+      // Wrong syntax id.
+      final bad2 = buildS7Item(
+        transportSize: kS7TransportSizeInt, count: 1, dbNumber: 1,
+        area: kS7AreaDataBlock, byteOffset: 0,
+      );
+      bad2[2] = 0x11;
+      expect(parseS7Item(bad2), isNull);
+      // Offset past the end.
+      expect(parseS7Item(bad2, 40), isNull);
+    });
+  });
+
+  group('S7 Read/Write Var parameter', () {
+    test('buildVarParameter emits function + item count, and parseVarParameter reads items back', () {
+      final items = [
+        buildS7Item(
+          transportSize: kS7TransportSizeByte, count: 4, dbNumber: 1,
+          area: kS7AreaDataBlock, byteOffset: 0,
+        ),
+        buildS7Item(
+          transportSize: kS7TransportSizeBit, count: 1, dbNumber: 2,
+          area: kS7AreaMerker, byteOffset: 5, bitOffset: 6,
+        ),
+      ];
+      final param = Uint8List.fromList([
+        ...buildVarParameter(function: kS7FunctionReadVar, itemCount: 2),
+        ...items[0],
+        ...items[1],
+      ]);
+      expect(param[0], kS7FunctionReadVar);
+      expect(param[1], 2);
+
+      final parsed = parseVarParameter(param);
+      expect(parsed, isNotNull);
+      expect(parsed!.function, kS7FunctionReadVar);
+      expect(parsed.items.length, 2);
+      expect(parsed.items[0].dbNumber, 1);
+      expect(parsed.items[1].area, kS7AreaMerker);
+      expect(parsed.items[1].byteOffset, 5);
+      expect(parsed.items[1].bitOffset, 6);
+    });
+
+    test('parseVarParameter returns null (never throws) on truncated input', () {
+      expect(parseVarParameter(Uint8List(0)), isNull);
+      expect(parseVarParameter(Uint8List.fromList([kS7FunctionReadVar])), isNull);
+      // Claims 3 items but carries only one.
+      final truncated = Uint8List.fromList([
+        kS7FunctionWriteVar, 3,
+        ...buildS7Item(
+          transportSize: kS7TransportSizeByte, count: 1, dbNumber: 1,
+          area: kS7AreaDataBlock, byteOffset: 0,
+        ),
+      ]);
+      expect(parseVarParameter(truncated), isNull);
+    });
+  });
+
+  group('S7 response data item', () {
+    test('a BYTE/WORD (0x04) item carries its length in BITS', () {
+      final item = buildDataItem(
+        returnCode: kS7ReturnSuccess,
+        transportSize: kS7DataTransportByteWord,
+        data: Uint8List.fromList([0xAA, 0xBB, 0xCC, 0xDD]),
+      );
+      expect(
+        item,
+        equals(Uint8List.fromList([
+          kS7ReturnSuccess,
+          kS7DataTransportByteWord,
+          0x00, 0x20, // 4 bytes == 32 BITS, BIG-ENDIAN
+          0xAA, 0xBB, 0xCC, 0xDD,
+        ])),
+      );
+    });
+
+    test('a BIT (0x03) item carries its length in BITS', () {
+      final item = buildDataItem(
+        returnCode: kS7ReturnSuccess,
+        transportSize: kS7DataTransportBit,
+        data: Uint8List.fromList([0x01]),
+      );
+      // 1 byte == 8 bits, then padded to an even byte count.
+      expect(item[0], kS7ReturnSuccess);
+      expect(item[1], kS7DataTransportBit);
+      expect(item[2], 0x00);
+      expect(item[3], 0x08);
+      expect(item[4], 0x01);
+      expect(item[5], 0x00, reason: 'pad byte');
+      expect(item.length, 6);
+    });
+
+    test('an OCTET STRING (0x09) item carries its length in BYTES', () {
+      final item = buildDataItem(
+        returnCode: kS7ReturnSuccess,
+        transportSize: kS7DataTransportOctetString,
+        data: Uint8List.fromList([0xAA, 0xBB, 0xCC, 0xDD]),
+      );
+      expect(
+        item,
+        equals(Uint8List.fromList([
+          kS7ReturnSuccess,
+          kS7DataTransportOctetString,
+          0x00, 0x04, // 4 BYTES, BIG-ENDIAN
+          0xAA, 0xBB, 0xCC, 0xDD,
+        ])),
+      );
+    });
+
+    test('the two length units genuinely differ for the same payload', () {
+      final bits = buildDataItem(
+        returnCode: kS7ReturnSuccess,
+        transportSize: kS7DataTransportByteWord,
+        data: Uint8List.fromList([0x01, 0x02]),
+      );
+      final bytes = buildDataItem(
+        returnCode: kS7ReturnSuccess,
+        transportSize: kS7DataTransportOctetString,
+        data: Uint8List.fromList([0x01, 0x02]),
+      );
+      expect(bits[3], 0x10); // 16 bits
+      expect(bytes[3], 0x02); // 2 bytes
+      expect(bits[3], isNot(bytes[3]));
+    });
+
+    test('odd-length data is padded to an even byte count without changing the declared length', () {
+      final item = buildDataItem(
+        returnCode: kS7ReturnSuccess,
+        transportSize: kS7DataTransportOctetString,
+        data: Uint8List.fromList([0x01, 0x02, 0x03]),
+      );
+      expect(item.length, 8, reason: '4 header + 3 data + 1 pad');
+      expect(item[3], 0x03, reason: 'declared length excludes the pad byte');
+      expect(item[7], 0x00);
+    });
+
+    test('an error item carries its return code and no data', () {
+      final item = buildDataItem(
+        returnCode: kS7ReturnObjectDoesNotExist,
+        transportSize: kS7DataTransportNull,
+        data: Uint8List(0),
+      );
+      expect(item, equals(Uint8List.fromList([kS7ReturnObjectDoesNotExist, 0x00, 0x00, 0x00])));
+    });
+  });
+
+  group('S7 Write Var payloads and response', () {
+    test('parseWriteDataItems splits the data section into per-item payloads', () {
+      final data = Uint8List.fromList([
+        ...buildDataItem(
+          returnCode: kS7ReturnSuccess,
+          transportSize: kS7DataTransportByteWord,
+          data: Uint8List.fromList([0x01, 0x02]),
+        ),
+        ...buildDataItem(
+          returnCode: kS7ReturnSuccess,
+          transportSize: kS7DataTransportBit,
+          data: Uint8List.fromList([0x01]),
+        ),
+      ]);
+      final payloads = parseWriteDataItems(data, 2);
+      expect(payloads, isNotNull);
+      expect(payloads!.length, 2);
+      expect(payloads[0], equals([0x01, 0x02]));
+      expect(payloads[1], equals([0x01]));
+    });
+
+    test('parseWriteDataItems returns null (never throws) on truncated input', () {
+      expect(parseWriteDataItems(Uint8List(0), 1), isNull);
+      expect(parseWriteDataItems(Uint8List.fromList([0xFF, 0x04, 0x00, 0x20, 0x01]), 1), isNull);
+      expect(parseWriteDataItems(Uint8List.fromList([0xFF, 0x04, 0x00, 0x10, 0x01, 0x02]), 2), isNull);
+    });
+
+    test('the Write Var response is function 0x05, item count, then one return code per item', () {
+      final param = buildVarParameter(function: kS7FunctionWriteVar, itemCount: 3);
+      expect(param, equals(Uint8List.fromList([0x05, 0x03])));
+
+      final data = buildWriteResponseData([
+        kS7ReturnSuccess,
+        kS7ReturnAccessDenied,
+        kS7ReturnAddressOutOfRange,
+      ]);
+      expect(data, equals(Uint8List.fromList([0xFF, 0x03, 0x05])));
+      expect(data.length, 3, reason: 'exactly one byte per item');
+    });
+  });
 }
