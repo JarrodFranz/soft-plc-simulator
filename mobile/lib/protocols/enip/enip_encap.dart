@@ -107,16 +107,30 @@ EnipHeader? parseEnipHeader(Uint8List frame) {
 
 /// Builds a full encapsulation frame (24-byte header + [data]) from
 /// [header]. The header's own `length` field is ignored on input — this
-/// function always sets the on-wire `length` to `data.length`, since that is
-/// the one value the spec requires to be consistent with the actual payload.
+/// function always sets the on-wire `length` to the number of payload bytes
+/// actually written, since that is the one value the spec requires to be
+/// consistent with the actual payload.
+///
+/// The `length` field is a u16, so it cannot represent more than 65535
+/// bytes. If [data] is longer than that, the payload is **truncated** to
+/// its first 65535 bytes and `length` is set to that same truncated count —
+/// the emitted frame is always self-consistent (declared `length` equals
+/// the number of payload bytes actually present after the header). This
+/// codec never throws, so an oversized payload is silently capped rather
+/// than rejected; it does not mask the field while still appending the
+/// full, uncapped payload, which would produce a frame whose length lies
+/// about its own contents.
+///
 /// `senderContext` is copied byte-for-byte; if it is not exactly
-/// [kEnipSenderContextLen] bytes it is truncated or zero-padded to fit (a
-/// defensive fallback — well-formed callers always supply exactly 8 bytes).
+/// [kEnipSenderContextLen] bytes it is truncated to its first 8 bytes (if
+/// longer) or zero-padded on the right (if shorter) to fit (a defensive
+/// fallback — well-formed callers always supply exactly 8 bytes).
 Uint8List buildEnipFrame(EnipHeader header, Uint8List data) {
-  final out = Uint8List(kEnipHeaderLen + data.length);
+  final effectiveLen = data.length > 0xFFFF ? 0xFFFF : data.length;
+  final out = Uint8List(kEnipHeaderLen + effectiveLen);
   final bd = ByteData.sublistView(out, 0, kEnipHeaderLen);
   bd.setUint16(0, header.command & 0xFFFF, Endian.little);
-  bd.setUint16(2, data.length & 0xFFFF, Endian.little);
+  bd.setUint16(2, effectiveLen, Endian.little);
   bd.setUint32(4, header.sessionHandle, Endian.little);
   bd.setUint32(8, header.status, Endian.little);
   final ctx = header.senderContext;
@@ -124,7 +138,7 @@ Uint8List buildEnipFrame(EnipHeader header, Uint8List data) {
     out[12 + i] = i < ctx.length ? ctx[i] : 0;
   }
   bd.setUint32(20, header.options, Endian.little);
-  out.setRange(kEnipHeaderLen, kEnipHeaderLen + data.length, data);
+  out.setRange(kEnipHeaderLen, kEnipHeaderLen + effectiveLen, data);
   return out;
 }
 
@@ -171,22 +185,39 @@ List<CpfItem>? parseCpf(Uint8List data) {
 
 /// Builds a CPF item list from [items]: a little-endian u16 item count
 /// followed by each item's `typeId`(u16) + `length`(u16) + data.
+///
+/// Both the item count and each item's `length` are u16 fields, so each is
+/// capped at 65535. Every length written is kept self-consistent with the
+/// bytes actually present in the output, never masked while the full,
+/// uncapped data is still written:
+///  - If [items] has more than 65535 entries, only the first 65535 are
+///    emitted; the excess entries are **dropped** and the item count
+///    reflects only what was written.
+///  - If an individual item's `data` is longer than 65535 bytes, that
+///    item's data is **truncated** to its first 65535 bytes and its
+///    declared `length` field is set to that same truncated count.
 Uint8List buildCpf(List<CpfItem> items) {
+  final effectiveItems = items.length > 0xFFFF ? items.sublist(0, 0xFFFF) : items;
+  final itemLens = <int>[];
   var totalLen = 2;
-  for (final item in items) {
-    totalLen += 4 + item.data.length;
+  for (final item in effectiveItems) {
+    final itemLen = item.data.length > 0xFFFF ? 0xFFFF : item.data.length;
+    itemLens.add(itemLen);
+    totalLen += 4 + itemLen;
   }
   final out = Uint8List(totalLen);
   final countView = ByteData.sublistView(out, 0, 2);
-  countView.setUint16(0, items.length & 0xFFFF, Endian.little);
+  countView.setUint16(0, effectiveItems.length, Endian.little);
   var offset = 2;
-  for (final item in items) {
+  for (var i = 0; i < effectiveItems.length; i++) {
+    final item = effectiveItems[i];
+    final itemLen = itemLens[i];
     final header = ByteData.sublistView(out, offset, offset + 4);
     header.setUint16(0, item.typeId & 0xFFFF, Endian.little);
-    header.setUint16(2, item.data.length & 0xFFFF, Endian.little);
+    header.setUint16(2, itemLen, Endian.little);
     offset += 4;
-    out.setRange(offset, offset + item.data.length, item.data);
-    offset += item.data.length;
+    out.setRange(offset, offset + itemLen, item.data);
+    offset += itemLen;
   }
   return out;
 }

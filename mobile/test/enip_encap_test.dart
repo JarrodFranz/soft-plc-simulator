@@ -62,6 +62,95 @@ void main() {
       expect(roundTripped.senderContext, context);
       expect(roundTripped.options, 0);
     });
+
+    test('buildEnipFrame produces byte-exact output for an ordinary header (not just a parse round-trip)', () {
+      final header = EnipHeader(
+        command: kEnipCommandRegisterSession,
+        length: 0, // ignored on input — must not leak onto the wire.
+        sessionHandle: 0x12345678,
+        status: 1,
+        senderContext: Uint8List.fromList([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]),
+        options: 0xDDCCBBAA,
+      );
+      final data = Uint8List.fromList([0xAA, 0xBB]);
+      final frame = buildEnipFrame(header, data);
+
+      expect(
+        frame,
+        Uint8List.fromList([
+          0x65, 0x00, // command = RegisterSession (0x0065), LE
+          0x02, 0x00, // length = 2 (data.length), LE
+          0x78, 0x56, 0x34, 0x12, // sessionHandle = 0x12345678, LE
+          0x01, 0x00, 0x00, 0x00, // status = 1, LE
+          0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // senderContext, verbatim
+          0xAA, 0xBB, 0xCC, 0xDD, // options = 0xDDCCBBAA, LE
+          0xAA, 0xBB, // data, appended after the 24-byte header
+        ]),
+      );
+    });
+
+    test('buildEnipFrame pads a senderContext shorter than 8 bytes with trailing zeros', () {
+      final header = EnipHeader(
+        command: kEnipCommandNop,
+        length: 0,
+        sessionHandle: 0,
+        status: 0,
+        senderContext: Uint8List.fromList([0x11, 0x22, 0x33]), // only 3 bytes
+        options: 0,
+      );
+      final frame = buildEnipFrame(header, Uint8List(0));
+
+      final parsed = parseEnipHeader(frame);
+      expect(parsed, isNotNull);
+      expect(parsed!.senderContext, [0x11, 0x22, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00]);
+      expect(parsed.senderContext.length, kEnipSenderContextLen);
+    });
+
+    test('buildEnipFrame truncates a senderContext longer than 8 bytes to its first 8 bytes', () {
+      final header = EnipHeader(
+        command: kEnipCommandNop,
+        length: 0,
+        sessionHandle: 0,
+        status: 0,
+        senderContext: Uint8List.fromList([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]), // 11 bytes
+        options: 0,
+      );
+      final frame = buildEnipFrame(header, Uint8List(0));
+
+      final parsed = parseEnipHeader(frame);
+      expect(parsed, isNotNull);
+      expect(parsed!.senderContext, [1, 2, 3, 4, 5, 6, 7, 8]);
+      expect(parsed.senderContext.length, kEnipSenderContextLen);
+    });
+
+    test('buildEnipFrame keeps the declared length self-consistent when data exceeds the u16 length field',
+        () {
+      // 65535 is the max representable length; feed one byte more than that.
+      final oversized = Uint8List(0x10000); // 65536 bytes
+      for (var i = 0; i < oversized.length; i++) {
+        oversized[i] = i & 0xFF;
+      }
+      final header = EnipHeader(
+        command: kEnipCommandSendUnitData,
+        length: 0,
+        sessionHandle: 0,
+        status: 0,
+        senderContext: Uint8List(kEnipSenderContextLen),
+        options: 0,
+      );
+      final frame = buildEnipFrame(header, oversized);
+
+      // The frame must be internally consistent: its declared length must
+      // equal the number of payload bytes actually present, and re-parsing
+      // must agree.
+      final actualPayloadBytes = frame.length - kEnipHeaderLen;
+      final parsed = parseEnipHeader(frame);
+      expect(parsed, isNotNull);
+      expect(parsed!.length, actualPayloadBytes);
+      expect(parsed.length, lessThanOrEqualTo(0xFFFF));
+      expect(actualPayloadBytes, 0xFFFF); // truncated to the field's capacity.
+      expect(frame.sublist(kEnipHeaderLen), oversized.sublist(0, 0xFFFF));
+    });
   });
 
   group('CPF (Common Packet Format)', () {
@@ -102,6 +191,30 @@ void main() {
 
     test('parseCpf returns null on an empty buffer', () {
       expect(parseCpf(Uint8List(0)), isNull);
+    });
+
+    test('buildCpf keeps an item\'s declared length self-consistent when its data exceeds the u16 length field',
+        () {
+      final oversized = Uint8List(0x10000); // 65536 bytes — one more than a u16 can hold.
+      for (var i = 0; i < oversized.length; i++) {
+        oversized[i] = i & 0xFF;
+      }
+      final items = [CpfItem(typeId: kCpfTypeUnconnectedData, data: oversized)];
+      final built = buildCpf(items);
+
+      // item count (1) + typeId(2) + declared length(2) + truncated data(0xFFFF)
+      expect(built.length, 2 + 4 + 0xFFFF);
+
+      final parsed = parseCpf(built);
+      expect(parsed, isNotNull);
+      expect(parsed!.length, 1);
+      expect(parsed[0].data.length, 0xFFFF); // truncated to the field's capacity.
+      expect(parsed[0].data, oversized.sublist(0, 0xFFFF));
+
+      // The declared length in the wire bytes must equal the number of data
+      // bytes actually present, not the real (uncapped) data length.
+      final declaredLen = ByteData.sublistView(built, 2 + 2, 2 + 4).getUint16(0, Endian.little);
+      expect(declaredLen, built.length - 2 - 4);
     });
   });
 
