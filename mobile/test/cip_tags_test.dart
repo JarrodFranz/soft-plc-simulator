@@ -43,11 +43,14 @@ void main() {
         name: 'CIP Tags Project',
         controllerName: 'PLC_CIP_TAGS',
         tags: [
-          PlcTag(name: 'Bool_Tag', path: 'Bool_Tag', dataType: 'BOOL', value: false, ioType: 'Internal'),
-          PlcTag(name: 'Int16_Tag', path: 'Int16_Tag', dataType: 'INT16', value: 0, ioType: 'Internal'),
-          PlcTag(name: 'Int32_Tag', path: 'Int32_Tag', dataType: 'INT32', value: 0, ioType: 'Internal'),
-          PlcTag(name: 'Int64_Tag', path: 'Int64_Tag', dataType: 'INT64', value: 0, ioType: 'Internal'),
-          PlcTag(name: 'Float64_Tag', path: 'Float64_Tag', dataType: 'FLOAT64', value: 0.0, ioType: 'Internal'),
+          // Distinct, non-zero fixture values (see Fix 3): a per-type test
+          // that only checks the type code can't tell a correctly-decoded
+          // value apart from the wrong number of zero bytes.
+          PlcTag(name: 'Bool_Tag', path: 'Bool_Tag', dataType: 'BOOL', value: true, ioType: 'Internal'),
+          PlcTag(name: 'Int16_Tag', path: 'Int16_Tag', dataType: 'INT16', value: 1234, ioType: 'Internal'),
+          PlcTag(name: 'Int32_Tag', path: 'Int32_Tag', dataType: 'INT32', value: 98765, ioType: 'Internal'),
+          PlcTag(name: 'Int64_Tag', path: 'Int64_Tag', dataType: 'INT64', value: 5000000000, ioType: 'Internal'),
+          PlcTag(name: 'Float64_Tag', path: 'Float64_Tag', dataType: 'FLOAT64', value: 12.5, ioType: 'Internal'),
           // Map-level ReadOnly (tag's own `access` field is left ReadWrite on
           // purpose, to prove it's the MAP entry that gates the write, not
           // the tag itself).
@@ -66,8 +69,25 @@ void main() {
           // Present in the project but deliberately NOT added to the CipMap
           // below.
           PlcTag(name: 'Unexposed_Tag', path: 'Unexposed_Tag', dataType: 'BOOL', value: true, ioType: 'Internal'),
+          // Fix 1 regression fixture: a composite ROOT tag that is forced.
+          // `rootTagOf` (tag_resolver.dart) resolves a member path like
+          // `Tank.Level` to this root by its first path segment, so a write
+          // to the MEMBER must be refused exactly like a write to the root
+          // itself would be.
+          PlcTag(
+            name: 'Tank',
+            path: 'Tank',
+            dataType: 'TankType',
+            value: {'Level': 55},
+            ioType: 'Internal',
+            isForced: true,
+          ),
         ],
-        structDefs: [],
+        structDefs: [
+          PlcStructDef(name: 'TankType', fields: [
+            StructFieldDef(name: 'Level', dataType: 'INT32', defaultValue: 0),
+          ]),
+        ],
         programs: [],
         tasks: [],
         hmis: [],
@@ -81,19 +101,24 @@ void main() {
         CipMapEntry(tagName: 'Float64_Tag', access: 'ReadWrite'),
         CipMapEntry(tagName: 'Locked_Tag', access: 'ReadOnly'),
         CipMapEntry(tagName: 'Forced_Tag', access: 'ReadWrite'),
+        CipMapEntry(tagName: 'Tank.Level', access: 'ReadWrite'),
       ]);
 
   group('Read Tag (0x4C)', () {
-    test('returns the correct type code and value for each supported type', () {
+    test('returns the correct type code AND value for each supported type', () {
       final project = buildProject();
       final map = buildMap();
 
+      // Each fixture tag (see buildProject) holds a DISTINCT NON-ZERO value,
+      // so an implementation that returns the right type code but the wrong
+      // number of (or wrong) value bytes cannot pass by coincidence with an
+      // all-zero fixture.
       final cases = <String, List<Object>>{
-        'Bool_Tag': [kCipTypeBool],
-        'Int16_Tag': [kCipTypeInt],
-        'Int32_Tag': [kCipTypeDint],
-        'Int64_Tag': [kCipTypeLint],
-        'Float64_Tag': [kCipTypeReal],
+        'Bool_Tag': [kCipTypeBool, true],
+        'Int16_Tag': [kCipTypeInt, 1234],
+        'Int32_Tag': [kCipTypeDint, 98765],
+        'Int64_Tag': [kCipTypeLint, 5000000000],
+        'Float64_Tag': [kCipTypeReal, 12.5], // exactly representable in float32 — no narrowing here.
       };
 
       for (final tagName in cases.keys) {
@@ -105,7 +130,15 @@ void main() {
         final resp = dispatchCipService(project, map, req);
         expect(resp.generalStatus, kCipStatusSuccess, reason: tagName);
         final typeCode = _readU16(resp.data, 0);
-        expect(typeCode, cases[tagName]![0], reason: tagName);
+        final expectedTypeCode = cases[tagName]![0] as int;
+        final expectedValue = cases[tagName]![1];
+        expect(typeCode, expectedTypeCode, reason: tagName);
+        final decoded = decodeCipValue(typeCode, resp.data.sublist(2));
+        if (tagName == 'Float64_Tag') {
+          expect(decoded, closeTo(expectedValue as double, 0.0001), reason: tagName);
+        } else {
+          expect(decoded, expectedValue, reason: tagName);
+        }
       }
     });
 
@@ -204,8 +237,76 @@ void main() {
         data: _writeData(kCipTypeBool, Uint8List.fromList([0xFF])),
       );
       final resp = dispatchCipService(project, map, req);
-      expect(resp.generalStatus, isNot(kCipStatusSuccess));
+      // Pinned to the actual constant (Fix 4) rather than `isNot(kCipStatusSuccess)`
+      // so a future change to this status is visible instead of silently absorbed.
+      expect(resp.generalStatus, kCipStatusInvalidAttributeValue);
       expect(project.tags.firstWhere((t) => t.name == 'Int32_Tag').value, before);
+    });
+
+    test('write round-trips BOOL, INT16, and INT64 through their CIP types', () {
+      final project = buildProject();
+      final map = buildMap();
+
+      // Fix 3: only INT32 had write coverage before; this fills in the rest
+      // of the exact-equality types (FLOAT64 gets its own narrowing-aware
+      // test below).
+      final writes = <String, List<Object>>{
+        'Bool_Tag': [kCipTypeBool, false],
+        'Int16_Tag': [kCipTypeInt, -4321],
+        'Int64_Tag': [kCipTypeLint, 9000000000],
+      };
+
+      for (final tagName in writes.keys) {
+        final typeCode = writes[tagName]![0] as int;
+        final newValue = writes[tagName]![1];
+
+        final writeReq = CipRequest(
+          service: kCipServiceWriteTag,
+          path: [CipPathSegment.symbol(tagName)],
+          data: _writeData(typeCode, encodeCipValue(typeCode, newValue)!),
+        );
+        final writeResp = dispatchCipService(project, map, writeReq);
+        expect(writeResp.generalStatus, kCipStatusSuccess, reason: tagName);
+
+        final readReq = CipRequest(
+          service: kCipServiceReadTag,
+          path: [CipPathSegment.symbol(tagName)],
+          data: _readData(),
+        );
+        final readResp = dispatchCipService(project, map, readReq);
+        expect(readResp.generalStatus, kCipStatusSuccess, reason: tagName);
+        final decoded = decodeCipValue(typeCode, readResp.data.sublist(2));
+        expect(decoded, newValue, reason: tagName);
+      }
+    });
+
+    test('a FLOAT64 write narrows through CIP REAL (single precision) — read back is close, not exact', () {
+      final project = buildProject();
+      final map = buildMap();
+
+      // A value with a fractional part not exactly representable in a
+      // 32-bit float exposes the narrowing conversion (see cip.dart's
+      // encodeCipValue/decodeCipValue docs on REAL 0xCA).
+      const newValue = 3.14159;
+      final writeReq = CipRequest(
+        service: kCipServiceWriteTag,
+        path: [CipPathSegment.symbol('Float64_Tag')],
+        data: _writeData(kCipTypeReal, encodeCipValue(kCipTypeReal, newValue)!),
+      );
+      final writeResp = dispatchCipService(project, map, writeReq);
+      expect(writeResp.generalStatus, kCipStatusSuccess);
+
+      final readReq = CipRequest(
+        service: kCipServiceReadTag,
+        path: [CipPathSegment.symbol('Float64_Tag')],
+        data: _readData(),
+      );
+      final readResp = dispatchCipService(project, map, readReq);
+      expect(readResp.generalStatus, kCipStatusSuccess);
+      final decoded = decodeCipValue(kCipTypeReal, readResp.data.sublist(2)) as double;
+      // Tolerance, not exact equality — the value was narrowed to single
+      // precision on write and widened back on read.
+      expect(decoded, closeTo(newValue, 0.0001));
     });
 
     test('malformed (too-short) write data never throws and leaves the tag unchanged', () {
@@ -222,6 +323,33 @@ void main() {
       expect(() => resp = dispatchCipService(project, map, req), returnsNormally);
       expect(resp.generalStatus, isNot(kCipStatusSuccess));
       expect(project.tags.firstWhere((t) => t.name == 'Bool_Tag').value, before);
+    });
+
+    test(
+        'Fix 1 regression: a write to a MEMBER path beneath a forced ROOT tag is refused with 0x0F, member unchanged',
+        () {
+      final project = buildProject();
+      final map = buildMap();
+
+      // `Tank` is a composite root tag with `isForced: true` (see
+      // buildProject). `rootTagOf(project, 'Tank.Level')` resolves to the
+      // `Tank` tag by its first path segment — NOT an exact-name match — so
+      // the forced-write refusal must fire for a write to the MEMBER path
+      // `Tank.Level` exactly as it would for a write to `Tank` itself.
+      final tankTag = project.tags.firstWhere((t) => t.name == 'Tank');
+      expect(tankTag.isForced, isTrue);
+      final before = (tankTag.value as Map)['Level'];
+      expect(before, 55); // fixture value, sanity-checked before the write attempt
+
+      final req = CipRequest(
+        service: kCipServiceWriteTag,
+        path: [CipPathSegment.symbol('Tank'), CipPathSegment.symbol('Level')],
+        data: _writeData(kCipTypeDint, encodeCipValue(kCipTypeDint, 12345)!),
+      );
+      final resp = dispatchCipService(project, map, req);
+      expect(resp.generalStatus, kCipStatusPrivilegeViolation);
+      final after = (project.tags.firstWhere((t) => t.name == 'Tank').value as Map)['Level'];
+      expect(after, before, reason: 'member write into a forced root must never land');
     });
   });
 
@@ -263,11 +391,23 @@ void main() {
       expect(body0[0], kCipServiceReadTag | 0x80);
       expect(body0[2], kCipStatusSuccess);
       expect(_readU16(body0, 4), kCipTypeBool);
+      expect(decodeCipValue(kCipTypeBool, body0.sublist(6)), true); // Bool_Tag's fixture value
 
       expect(body1[0], kCipServiceReadTag | 0x80);
       expect(body1[2], kCipStatusSuccess);
       expect(_readU16(body1, 4), kCipTypeDint);
-      expect(decodeCipValue(kCipTypeDint, body1.sublist(6)), 0);
+      expect(decodeCipValue(kCipTypeDint, body1.sublist(6)), 98765); // Int32_Tag's fixture value
+
+      // Fix 2 regression: exact reply length. header(2) + offset list
+      // (count * 2 = 4) + body0 (4-byte CIP response header + 2-byte type +
+      // 1-byte BOOL = 7) + body1 (4-byte header + 2-byte type + 4-byte DINT
+      // = 10) = 23. The pre-fix allocation counted the 4-byte offset list
+      // TWICE (`2 + count * 2 + cursor` where `cursor` already included
+      // `count * 2`), producing a 27-byte reply — 4 trailing junk bytes
+      // appended after body1, which `body1`'s own bounded slice above can't
+      // catch because `resp.data.sublist(offsetListStart + off1)` runs to
+      // whatever `resp.data.length` happens to be.
+      expect(resp.data.length, 23);
     });
 
     test('one bad embedded request does not fail the batch — the good one still returns its data', () {
@@ -305,7 +445,7 @@ void main() {
 
       expect(body0[2], kCipStatusSuccess);
       expect(_readU16(body0, 4), kCipTypeBool);
-      expect(body0.sublist(6), [0x00]); // Bool_Tag == false
+      expect(body0.sublist(6), [0xFF]); // Bool_Tag == true
 
       expect(body1[2], kCipStatusPathDestinationUnknown);
     });

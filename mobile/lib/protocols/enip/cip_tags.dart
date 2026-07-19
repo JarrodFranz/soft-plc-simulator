@@ -207,13 +207,18 @@ CipResponse _writeTag(PlcProject project, CipMap map, CipRequest req) {
   // Force-aware write: a forced root tag REFUSES an external write visibly
   // (0x0F) rather than silently discarding it — see file header and
   // `opcua_services.dart`'s `_writeAttribute` for the identical precedent.
-  // `rootTagOf` returns the tag whose `name` is the leaf path's first
-  // segment; the `root.name == tagName` guard (mirroring the OPC UA check
-  // exactly) means this only fires when the write targets the forced tag
-  // itself (a bare scalar tag), matching `tag_resolver.dart`'s note that
-  // forcing is only ever offered for scalar tags in the UI.
+  // `rootTagOf` returns the tag whose `name` is the leaf path's FIRST
+  // SEGMENT — unlike OPC UA's `_findRootTag`, which only ever returns an
+  // exact-name match, `rootTagOf` also returns the root for a write to a
+  // MEMBER beneath it (e.g. `tagName == 'Tank.Level'` resolves `root.name`
+  // to `'Tank'`). A forced root must refuse writes to every path beneath
+  // it, not just a write to the bare root name itself — otherwise a write
+  // to `Tank.Level` would silently bypass the force refusal that a write to
+  // `Tank` itself would have been given. There is deliberately no
+  // `root.name == tagName` equality check here (unlike the OPC UA
+  // precedent, where that comparison is a harmless tautology).
   final root = rootTagOf(project, tagName);
-  if (root != null && root.isForced && root.name == tagName) {
+  if (root != null && root.isForced) {
     return _errorResponse(req.service, kCipStatusPrivilegeViolation);
   }
 
@@ -292,14 +297,27 @@ CipResponse _multipleServicePacket(PlcProject project, CipMap map, CipRequest re
   // Offsets are relative to the START of the offset list (offsetListStart),
   // and the embedded response bodies begin right after that list itself —
   // so the first body's offset is the offset list's own size (count * 2),
-  // not 0.
+  // not 0. `cursor` therefore already INCLUDES the offset list's own size
+  // by the time the loop below finishes — it ends up equal to
+  // `count * 2 + sum(body.length)`, i.e. the total size of the offset list
+  // plus all embedded bodies. The reply buffer is `2` (count field) plus
+  // that, NOT `2 + count * 2 + cursor` (which would double-count the
+  // offset list's `count * 2` bytes and over-allocate by that many bytes).
   var cursor = count * 2;
   for (final body in bodies) {
     replyOffsets.add(cursor);
     cursor += body.length;
   }
 
-  final replyData = Uint8List(2 + count * 2 + cursor);
+  // Guard: offsets are serialized through `_writeU16`, which masks to 16
+  // bits. If the reply (or any individual offset) would exceed 0xFFFF, a
+  // wrapped offset would silently corrupt the reply framing — fail the
+  // whole batch with a non-zero status instead of emitting it.
+  if (cursor > 0xFFFF || replyOffsets.any((o) => o > 0xFFFF)) {
+    return _errorResponse(req.service, kCipStatusEmbeddedListError);
+  }
+
+  final replyData = Uint8List(2 + cursor);
   replyData.setRange(0, 2, _writeU16(count));
   for (var i = 0; i < count; i++) {
     replyData.setRange(2 + i * 2, 2 + i * 2 + 2, _writeU16(replyOffsets[i]));
