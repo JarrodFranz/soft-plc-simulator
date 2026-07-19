@@ -78,6 +78,17 @@ int s7ItemByteLength(S7Item item) {
 /// [budgetBytes] is how many data bytes are still available in the response;
 /// an item that cannot fit is answered with [kS7ReturnAddressOutOfRange] and
 /// a NULL transport rather than a truncated payload.
+///
+/// *** THE BUDGET IS CHARGED THE ITEM'S FULL ON-WIRE COST, NOT ITS PAYLOAD ***
+/// A data item is bigger than the bytes it carries: [buildDataItem] prepends a
+/// [kS7DataItemHeaderLen]-byte header and appends a pad byte when the payload
+/// length is odd. Comparing the PAYLOAD against the remaining budget — the
+/// natural mistake, since that is the number this function goes on to read —
+/// admits a read whose finished message overruns the PDU length the device
+/// agreed to during Setup Communication, by up to 5 bytes per item. A strict
+/// driver enforcing the negotiated size drops such a frame, so the read fails
+/// silently on exactly the large-block-read pattern this protocol serves. See
+/// `test/s7_services_test.dart`, which pins the boundary from both sides.
 Uint8List _readItemData(
   PlcProject project,
   S7Map map,
@@ -102,7 +113,8 @@ Uint8List _readItemData(
   if (byteLength <= 0) {
     return errorItem(kS7ReturnObjectDoesNotExist);
   }
-  if (byteLength > budgetBytes) {
+  final itemCost = byteLength + kS7DataItemHeaderLen + (byteLength.isOdd ? 1 : 0);
+  if (itemCost > budgetBytes) {
     return errorItem(kS7ReturnAddressOutOfRange);
   }
 
@@ -158,14 +170,22 @@ Uint8List? buildReadVarResponse(
   if (varParam == null) {
     return null;
   }
-  var budget = s7MaxResponseDataBytes(negotiatedPduLength);
+  final maxData = s7MaxResponseDataBytes(negotiatedPduLength);
+  final items = varParam.items;
   final chunks = <Uint8List>[];
-  for (final item in varParam.items) {
-    final chunk = _readItemData(project, map, item, budget);
-    budget -= chunk.length;
-    if (budget < 0) {
-      budget = 0;
-    }
+  var used = 0;
+  for (var i = 0; i < items.length; i++) {
+    // Every item still to be answered after this one occupies at least a
+    // [kS7DataItemHeaderLen]-byte NULL error item — the reply's item count
+    // must match the request's, so no item can simply be dropped. Reserving
+    // that minimum here is what stops a big item early in the list from
+    // eating the room its successors' headers need, which would push the
+    // finished message past the negotiated PDU even though every individual
+    // admission looked affordable.
+    final reserved = (items.length - i - 1) * kS7DataItemHeaderLen;
+    final budget = maxData - used - reserved;
+    final chunk = _readItemData(project, map, items[i], budget > 0 ? budget : 0);
+    used += chunk.length;
     chunks.add(chunk);
   }
 

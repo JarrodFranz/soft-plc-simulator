@@ -11,8 +11,9 @@ Host **S7comm on TCP 102** in-process so a SCADA S7 driver can read and write
 the app's tags by **memory area + byte offset**. Sixth protocol in the pure-Dart
 suite, after OPC UA, Modbus TCP, MQTT/Sparkplug B, DNP3 and EtherNet/IP.
 
-S7 is the dominant protocol in European process plants and the one Ignition's
-Siemens driver speaks, so it materially widens interop.
+S7comm is widely deployed in European process plants, and SCADA and HMI
+packages commonly ship a driver for it, so serving it materially widens the
+range of clients that can talk to this simulator.
 
 ## Reference client — CONFIRMED BEFORE PLANNING
 

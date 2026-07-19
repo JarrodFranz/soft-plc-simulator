@@ -68,11 +68,11 @@ The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators
   │  - Scan pipeline: sim inputs → programs → outputs      │
   ├────────────────────────────────────────────────────────┤
   │   In-App Protocol Servers (pure Dart, dart:io sockets) │
-  │   — hosted directly by this same app, no companion —  │
-  ├───────────┬────────────┬────────────┬────────┬─────────┬───────┤
-  │  OPC UA   │ Modbus TCP │ MQTT + SpB │  DNP3  │EtherNet/│S7comm │
-  │  Server   │   Server   │ Publisher  │Outstatn│ IP + CIP│Server │
-  └───────────┴────────────┴────────────┴────────┴─────────┴───────┘
+  │   — hosted directly by this same app, no companion —   │
+  ├─────────┬─────────┬─────────┬────────┬────────┬────────┤
+  │ OPC UA  │ Modbus  │MQTT+SpB │  DNP3  │EtherNet│ S7comm │
+  │ Server  │   TCP   │Publisher│Outstatn│ IP+CIP │ Server │
+  └─────────┴─────────┴─────────┴────────┴────────┴────────┘
 ```
 
 Per **ADR-010** (`DECISIONS.md`), all six protocol servers run **in-process**
@@ -194,8 +194,11 @@ It drives connect → negotiate → read → write → **independent read-back o
 exact written value** across two memory areas, including a single-bit round
 trip and both write-refusal paths. See
 [`docs/protocols/s7comm.md`](docs/protocols/s7comm.md).
-This is the shared Python-lane pattern the remaining protocol workstreams
-reuse. Requires Python 3.8+ on `PATH` and network access on first run.
+
+Both the EtherNet/IP and S7comm probes above run on the **same shared Python
+lane**, which the remaining protocol workstreams reuse: a venv-isolated,
+exact-pinned client environment under `tool/py/`. Either script requires Python
+3.8+ on `PATH` and network access on its first run.
 
 ---
 
@@ -207,7 +210,7 @@ cd runtime
 cargo test
 ```
 
-#### Run Flutter Unit & Integration Tests (1673 Tests Passing)
+#### Run Flutter Unit & Integration Tests (1803 Tests Passing)
 ```bash
 cd mobile
 flutter test
@@ -256,8 +259,9 @@ flutter analyze
 - [DECISIONS.md](DECISIONS.md) — Architecture Decision Records (ADRs).
 - [DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md) — Guidelines for human & AI developers.
 - [SECURITY_AND_SAFETY.md](SECURITY_AND_SAFETY.md) — Security policies and safety disclaimers.
-- [docs/protocols/](docs/protocols/) — Protocol adapter specifications (OPC UA, Modbus TCP, MQTT, DNP3, EtherNet/IP).
+- [docs/protocols/](docs/protocols/) — Protocol adapter specifications (OPC UA, Modbus TCP, MQTT, DNP3, EtherNet/IP, S7comm).
 - [docs/protocols/ethernet-ip.md](docs/protocols/ethernet-ip.md) — EtherNet/IP + CIP explicit messaging: v1 scope, symbolic tag addressing, the `CipMap` exposure model, what is deferred to v2 and why, and the Python probe lane.
+- [docs/protocols/s7comm.md](docs/protocols/s7comm.md) — S7comm (device side): v1 scope, memory-area + byte-offset addressing, the `S7Map` exposure model, gap/partial-coverage/refusal semantics, the negotiated-PDU response budget, and the two wire details the real client settled.
 - [docs/trends.md](docs/trends.md) — Tag historian & trend charts (pens, the Trends section, the HMI trend component, and the trace cursor).
 - [docs/mimo-coupled-plant.md](docs/mimo-coupled-plant.md) — MIMO coupled-plant demo, gain-matrix/RGA interaction analysis, and the static decoupler.
 

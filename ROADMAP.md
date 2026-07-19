@@ -285,8 +285,8 @@ alternative `Quality_OK` dispatch/reject gate). See
 
 ---
 
-## Phase 14: Protocol Expansion Program — EtherNet/IP + CIP (workstream 1 of 5) ✅
-- **Objective**: Extend the shipped four-protocol suite (OPC UA, Modbus TCP, MQTT + Sparkplug B, DNP3) into a **protocol-expansion program** covering the remaining protocols an integrator is most likely to need — **EtherNet/IP + CIP**, S7comm, FINS, SLMP, and BACnet — each hosted in-app in pure Dart per ADR-010, each proven against a real third-party client. This phase records the program and delivers its first workstream.
+## Phase 14: Protocol Expansion Program — EtherNet/IP + CIP (workstream 2 of 6) ✅
+- **Objective**: Extend the shipped four-protocol suite (OPC UA, Modbus TCP, MQTT + Sparkplug B, DNP3) into a **protocol-expansion program** covering the remaining protocols an integrator is most likely to need — Modbus RTU-over-TCP (WS1), **EtherNet/IP + CIP** (WS2), S7comm (WS3), FINS (WS4), SLMP (WS5), and BACnet/IP (WS6) — each hosted in-app in pure Dart per ADR-010, each proven against a real third-party client. This phase records the program and delivers its second workstream. (The program's six workstreams and their order are defined in [`docs/superpowers/specs/2026-07-16-protocol-expansion-program-roadmap.md`](docs/superpowers/specs/2026-07-16-protocol-expansion-program-roadmap.md).)
 - **Program shape**: every protocol follows the same six-task shape — a pure-Dart wire codec built bottom-up in independently-testable layers, a `dart:io` socket host as the ONLY file allowed to touch sockets, a tag-exposure map model mirroring the existing `OpcuaMap`/`ModbusMap` precedent (including the force-aware, VISIBLE write refusal), additive persistence (no protocol key in a project's JSON ⇒ disabled, default port), and a real-third-party-client E2E that is treated as **the authority on wire details** over any unit test.
 - **Delivered — EtherNet/IP + CIP explicit messaging (v1)** ✅ (TCP 44818, default off):
   - **Encapsulation layer** ✅ (`mobile/lib/protocols/enip/enip_encap.dart`) — the 24-byte little-endian encapsulation header and the Common Packet Format (CPF) item list, plus `NOP`/`RegisterSession`/`UnRegisterSession`/`SendRRData`/`SendUnitData`.
@@ -298,12 +298,12 @@ alternative `Quality_OK` dispatch/reject gate). See
   - Full green gate (`flutter analyze` clean, `flutter test`, `flutter build web --release`) plus no regression in `tool/modbus_e2e.sh` / `tool/opcua_e2e.sh`. Documented in [`docs/protocols/ethernet-ip.md`](docs/protocols/ethernet-ip.md).
 - **Deferred to EtherNet/IP v2 (documented, deliberate)**: Symbol/Template Object browse (controller tag-list upload), `STRING` as a structured type (it needs the Template Object to describe its layout), the Identity Object / `ListIdentity`, the Large Forward Open, and implicit (Class 1 I/O) UDP messaging.
 - **Remaining workstreams**: FINS, SLMP, BACnet — each reusing the six-task shape and the Python probe lane above (S7comm shipped as WS3, below). ⏳
-- **Status**: 🔄 **ACTIVE — EtherNet/IP + CIP explicit messaging (v1) shipped, real-client E2E-proven, and documented**
+- **Status**: ✅ **COMPLETE — EtherNet/IP + CIP explicit messaging (v1) shipped, real-client E2E-proven, and documented**
 
 ---
 
-## Phase 15: Protocol Expansion Program — S7comm (workstream 3 of 5) ✅
-- **Objective**: Deliver the program's S7comm workstream — host S7comm on TCP 102 in-process so a SCADA S7 driver can read and write the app's tags by **memory area + byte offset**, following the same six-task shape and reusing the Python probe lane WS1 established.
+## Phase 15: Protocol Expansion Program — S7comm (workstream 3 of 6) ✅
+- **Objective**: Deliver the program's S7comm workstream — host S7comm on TCP 102 in-process so a SCADA S7 driver can read and write the app's tags by **memory area + byte offset**, following the same six-task shape and reusing the Python probe lane **EtherNet/IP (WS2)** established. (WS1, Modbus RTU-over-TCP, used the Rust client lane.)
 - **Delivered — S7comm device side (v1)** ✅ (TCP 102, default off):
   - **TPKT + COTP framing** ✅ (`mobile/lib/protocols/s7/tpkt_cotp.dart`) — RFC 1006 TPKT, whose big-endian `length` counts the **whole** packet including its own 4-byte header (the exact inverse of EtherNet/IP's encapsulation length, which excluded it), plus COTP Connection Request → Connection Confirm with TSAP and TPDU-size parameters, and Data TPDUs. Rack/slot are accepted permissively — this is a simulator, and rejecting a mismatch gives a confusing failure with no diagnostic value.
   - **S7 PDU + Setup Communication** ✅ (`s7_pdu.dart`) — the header, **12 bytes on `Ack_Data` and 10 on every other ROSCTR**, PDU-length negotiation that only ever moves DOWN from the client's proposal (clamped to a documented 240-byte floor), and the Read/Write Var item specifications and data items.

@@ -178,6 +178,31 @@ future client that *does* object surfaces immediately.
 
 ---
 
+## A Read Var response never exceeds the negotiated PDU
+
+Setup Communication agrees a maximum PDU length (480 here, clamped down from
+any larger proposal and never below a 240-byte floor). A response that exceeds
+it is dropped by a strict driver, so a read that overruns fails **silently** —
+and it would fail on exactly the large-block read this protocol exists to
+serve.
+
+The budget is therefore charged each item's **full on-wire cost**, not the
+bytes it carries: a data item is its payload *plus* a 4-byte header
+(`returnCode`, `transportSize`, 2-byte length) *plus* a pad byte when the
+payload length is odd. At 480 the data section may hold 466 bytes
+(`480 − 12-byte Ack_Data header − 2-byte parameter`), so the largest servable
+single read is **462** bytes, not 466.
+
+An item that does not fit is answered with `0x05` (address out of range) and a
+NULL transport — an explicit per-item error, never a truncated payload. The
+bound also holds **in aggregate** across a multi-item request: each item's
+admission reserves the 4-byte minimum every *later* item needs, so a large item
+early in the list cannot starve its successors into pushing the finished
+message past the PDU. `test/s7_services_test.dart` pins the boundary from both
+sides at 480 and at the 240-byte floor.
+
+---
+
 ## Port 102 is a privileged port
 
 S7comm's standard port, **102**, is below 1024. On **Linux and macOS** binding a
@@ -216,10 +241,18 @@ so the caveat is visible before the first failed start rather than after it.
   v1's whole model is area + byte offset, which is what non-optimized access
   uses; symbolic access is a different addressing scheme, not a tweak to this
   one.
-* **Multi-item requests from the client side.** The server answers as many items
-  as a request carries, but the E2E's client only issues single-item requests,
-  so multi-item behaviour is proven by unit tests over real sockets rather than
-  by the third-party client.
+
+### NOT deferred: multi-item requests
+
+**Multi-item Read Var and Write Var are fully implemented.** A request carrying
+several item specifications is answered item-by-item in request order, each with
+its own return code, so one bad or refused item never fails the others
+(`s7_services.dart`). What is deferred is only the *third-party proof*: snap7's
+response parser is single-item, so the E2E client cannot issue a multi-item
+request. That behaviour is therefore covered by unit tests over real sockets
+(`test/s7_host_test.dart`) and by the dispatch tests
+(`test/s7_services_test.dart`) instead — including the PDU budget, which is
+enforced across the whole item list in aggregate, not per item.
 
 ---
 
@@ -239,22 +272,38 @@ exit code. The host is killed unconditionally on the way out.
 
 ### What the probe drives
 
+The numbering below is the probe's OWN step numbering — each item `N` is
+`tool/py/s7_probe.py`'s `_stepN_...` function (steps 1–3 and 14 are inline in
+`run()`). **Keep the two in step when either changes**: `s7_pdu.dart`'s
+`buildDataItem` cites "`tool/py/s7_probe.py` step 6" as the evidence for the
+BIT declared-length decision, and a reader who follows a drifted numbering
+lands on the wrong step and loses that anchor.
+
 1. `connect()` — COTP Connection Request → Connection Confirm, then S7 Setup
    Communication → its `Ack_Data` reply (snap7 does both inside `connect()`).
-2. The client agrees the session is up, and the PDU length **it** parsed out of
-   **our** reply is exactly 480.
-3. A multi-byte read whose bytes all differ, so a byte-order fault cannot pass.
-4. An **odd-length** read — wire question 2 above.
-5. A **BIT-transport** read — wire question 1 above.
-6. A **BIT-transport write**, then an independent read of the whole byte
+2. The client agrees the session is up (`get_connected()`).
+3. The PDU length **the client** parsed out of **our** reply is exactly 480.
+   Note what this does and does not prove: snap7's own default proposal is
+   already 480, i.e. at this device's documented maximum, so the exact match
+   proves our reply parameter's offset and byte order are what the client
+   reads — but **not** that the server-side clamp fired, since the clamp is a
+   no-op against a proposal that is already at the maximum. The probe prints
+   snap7's pre-connect proposal so a future version proposing something else
+   is visible rather than silently making this assertion vacuous. The clamp
+   itself is proven separately, by a Dart unit test negotiating **down** from
+   a 960-byte proposal.
+4. A multi-byte read whose bytes all differ, so a byte-order fault cannot pass.
+5. An **odd-length** read — wire question 2 above.
+6. A **BIT-transport** read — wire question 1 above.
+7. A **BIT-transport write**, then an independent read of the whole byte
    asserting both that the bit landed **and** that its neighbour survived.
-7. A multi-byte write, then an **independent read-back of the exact value**.
-8. An S7 `REAL` decode.
-9. A **second area** (merker/M): read, write, independent read-back, plus a bit.
-10. Gap bytes reading zero.
-11. A `ReadOnly` write refused, value unchanged.
-12. A write to a **forced** tag refused, forced value standing.
-13. `disconnect()`.
+8. A multi-byte write, then an **independent read-back of the exact value**.
+9. An S7 `REAL` decode.
+10. A **second area** (merker/M): read, write, independent read-back, plus a bit.
+11. Gap bytes reading zero.
+12. A `ReadOnly` write refused, value unchanged.
+13. A write to a **forced** tag refused, forced value standing.
+14. `disconnect()`.
 
 Every write is followed by a **separate** request that reads the value back: a
 read that agrees with a write proves nothing if both travel the same buggy path.

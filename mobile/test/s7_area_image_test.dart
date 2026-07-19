@@ -223,7 +223,14 @@ void main() {
       applyAreaWrite(p, buildMap(), 'DB', 1, 24, toBytes([0x44, 0x9A, 0x52, 0x2B]));
       final v = readPath(p, 'Real1');
       expect(v, isA<double>());
-      expect(v as double, closeTo(1234.5678, 1e-3));
+      // Tolerance sits just above the true float32 round-trip error for this
+      // value (~5.1e-5), matching the encode test above. A looser bound would
+      // pass on a decoder that never went through float32 at all.
+      expect(v as double, closeTo(1234.5678, 1e-4));
+      // ...and this is the narrowing canary: a decode that widened the 4 wire
+      // bytes without a float32 step could not land exactly on the double
+      // literal, so an EQUAL value means the narrowing did not happen.
+      expect(v, isNot(equals(1234.5678)));
     });
 
     test('a BOOL write sets only its own bit', () {
@@ -367,16 +374,21 @@ void main() {
       expect(applyAreaWrite(p, m, 'DB', 1, -4, toBytes([0x01, 0x02])), isEmpty);
       expect(applyAreaWrite(p, m, 'ZZ', 1, 0, toBytes([0x01])), isEmpty);
       expect(applyAreaWrite(p, m, 'DB', 99, 0, toBytes([0x01, 0x02])), isEmpty);
-      expect(
-        applyAreaWrite(
-          p,
-          S7Map(entries: [
-            S7MapEntry(tag: 'NoSuchTag', area: 'DB', dbNumber: 1, byteOffset: 0, bitOffset: 0),
-          ]),
-          'DB', 1, 0, toBytes([0x01]),
-        ),
-        isNotNull,
+      // A mapping naming a tag that does not exist must be REPORTED as
+      // unsupported rather than silently succeeding. (Asserting `isNotNull`
+      // here would be vacuous: `applyAreaWrite` returns a non-nullable
+      // `List<S7WriteResult>`, so that expectation cannot fail under any
+      // implementation.)
+      final missingTag = applyAreaWrite(
+        p,
+        S7Map(entries: [
+          S7MapEntry(tag: 'NoSuchTag', area: 'DB', dbNumber: 1, byteOffset: 0, bitOffset: 0),
+        ]),
+        'DB', 1, 0, toBytes([0x01]),
       );
+      expect(missingTag, hasLength(1));
+      expect(missingTag.single.tag, 'NoSuchTag');
+      expect(missingTag.single.status, S7WriteStatus.unsupported);
     });
 
     test('a write to a STRING-typed mapping is refused, not thrown on', () {
