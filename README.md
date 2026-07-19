@@ -44,6 +44,8 @@ The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators
   - **Draggable trace cursor** (touch + mouse): tap/drag a vertical scrubber to read each pen's value at any moment, with the time shown both relative (`-1m 12s`) and as wall-clock (`HH:mm:ss`). Samples are transient (never persisted); the pen configuration saves with the project.
 - **Configurable Scan Cycle Engine & Debugging**:
   - PLC-faithful scan pipeline each tick: **read/drive simulated inputs → execute ladder programs → write outputs**, with a **Scan Loop Speed Slider** (`50ms` Full Speed down to `2000ms` Slow Motion step debugging), Pause control (`⏸ / ▶`), and **Step Scan** (`⏭`) single-cycle execution. Timers advance by scan ticks, so pause/step debugging stays deterministic.
+- **In-App Log / Diagnostics Window**:
+  - A source-tagged, filterable **Logs** screen (left dock) makes previously-invisible failures diagnosable from the app alone — e.g. a SCADA client that connects (card reads "Running, Clients: 1") while every request it sends is silently dropped. Every subsystem (all six protocol hosts, the scan engine, project load/save/switch, sim/historian/scheduler) logs to one shared, memory-only ring buffer (2000 entries) with text/source/minimum-level filters, a live-tail toggle that follows the (optionally filtered) tail via the app's throttled repaint tick, and expandable rows for frame-level detail. Per-source DEBUG/TRACE verbosity is off by default and toggled right from the Logs screen; a first-occurrence WARN always announces a dropped request at default verbosity, with repeats demoted to DEBUG so a stuck client can't flood the buffer. The log is never persisted (lost on restart) and is deliberately **not** cleared on project switch, unlike the tag historian — see [`docs/diagnostics.md`](docs/diagnostics.md).
 - **Project Catalog & Persistence**:
   - Projects (including the built-in default projects) are stored locally via `SharedPreferences`; edits autosave in the background as you work.
   - Built-in default projects **backfill non-destructively on upgrade**: when a new release adds a default project, it appears in your catalog on the next launch without wiping any of your existing projects or edits — and a default project you previously deleted stays deleted (it is never resurrected).
@@ -210,7 +212,7 @@ cd runtime
 cargo test
 ```
 
-#### Run Flutter Unit & Integration Tests (1803 Tests Passing)
+#### Run Flutter Unit & Integration Tests (1872 Tests Passing)
 ```bash
 cd mobile
 flutter test
@@ -264,6 +266,7 @@ flutter analyze
 - [docs/protocols/s7comm.md](docs/protocols/s7comm.md) — S7comm (device side): v1 scope, memory-area + byte-offset addressing, the `S7Map` exposure model, gap/partial-coverage/refusal semantics, the negotiated-PDU response budget, and the two wire details the real client settled.
 - [docs/trends.md](docs/trends.md) — Tag historian & trend charts (pens, the Trends section, the HMI trend component, and the trace cursor).
 - [docs/mimo-coupled-plant.md](docs/mimo-coupled-plant.md) — MIMO coupled-plant demo, gain-matrix/RGA interaction analysis, and the static decoupler.
+- [docs/diagnostics.md](docs/diagnostics.md) — In-app Logs / diagnostics window: the source list, per-source verbosity, memory-only/not-cleared-on-switch semantics, and a worked example of diagnosing a client that connects but is served nothing.
 
 ---
 
