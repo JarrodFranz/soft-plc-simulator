@@ -488,4 +488,182 @@ void main() {
       expect(readPath(project, 'BoTag'), true);
     });
   });
+
+  // --- Task 4: application-fragment bound + multi-fragment large reads ------
+  //
+  // A Class 0 read of a large database produces an application fragment that
+  // overruns the master's fixed 2048-byte receive buffer (the `dnp3` crate's
+  // min+default rx_buffer_size, which a master cannot raise), silently
+  // dropping the whole response. The outstation must instead page the response
+  // across multiple application fragments, each <= kDnpMaxAppFragment, gated by
+  // the master's CONFIRM. There is no scriptable third-party DNP3 master in
+  // this repo, so this boundary unit test is the proof: it drives the full
+  // CONFIRM-gated exchange and reassembles the paged fragments the way a
+  // conformant master would.
+  group('Task 4: application-fragment bound + multi-fragment large reads', () {
+    // Builds a project of [count] contiguous analogInput INT32 points at
+    // indices 0..count-1, each carrying its own index as its value (so the
+    // reassembled point set can be checked for order/completeness).
+    PlcProject buildAnalogProject(int count) {
+      final tags = <PlcTag>[];
+      final entries = <DnpMapEntry>[];
+      for (var i = 0; i < count; i++) {
+        tags.add(PlcTag(name: 'Ai$i', path: 'Ai$i', dataType: 'INT32', value: i, ioType: 'Internal'));
+        entries.add(DnpMapEntry(tag: 'Ai$i', pointType: 'analogInput', index: i));
+      }
+      return PlcProject(
+        id: 'big',
+        name: 'BIG',
+        controllerName: 'C',
+        structDefs: const [],
+        programs: const [],
+        tasks: const [],
+        hmis: const [],
+        tags: tags,
+        protocols: ProtocolSettings(
+          dnp3: DnpProtocolConfig(enabled: true, map: DnpMap(entries: entries)),
+        ),
+      );
+    }
+
+    // Drives the full CONFIRM-gated multi-fragment exchange: sends the read,
+    // then a solicited CONFIRM (matching the last fragment's sequence) for each
+    // non-final fragment, collecting every emitted fragment in order.
+    List<Uint8List> driveRead(DnpOutstation os, Uint8List req, {int nowMs = 0}) {
+      final frags = <Uint8List>[];
+      var resp = os.handleAppRequest(req, nowMs: nowMs);
+      frags.add(resp);
+      // FIN (app control bit 6, 0x40) clear means more fragments follow.
+      while ((resp[0] & 0x40) == 0) {
+        final seq = resp[0] & 0x0F;
+        // Solicited CONFIRM: FIR|FIN|seq, UNS(0x10) clear.
+        final confirm = Uint8List.fromList([0xC0 | seq, DnpFunc.confirm]);
+        resp = os.handleAppRequest(confirm, nowMs: nowMs);
+        if (resp.isEmpty) {
+          break; // guard against a non-advancing CONFIRM
+        }
+        frags.add(resp);
+      }
+      return frags;
+    }
+
+    // Reassembles paged g30v1 fragments into an index->value map, asserting no
+    // index is delivered twice.
+    Map<int, int> reassembleAnalogInts(List<Uint8List> frags) {
+      final objBytes = BytesBuilder();
+      for (final f in frags) {
+        objBytes.add(f.sublist(4)); // strip app control + func + IIN(2)
+      }
+      final objs = _decodeResponseObjects(objBytes.toBytes());
+      final values = <int, int>{};
+      for (final o in objs) {
+        if (o.group != 30 || o.variation != 1) {
+          continue;
+        }
+        for (var idx = o.start; idx <= o.stop; idx++) {
+          expect(values.containsKey(idx), isFalse, reason: 'index $idx delivered twice');
+          values[idx] = _decodeI32(_findPoint([o], 30, 1, idx)!);
+        }
+      }
+      return values;
+    }
+
+    test('a Class 0 read of 408 analog points pages across fragments, each <= kDnpMaxAppFragment', () {
+      final project = buildAnalogProject(408);
+      final os = DnpOutstation(projectProvider: () => project);
+      final frags = driveRead(os, _readClass0Req(1));
+
+      expect(frags.length, greaterThan(1), reason: '408 points must overrun one fragment');
+      for (final f in frags) {
+        expect(f.length, lessThanOrEqualTo(kDnpMaxAppFragment));
+      }
+
+      final values = reassembleAnalogInts(frags);
+      expect(values.length, 408, reason: 'every point delivered exactly once');
+      for (var i = 0; i < 408; i++) {
+        expect(values[i], i, reason: 'point $i present and in order');
+      }
+    });
+
+    test('FIR/FIN bits are correct across the paged fragments', () {
+      final project = buildAnalogProject(1000);
+      final os = DnpOutstation(projectProvider: () => project);
+      final frags = driveRead(os, _readClass0Req(1));
+      expect(frags.length, greaterThan(2), reason: '1000 points needs 3+ fragments');
+
+      // First: FIR set, FIN clear.
+      expect(frags.first[0] & 0x80, 0x80);
+      expect(frags.first[0] & 0x40, 0);
+      // Last: FIN set, FIR clear.
+      expect(frags.last[0] & 0x40, 0x40);
+      expect(frags.last[0] & 0x80, 0);
+      // Middle(s): neither FIR nor FIN.
+      for (var i = 1; i < frags.length - 1; i++) {
+        expect(frags[i][0] & 0x80, 0, reason: 'middle fragment $i has FIR clear');
+        expect(frags[i][0] & 0x40, 0, reason: 'middle fragment $i has FIN clear');
+      }
+    });
+
+    test('a CONFIRM advances the cursor and the fragment sequence numbers increment', () {
+      final project = buildAnalogProject(1000);
+      final os = DnpOutstation(projectProvider: () => project);
+      final frags = driveRead(os, _readClass0Req(3));
+      for (var i = 0; i < frags.length; i++) {
+        expect(frags[i][0] & 0x0F, (3 + i) & 0x0F, reason: 'fragment $i sequence');
+      }
+      // Non-final fragments set CON (0x20) so the master knows to CONFIRM.
+      for (var i = 0; i < frags.length - 1; i++) {
+        expect(frags[i][0] & 0x20, 0x20, reason: 'fragment $i requests CONFIRM');
+      }
+    });
+
+    test('a stale/duplicate CONFIRM does not release a fragment (deterministic cursor)', () {
+      final project = buildAnalogProject(408);
+      final os = DnpOutstation(projectProvider: () => project);
+      final first = os.handleAppRequest(_readClass0Req(1), nowMs: 0);
+      final firstSeq = first[0] & 0x0F;
+      // A CONFIRM whose sequence does NOT match the in-flight fragment is ignored.
+      final wrong = os.handleAppRequest(
+          Uint8List.fromList([0xC0 | ((firstSeq + 5) & 0x0F), DnpFunc.confirm]),
+          nowMs: 0);
+      expect(wrong, isEmpty, reason: 'mismatched CONFIRM releases nothing');
+      // The correct CONFIRM releases the next fragment.
+      final next = os.handleAppRequest(
+          Uint8List.fromList([0xC0 | firstSeq, DnpFunc.confirm]), nowMs: 0);
+      expect(next, isNotEmpty);
+      expect(next[0] & 0x0F, (firstSeq + 1) & 0x0F);
+    });
+
+    test('407 analog points still fit in a single FIR+FIN fragment (just under the bound)', () {
+      final project = buildAnalogProject(407);
+      final os = DnpOutstation(projectProvider: () => project);
+      final resp = os.handleAppRequest(_readClass0Req(1), nowMs: 0);
+      expect(resp.length, lessThanOrEqualTo(kDnpMaxAppFragment));
+      expect(resp[0] & 0x80, 0x80, reason: 'FIR set');
+      expect(resp[0] & 0x40, 0x40, reason: 'FIN set (single fragment)');
+      // No continuation: a CONFIRM releases nothing.
+      final seq = resp[0] & 0x0F;
+      final after = os.handleAppRequest(
+          Uint8List.fromList([0xC0 | seq, DnpFunc.confirm]), nowMs: 0);
+      expect(after, isEmpty);
+    });
+
+    test('408 analog points splits at the tipping point into exactly two fragments', () {
+      final project = buildAnalogProject(408);
+      final os = DnpOutstation(projectProvider: () => project);
+      final frags = driveRead(os, _readClass0Req(1));
+      expect(frags.length, 2, reason: '408 is one point over the single-fragment ceiling');
+    });
+
+    test('a small Class 0 read is byte-identical to the pre-change single-fragment form', () {
+      // The existing fixture (a handful of points) must still be exactly one
+      // FIR|FIN, CON-clear response with no continuation state.
+      final project = _buildProject();
+      final os = DnpOutstation(projectProvider: () => project);
+      final resp = os.handleAppRequest(_readClass0Req(1), nowMs: 0);
+      expect(resp.length, lessThan(kDnpMaxAppFragment));
+      expect(resp[0], 0xC0 | 1, reason: 'FIR|FIN|seq=1, CON clear');
+      expect(resp[1], DnpFunc.response);
+    });
+  });
 }
