@@ -83,12 +83,13 @@ class DnpMap {
   ///
   /// Access/point-type selection is inherited from the ROOT tag (the tag
   /// whose name is the leaf path's first segment): `SimulatedOutput` or an
-  /// explicit `ReadOnly` tag `access` (e.g. the reserved `System` tag) is
-  /// read-only; everything else (`SimulatedInput`, `Internal`) is
-  /// read-write. Point type selection: `BOOL` -> `binaryInput` (RO) /
-  /// `binaryOutput` (RW); numeric -> `analogInput` (RO) / `analogOutput`
-  /// (RW). Indexes are assigned sequentially per point type in leaf order,
-  /// each starting from 0.
+  /// explicit `ReadOnly` tag `access` (e.g. the reserved `System` tag,
+  /// checked by name, not just its `access` field, so this holds even if
+  /// `System`'s own `access` were ever left at its default) is read-only;
+  /// everything else (`SimulatedInput`, `Internal`) is read-write. Point type
+  /// selection: `BOOL` -> `binaryInput` (RO) / `binaryOutput` (RW); numeric ->
+  /// `analogInput` (RO) / `analogOutput` (RW). Indexes are assigned
+  /// sequentially per point type in leaf order, each starting from 0.
   static DnpMap autoGenerate(PlcProject p) {
     const skipTypes = {'TIMER', 'COUNTER', 'STRING'};
     const scalarTypes = {'BOOL', 'INT16', 'INT32', 'FLOAT64'};

@@ -95,12 +95,14 @@ class ModbusMap {
   ///
   /// Access/table selection is inherited from the ROOT tag (the tag whose
   /// name is the leaf path's first segment): `SimulatedOutput` or an
-  /// explicit `ReadOnly` tag `access` (e.g. the reserved `System` tag) is
-  /// read-only; everything else (`SimulatedInput`, `Internal`) is
-  /// read-write. Table selection: `BOOL` -> `coil` (RW) / `discrete` (RO);
-  /// numeric -> `holding` (RW) / `input` (RO). Addresses are assigned
-  /// sequentially per table in leaf order, advancing by 1 for bit tables or
-  /// by [regsForType] for register tables.
+  /// explicit `ReadOnly` tag `access` (e.g. the reserved `System` tag,
+  /// checked by name, not just its `access` field, so this holds even if
+  /// `System`'s own `access` were ever left at its default) is read-only;
+  /// everything else (`SimulatedInput`, `Internal`) is read-write. Table
+  /// selection: `BOOL` -> `coil` (RW) / `discrete` (RO); numeric ->
+  /// `holding` (RW) / `input` (RO). Addresses are assigned sequentially per
+  /// table in leaf order, advancing by 1 for bit tables or by [regsForType]
+  /// for register tables.
   static ModbusMap autoGenerate(PlcProject p) {
     const skipTypes = {'TIMER', 'COUNTER', 'STRING'};
     const scalarTypes = {'BOOL', 'INT16', 'INT32', 'FLOAT64'};

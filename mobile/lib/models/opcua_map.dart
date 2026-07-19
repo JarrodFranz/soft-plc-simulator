@@ -78,8 +78,10 @@ class OpcuaMap {
   /// `Arr[0]`) — a bare scalar tag yields itself, unchanged from before.
   /// STRING leaves are allowed. Access is inherited from the ROOT tag (the
   /// tag whose name is the leaf path's first segment): `SimulatedOutput` or
-  /// an explicit `ReadOnly` tag `access` (e.g. the reserved `System` tag)
-  /// yields `ReadOnly`; everything else (`SimulatedInput`, `Internal`) is
+  /// an explicit `ReadOnly` tag `access` (e.g. the reserved `System` tag,
+  /// checked by name, not just its `access` field, so this holds even if
+  /// `System`'s own `access` were ever left at its default) yields
+  /// `ReadOnly`; everything else (`SimulatedInput`, `Internal`) is
   /// `ReadWrite`.
   ///
   /// The OPC UA `nodeId` string and the `tag` resolver key are intentionally

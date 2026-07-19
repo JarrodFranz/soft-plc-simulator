@@ -76,8 +76,10 @@ class MqttMap {
   /// Metric name defaults to the leaf's dotted path, prefixed with the ROOT
   /// tag's folder (the tag whose name is the leaf path's first segment);
   /// `SimulatedOutput` tags or an explicit `ReadOnly` root tag `access`
-  /// (e.g. the reserved `System` tag) are read-only, everything else
-  /// (`SimulatedInput`, `Internal`) is writable.
+  /// (e.g. the reserved `System` tag, checked by name, not just its `access`
+  /// field, so this holds even if `System`'s own `access` were ever left at
+  /// its default) are read-only, everything else (`SimulatedInput`, `Internal`)
+  /// is writable.
   static MqttMap autoGenerate(PlcProject p) {
     const scalarTypes = {'BOOL', 'INT16', 'INT32', 'FLOAT64', 'STRING'};
     final entries = <MqttMapEntry>[];

@@ -177,8 +177,10 @@ class S7Map {
   /// Access is inherited from the ROOT tag (the tag whose name is the leaf
   /// path's first segment), exactly as the Modbus and CIP maps do: an
   /// `ioType` of `'SimulatedOutput'` or an explicit tag `access` of
-  /// `'ReadOnly'` (which is how the reserved `System` tag is marked) yields
-  /// `'ReadOnly'`; everything else yields `'ReadWrite'`.
+  /// `'ReadOnly'` (the reserved `System` tag is checked by name, not just its
+  /// `access` field, so this holds even if `System`'s own `access` were ever
+  /// left at its default) yields `'ReadOnly'`; everything else yields
+  /// `'ReadWrite'`.
   static S7Map autoGenerate(PlcProject p) {
     final entries = <S7MapEntry>[];
     var nextByte = 0;
