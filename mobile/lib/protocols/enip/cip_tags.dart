@@ -37,15 +37,14 @@
 // `generalStatus` only turns non-success if the *envelope itself* (the
 // count/offset header) fails to parse.
 //
-// This file defines two items not present in `cip.dart` (Task 2's scope was
-// limited to the Read/Write Tag services):
+// This file uses two constants defined in `cip.dart` (consolidated there
+// alongside the rest of the CIP status/service codes — see that file's doc
+// comment for the full history and the 0x0A footgun warning):
 //  - `kCipServiceMultipleServicePacket` (0x0A), this service's code.
 //  - `kCipStatusInvalidAttributeValue` (0x09), the standard CIP general
 //    status for "the supplied attribute value is invalid for its type" —
 //    used here for a Write Tag whose wire type code doesn't match the
-//    target tag's actual CIP type. The brief's status list didn't name a
-//    code for this case; 0x09 is the closest standard fit and is called out
-//    here rather than silently reusing an unrelated existing constant.
+//    target tag's actual CIP type.
 //
 // Non-throwing contract: `dispatchCipService` is fed a `CipRequest` already
 // parsed off the wire by `cip.dart`, but its `data` payload has NOT been
@@ -61,14 +60,6 @@ import '../../models/cip_map.dart';
 import '../../models/project_model.dart';
 import '../../models/tag_resolver.dart';
 import 'cip.dart';
-
-/// Multiple Service Packet service code (not defined in `cip.dart`; Task 2
-/// only defined the Read/Write Tag service codes).
-const int kCipServiceMultipleServicePacket = 0x0A;
-
-/// CIP general status 0x09, "Invalid Attribute Value" — used here when a
-/// Write Tag request's wire type code doesn't match the target tag's type.
-const int kCipStatusInvalidAttributeValue = 0x09;
 
 /// The Message Router object identity (class 0x02, instance 0x01) that a
 /// Multiple Service Packet request's path must address.

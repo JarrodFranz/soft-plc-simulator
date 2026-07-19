@@ -8,6 +8,7 @@
 // No Flutter dependency — this file must stay pure Dart so it can be used
 // from services and widgets alike without pulling Flutter into model code.
 
+import 'cip_map.dart';
 import 'dnp3_map.dart';
 import 'modbus_map.dart';
 import 'mqtt_map.dart';
@@ -421,6 +422,45 @@ class DnpProtocolConfig {
       );
 }
 
+/// Per-project EtherNet/IP + CIP explicit-messaging outbound-protocol
+/// configuration: whether the in-app EtherNet/IP host is enabled, the TCP
+/// port it listens on, and the symbolic tag<->exposure map that decides
+/// which tags are exposed and whether each accepts writes.
+class CipProtocolConfig {
+  bool enabled;
+  int port;
+  CipMap map;
+
+  CipProtocolConfig({
+    this.enabled = false,
+    this.port = 44818,
+    required this.map,
+  });
+
+  factory CipProtocolConfig.fromJson(Map<String, dynamic> j) => CipProtocolConfig(
+        enabled: j['enabled'] == true,
+        port: (j['port'] as num?)?.toInt() ?? 44818,
+        map: j['map'] != null
+            ? CipMap.fromJson(j['map'] as Map<String, dynamic>)
+            : CipMap(entries: []),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'enabled': enabled,
+        'port': port,
+        'map': map.toJson(),
+      };
+
+  /// Sane defaults for a project that has never configured EtherNet/IP:
+  /// disabled, the standard EtherNet/IP TCP port, and an auto-generated map
+  /// from the project's current scalar tags.
+  static CipProtocolConfig defaults(PlcProject p) => CipProtocolConfig(
+        enabled: false,
+        port: 44818,
+        map: CipMap.autoPopulate(p),
+      );
+}
+
 /// Per-project outbound-protocol settings: the shared gateway endpoint plus
 /// one config slot per protocol.
 ///
@@ -433,6 +473,7 @@ class ProtocolSettings {
   ModbusProtocolConfig? modbus;
   MqttProtocolConfig? mqtt;
   DnpProtocolConfig? dnp3;
+  CipProtocolConfig? ethernetIp;
 
   ProtocolSettings({
     this.gatewayUrl = kDefaultGatewayUrl,
@@ -440,6 +481,7 @@ class ProtocolSettings {
     this.modbus,
     this.mqtt,
     this.dnp3,
+    this.ethernetIp,
   });
 
   Map<String, dynamic> toJson() => {
@@ -448,6 +490,7 @@ class ProtocolSettings {
         if (modbus != null) 'modbus': modbus!.toJson(),
         if (mqtt != null) 'mqtt': mqtt!.toJson(),
         if (dnp3 != null) 'dnp3': dnp3!.toJson(),
+        if (ethernetIp != null) 'ethernet_ip': ethernetIp!.toJson(),
       };
 
   factory ProtocolSettings.fromJson(Map<String, dynamic> j) => ProtocolSettings(
@@ -456,6 +499,9 @@ class ProtocolSettings {
         modbus: j['modbus'] != null ? ModbusProtocolConfig.fromJson(j['modbus'] as Map<String, dynamic>) : null,
         mqtt: j['mqtt'] != null ? MqttProtocolConfig.fromJson(j['mqtt'] as Map<String, dynamic>) : null,
         dnp3: j['dnp3'] != null ? DnpProtocolConfig.fromJson(j['dnp3'] as Map<String, dynamic>) : null,
+        ethernetIp: j['ethernet_ip'] != null
+            ? CipProtocolConfig.fromJson(j['ethernet_ip'] as Map<String, dynamic>)
+            : null,
       );
 
   static ProtocolSettings defaults(PlcProject p) => ProtocolSettings(
@@ -464,5 +510,6 @@ class ProtocolSettings {
         modbus: ModbusProtocolConfig.defaults(p),
         mqtt: MqttProtocolConfig.defaults(p),
         dnp3: DnpProtocolConfig.defaults(p),
+        ethernetIp: CipProtocolConfig.defaults(p),
       );
 }

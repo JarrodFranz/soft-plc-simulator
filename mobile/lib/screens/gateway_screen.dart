@@ -15,6 +15,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/material.dart';
 
+import '../models/cip_map.dart';
 import '../models/dnp3_map.dart';
 import '../models/modbus_map.dart';
 import '../models/mqtt_map.dart';
@@ -23,6 +24,7 @@ import '../models/project_model.dart';
 import '../models/protocol_settings.dart';
 import '../models/tag_resolver.dart';
 import '../services/dnp3_host.dart';
+import '../services/enip_host.dart';
 import '../services/modbus_host.dart';
 import '../services/mqtt_host.dart';
 import '../services/opcua_host.dart';
@@ -106,15 +108,16 @@ class GatewayScreen extends StatefulWidget {
   final ModbusHost modbusHost;
   final MqttHost mqttHost;
   final DnpHost dnpHost;
+  final EnipHost enipHost;
   final VoidCallback onProjectUpdated;
 
-  /// Whether this platform can host the in-app OPC UA/Modbus/DNP3 TCP
-  /// servers (or dial out an MQTT connection). Hosting/dialing uses a real
-  /// TCP socket, which web browsers do not allow (a start attempt throws
-  /// `Unsupported operation: InternetAddress.anyIPv4` for the listen-only
-  /// servers, and `Socket.connect` is similarly unavailable), so it's
-  /// native-only (Android/iOS/desktop). Defaults to `!kIsWeb`; overridable
-  /// for tests.
+  /// Whether this platform can host the in-app OPC UA/Modbus/DNP3/EtherNet-IP
+  /// TCP servers (or dial out an MQTT connection). Hosting/dialing uses a
+  /// real TCP socket, which web browsers do not allow (a start attempt
+  /// throws `Unsupported operation: InternetAddress.anyIPv4` for the
+  /// listen-only servers, and `Socket.connect` is similarly unavailable), so
+  /// it's native-only (Android/iOS/desktop). Defaults to `!kIsWeb`;
+  /// overridable for tests.
   final bool hostingSupported;
 
   const GatewayScreen({
@@ -124,6 +127,7 @@ class GatewayScreen extends StatefulWidget {
     required this.modbusHost,
     required this.mqttHost,
     required this.dnpHost,
+    required this.enipHost,
     required this.onProjectUpdated,
     this.hostingSupported = !kIsWeb,
   });
@@ -140,6 +144,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
   late final TextEditingController _dnpPortController;
   late final TextEditingController _dnpOutstationAddressController;
   late final TextEditingController _dnpMasterAddressController;
+  late final TextEditingController _enipPortController;
 
   /// The MQTT broker password: held ONLY here, in ephemeral widget State —
   /// never written to `currentProject`/`MqttProtocolConfig` (see that
@@ -178,6 +183,9 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
     _dnpMasterAddressController = TextEditingController(
       text: widget.currentProject.protocols!.dnp3!.masterAddress.toString(),
+    );
+    _enipPortController = TextEditingController(
+      text: widget.currentProject.protocols!.ethernetIp!.port.toString(),
     );
   }
 
@@ -239,6 +247,13 @@ class _GatewayScreenState extends State<GatewayScreen> {
           selection: TextSelection.collapsed(offset: newDnpMasterAddress.length),
         );
       }
+      final newEnipPort = widget.currentProject.protocols!.ethernetIp!.port.toString();
+      if (_enipPortController.text != newEnipPort) {
+        _enipPortController.value = TextEditingValue(
+          text: newEnipPort,
+          selection: TextSelection.collapsed(offset: newEnipPort.length),
+        );
+      }
       _mqttPassword = '';
     }
   }
@@ -252,6 +267,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
     _dnpPortController.dispose();
     _dnpOutstationAddressController.dispose();
     _dnpMasterAddressController.dispose();
+    _enipPortController.dispose();
     super.dispose();
   }
 
@@ -321,6 +337,28 @@ class _GatewayScreenState extends State<GatewayScreen> {
     }
   }
 
+  String _enipStatusLabel(EnipHostStatus s) {
+    switch (s) {
+      case EnipHostStatus.stopped:
+        return 'Stopped';
+      case EnipHostStatus.running:
+        return 'Running';
+      case EnipHostStatus.error:
+        return 'Error';
+    }
+  }
+
+  Color _enipStatusColor(EnipHostStatus s) {
+    switch (s) {
+      case EnipHostStatus.stopped:
+        return Colors.grey;
+      case EnipHostStatus.running:
+        return Colors.greenAccent;
+      case EnipHostStatus.error:
+        return Colors.redAccent;
+    }
+  }
+
   String _mqttStatusLabel(MqttHostStatus s) {
     switch (s) {
       case MqttHostStatus.stopped:
@@ -369,6 +407,14 @@ class _GatewayScreenState extends State<GatewayScreen> {
 
   Future<void> _stopDnpHosting() async {
     await widget.dnpHost.stop();
+  }
+
+  Future<void> _startEnipHosting() async {
+    await widget.enipHost.start(() => widget.currentProject);
+  }
+
+  Future<void> _stopEnipHosting() async {
+    await widget.enipHost.stop();
   }
 
   Future<void> _connectMqtt() async {
@@ -484,6 +530,34 @@ class _GatewayScreenState extends State<GatewayScreen> {
     widget.onProjectUpdated();
   }
 
+  void _autoGenerateEnipMap() {
+    setState(() {
+      _ensureEnip();
+      widget.currentProject.protocols!.ethernetIp!.map = CipMap.autoPopulate(widget.currentProject);
+    });
+    widget.onProjectUpdated();
+  }
+
+  /// Appends a default entry (first available tag option, `ReadWrite`) to
+  /// the EtherNet/IP symbolic tag map — mirrors `_addModbusEntry`.
+  void _addEnipEntry(List<String> tagOptions) {
+    setState(() {
+      _ensureEnip();
+      widget.currentProject.protocols!.ethernetIp!.map.entries.add(CipMapEntry(
+        tagName: tagOptions.isNotEmpty ? tagOptions.first : '',
+        access: 'ReadWrite',
+      ));
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _deleteEnipEntry(CipMapEntry entry) {
+    setState(() {
+      widget.currentProject.protocols!.ethernetIp!.map.entries.remove(entry);
+    });
+    widget.onProjectUpdated();
+  }
+
   /// Creates a default `ProtocolSettings` (and its OPC UA config) in place
   /// when the project has none yet, mirroring WS16's `_ensureMap`: mutate in
   /// memory only — do NOT call `onProjectUpdated` here, so an untouched
@@ -495,6 +569,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
     _ensureModbus();
     _ensureMqtt();
     _ensureDnp();
+    _ensureEnip();
+  }
+
+  /// Creates a default `CipProtocolConfig` in place when the project has
+  /// none yet — mirrors `_ensureModbus`: mutate in memory only, no
+  /// `onProjectUpdated` call here.
+  void _ensureEnip() {
+    widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
+    widget.currentProject.protocols!.ethernetIp ??= CipProtocolConfig.defaults(widget.currentProject);
   }
 
   /// Creates a default `DnpProtocolConfig` in place when the project has
@@ -581,6 +664,26 @@ class _GatewayScreenState extends State<GatewayScreen> {
       return; // ignore invalid input; keep the last-valid persisted address
     }
     widget.currentProject.protocols!.dnp3!.masterAddress = parsed;
+    widget.onProjectUpdated();
+  }
+
+  void _setEnipEnabled(bool enabled) {
+    setState(() {
+      _ensureEnip();
+      widget.currentProject.protocols!.ethernetIp!.enabled = enabled;
+    });
+    if (!enabled && widget.enipHost.status != EnipHostStatus.stopped) {
+      unawaited(widget.enipHost.stop());
+    }
+    widget.onProjectUpdated();
+  }
+
+  void _setEnipPort(String value) {
+    final parsed = int.tryParse(value.trim());
+    if (parsed == null || parsed < 0 || parsed > 65535) {
+      return; // ignore invalid input; keep the last-valid persisted port
+    }
+    widget.currentProject.protocols!.ethernetIp!.port = parsed;
     widget.onProjectUpdated();
   }
 
@@ -830,6 +933,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
     Tab(key: Key('protocol_tab_modbus'), text: 'Modbus'),
     Tab(key: Key('protocol_tab_mqtt'), text: 'MQTT'),
     Tab(key: Key('protocol_tab_dnp3'), text: 'DNP3'),
+    Tab(key: Key('protocol_tab_enip'), text: 'EtherNet/IP'),
   ];
 
   @override
@@ -883,6 +987,12 @@ class _GatewayScreenState extends State<GatewayScreen> {
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(12),
                 child: _buildDnpCard(context, tagOptions),
+              ),
+            ),
+            _KeepAliveTabBody(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(12),
+                child: _buildEnipCard(context, tagOptions),
               ),
             ),
           ],
@@ -2305,6 +2415,294 @@ class _GatewayScreenState extends State<GatewayScreen> {
   /// bare field already fills the available width there without it.
   Widget _mqttFlexField({required bool isCompact, required Widget child}) {
     return isCompact ? child : Expanded(child: child);
+  }
+
+  /// The EtherNet/IP + CIP explicit-messaging protocol card: header + enable
+  /// switch, hosting controls (Start/Stop, port, status, endpoint), and
+  /// (when enabled) the symbolic tag map editor. Mirrors `_buildModbusCard`
+  /// (the simplest of the four existing cards — EtherNet/IP has no
+  /// word/byte-swap or framing options to mirror from Modbus).
+  Widget _buildEnipCard(BuildContext context, List<String> tagOptions) {
+    final enip = widget.currentProject.protocols!.ethernetIp!;
+    final isCompact = context.isCompact;
+
+    return Card(
+      color: const Color(0xFF1E293B),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'EtherNet/IP',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                  ),
+                ),
+                Switch(
+                  key: const Key('enip_enable_switch'),
+                  value: enip.enabled,
+                  onChanged: _setEnipEnabled,
+                ),
+              ],
+            ),
+            if (!enip.enabled)
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text(
+                  'Disabled — no tags are exposed to this protocol.',
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+              )
+            else ...[
+              const SizedBox(height: 12),
+              const Text(
+                'Explicit messaging over CIP, addressed by symbolic (named) tag.',
+                style: TextStyle(color: Colors.white70, fontSize: 11),
+              ),
+              const SizedBox(height: 12),
+              // ── Hosting controls ────────────────────────────────────
+              // Scoped to `widget.enipHost` alone (mirrors the other three
+              // cards' WS-perf-task-1 pattern): the status chip, client
+              // count, port field's enabled state, and Start/Stop buttons
+              // are the only things here driven by host notifies. The
+              // (virtualized) tag map below is untouched by a host
+              // `notifyListeners()`.
+              ListenableBuilder(
+                listenable: widget.enipHost,
+                builder: (context, _) {
+                  final status = widget.enipHost.status;
+                  final running = status == EnipHostStatus.running;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 10,
+                                height: 10,
+                                decoration:
+                                    BoxDecoration(color: _enipStatusColor(status), shape: BoxShape.circle),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                _enipStatusLabel(status),
+                                style: const TextStyle(
+                                    color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                            ],
+                          ),
+                          Text(
+                            'Mapped tags: ${enip.map.entries.length}',
+                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                          ),
+                          if (widget.enipHost.clientCount > 0)
+                            Text(
+                              'Clients: ${widget.enipHost.clientCount}',
+                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _enipPortController,
+                        enabled: !running,
+                        keyboardType: TextInputType.number,
+                        style: const TextStyle(fontSize: 12, color: Colors.white),
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          labelText: 'Port',
+                          helperText: 'Default: 44818',
+                          filled: true,
+                          fillColor: Color(0xFF0F172A),
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: _setEnipPort,
+                      ),
+                      const SizedBox(height: 12),
+                      Flex(
+                        direction: isCompact ? Axis.vertical : Axis.horizontal,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(
+                            width: isCompact ? double.infinity : null,
+                            child: ElevatedButton(
+                              onPressed:
+                                  (running || !widget.hostingSupported) ? null : _startEnipHosting,
+                              child: const Text('Start hosting'),
+                            ),
+                          ),
+                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                            width: isCompact ? double.infinity : null,
+                            child: OutlinedButton(
+                              onPressed: running ? _stopEnipHosting : null,
+                              child: const Text('Stop hosting'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (!widget.hostingSupported) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Hosting runs the EtherNet/IP server inside the app on a TCP '
+                          'socket, which web browsers do not allow. Run the desktop '
+                          '(Windows/macOS/Linux) or mobile (Android/iOS) app to host — '
+                          'you can still design the tag map here.',
+                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                        ),
+                      ],
+                      if (running && widget.enipHost.endpointUrl != null) ...[
+                        const SizedBox(height: 8),
+                        SelectableText(
+                          widget.enipHost.endpointUrl!,
+                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                        ),
+                      ],
+                      if (widget.enipHost.lastError != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Last error: ${widget.enipHost.lastError}',
+                          style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                        ),
+                      ],
+                    ],
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
+              _enipMapEditorCard(context, enip.map, tagOptions),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _enipMapEditorCard(BuildContext context, CipMap map, List<String> tagOptions) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            runSpacing: 4,
+            children: [
+              const Text(
+                'EtherNet/IP Tag Map',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+              Wrap(
+                spacing: 4,
+                children: [
+                  TextButton.icon(
+                    icon: const Icon(Icons.add, size: 16, color: Colors.cyanAccent),
+                    label: const Text('Add entry', style: TextStyle(color: Colors.cyanAccent)),
+                    onPressed: () => _addEnipEntry(tagOptions),
+                  ),
+                  TextButton.icon(
+                    icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
+                    label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
+                    onPressed: _autoGenerateEnipMap,
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (map.entries.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                'No entries yet. Tap Regenerate to build a default map from the project tags.',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            )
+          else
+            _virtualizedMapList<CipMapEntry>(
+              map.entries,
+              (e) => e.tagName,
+              (e) => _enipRow(e, tagOptions),
+              listKey: const Key('enip_map_list'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _enipRow(CipMapEntry entry, List<String> tagOptions) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isCompact = context.isCompact;
+          final tagField = TagAutocompleteField(
+            options: tagOptions,
+            initialValue: entry.tagName,
+            label: 'Tag',
+            onChanged: (v) {
+              entry.tagName = v;
+              widget.onProjectUpdated();
+            },
+          );
+          final accessDropdown = DropdownButtonFormField<String>(
+            initialValue: entry.access,
+            decoration: const InputDecoration(isDense: true, labelText: 'Access'),
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            dropdownColor: const Color(0xFF1E293B),
+            items: const [
+              DropdownMenuItem(value: 'ReadOnly', child: Text('ReadOnly')),
+              DropdownMenuItem(value: 'ReadWrite', child: Text('ReadWrite')),
+            ],
+            onChanged: (v) {
+              if (v == null) return;
+              setState(() => entry.access = v);
+              widget.onProjectUpdated();
+            },
+          );
+          final deleteButton = IconButton(
+            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+            tooltip: 'Delete entry',
+            onPressed: () => _deleteEnipEntry(entry),
+          );
+
+          if (isCompact) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                tagField,
+                const SizedBox(height: 4),
+                accessDropdown,
+                Align(alignment: Alignment.centerRight, child: deleteButton),
+              ],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(flex: 3, child: tagField),
+              const SizedBox(width: 8),
+              SizedBox(width: 160, child: accessDropdown),
+              SizedBox(width: 40, child: deleteButton),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   /// The MQTT / Sparkplug B protocol card: header + enable switch,

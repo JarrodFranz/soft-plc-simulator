@@ -57,13 +57,53 @@ const int kCipServiceWriteTag = 0x4D;
 // --- CIP general status codes -------------------------------------------
 
 const int kCipStatusSuccess = 0x00;
+
+/// "Connection failure" — used by the Connection Manager (`cip_connection.dart`
+/// — Forward Open/Forward Close) both for a Forward Open that cannot be
+/// honored and for a Forward Close that does not match any open connection.
+/// `cip.dart`'s own Read/Write Tag services never need this status; it is
+/// consolidated here (moved from `cip_connection.dart`, which previously
+/// defined it locally) purely so every CIP general-status code lives in one
+/// place. NOT a service code — see the "FOOTGUN" note on
+/// [kCipServiceMultipleServicePacket] below, which shares this same literal
+/// byte value in an entirely different namespace.
+const int kCipStatusConnectionFailure = 0x01;
+
 const int kCipStatusPathSegmentError = 0x04;
 const int kCipStatusPathDestinationUnknown = 0x05;
 const int kCipStatusServiceNotSupported = 0x08;
+
+/// "Invalid Attribute Value" — used by the tag-write service
+/// (`cip_tags.dart`) when a Write Tag request's wire type code doesn't match
+/// the target tag's actual CIP type. Consolidated here (moved from
+/// `cip_tags.dart`, which previously defined it locally) alongside the rest
+/// of the general-status block.
+const int kCipStatusInvalidAttributeValue = 0x09;
+
 const int kCipStatusEmbeddedListError = 0x0A;
 const int kCipStatusPrivilegeViolation = 0x0F;
 const int kCipStatusNotEnoughData = 0x13;
 const int kCipStatusEmbeddedServiceError = 0x1E;
+
+// --- CIP service codes (continued) --------------------------------------
+//
+// FOOTGUN WARNING: [kCipStatusEmbeddedListError] (0x0A, a GENERAL STATUS
+// code, in the block above) and [kCipServiceMultipleServicePacket] (0x0A,
+// a SERVICE code, immediately below) share the identical literal byte value
+// 0x0A in TWO DIFFERENT namespaces — one appears in a CIP response's
+// `generalStatus` byte, the other in a CIP request's `service` byte. Both
+// are used inside the SAME function (`_multipleServicePacket` in
+// `cip_tags.dart`), which reads `kCipServiceMultipleServicePacket` to
+// recognize the outer request and can return `kCipStatusEmbeddedListError`
+// as that same request's reply status. Never conflate the two: check which
+// field (request `service` vs. response `generalStatus`) you are comparing
+// against before reusing either constant.
+//
+/// Multiple Service Packet service code — batches embedded Read/Write Tag
+/// requests into one round trip. Consolidated here (moved from
+/// `cip_tags.dart`, which previously defined it locally because Task 2's
+/// scope was limited to the Read/Write Tag service codes above).
+const int kCipServiceMultipleServicePacket = 0x0A;
 
 // --- CIP elementary data-type codes -------------------------------------
 

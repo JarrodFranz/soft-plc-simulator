@@ -97,17 +97,24 @@ import 'dart:typed_data';
 
 import 'cip.dart';
 
-// --- General status codes used by this layer only -----------------------
+// --- Service codes this layer handles -------------------------------------
 //
-// `cip.dart` does not define a "connection failure" general status because
-// its own services never need one; the Connection Manager does, both for a
-// Forward Open that cannot be honored and for a Forward Close that does not
-// match any open connection. This is general status `0x01` ("Connection
-// failure") per the CIP specification. This codec does not emit extended
-// status words (mirroring `cip.dart`'s `buildCipResponse`, which always
-// writes `additionalStatusWords = 0`), so the specific sub-reason is not
-// distinguished on the wire.
-const int kCipStatusConnectionFailure = 0x01;
+// Not defined in `cip.dart` (Task 2's scope was limited to the Read/Write
+// Tag service codes) — the Connection Manager object's own two services.
+// A caller (the socket host) routing a `SendRRData` UCMM request needs these
+// to decide whether a request goes to [forwardOpen]/[forwardClose] or to the
+// tag-service dispatcher (`cip_tags.dart`'s `dispatchCipService`).
+const int kCipServiceForwardOpen = 0x54;
+const int kCipServiceForwardClose = 0x4E;
+//
+// `kCipStatusConnectionFailure` (general status `0x01`, "Connection
+// failure") — used both for a Forward Open that cannot be honored and for a
+// Forward Close that does not match any open connection — now lives in
+// `cip.dart` alongside the rest of the CIP general-status codes (moved
+// there for consolidation; see that file's doc comment). This codec does
+// not emit extended status words (mirroring `cip.dart`'s
+// `buildCipResponse`, which always writes `additionalStatusWords = 0`), so
+// the specific sub-reason is not distinguished on the wire.
 
 /// The first Target-to-Originator connection id allocated by a fresh
 /// [CipConnectionManager]. Documented as a named constant (rather than an
