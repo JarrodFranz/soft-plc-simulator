@@ -164,7 +164,9 @@ class _Connection {
     PlcProject Function() projectProvider,
     int Function() allocateSessionHandle,
   ) {
-    if (_closed) return;
+    if (_closed) {
+      return;
+    }
     _buffer.addAll(data);
     try {
       while (true) {
@@ -342,8 +344,10 @@ class _Connection {
       return;
     }
 
+    // Sequence count is only ever needed locally for this one request/reply
+    // pair, so it is tracked in the local `seq` variable below rather than
+    // on the connection object — mirrors `enip_host.dart`.
     final seq = ByteData.sublistView(connectedData, 0, 2).getUint16(0, Endian.little);
-    conn.sequenceCount = seq;
     final cipBytes = Uint8List.sublistView(connectedData, 2);
     final req = parseCipRequest(cipBytes);
 
@@ -360,8 +364,11 @@ class _Connection {
     ByteData.sublistView(connectedReplyData, 0, 2).setUint16(0, seq, Endian.little);
     connectedReplyData.setRange(2, connectedReplyData.length, respBytes);
 
+    // Connected Address item on the reply must carry the T->O id the
+    // originator allocated and consumes — mirrors `enip_host.dart`'s fix;
+    // see cip_connection.dart:20-38 for the consumer-allocates rule.
     final addrItemData = Uint8List(4);
-    ByteData.sublistView(addrItemData).setUint32(0, connectionId, Endian.little);
+    ByteData.sublistView(addrItemData).setUint32(0, conn.connectionIdTO, Endian.little);
 
     final replyCpfBytes = buildCpf([
       CpfItem(typeId: kCpfTypeConnectedAddress, data: addrItemData),
@@ -387,7 +394,9 @@ class _Connection {
   }
 
   void close() {
-    if (_closed) return;
+    if (_closed) {
+      return;
+    }
     _closed = true;
     connMgr.releaseAll();
     _connections.remove(this);

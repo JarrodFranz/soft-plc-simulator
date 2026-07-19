@@ -186,18 +186,12 @@ class CipConnection {
   /// triple a Forward Close matches against.
   final int originatorSerial;
 
-  /// Connected-message sequence count. Starts at `0`; a later layer
-  /// (connected explicit messaging over `SendUnitData`) is responsible for
-  /// advancing it — this layer only allocates the field.
-  int sequenceCount;
-
   CipConnection({
     required this.connectionIdOT,
     required this.connectionIdTO,
     required this.connectionSerial,
     required this.vendorId,
     required this.originatorSerial,
-    this.sequenceCount = 0,
   });
 }
 

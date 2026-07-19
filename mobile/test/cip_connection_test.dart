@@ -187,7 +187,6 @@ void main() {
       expect(conn.connectionSerial, 0x10);
       expect(conn.vendorId, 0x20);
       expect(conn.originatorSerial, 0x30);
-      expect(conn.sequenceCount, 0);
     });
 
     test('returns null for an unknown id', () {

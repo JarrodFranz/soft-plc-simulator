@@ -87,7 +87,9 @@ class _Connection {
     PlcProject Function() projectProvider,
     int Function() allocateSessionHandle,
   ) {
-    if (_closed) return;
+    if (_closed) {
+      return;
+    }
     _buffer.addAll(data);
     try {
       while (true) {
@@ -296,11 +298,11 @@ class _Connection {
     }
 
     // Connected Data = sequence count (u16 LE) + the embedded CIP request.
-    // Track/echo the sequence count on the connection, mirroring how a real
-    // connected explicit-messaging exchange's reply carries the same
-    // sequence count the request carried.
+    // The reply echoes the same sequence count the request carried; it is
+    // only ever needed locally for this one request/reply pair, so it is
+    // tracked in the local `seq` variable below rather than on the
+    // connection object.
     final seq = ByteData.sublistView(connectedData, 0, 2).getUint16(0, Endian.little);
-    conn.sequenceCount = seq;
     final cipBytes = Uint8List.sublistView(connectedData, 2);
     final req = parseCipRequest(cipBytes);
 
@@ -317,8 +319,14 @@ class _Connection {
     ByteData.sublistView(connectedReplyData, 0, 2).setUint16(0, seq, Endian.little);
     connectedReplyData.setRange(2, connectedReplyData.length, respBytes);
 
+    // Connected Address item on a target->originator (reply) message must
+    // carry the id the ORIGINATOR allocated and consumes — the T->O id
+    // (`conn.connectionIdTO`) — per the consumer-allocates rule documented
+    // at cip_connection.dart:20-38. `connectionId` (the O->T id read off the
+    // incoming request, above) is what THIS host allocated and consumes; it
+    // is correct for `byConnectionId` lookups but wrong to echo back here.
     final addrItemData = Uint8List(4);
-    ByteData.sublistView(addrItemData).setUint32(0, connectionId, Endian.little);
+    ByteData.sublistView(addrItemData).setUint32(0, conn.connectionIdTO, Endian.little);
 
     final replyCpfBytes = buildCpf([
       CpfItem(typeId: kCpfTypeConnectedAddress, data: addrItemData),
@@ -350,7 +358,9 @@ class _Connection {
   }
 
   void close() {
-    if (_closed) return;
+    if (_closed) {
+      return;
+    }
     _closed = true;
     connMgr.releaseAll();
     try {
