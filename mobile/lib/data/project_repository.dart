@@ -2,7 +2,9 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/app_log.dart';
 import '../models/project_model.dart';
+import '../services/app_logger.dart';
 import 'default_projects.dart';
 
 /// Lightweight catalog entry describing a stored project, without loading
@@ -55,9 +57,19 @@ class ProjectSummary {
 /// returns null (loadProject) rather than throwing, so a single damaged
 /// entry never takes down the whole project list.
 class ProjectRepository {
-  ProjectRepository(this._prefs);
+  ProjectRepository(this._prefs, {this.logger});
 
   final SharedPreferences _prefs;
+
+  /// App-wide logger, threaded in from the shell that owns it — optional
+  /// (nullable) so every existing bare `ProjectRepository(prefs)` call site
+  /// (tests included) keeps compiling unchanged. Used only to surface the
+  /// storage-layer failures below (a corrupt catalog entry, a corrupt
+  /// project blob, a backfill) that this class already recovers from
+  /// silently by returning `null`/`[]` — logging them doesn't change what's
+  /// returned to the caller, it just makes an otherwise-invisible failure
+  /// diagnosable.
+  final AppLogger? logger;
 
   static const String _catalogKey = 'project_catalog';
   static const String _activeProjectIdKey = 'active_project_id';
@@ -80,13 +92,17 @@ class ProjectRepository {
           } else if (entry is Map) {
             result.add(ProjectSummary.fromJson(Map<String, dynamic>.from(entry)));
           }
-        } catch (_) {
+        } catch (e) {
           // Skip a single corrupt catalog entry; keep the rest.
+          logger?.log(kLogSourceProject, LogLevel.warn,
+              'Skipped a corrupt project_catalog entry', detail: e.toString());
         }
       }
       return result;
-    } catch (_) {
+    } catch (e) {
       // Corrupt catalog JSON entirely — treat as empty rather than throwing.
+      logger?.log(kLogSourceProject, LogLevel.error,
+          'project_catalog is corrupt; treating as empty', detail: e.toString());
       return [];
     }
   }
@@ -113,7 +129,9 @@ class ProjectRepository {
       final decoded = jsonDecode(raw);
       if (decoded is! Map<String, dynamic>) return null;
       return PlcProject.fromJson(decoded);
-    } catch (_) {
+    } catch (e) {
+      logger?.log(kLogSourceProject, LogLevel.error,
+          'Corrupt project blob for id "$id"; returning null', detail: e.toString());
       return null;
     }
   }
@@ -206,6 +224,8 @@ class ProjectRepository {
     await _prefs.remove(_activeProjectIdKey);
     await _prefs.remove(_seededDefaultIdsKey);
     await backfillNewDefaults();
+    logger?.log(kLogSourceProject, LogLevel.warn,
+        'Reset to defaults: wiped ${catalog.length} project(s)');
   }
 
   /// Adds any built-in default whose id has never been seeded on this device,
@@ -229,10 +249,12 @@ class ProjectRepository {
       seeded = _decodeStringSet(raw);
     }
     var changed = false;
+    var addedCount = 0;
     for (final d in DefaultProjects.all()) {
       if (!seeded.contains(d.id)) {
         if (!catalogIds.contains(d.id)) {
           await saveProject(d);
+          addedCount++;
         }
         seeded.add(d.id);
         changed = true;
@@ -240,6 +262,10 @@ class ProjectRepository {
     }
     if (changed || raw == null) {
       await _prefs.setString(_seededDefaultIdsKey, jsonEncode(seeded.toList()));
+    }
+    if (addedCount > 0) {
+      logger?.log(kLogSourceProject, LogLevel.info,
+          'Backfilled $addedCount new default project(s)');
     }
   }
 

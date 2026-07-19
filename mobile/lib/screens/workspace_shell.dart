@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../models/app_log.dart';
 import '../models/project_model.dart';
 import '../models/project_history.dart';
 import '../models/system_tags.dart';
@@ -14,6 +15,7 @@ import '../models/tag_resolver.dart';
 import '../data/default_projects.dart';
 import '../data/project_repository.dart';
 import '../data/project_transfer.dart';
+import '../services/app_logger.dart';
 import '../services/dnp3_host.dart';
 import '../services/enip_host.dart';
 import '../services/s7_host.dart';
@@ -106,12 +108,26 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   Timer? _scanTimer;
   Timer? _supervisorTimer;
   final ScanTickRuntime _scan = ScanTickRuntime();
-  final OpcUaHost _opcuaHost = OpcUaHost();
-  final ModbusHost _modbusHost = ModbusHost();
-  final MqttHost _mqttHost = MqttHost();
-  final DnpHost _dnpHost = DnpHost();
-  final EnipHost _enipHost = EnipHost();
-  final S7Host _s7Host = S7Host();
+
+  /// The app-wide logger (see `services/app_logger.dart`) — owned here,
+  /// beside the hosts, and threaded into each of them below so every
+  /// protocol host's instrumentation (Task 3) actually reaches one shared
+  /// buffer instead of six independent, unobserved loggers. NOT cleared on
+  /// project switch (a project switch is itself logged, under
+  /// `kLogSourceProject`) — see `AppLogger`'s class doc for why that's a
+  /// deliberate divergence from `TagHistorian`, which does clear.
+  final AppLogger _logger = AppLogger();
+
+  // `late final` (not a plain field initializer) because each constructor
+  // below reads the sibling `_logger` field — a plain initializer cannot
+  // reference another instance member, only a `late` one (evaluated lazily,
+  // on first access, by which time `_logger` is already set).
+  late final OpcUaHost _opcuaHost = OpcUaHost(logger: _logger);
+  late final ModbusHost _modbusHost = ModbusHost(logger: _logger);
+  late final MqttHost _mqttHost = MqttHost(logger: _logger);
+  late final DnpHost _dnpHost = DnpHost(logger: _logger);
+  late final EnipHost _enipHost = EnipHost(logger: _logger);
+  late final S7Host _s7Host = S7Host(logger: _logger);
 
   // Repaint-pulse infrastructure (see live_tick.dart). `_executeScan` no
   // longer setStates the whole shell each tick — it writes the model
@@ -234,7 +250,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       } catch (_) {
         prefs = null;
       }
-      repo = prefs != null ? ProjectRepository(prefs) : null;
+      repo = prefs != null ? ProjectRepository(prefs, logger: _logger) : null;
     }
 
     // The UI refresh rate is a GLOBAL setting (not per-project), so it lives
@@ -280,12 +296,18 @@ class WorkspaceShellState extends State<WorkspaceShell> {
           final p = await repo.loadProject(summary.id);
           if (p != null) loadedProjects.add(p);
         }
-      } catch (_) {
+      } catch (e) {
         // A later boot step (seed/list/load) threw despite prefs being
         // available. Don't revert to a null repo — that would silently
         // disable persistence for the whole session. Just fall back to
         // in-memory defaults for THIS session's initial view; `_repo`
         // stays non-null so autosave still writes through.
+        _logger.log(
+          kLogSourceProject,
+          LogLevel.error,
+          'Boot: project catalog/list/load failed; falling back to in-memory defaults',
+          detail: e.toString(),
+        );
         loadedProjects = [];
         active = null;
       }
@@ -322,6 +344,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       }
       _hapticsEnabled = loadedHaptics;
     });
+    _logger.log(kLogSourceProject, LogLevel.info,
+        'Loaded project "${_activeProject.name}" (${_activeProject.id}) at boot');
     await repo?.setActiveProjectId(_activeProject.id);
     _startRunSession();
     _startScanLoop();
@@ -400,6 +424,25 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// needing a full scan-timer tick to elapse.
   @visibleForTesting
   LiveTick get debugLiveTick => _liveTick;
+
+  /// Test-only hook: the shell's [AppLogger], so widget tests can assert on
+  /// recorded entries directly (source/level/message) instead of scraping
+  /// the (Task 5) Logs screen.
+  @visibleForTesting
+  AppLogger get debugLogger => _logger;
+
+  /// Test-only hook: the current center-workspace view id (`'HMI:<id>'`,
+  /// `'PROGRAM:<name>'`, `'MEMORY'`, `'GATEWAY'`, `'LOGS'`, ...), for
+  /// asserting navigation state directly rather than scraping widget text.
+  @visibleForTesting
+  String get debugActiveViewId => _activeViewId;
+
+  /// Test-only hook: sets the active view id directly, bypassing the left
+  /// dock's `onTap`/`Navigator.pop` handling in `_selectView` (which needs a
+  /// real `BuildContext` and drawer state) — used to put the shell in a
+  /// known view (e.g. `'LOGS'`) before exercising a project switch.
+  @visibleForTesting
+  void debugSetActiveViewId(String id) => setState(() => _activeViewId = id);
 
   /// Test-only hook: the shell's current UI refresh rate (Hz), so a widget
   /// test can assert on it directly instead of poking at `_repaintThrottle`'s
@@ -527,6 +570,20 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   @visibleForTesting
   void debugSwitchToProject(PlcProject proj) => _switchActiveProject(proj);
 
+  /// Test-only hook: drives the same state-mutation tail `_importProject`
+  /// runs once it has a decoded [imported] project in hand — i.e.
+  /// everything after the file picker/decode steps. Those earlier steps go
+  /// through the real `file_picker` plugin's platform channel, which a
+  /// widget test can't answer with a real file: `PlatformFile.bytes` is a
+  /// `Uint8List`, but a mocked method channel reply round-trips through the
+  /// channel's codec (JSON on desktop), which cannot reproduce a `Uint8List`
+  /// — the plugin's own decoding throws and `_importProject` treats that
+  /// exactly like "file picker failed". This hook exercises
+  /// `_applyImportedProject` directly instead, the same way
+  /// `debugSwitchToProject` exercises `_switchActiveProject` directly.
+  @visibleForTesting
+  Future<void> debugImportProject(PlcProject imported) => _applyImportedProject(imported);
+
   /// Test-only hook: appends [t] to the active project's task list.
   @visibleForTesting
   void debugAddTask(PlcTask t) => setState(() => _activeProject.tasks.add(t));
@@ -561,12 +618,32 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         watchdogMs: watchdogMs,
       );
 
+  /// Clears the historian and resyncs it to `_activeProject`'s current
+  /// trend pens, then records a `kLogSourceHistorian` entry noting the pen
+  /// count. Called by every project-CRUD path that swaps `_activeProject`
+  /// (switch / create / duplicate / delete / reset / import / undo-redo) so
+  /// a project's trend buffers never straddle into another project's. Must
+  /// be called AFTER `_activeProject` is reassigned to the new project.
+  void _resyncHistorian() {
+    _historian.clear();
+    _historian.syncPens(_activeProject.trends);
+    _logger.log(
+      kLogSourceHistorian,
+      LogLevel.info,
+      'Historian resynced (${_activeProject.trends.length} pen(s)) for "${_activeProject.name}"',
+    );
+  }
+
   /// Reset all per-run-session runtime state when the active project is
   /// replaced (switch / undo-redo / create / duplicate / delete / reset /
   /// import): scheduler, watchdog fault, scan-time stats, and timers. A
   /// replaced project must never inherit another project's fault or telemetry.
   void _beginProjectSession() {
     _scan.resetSession();
+    _logger.log(kLogSourceSim, LogLevel.info,
+        'Sim engine state reset (new project session: "${_activeProject.name}")');
+    _logger.log(kLogSourceScheduler, LogLevel.info,
+        'Task scheduler state reset (new project session: "${_activeProject.name}")');
     _faulted = false;
     _faultTaskName = '';
     _faultCode = 0;
@@ -587,6 +664,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// Called on boot and on every stopped -> running transition.
   void _startRunSession() {
     _scan.resetSession();
+    _logger.log(kLogSourceScan, LogLevel.info, 'Scan engine started');
     _sessionScans = 0;
     _lastScanMs = _maxScanMs = _minScanMs = 0;
     _uptime
@@ -635,6 +713,13 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     // needs an immediate shell rebuild rather than waiting on the throttled
     // tick.
     if (result.faulted && !_faulted) {
+      // A transition (guarded by `!_faulted`), not a per-tick event — this
+      // fires once when the watchdog trips, never once per scan cycle.
+      _logger.log(
+        kLogSourceScan,
+        LogLevel.warn,
+        'Watchdog tripped: task "${result.faultTask}" exceeded its watchdog (code ${result.faultCode})',
+      );
       setState(() {
         _faulted = true;
         _faultTaskName = result.faultTask;
@@ -707,19 +792,57 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     ensureSystemTag(proj);
     setState(() {
       _activeProject = proj;
-      _historian.clear();
-      _historian.syncPens(_activeProject.trends);
-      if (proj.hmis.isNotEmpty) {
-        _activeViewId = 'HMI:${proj.hmis.first.id}';
-      } else if (proj.programs.isNotEmpty) {
-        _activeViewId = 'PROGRAM:${proj.programs.first.name}';
-      }
+      _resyncHistorian();
+      _rekeyViewForProject(proj);
       scanCount = 0;
       _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
+    _logger.log(kLogSourceProject, LogLevel.info,
+        'Switched to project "${proj.name}" (${proj.id})');
     unawaited(_repo?.setActiveProjectId(proj.id));
+  }
+
+  /// Whether [viewId] is keyed to the active project's HMIs/programs and
+  /// should therefore be re-derived whenever the active project changes
+  /// (switch/create/duplicate/delete/reset/import) — as opposed to being
+  /// source-independent and left alone.
+  ///
+  /// 'LOGS' is the one view id known to be project-independent (it shows
+  /// the app-level diagnostics log, which must survive a project change).
+  /// MEMORY/SIMIO:rules/PID_AUTOTUNE/INTERACTION/GATEWAY also render
+  /// per-project content today and are deliberately NOT exempted here —
+  /// whether they too should survive a project change is a separate,
+  /// open product question; this predicate only encodes the LOGS rule
+  /// that already existed for `_switchActiveProject`, applied consistently.
+  bool _isProjectScopedView(String viewId) => viewId != 'LOGS';
+
+  /// Re-keys `_activeViewId` for [proj] after a project-mutating operation,
+  /// unless the currently active view is project-independent (see
+  /// [_isProjectScopedView]) — in that case `_activeViewId` is left
+  /// untouched so the user isn't silently bounced off it. Must be called
+  /// from inside the mutation's `setState` block, after `_activeProject`
+  /// has already been reassigned to [proj].
+  ///
+  /// [fallbackToView] is what `_activeViewId` becomes when [proj] has
+  /// neither HMIs nor programs. `_switchActiveProject` omits it (leaving
+  /// `_activeViewId` untouched in that case), matching its pre-existing
+  /// behavior; every CRUD path (create/duplicate/delete/reset/import)
+  /// passes `'MEMORY'`, also matching their pre-existing behavior. This
+  /// method only centralizes the preserve-LOGS decision — it does not
+  /// change what any call site did when there's no HMI/program to land on.
+  void _rekeyViewForProject(PlcProject proj, {String? fallbackToView}) {
+    if (!_isProjectScopedView(_activeViewId)) {
+      return;
+    }
+    if (proj.hmis.isNotEmpty) {
+      _activeViewId = 'HMI:${proj.hmis.first.id}';
+    } else if (proj.programs.isNotEmpty) {
+      _activeViewId = 'PROGRAM:${proj.programs.first.name}';
+    } else if (fallbackToView != null) {
+      _activeViewId = fallbackToView;
+    }
   }
 
   // ── Autosave ─────────────────────────────────────────────────────────
@@ -744,15 +867,23 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     final projectToSave = _activeProject;
     try {
       await repo.saveProject(projectToSave);
+      _logger.log(kLogSourceProject, LogLevel.info,
+          'Saved project "${projectToSave.name}" (${projectToSave.id})');
       if (!mounted) return;
       setState(() {
         _saveInFlight = false;
         _savedIndicatorVisible = true;
         _saveFailed = false;
       });
-    } catch (_) {
+    } catch (e) {
       // Don't let this become an unhandled Future error — reflect the
       // failure in the indicator instead of masking it.
+      _logger.log(
+        kLogSourceProject,
+        LogLevel.error,
+        'Autosave failed for project "${projectToSave.name}" (${projectToSave.id})',
+        detail: e.toString(),
+      );
       if (!mounted) return;
       setState(() {
         _saveInFlight = false;
@@ -816,8 +947,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         _allProjects[i] = proj;
       }
       _activeProject = proj;
-      _historian.clear();
-      _historian.syncPens(_activeProject.trends);
+      _resyncHistorian();
       _editorRevision++;
       _beginProjectSession();
       _ensureValidView();
@@ -838,7 +968,10 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       final progName = _activeViewId.replaceFirst('PROGRAM:', '');
       if (_activeProject.programs.any((p) => p.name == progName)) return;
     } else {
-      // MEMORY / SIMIO:rules / GATEWAY are always valid views.
+      // MEMORY / SIMIO:rules / PID_AUTOTUNE / INTERACTION / GATEWAY / LOGS
+      // are always valid views — none of them are keyed to this project's
+      // HMIs/programs, so anything not prefixed `HMI:`/`PROGRAM:` is valid
+      // regardless of which project is active.
       return;
     }
     if (_activeProject.hmis.isNotEmpty) {
@@ -945,19 +1078,21 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     setState(() {
       _allProjects.add(blank);
       _activeProject = blank;
-      _historian.clear();
-      _historian.syncPens(_activeProject.trends);
-      _activeViewId = 'MEMORY';
+      _resyncHistorian();
+      _rekeyViewForProject(blank, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
+    _logger.log(kLogSourceProject, LogLevel.info,
+        'Created project "${blank.name}" (${blank.id})');
   }
 
   Future<void> _duplicateActiveProject() async {
     final repo = _repo;
     if (repo == null) return;
+    final originalName = _activeProject.name;
     _flushPendingAutosave();
     // Protocol config (incl. hosting) is per-project — stop before switching
     // `_activeProject` to the duplicate.
@@ -975,25 +1110,21 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     setState(() {
       _allProjects.add(copy);
       _activeProject = copy;
-      _historian.clear();
-      _historian.syncPens(_activeProject.trends);
-      if (copy.hmis.isNotEmpty) {
-        _activeViewId = 'HMI:${copy.hmis.first.id}';
-      } else if (copy.programs.isNotEmpty) {
-        _activeViewId = 'PROGRAM:${copy.programs.first.name}';
-      } else {
-        _activeViewId = 'MEMORY';
-      }
+      _resyncHistorian();
+      _rekeyViewForProject(copy, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
+    _logger.log(kLogSourceProject, LogLevel.info,
+        'Duplicated project "$originalName" as "${copy.name}" (${copy.id})');
   }
 
   Future<void> _renameActiveProject() async {
     final repo = _repo;
     if (repo == null) return;
+    final oldName = _activeProject.name;
     final name = await _promptForName(
       context,
       title: 'Rename Project',
@@ -1011,6 +1142,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       // unchanged, so the editor is not re-keyed (editor state is preserved).
       _history.reset(_snapshot());
     });
+    _logger.log(kLogSourceProject, LogLevel.info,
+        'Renamed project ${_activeProject.id} from "$oldName" to "$name"');
   }
 
   Future<void> _deleteActiveProject() async {
@@ -1033,6 +1166,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _enipHost.stop();
     await _s7Host.stop();
     final deletedId = _activeProject.id;
+    final deletedName = _activeProject.name;
     await repo.deleteProject(deletedId);
 
     var remaining = _allProjects.where((p) => p.id != deletedId).toList();
@@ -1059,20 +1193,15 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     setState(() {
       _allProjects = remaining;
       _activeProject = next;
-      _historian.clear();
-      _historian.syncPens(_activeProject.trends);
-      if (next.hmis.isNotEmpty) {
-        _activeViewId = 'HMI:${next.hmis.first.id}';
-      } else if (next.programs.isNotEmpty) {
-        _activeViewId = 'PROGRAM:${next.programs.first.name}';
-      } else {
-        _activeViewId = 'MEMORY';
-      }
+      _resyncHistorian();
+      _rekeyViewForProject(next, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
+    _logger.log(kLogSourceProject, LogLevel.info,
+        'Deleted project "$deletedName" ($deletedId)');
   }
 
   Future<void> _resetToDefaults() async {
@@ -1113,20 +1242,14 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     setState(() {
       _allProjects = loaded;
       _activeProject = first;
-      _historian.clear();
-      _historian.syncPens(_activeProject.trends);
-      if (first.hmis.isNotEmpty) {
-        _activeViewId = 'HMI:${first.hmis.first.id}';
-      } else if (first.programs.isNotEmpty) {
-        _activeViewId = 'PROGRAM:${first.programs.first.name}';
-      } else {
-        _activeViewId = 'MEMORY';
-      }
+      _resyncHistorian();
+      _rekeyViewForProject(first, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
+    _logger.log(kLogSourceProject, LogLevel.warn, 'Reset all projects to defaults');
   }
 
   // ── Export / Import (cross-device transfer) ─────────────────────────
@@ -1150,7 +1273,15 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         fileNameOverrides: [fileName],
         subject: fileName,
       );
-    } catch (_) {
+      _logger.log(kLogSourceProject, LogLevel.info,
+          'Exported project "${_activeProject.name}" as $fileName');
+    } catch (e) {
+      _logger.log(
+        kLogSourceProject,
+        LogLevel.warn,
+        'Export failed for project "${_activeProject.name}"',
+        detail: e.toString(),
+      );
       if (!mounted) return;
       messenger.showSnackBar(
         const SnackBar(content: Text("Couldn't export: something went wrong sharing the file")),
@@ -1167,7 +1298,9 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         allowedExtensions: ['json'],
         withData: true,
       );
-    } catch (_) {
+    } catch (e) {
+      _logger.log(kLogSourceProject, LogLevel.warn, 'Import: file picker failed',
+          detail: e.toString());
       if (!mounted) return;
       messenger.showSnackBar(
         const SnackBar(content: Text("Couldn't open the file picker")),
@@ -1183,7 +1316,9 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       if (bytes != null) {
         text = utf8.decode(bytes);
       }
-    } catch (_) {
+    } catch (e) {
+      _logger.log(kLogSourceProject, LogLevel.warn,
+          'Import: failed to decode the selected file as UTF-8', detail: e.toString());
       text = null;
     }
     if (text == null) {
@@ -1197,13 +1332,17 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     PlcProject imported;
     try {
       imported = ProjectTransfer.decodeProject(text);
-    } on FormatException {
+    } on FormatException catch (e) {
+      _logger.log(kLogSourceProject, LogLevel.warn, 'Import: not a valid project file',
+          detail: e.toString());
       if (!mounted) return;
       messenger.showSnackBar(
         const SnackBar(content: Text("Couldn't import: not a valid project file")),
       );
       return;
-    } catch (_) {
+    } catch (e) {
+      _logger.log(kLogSourceProject, LogLevel.warn, 'Import: not a valid project file',
+          detail: e.toString());
       if (!mounted) return;
       messenger.showSnackBar(
         const SnackBar(content: Text("Couldn't import: not a valid project file")),
@@ -1214,6 +1353,19 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     final existingIds = _allProjects.map((p) => p.id).toSet();
     imported = ProjectTransfer.reassignIdIfColliding(imported, existingIds);
 
+    await _applyImportedProject(imported);
+    if (!mounted) return;
+    messenger.showSnackBar(SnackBar(content: Text('Imported "${imported.name}"')));
+  }
+
+  /// Applies a decoded/collision-resolved [imported] project as the new
+  /// active project: stops the per-project protocol hosts, persists it
+  /// (when a repository is available), and swaps it into the in-memory
+  /// session. Split out of `_importProject` so the plugin-touching file
+  /// picker step (untestable via a mocked platform channel — see
+  /// `debugImportProject`'s doc comment) is separate from this pure
+  /// state-mutation tail.
+  Future<void> _applyImportedProject(PlcProject imported) async {
     _flushPendingAutosave();
     // Protocol config (incl. hosting) is per-project — stop before import
     // switches `_activeProject` out from under a running host.
@@ -1234,21 +1386,15 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     setState(() {
       _allProjects.add(imported);
       _activeProject = imported;
-      _historian.clear();
-      _historian.syncPens(_activeProject.trends);
-      if (imported.hmis.isNotEmpty) {
-        _activeViewId = 'HMI:${imported.hmis.first.id}';
-      } else if (imported.programs.isNotEmpty) {
-        _activeViewId = 'PROGRAM:${imported.programs.first.name}';
-      } else {
-        _activeViewId = 'MEMORY';
-      }
+      _resyncHistorian();
+      _rekeyViewForProject(imported, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
       _history.reset(_snapshot());
       _editorRevision++;
     });
-    messenger.showSnackBar(SnackBar(content: Text('Imported "${imported.name}"')));
+    _logger.log(kLogSourceProject, LogLevel.info,
+        'Imported project "${imported.name}" (${imported.id})');
   }
 
   /// Renders the autosave status indicator. On [compact] widths the label
@@ -1686,6 +1832,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
           // mode — _startScanLoop() cancels+recreates the same
           // Timer.periodic, it does not double-schedule.
           _startScanLoop();
+        } else {
+          _logger.log(kLogSourceScan, LogLevel.info, 'Scan engine paused');
         }
       },
     );
@@ -2183,6 +2331,28 @@ class WorkspaceShellState extends State<WorkspaceShell> {
                         style: TextStyle(fontSize: 11, fontWeight: _activeViewId == 'GATEWAY' ? FontWeight.bold : FontWeight.normal),
                       ),
                       onTap: () => _selectView(context, 'GATEWAY'),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 8),
+
+                Container(
+                  margin: const EdgeInsets.only(left: 12, top: 2),
+                  decoration: BoxDecoration(
+                    color: _activeViewId == 'LOGS' ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(Icons.list_alt, size: 16, color: _activeViewId == 'LOGS' ? Colors.cyanAccent : Colors.tealAccent),
+                      title: Text(
+                        'Logs',
+                        style: TextStyle(fontSize: 11, fontWeight: _activeViewId == 'LOGS' ? FontWeight.bold : FontWeight.normal),
+                      ),
+                      onTap: () => _selectView(context, 'LOGS'),
                     ),
                   ),
                 ),
@@ -2785,6 +2955,12 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         s7Host: _s7Host,
         onProjectUpdated: _markDirtyAndAutosave,
       );
+    } else if (_activeViewId == 'LOGS') {
+      // Placeholder only — Task 5 replaces this with the real Logs screen
+      // (source/level filter bar, virtualized entry list, live-tail via
+      // `LiveTick`). Building that UI here would be building ahead into
+      // Task 5, which this project's YAGNI stance treats as a defect.
+      return const Center(child: Text('Logs (coming soon)'));
     }
     return const Center(child: Text('Select an HMI, Memory, or Program from the Left Dock'));
   }
