@@ -132,6 +132,53 @@ void main() {
       final messages = logger.entries.map((e) => e.message).toList();
       expect(messages.contains('after detail throw'), isTrue);
     });
+
+    test(
+      'a throwing detail builder still records the primary message '
+      '(the built message must survive)',
+      () {
+        final logger = AppLogger();
+        logger.setSourceLevel(kLogSourceMqtt, LogLevel.debug);
+
+        expect(
+          () => logger.logLazy(
+            kLogSourceMqtt,
+            LogLevel.debug,
+            () => 'unsupported ROSCTR 0x07',
+            detail: () => throw StateError('hex formatter boom'),
+          ),
+          returnsNormally,
+        );
+
+        final messages = logger.entries.map((e) => e.message).toList();
+        expect(messages.contains('unsupported ROSCTR 0x07'), isTrue);
+      },
+    );
+  });
+
+  group('successful detail lands on LogEntry.detail', () {
+    test('log(...) threads a supplied detail through', () {
+      final logger = AppLogger();
+      logger.log(
+        kLogSourceModbus,
+        LogLevel.info,
+        'frame received',
+        detail: 'aa bb cc dd',
+      );
+      expect(logger.entries.single.detail, 'aa bb cc dd');
+    });
+
+    test('logLazy(...) threads a successful detail builder result through', () {
+      final logger = AppLogger();
+      logger.setSourceLevel(kLogSourceModbus, LogLevel.debug);
+      logger.logLazy(
+        kLogSourceModbus,
+        LogLevel.debug,
+        () => 'frame received',
+        detail: () => 'aa bb cc dd',
+      );
+      expect(logger.entries.single.detail, 'aa bb cc dd');
+    });
   });
 
   group('tMs hook', () {

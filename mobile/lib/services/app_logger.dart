@@ -28,11 +28,21 @@ import '../models/app_log.dart';
 /// **Never throws.** A logging bug must not break a caller — in particular
 /// a protocol host mid-scan. Every public method that can execute
 /// caller-supplied code (`logLazy`'s `build`/`detail` builders) wraps that
-/// call so a throw is contained. When a builder throws, this service
-/// records a best-effort internal error entry (source `Sim`-style tag is
-/// not used; the original `source`/`level` are kept so filtering still
-/// finds it) rather than losing the failure silently, but it never
-/// rethrows past `logLazy`.
+/// call so a throw is contained.
+///
+/// If `build` throws, the primary message could not be produced at all, so
+/// this records a best-effort internal error entry in its place (the
+/// original `source`/`level` are kept so filtering still finds it) and
+/// returns.
+///
+/// If `build` already succeeded and `detail` throws, the primary message is
+/// NOT discarded — losing it would erase the diagnostic signal the caller
+/// was trying to record (e.g. "unsupported ROSCTR 0x07") just because a
+/// supplementary hex/frame formatter misbehaved. The entry is recorded with
+/// the built message and a short marker in place of the detail noting the
+/// detail builder threw.
+///
+/// Either way, this never rethrows past `logLazy`.
 class AppLogger {
   final LogRingBuffer _buffer;
   final Map<String, LogLevel> _sourceLevels = <String, LogLevel>{};
@@ -85,12 +95,19 @@ class AppLogger {
   /// essentially nothing: no string interpolation, no formatting, no
   /// allocation, even when this is called once per scan frame.
   ///
-  /// If [build] or [detail] throws, the exception is caught and contained
-  /// here: a best-effort internal error entry is recorded (using the same
-  /// [source] so it's still findable when filtering on that source) and
-  /// this method returns normally. It never rethrows and never leaves the
-  /// buffer in a bad state — entries logged after a throwing builder still
-  /// record normally.
+  /// If [build] throws, the exception is caught and contained here: a
+  /// best-effort internal error entry is recorded in place of the message
+  /// (using the same [source] so it's still findable when filtering on that
+  /// source) and this method returns normally.
+  ///
+  /// If [build] succeeds but [detail] throws, the built message is still
+  /// recorded — only [detail] is replaced with a short marker noting the
+  /// detail builder failed. The primary message is the diagnostic signal
+  /// callers depend on and must not be lost just because a supplementary
+  /// detail formatter misbehaved.
+  ///
+  /// Either way, it never rethrows and never leaves the buffer in a bad
+  /// state — entries logged after a throwing builder still record normally.
   void logLazy(
     String source,
     LogLevel level,
@@ -121,14 +138,13 @@ class AppLogger {
       try {
         detailStr = detail();
       } catch (err) {
-        _recordSafe(
-          source,
-          LogLevel.error,
-          'log detail builder threw: $err',
-          null,
-          tMs,
-        );
-        return;
+        // The primary message already built successfully — that is the
+        // diagnostic signal callers actually care about (e.g. "unsupported
+        // ROSCTR 0x07"), and a broken supplementary hex/frame formatter must
+        // not erase it. Record the message with a short marker in place of
+        // the detail so the builder failure is still visible on the same
+        // entry, rather than losing the whole entry.
+        detailStr = 'log detail builder threw: $err';
       }
     }
 
