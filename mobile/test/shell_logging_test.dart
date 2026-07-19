@@ -125,4 +125,119 @@ void main() {
         reason: 'LOGS is an always-valid view (like MEMORY/SIMIO:rules/GATEWAY) — '
             'a project switch must not silently bounce the user off it');
   });
+
+  // The five sibling CRUD paths below all contain the exact same
+  // unconditional `_activeViewId` re-key that `_switchActiveProject` used to
+  // have, and are all reachable from the always-present AppBar project ⋮
+  // menu regardless of the active view — so a user reading LOGS who taps
+  // New/Duplicate/Delete/Reset/Import is silently bounced off it, same bug,
+  // different trigger. Desktop surface so the ⋮ menu is inline (no drawer).
+
+  testWidgets('creating a new project while LOGS is active does not reset the view', (tester) async {
+    await setSurface(tester, desktopSize);
+    await tester.pumpWidget(const MaterialApp(home: WorkspaceShell()));
+    await tester.pumpAndSettle();
+
+    final state = tester.state<WorkspaceShellState>(find.byType(WorkspaceShell));
+    state.debugSetActiveViewId('LOGS');
+    expect(state.debugActiveViewId, 'LOGS');
+
+    await tester.tap(find.byTooltip('Project actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('New Project'));
+    await tester.pumpAndSettle();
+
+    // The name dialog opens pre-filled with 'New Project'; accept it as-is.
+    await tester.tap(find.widgetWithText(ElevatedButton, 'Create'));
+    await tester.pumpAndSettle();
+
+    expect(state.debugActiveViewId, 'LOGS',
+        reason: 'LOGS must survive _createNewProject exactly like it survives a project switch');
+  });
+
+  testWidgets('duplicating the active project while LOGS is active does not reset the view',
+      (tester) async {
+    await setSurface(tester, desktopSize);
+    await tester.pumpWidget(const MaterialApp(home: WorkspaceShell()));
+    await tester.pumpAndSettle();
+
+    final state = tester.state<WorkspaceShellState>(find.byType(WorkspaceShell));
+    state.debugSetActiveViewId('LOGS');
+    expect(state.debugActiveViewId, 'LOGS');
+
+    await tester.tap(find.byTooltip('Project actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Duplicate Project'));
+    await tester.pumpAndSettle();
+
+    expect(state.debugActiveViewId, 'LOGS',
+        reason: 'LOGS must survive _duplicateActiveProject exactly like it survives a project switch');
+  });
+
+  testWidgets('deleting the active project while LOGS is active does not reset the view',
+      (tester) async {
+    await setSurface(tester, desktopSize);
+    await tester.pumpWidget(const MaterialApp(home: WorkspaceShell()));
+    await tester.pumpAndSettle();
+
+    final state = tester.state<WorkspaceShellState>(find.byType(WorkspaceShell));
+    state.debugSetActiveViewId('LOGS');
+    expect(state.debugActiveViewId, 'LOGS');
+
+    await tester.tap(find.byTooltip('Project actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete Project'));
+    await tester.pumpAndSettle();
+
+    // Confirm dialog: default projects catalog has many entries, so
+    // deleting the active one always leaves a valid next project to land on.
+    await tester.tap(find.widgetWithText(ElevatedButton, 'Delete'));
+    await tester.pumpAndSettle();
+
+    expect(state.debugActiveViewId, 'LOGS',
+        reason: 'LOGS must survive _deleteActiveProject exactly like it survives a project switch');
+  });
+
+  testWidgets('resetting to defaults while LOGS is active does not reset the view', (tester) async {
+    await setSurface(tester, desktopSize);
+    await tester.pumpWidget(const MaterialApp(home: WorkspaceShell()));
+    await tester.pumpAndSettle();
+
+    final state = tester.state<WorkspaceShellState>(find.byType(WorkspaceShell));
+    state.debugSetActiveViewId('LOGS');
+    expect(state.debugActiveViewId, 'LOGS');
+
+    await tester.tap(find.byTooltip('Project actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Reset to Defaults'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(ElevatedButton, 'Reset'));
+    await tester.pumpAndSettle();
+
+    expect(state.debugActiveViewId, 'LOGS',
+        reason: 'LOGS must survive _resetToDefaults exactly like it survives a project switch');
+  });
+
+  testWidgets('importing a project while LOGS is active does not reset the view', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: WorkspaceShell()));
+    await tester.pumpAndSettle();
+
+    final state = tester.state<WorkspaceShellState>(find.byType(WorkspaceShell));
+    state.debugSetActiveViewId('LOGS');
+    expect(state.debugActiveViewId, 'LOGS');
+
+    // `_importProject`'s file-picker/decode steps go through the real
+    // `file_picker` plugin platform channel, which can't be faithfully
+    // mocked in a widget test (see `debugImportProject`'s doc comment) —
+    // so drive its state-mutation tail directly, the same way
+    // `debugSwitchToProject` drives `_switchActiveProject` directly.
+    final importedProject =
+        _project('proj_shell_logging_test_import', 'Shell Logging Test Import');
+    await state.debugImportProject(importedProject);
+    await tester.pump();
+
+    expect(state.debugActiveViewId, 'LOGS',
+        reason: 'LOGS must survive _importProject exactly like it survives a project switch');
+  });
 }

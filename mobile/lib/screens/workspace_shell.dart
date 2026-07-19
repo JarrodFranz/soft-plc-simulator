@@ -570,6 +570,20 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   @visibleForTesting
   void debugSwitchToProject(PlcProject proj) => _switchActiveProject(proj);
 
+  /// Test-only hook: drives the same state-mutation tail `_importProject`
+  /// runs once it has a decoded [imported] project in hand — i.e.
+  /// everything after the file picker/decode steps. Those earlier steps go
+  /// through the real `file_picker` plugin's platform channel, which a
+  /// widget test can't answer with a real file: `PlatformFile.bytes` is a
+  /// `Uint8List`, but a mocked method channel reply round-trips through the
+  /// channel's codec (JSON on desktop), which cannot reproduce a `Uint8List`
+  /// — the plugin's own decoding throws and `_importProject` treats that
+  /// exactly like "file picker failed". This hook exercises
+  /// `_applyImportedProject` directly instead, the same way
+  /// `debugSwitchToProject` exercises `_switchActiveProject` directly.
+  @visibleForTesting
+  Future<void> debugImportProject(PlcProject imported) => _applyImportedProject(imported);
+
   /// Test-only hook: appends [t] to the active project's task list.
   @visibleForTesting
   void debugAddTask(PlcTask t) => setState(() => _activeProject.tasks.add(t));
@@ -779,17 +793,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     setState(() {
       _activeProject = proj;
       _resyncHistorian();
-      // 'LOGS' is a source-independent view (like MEMORY/SIMIO:rules/
-      // GATEWAY — see `_ensureValidView`'s doc comment): it isn't tied to
-      // this project's HMIs/programs, so a switch must not silently bounce
-      // the user off it and back to the new project's first HMI/program.
-      if (_activeViewId != 'LOGS') {
-        if (proj.hmis.isNotEmpty) {
-          _activeViewId = 'HMI:${proj.hmis.first.id}';
-        } else if (proj.programs.isNotEmpty) {
-          _activeViewId = 'PROGRAM:${proj.programs.first.name}';
-        }
-      }
+      _rekeyViewForProject(proj);
       scanCount = 0;
       _beginProjectSession();
       _history.reset(_snapshot());
@@ -798,6 +802,47 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     _logger.log(kLogSourceProject, LogLevel.info,
         'Switched to project "${proj.name}" (${proj.id})');
     unawaited(_repo?.setActiveProjectId(proj.id));
+  }
+
+  /// Whether [viewId] is keyed to the active project's HMIs/programs and
+  /// should therefore be re-derived whenever the active project changes
+  /// (switch/create/duplicate/delete/reset/import) — as opposed to being
+  /// source-independent and left alone.
+  ///
+  /// 'LOGS' is the one view id known to be project-independent (it shows
+  /// the app-level diagnostics log, which must survive a project change).
+  /// MEMORY/SIMIO:rules/PID_AUTOTUNE/INTERACTION/GATEWAY also render
+  /// per-project content today and are deliberately NOT exempted here —
+  /// whether they too should survive a project change is a separate,
+  /// open product question; this predicate only encodes the LOGS rule
+  /// that already existed for `_switchActiveProject`, applied consistently.
+  bool _isProjectScopedView(String viewId) => viewId != 'LOGS';
+
+  /// Re-keys `_activeViewId` for [proj] after a project-mutating operation,
+  /// unless the currently active view is project-independent (see
+  /// [_isProjectScopedView]) — in that case `_activeViewId` is left
+  /// untouched so the user isn't silently bounced off it. Must be called
+  /// from inside the mutation's `setState` block, after `_activeProject`
+  /// has already been reassigned to [proj].
+  ///
+  /// [fallbackToView] is what `_activeViewId` becomes when [proj] has
+  /// neither HMIs nor programs. `_switchActiveProject` omits it (leaving
+  /// `_activeViewId` untouched in that case), matching its pre-existing
+  /// behavior; every CRUD path (create/duplicate/delete/reset/import)
+  /// passes `'MEMORY'`, also matching their pre-existing behavior. This
+  /// method only centralizes the preserve-LOGS decision — it does not
+  /// change what any call site did when there's no HMI/program to land on.
+  void _rekeyViewForProject(PlcProject proj, {String? fallbackToView}) {
+    if (!_isProjectScopedView(_activeViewId)) {
+      return;
+    }
+    if (proj.hmis.isNotEmpty) {
+      _activeViewId = 'HMI:${proj.hmis.first.id}';
+    } else if (proj.programs.isNotEmpty) {
+      _activeViewId = 'PROGRAM:${proj.programs.first.name}';
+    } else if (fallbackToView != null) {
+      _activeViewId = fallbackToView;
+    }
   }
 
   // ── Autosave ─────────────────────────────────────────────────────────
@@ -1034,7 +1079,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _allProjects.add(blank);
       _activeProject = blank;
       _resyncHistorian();
-      _activeViewId = 'MEMORY';
+      _rekeyViewForProject(blank, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
       _history.reset(_snapshot());
@@ -1066,13 +1111,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _allProjects.add(copy);
       _activeProject = copy;
       _resyncHistorian();
-      if (copy.hmis.isNotEmpty) {
-        _activeViewId = 'HMI:${copy.hmis.first.id}';
-      } else if (copy.programs.isNotEmpty) {
-        _activeViewId = 'PROGRAM:${copy.programs.first.name}';
-      } else {
-        _activeViewId = 'MEMORY';
-      }
+      _rekeyViewForProject(copy, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
       _history.reset(_snapshot());
@@ -1155,13 +1194,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _allProjects = remaining;
       _activeProject = next;
       _resyncHistorian();
-      if (next.hmis.isNotEmpty) {
-        _activeViewId = 'HMI:${next.hmis.first.id}';
-      } else if (next.programs.isNotEmpty) {
-        _activeViewId = 'PROGRAM:${next.programs.first.name}';
-      } else {
-        _activeViewId = 'MEMORY';
-      }
+      _rekeyViewForProject(next, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
       _history.reset(_snapshot());
@@ -1210,13 +1243,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _allProjects = loaded;
       _activeProject = first;
       _resyncHistorian();
-      if (first.hmis.isNotEmpty) {
-        _activeViewId = 'HMI:${first.hmis.first.id}';
-      } else if (first.programs.isNotEmpty) {
-        _activeViewId = 'PROGRAM:${first.programs.first.name}';
-      } else {
-        _activeViewId = 'MEMORY';
-      }
+      _rekeyViewForProject(first, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
       _history.reset(_snapshot());
@@ -1326,6 +1353,19 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     final existingIds = _allProjects.map((p) => p.id).toSet();
     imported = ProjectTransfer.reassignIdIfColliding(imported, existingIds);
 
+    await _applyImportedProject(imported);
+    if (!mounted) return;
+    messenger.showSnackBar(SnackBar(content: Text('Imported "${imported.name}"')));
+  }
+
+  /// Applies a decoded/collision-resolved [imported] project as the new
+  /// active project: stops the per-project protocol hosts, persists it
+  /// (when a repository is available), and swaps it into the in-memory
+  /// session. Split out of `_importProject` so the plugin-touching file
+  /// picker step (untestable via a mocked platform channel — see
+  /// `debugImportProject`'s doc comment) is separate from this pure
+  /// state-mutation tail.
+  Future<void> _applyImportedProject(PlcProject imported) async {
     _flushPendingAutosave();
     // Protocol config (incl. hosting) is per-project — stop before import
     // switches `_activeProject` out from under a running host.
@@ -1347,13 +1387,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _allProjects.add(imported);
       _activeProject = imported;
       _resyncHistorian();
-      if (imported.hmis.isNotEmpty) {
-        _activeViewId = 'HMI:${imported.hmis.first.id}';
-      } else if (imported.programs.isNotEmpty) {
-        _activeViewId = 'PROGRAM:${imported.programs.first.name}';
-      } else {
-        _activeViewId = 'MEMORY';
-      }
+      _rekeyViewForProject(imported, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
       _history.reset(_snapshot());
@@ -1361,7 +1395,6 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     });
     _logger.log(kLogSourceProject, LogLevel.info,
         'Imported project "${imported.name}" (${imported.id})');
-    messenger.showSnackBar(SnackBar(content: Text('Imported "${imported.name}"')));
   }
 
   /// Renders the autosave status indicator. On [compact] widths the label
