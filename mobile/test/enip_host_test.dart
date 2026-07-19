@@ -12,6 +12,7 @@ import 'package:soft_plc_mobile/models/cip_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/protocols/enip/cip.dart';
+import 'package:soft_plc_mobile/protocols/enip/cip_connection.dart';
 import 'package:soft_plc_mobile/protocols/enip/enip_encap.dart';
 import 'package:soft_plc_mobile/services/enip_host.dart';
 
@@ -145,6 +146,78 @@ Uint8List _sendRRDataFrame({
     sessionHandle: sessionHandle,
     status: 0,
     senderContext: senderContext ?? _senderContext(2),
+    options: 0,
+  );
+  return buildEnipFrame(header, data);
+}
+
+const List<int> _kConnMgrPath = [0x20, 0x06, 0x24, 0x01]; // Connection Manager, class 6 / instance 1.
+
+/// Builds the raw wire bytes (service + EPATH + service data) of a Forward
+/// Open (0x54) CIP request to the Connection Manager object, per public CIP
+/// specification material — mirrors `cip_connection_test.dart`'s
+/// `_buildForwardOpenData`, but as the on-wire request bytes `SendRRData`
+/// actually carries, rather than a pre-parsed `CipRequest`.
+Uint8List _forwardOpenCipRequest({
+  required int connIdOT,
+  required int connectionSerial,
+  required int vendorId,
+  required int originatorSerial,
+}) {
+  final serviceData = <int>[
+    0x0A, // priority/time tick
+    0x0E, // timeout ticks
+    ...(ByteData(4)..setUint32(0, connIdOT, Endian.little)).buffer.asUint8List(), // O->T connection id
+    0, 0, 0, 0, // T->O connection id proposed (ignored by the target)
+    ...(ByteData(2)..setUint16(0, connectionSerial, Endian.little)).buffer.asUint8List(),
+    ...(ByteData(2)..setUint16(0, vendorId, Endian.little)).buffer.asUint8List(),
+    ...(ByteData(4)..setUint32(0, originatorSerial, Endian.little)).buffer.asUint8List(),
+    0x03, // connection timeout multiplier
+    0x00, 0x00, 0x00, // reserved
+    ...(ByteData(4)..setUint32(0, 10000, Endian.little)).buffer.asUint8List(), // O->T RPI
+    0x02, 0x43, // O->T connection params
+    ...(ByteData(4)..setUint32(0, 20000, Endian.little)).buffer.asUint8List(), // T->O RPI
+    0x02, 0x43, // T->O connection params
+    0xA3, // transport type/trigger
+    _kConnMgrPath.length ~/ 2, // connection path size, in words
+    ..._kConnMgrPath,
+  ];
+  final out = Uint8List(2 + _kConnMgrPath.length + serviceData.length);
+  out[0] = kCipServiceForwardOpen;
+  out[1] = _kConnMgrPath.length ~/ 2;
+  out.setRange(2, 2 + _kConnMgrPath.length, _kConnMgrPath);
+  out.setRange(2 + _kConnMgrPath.length, out.length, serviceData);
+  return out;
+}
+
+/// Builds a `SendUnitData` (0x70) request frame carrying [cipRequest] as
+/// connected data addressed to [connectionId], per public EtherNet/IP
+/// encapsulation specification material: Interface Handle u32=0 + Timeout
+/// u16=0, then a CPF item list of a Connected Address item (the connection
+/// id) and a Connected Data item (sequence count u16 + the CIP request).
+Uint8List _sendUnitDataFrame({
+  required int sessionHandle,
+  required int connectionId,
+  required Uint8List cipRequest,
+  int seq = 1,
+}) {
+  final addrData = Uint8List(4);
+  ByteData.sublistView(addrData).setUint32(0, connectionId, Endian.little);
+  final connectedData = Uint8List(2 + cipRequest.length);
+  ByteData.sublistView(connectedData, 0, 2).setUint16(0, seq, Endian.little);
+  connectedData.setRange(2, connectedData.length, cipRequest);
+  final cpf = buildCpf([
+    CpfItem(typeId: kCpfTypeConnectedAddress, data: addrData),
+    CpfItem(typeId: kCpfTypeConnectedData, data: connectedData),
+  ]);
+  final data = Uint8List(6 + cpf.length);
+  data.setRange(6, data.length, cpf);
+  final header = EnipHeader(
+    command: kEnipCommandSendUnitData,
+    length: 0,
+    sessionHandle: sessionHandle,
+    status: 0,
+    senderContext: _senderContext(3),
     options: 0,
   );
   return buildEnipFrame(header, data);
@@ -405,6 +478,96 @@ void main() {
       // still carries its own freshly-allocated (monotonically increasing)
       // handle.
       expect(second.sessionHandle, greaterThan(first.sessionHandle));
+    });
+  });
+
+  group('EnipHost — re-registering a session releases its prior CIP connections', () {
+    test(
+        'a second RegisterSession on the same socket releases connections opened under the '
+        'first session; SendUnitData referencing the old connection id is refused, not crashed',
+        () async {
+      final host = EnipHost();
+      final project = _enabledProject(port: 0);
+      await host.start(() => project);
+      addTearDown(host.stop);
+
+      final endpoint = Uri.parse(host.endpointUrl!.replaceFirst('enip-tcp://', 'tcp://'));
+      final socket = await Socket.connect('127.0.0.1', endpoint.port);
+      addTearDown(socket.destroy);
+      final rx = _SocketCollector(socket);
+      addTearDown(rx.cancel);
+
+      // 1) Register the first session.
+      const registerReplyLen = kEnipHeaderLen + 4;
+      socket.add(_registerSessionFrame());
+      await socket.flush();
+      var offset = registerReplyLen;
+      final firstSessionHandle = parseEnipHeader(await rx.readAtLeast(offset))!.sessionHandle;
+
+      // 2) Forward Open a connection under the first session.
+      final forwardOpenReq = _forwardOpenCipRequest(
+        connIdOT: 0x1111,
+        connectionSerial: 0x2222,
+        vendorId: 0x3333,
+        originatorSerial: 0x44444444,
+      );
+      socket.add(_sendRRDataFrame(sessionHandle: firstSessionHandle, cipRequest: forwardOpenReq));
+      await socket.flush();
+
+      // Forward Open reply body: header(24) + interfaceHandle(4) + timeout(2)
+      // + cpf(count(2) + nullAddrItem(4+0) + unconnectedDataItem header(4) +
+      // cip reply (4-byte CIP header + 26-byte Forward Open reply data = 30))
+      // = 24 + 6 + 2 + 4 + 4 + 30 = 70.
+      const forwardOpenReplyLen = kEnipHeaderLen + 6 + 2 + 4 + 4 + 30;
+      offset += forwardOpenReplyLen;
+      final foFull = await rx.readAtLeast(offset);
+      final foResponse = Uint8List.sublistView(foFull, offset - forwardOpenReplyLen);
+      final foHeader = parseEnipHeader(foResponse);
+      expect(foHeader, isNotNull);
+      expect(foHeader!.status, 0);
+      final foData = Uint8List.sublistView(foResponse, kEnipHeaderLen);
+      final foItems = parseCpf(Uint8List.sublistView(foData, 6));
+      expect(foItems, isNotNull);
+      final foUnconnected = foItems!.firstWhere((i) => i.typeId == kCpfTypeUnconnectedData);
+      final foCipReply = foUnconnected.data;
+      expect(foCipReply[0], kCipServiceForwardOpen | 0x80);
+      expect(foCipReply[2], kCipStatusSuccess);
+      // Byte layout of the Forward Open reply data (see cip_connection.dart):
+      // OT connection id at data[0:4], TO connection id (the one routed by
+      // SendUnitData/`byTargetId`) at data[4:8] — offset by the 4-byte CIP
+      // response header this codec prepends.
+      final oldConnectionId = ByteData.sublistView(foCipReply, 8, 12).getUint32(0, Endian.little);
+      expect(oldConnectionId, kInitialTargetConnectionId);
+
+      // 3) Register a SECOND session on the SAME socket — this must release
+      // the connection opened in step 2.
+      socket.add(_registerSessionFrame(senderContext: _senderContext(99)));
+      await socket.flush();
+      offset += registerReplyLen;
+      final secondFull = await rx.readAtLeast(offset);
+      final secondHeader = parseEnipHeader(Uint8List.sublistView(secondFull, offset - registerReplyLen));
+      expect(secondHeader, isNotNull);
+      final secondSessionHandle = secondHeader!.sessionHandle;
+      expect(secondSessionHandle, greaterThan(firstSessionHandle));
+
+      // 4) SendUnitData under the NEW session referencing the OLD connection
+      // id must be refused (not served, not a crash) — the connection was
+      // released when the second RegisterSession overwrote the first.
+      socket.add(_sendUnitDataFrame(
+        sessionHandle: secondSessionHandle,
+        connectionId: oldConnectionId,
+        cipRequest: _readTagCipRequest('Speed'),
+      ));
+      await socket.flush();
+      offset += kEnipHeaderLen; // error reply carries no data payload.
+      final finalFull = await rx.readAtLeast(offset);
+      final finalHeader = parseEnipHeader(Uint8List.sublistView(finalFull, offset - kEnipHeaderLen));
+      expect(finalHeader, isNotNull);
+      expect(finalHeader!.command, kEnipCommandSendUnitData);
+      expect(finalHeader.status, isNonZero);
+
+      // The host itself must not have crashed handling any of the above.
+      expect(host.status, EnipHostStatus.running);
     });
   });
 

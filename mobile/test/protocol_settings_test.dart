@@ -702,6 +702,24 @@ void main() {
         '(additive/back-compat)', () {
       final settings = ProtocolSettings.fromJson({'gateway_url': kDefaultGatewayUrl});
       expect(settings.ethernetIp, isNull);
+
+      // Prove the title's claim, not just the null check: materialize the
+      // effective config the same way the app does when a project has no
+      // ethernetIp config yet (mirrors `_ensureEnip` in gateway_screen.dart:
+      // `protocols!.ethernetIp ??= CipProtocolConfig.defaults(project)`).
+      final project = PlcProject(
+        id: 'enip_backcompat_proj',
+        name: 'ENIP Back-compat Project',
+        controllerName: 'PLC_ENIP_BC',
+        tags: const [],
+        structDefs: const [],
+        programs: const [],
+        tasks: const [],
+        hmis: const [],
+      );
+      final effective = settings.ethernetIp ?? CipProtocolConfig.defaults(project);
+      expect(effective.enabled, isFalse);
+      expect(effective.port, 44818);
     });
 
     test('CipProtocolConfig.fromJson tolerates a missing map key', () {

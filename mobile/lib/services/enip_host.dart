@@ -155,11 +155,24 @@ class _Connection {
     Uint8List data,
     int Function() allocateSessionHandle,
   ) {
+    // A socket that already holds a session handle and issues
+    // RegisterSession again is starting a fresh session on this connection:
+    // release any CIP connections opened under the PREVIOUS handle first, so
+    // they cannot outlive the session that created them — otherwise they'd
+    // stay resolvable via `connMgr.byTargetId` (and therefore servable by
+    // `SendUnitData`) even though no client can reference the old session
+    // anymore.
+    if (sessionHandle != null) {
+      connMgr.releaseAll();
+    }
     final handle = allocateSessionHandle();
     sessionHandle = handle;
     final replyHeader = EnipHeader(
       command: kEnipCommandRegisterSession,
-      length: 0,
+      // `length` here is purely documentary: `buildEnipFrame` is the sole
+      // authority for the on-wire length field and always recomputes it
+      // from the `data` actually passed to it, ignoring this value.
+      length: data.length,
       sessionHandle: handle,
       status: 0,
       senderContext: header.senderContext,
@@ -324,7 +337,10 @@ class _Connection {
   Uint8List _reply(EnipHeader reqHeader, int status, Uint8List data) {
     final replyHeader = EnipHeader(
       command: reqHeader.command,
-      length: 0,
+      // `length` here is purely documentary: `buildEnipFrame` is the sole
+      // authority for the on-wire length field and always recomputes it
+      // from the `data` actually passed to it, ignoring this value.
+      length: data.length,
       sessionHandle: reqHeader.sessionHandle,
       status: status,
       senderContext: reqHeader.senderContext,
