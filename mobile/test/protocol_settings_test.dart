@@ -10,6 +10,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/cip_map.dart';
 import 'package:soft_plc_mobile/models/dnp3_map.dart';
+import 'package:soft_plc_mobile/models/fins_map.dart';
 import 'package:soft_plc_mobile/models/s7_map.dart';
 import 'package:soft_plc_mobile/models/modbus_map.dart';
 import 'package:soft_plc_mobile/models/mqtt_map.dart';
@@ -955,6 +956,146 @@ void main() {
       expect(settings.s7!.enabled, isFalse);
       expect(settings.s7!.port, 102);
       expect(settings.s7!.map.entries, isNotEmpty);
+    });
+  });
+
+  group('FinsProtocolConfig / ProtocolSettings.fins (Omron FINS)', () {
+    /// A bare project the effective-config assertions can be materialized
+    /// against.
+    PlcProject bareProject(String id) => PlcProject(
+          id: id,
+          name: 'FINS Test Project',
+          controllerName: 'PLC_FINS',
+          tags: [
+            PlcTag(
+              name: 'Level',
+              path: 'Internal.Level',
+              dataType: 'INT16',
+              value: 0,
+              ioType: 'Internal',
+            ),
+          ],
+          structDefs: const [],
+          programs: const [],
+          tasks: const [],
+          hmis: const [],
+        );
+
+    test('FinsProtocolConfig defaults to disabled on port 9600', () {
+      final cfg = FinsProtocolConfig(map: FinsMap(entries: []));
+      expect(cfg.enabled, isFalse);
+      expect(cfg.port, 9600);
+    });
+
+    test('FinsProtocolConfig round-trips through toJson/fromJson', () {
+      final cfg = FinsProtocolConfig(
+        enabled: true,
+        port: 19600,
+        map: FinsMap(entries: [
+          FinsMapEntry(
+            tag: 'Level',
+            area: kFinsAreaNameCIO,
+            wordAddress: 6,
+            bitOffset: 3,
+            access: 'ReadOnly',
+          ),
+        ]),
+      );
+      final rt = FinsProtocolConfig.fromJson(cfg.toJson());
+      expect(rt.enabled, isTrue);
+      expect(rt.port, 19600);
+      expect(rt.map.entries, hasLength(1));
+      expect(rt.map.entries.first.tag, 'Level');
+      expect(rt.map.entries.first.area, kFinsAreaNameCIO);
+      expect(rt.map.entries.first.wordAddress, 6);
+      expect(rt.map.entries.first.bitOffset, 3);
+      expect(rt.map.entries.first.access, 'ReadOnly');
+    });
+
+    test('a project JSON without fins loads with the feature DISABLED and port 9600 '
+        '(additive/back-compat)', () {
+      final settings = ProtocolSettings.fromJson({'gateway_url': kDefaultGatewayUrl});
+      expect(settings.fins, isNull);
+
+      // Prove the title's claim rather than just the null check: materialize
+      // the effective config exactly the way the app does for a project that
+      // has no FINS config yet (mirrors `_ensureFins` in gateway_screen.dart:
+      // `protocols!.fins ??= FinsProtocolConfig.defaults(project)`), and assert
+      // BOTH properties.
+      final effective = settings.fins ?? FinsProtocolConfig.defaults(bareProject('fins_backcompat_proj'));
+      expect(effective.enabled, isFalse, reason: 'an unconfigured project must not host FINS');
+      expect(effective.port, 9600, reason: 'the standard FINS UDP port is the default');
+    });
+
+    test('a project JSON whose fins block is present round-trips through PlcProject', () {
+      final project = bareProject('fins_rt_proj');
+      project.protocols = ProtocolSettings(
+        fins: FinsProtocolConfig(
+          enabled: true,
+          port: 19600,
+          map: FinsMap(entries: [
+            FinsMapEntry(tag: 'Level', area: kFinsAreaNameDM, wordAddress: 4),
+          ]),
+        ),
+      );
+      final rt = PlcProject.fromJson(jsonDecode(jsonEncode(project.toJson())) as Map<String, dynamic>);
+      expect(rt.protocols!.fins, isNotNull);
+      expect(rt.protocols!.fins!.enabled, isTrue);
+      expect(rt.protocols!.fins!.port, 19600);
+      expect(rt.protocols!.fins!.map.entries.single.wordAddress, 4);
+    });
+
+    test('FinsProtocolConfig.fromJson tolerates a missing map key', () {
+      final cfg = FinsProtocolConfig.fromJson({'enabled': true});
+      expect(cfg.enabled, isTrue);
+      expect(cfg.map.entries, isEmpty);
+    });
+
+    test('FinsProtocolConfig.fromJson on a record with no "port" key back-fills 9600', () {
+      final cfg = FinsProtocolConfig.fromJson({'enabled': true, 'map': {'entries': []}});
+      expect(cfg.port, 9600);
+    });
+
+    test('ProtocolSettings with fins == null omits the fins key entirely', () {
+      final settings = ProtocolSettings(opcua: OpcUaProtocolConfig.defaults(bareProject('fins_omit_proj')));
+      expect(settings.fins, isNull);
+      expect(settings.toJson().containsKey('fins'), isFalse);
+    });
+
+    test('SIBLING protocol keys are untouched when fins is present', () {
+      final project = bareProject('fins_siblings_proj');
+      final settings = ProtocolSettings(
+        opcua: OpcUaProtocolConfig.defaults(project),
+        s7: S7ProtocolConfig(map: S7Map(entries: [])),
+        fins: FinsProtocolConfig(map: FinsMap(entries: [])),
+      );
+
+      final json = settings.toJson();
+      expect(json.containsKey('opcua'), isTrue);
+      expect(json.containsKey('modbus'), isFalse);
+      expect(json.containsKey('mqtt'), isFalse);
+      expect(json.containsKey('dnp3'), isFalse);
+      expect(json.containsKey('ethernet_ip'), isFalse);
+      expect(json.containsKey('s7comm'), isTrue);
+      expect(json.containsKey('fins'), isTrue);
+
+      final rt = ProtocolSettings.fromJson(json);
+      expect(rt.opcua, isNotNull);
+      expect(rt.modbus, isNull);
+      expect(rt.mqtt, isNull);
+      expect(rt.dnp3, isNull);
+      expect(rt.ethernetIp, isNull);
+      expect(rt.s7, isNotNull);
+      expect(rt.fins, isNotNull);
+    });
+
+    test('ProtocolSettings.defaults builds a disabled fins config with port 9600 and a '
+        'populated map', () {
+      final settings = ProtocolSettings.defaults(bareProject('fins_def_proj'));
+      expect(settings.fins, isNotNull);
+      expect(settings.fins!.enabled, isFalse);
+      expect(settings.fins!.port, 9600);
+      expect(settings.fins!.map.entries, isNotEmpty);
     });
   });
 }

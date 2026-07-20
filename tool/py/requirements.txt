@@ -25,3 +25,13 @@ pycomm3==1.2.16
 # implementation of the wire format, not from a shared C core — and there is
 # no system package to install for the E2E to run.
 python-snap7==3.1.0
+
+# fins — a real, third-party Omron FINS client. Used by `tool/py/fins_probe.py`
+# (driven by `tool/fins_e2e.sh`) to verify this project's in-app FINS host
+# against a client written entirely independently of us. It is PURE PYTHON: it
+# opens an ordinary `socket.socket` and builds/parses the FINS frames itself
+# with `struct` (no native library, nothing to install at the system level), so
+# the bytes our UDP host is judged against come from an INDEPENDENT second
+# implementation of the wire format. This is the FINS-over-UDP first use of
+# this lane — every prior client here (pycomm3, python-snap7) spoke TCP.
+fins==1.0.5
