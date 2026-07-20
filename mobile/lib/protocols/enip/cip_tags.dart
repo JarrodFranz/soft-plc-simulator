@@ -206,6 +206,17 @@ CipResponse _unconnectedSend(PlcProject project, CipMap map, CipRequest req) {
   if (embeddedReq == null) {
     return _errorResponse(req.service, kCipStatusEmbeddedServiceError);
   }
+  // Reject a nested Unconnected Send BEFORE re-dispatching. Re-dispatch routes
+  // 0x52 back into this function, so a crafted 0x52-inside-0x52 frame would
+  // recurse once per nesting level — bounded only by the ~64 KB frame cap, i.e.
+  // thousands of levels, each COPYING its embedded slice (parseCipRequest uses
+  // sublist, not a view). That is a resource-exhaustion DoS that can OOM the
+  // isolate before the host's try/catch can degrade it to a dropped connection.
+  // A real Logix target never nests Unconnected Send, so bounding the unwrap to
+  // exactly one level costs the legitimate path nothing.
+  if (embeddedReq.service == kCipServiceUnconnectedSend) {
+    return _errorResponse(req.service, kCipStatusServiceNotSupported);
+  }
   // Transparent unwrap: the embedded service's own response IS the reply.
   return dispatchCipService(project, map, embeddedReq);
 }

@@ -895,6 +895,29 @@ void main() {
       expect(resp.generalStatus, isNot(kCipStatusSuccess));
     });
 
+    test('a nested Unconnected Send (0x52 inside 0x52) is rejected, never deep-recurses or throws', () {
+      // Craft a 0x52 whose embedded request is ANOTHER 0x52. Re-dispatch routes
+      // 0x52 back into the handler, so without a guard a nested frame would
+      // recurse once per level (a resource-exhaustion DoS). The handler must
+      // reject the nested wrapper with an error status at exactly one level.
+      final innerReal = _embeddedRequest(
+          kCipServiceReadTag, [CipPathSegment.symbol('Int32_Tag')], _readData());
+      final inner52 = _embeddedRequest(
+        kCipServiceUnconnectedSend,
+        [CipPathSegment.classId(kCipConnectionManagerClassId), CipPathSegment.instanceId(1)],
+        _wrapUnconnectedSend(innerReal),
+      );
+      final wrapped = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: [CipPathSegment.classId(kCipConnectionManagerClassId), CipPathSegment.instanceId(1)],
+        data: _wrapUnconnectedSend(inner52),
+      );
+      late CipResponse resp;
+      expect(() => resp = dispatchCipService(buildProject(), buildMap(), wrapped), returnsNormally);
+      expect(resp.generalStatus, isNot(kCipStatusSuccess));
+      expect(resp.generalStatus, kCipStatusServiceNotSupported);
+    });
+
     test('a malformed wrapper (declared embedded size exceeds the data) returns an error, never throws', () {
       // Header claims a 200-byte embedded message but only a few bytes follow.
       final data = Uint8List.fromList([0x0a, 0x05, 0xC8, 0x00, 0x01, 0x02]);
