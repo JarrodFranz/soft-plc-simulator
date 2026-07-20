@@ -17,6 +17,7 @@
 - LITTLE-endian on the wire for all multi-byte CIP fields (matches `cip.dart`: `Endian.little`).
 - The real `pycomm3` client is the wire authority: when it disagrees with our unit tests, fix the Dart and report it. Assert literal bytes, never only round-trips.
 - Zero `flutter analyze` warnings; braces on all control flow; `withValues(alpha:)` not `withOpacity` (no UI here, but the rule stands).
+- **Runtime errors are visible in the in-app Logs screen.** Any browse/identity request that the running host answers with a non-success CIP status (a malformed browse request, an unsupported service, an unresolvable/absent object) is logged to `kLogSourceEnip` via the host's `AppLogger` so it appears in the Logs view. The pure codecs stay logger-free (they only return statuses); the **host** logs the outcome, using the existing first-occurrence `DropLogGate`/`_logDrop` pattern so a polling client cannot spam the log. Normal pagination (status 0x06 Partial Transfer) is NOT an error — log it at most at `debug`, never `warn`.
 - No competitor programming-software branding, and **do not impersonate a real vendor**: the simulator's Identity reports a neutral, honest self-description, never a real vendor's assigned Vendor ID or product identity.
 
 ---
@@ -747,12 +748,28 @@ In `cip_tags.dart`, add `import 'cip_identity.dart';`, then a case before the `d
 
 In `mobile/lib/services/enip_host.dart`, find the encapsulation-command switch (where `kEnipCommandListIdentity` / RegisterSession / SendRRData are dispatched). Add a handler that, on `kEnipCommandListIdentity` (0x63), replies with a CPF-style body: item count u16 (1) + `buildListIdentityItem()`. Import `cip_identity.dart`. Use the existing `_reply(header, 0, data)` helper. (Read the surrounding switch first; match its exact reply-framing pattern — the ListIdentity reply is an encapsulation reply with the command echoed and status 0.)
 
-- [ ] **Step 7: Analyze**
+- [ ] **Step 7: Surface non-success CIP outcomes in the in-app Logs**
+
+In `mobile/lib/services/enip_host.dart`, at BOTH `dispatchCipService` call sites (the unconnected `_handleSendRRData` path ~line 335 and the connected `_handleSendUnitData` path ~line 434), after computing `resp`, log a warning when the running host answers a request with an abnormal status — so a client that can't browse/read/write sees why in the Logs view. Read the file's existing `_logDrop(String key, String Function() msg)` helper (it gates on first-occurrence via a `DropLogGate` so it can't be spammed) and reuse it:
+
+```dart
+    // Surface a non-success CIP outcome to the in-app Logs (first-occurrence
+    // gated). Partial Transfer (0x06) is normal browse pagination, not an error.
+    if (resp.generalStatus != kCipStatusSuccess && resp.generalStatus != kCipStatusPartialTransfer) {
+      _logDrop('enip-cip-status-${_hex(resp.service)}-${_hex(resp.generalStatus)}',
+          () => 'CIP service ${_hex(req.service)} answered with general status '
+              '${_hex(resp.generalStatus)} (non-success).');
+    }
+```
+
+Place it where `req` and `resp` are both in scope (in the connected path, guard for `req != null`). Import `kCipStatusPartialTransfer` if not already visible. This is the concrete realization of the Global Constraint "runtime errors are visible in the in-app Logs screen."
+
+- [ ] **Step 8: Analyze**
 
 Run: `cd mobile && flutter analyze lib/protocols/enip/ lib/services/enip_host.dart`
 Expected: `No issues found!`
 
-- [ ] **Step 8: The full LogixDriver browse gate**
+- [ ] **Step 9: The full LogixDriver browse gate**
 
 Replace the Task-2 generic-messaging browse step in `enip_probe.py` with (or add alongside it) a `LogixDriver` path that is the real goal:
 
