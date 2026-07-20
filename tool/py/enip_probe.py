@@ -63,7 +63,7 @@ from __future__ import annotations
 import sys
 import traceback
 
-from pycomm3 import BOOL, DINT, INT, LINT, REAL, UINT, CIPDriver, Services
+from pycomm3 import BOOL, DINT, INT, LINT, REAL, UINT, CIPDriver, LogixDriver, Services
 from pycomm3.cip_driver import with_forward_open
 from pycomm3.packets import (
     GenericConnectedRequestPacket,
@@ -106,6 +106,9 @@ EXPECTED_SYMBOLS = {
     "Level": REAL.code,     # 0xCA
     "Temp": REAL.code,      # 0xCA (ReadOnly-mapped, but still browsable)
     "Forced_Speed": DINT.code,  # 0xC4
+    # A DOTTED struct-member symbol: proves the dotted name survives the browse
+    # (and, at step 10, LogixDriver.get_tag_list()) intact, not split or dropped.
+    "Tank.Level": DINT.code,  # 0xC4
 }
 
 # CIP service code for Get Instance Attribute List, the Symbol Object browse.
@@ -305,6 +308,55 @@ def symbol_browse(driver: CIPDriver) -> dict[str, int]:
     return tags
 
 
+def logix_browse(host: str, port: int) -> None:
+    """The decisive gate: the REAL `LogixDriver` browse path.
+
+    Unlike every step above (which drives pycomm3's lower-level CIPDriver /
+    generic-messaging classes), this opens a full `LogixDriver`. Its `open()`
+    performs the connect-time controller-info handshake a Logix client always
+    does -- ListIdentity (encapsulation 0x63), then, wrapped in a CIP
+    Unconnected Send (0x52) to the Connection Manager, Get Attributes All on the
+    Identity Object (class 0x01) and on the Program Name Object (class 0x64) --
+    then uploads the controller tag directory via the Symbol Object (class
+    0x6B), which pycomm3 requests with attributes {1,2,3,5,6,8}. This is the
+    path Ignition's AB Logix driver walks too, so it -- not our own codec -- is
+    the authority that our Identity + Program-Name + Symbol bytes are what a
+    Logix client actually accepts.
+    """
+    drv = LogixDriver(host)
+    drv._cfg["port"] = port
+    with drv:  # open(): identity + program name (via 0x52), then tag upload
+        tags = drv.get_tag_list()
+        names = {t["tag_name"] for t in tags}
+        for expected in ("Speed", "Running", "Level"):
+            check(
+                expected in names,
+                f"STEP 10 (LogixDriver browse): {expected!r} not in tag list "
+                f"{sorted(names)}",
+            )
+        # The dotted struct-member symbol must survive get_tag_list() intact --
+        # a Logix client's STRING parse + user-tag isolation must keep the dot,
+        # not split 'Tank.Level' into a 'Tank' struct upload (which would need
+        # the Template Object we deliberately do not serve).
+        check(
+            "Tank.Level" in names,
+            f"STEP 10 (LogixDriver browse): dotted name 'Tank.Level' did not "
+            f"survive get_tag_list(); got {sorted(names)}",
+        )
+        # Read one browsed tag back through LogixDriver's OWN read path (which
+        # builds the request from the uploaded tag definition, not from bytes
+        # we hand it) -- proof the browsed directory is actually usable.
+        result = drv.read("Speed")
+        check(
+            result and result.value is not None,
+            "STEP 10 (LogixDriver browse): LogixDriver read of a browsed tag failed",
+        )
+    print(
+        f"[probe] step 10 OK: LogixDriver browsed {len(names)} tags and read one "
+        f"back (Speed={result.value})"
+    )
+
+
 def run(host: str, port: int) -> None:
     driver = CIPDriver(f"{host}")
     driver._cfg["port"] = port
@@ -457,6 +509,9 @@ def run(host: str, port: int) -> None:
             driver.close()
         except Exception:  # noqa: BLE001 - teardown must not mask a real failure
             pass
+
+    # --- Step 10: the full LogixDriver browse gate (own session) ---------
+    logix_browse(host, port)
 
     print("ENIP PROBE PASS")
 

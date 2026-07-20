@@ -1,17 +1,24 @@
-// CIP Identity Object (class 0x01) — pure Dart, no dart:io / Flutter. Serves
-// Get Attributes All (0x01) so a Logix-style client's connect-time
-// controller-info read (pycomm3 LogixDriver.open()'s get_plc_info, Ignition's
-// driver) succeeds and proceeds to upload the tag directory (see
-// cip_symbol.dart). Also builds the ListIdentity (encapsulation 0x63) item.
+// CIP connect-time controller-info objects — pure Dart, no dart:io / Flutter.
+// Serves the two Get Attributes All reads a Logix-style client performs at
+// connect (pycomm3 LogixDriver.open()'s get_plc_info + get_plc_name, Ignition's
+// driver) BEFORE it uploads the tag directory (see cip_symbol.dart):
+//
+//  - Identity Object (class 0x01): vendor/product/revision/serial/name.
+//  - Program Name Object (class 0x64): the controller/program name, returned
+//    as a Logix STRING (u16 length + ascii) — the honest project controller
+//    name, no impersonation.
+//
+// Also builds the ListIdentity (encapsulation 0x63) item, which wraps the same
+// identity fields for pre-session discovery.
 //
 // The reported identity is an HONEST self-description of the simulator: a
 // reserved Vendor ID (0 — claims no real vendor), Device Type "Programmable
 // Logic Controller", a fixed serial (determinism), product name
 // "Soft PLC Simulator". It impersonates no real product.
 //
-// Get Attributes All reply layout (little-endian): Vendor ID u16, Device Type
-// u16, Product Code u16, Revision major u8 + minor u8, Status u16, Serial u32,
-// Product Name SHORT_STRING (u8 len + ascii).
+// Identity Get Attributes All reply layout (little-endian): Vendor ID u16,
+// Device Type u16, Product Code u16, Revision major u8 + minor u8, Status u16,
+// Serial u32, Product Name SHORT_STRING (u8 len + ascii).
 library cip_identity;
 
 import 'dart:typed_data';
@@ -32,6 +39,30 @@ bool isIdentityObjectPath(List<CipPathSegment> path) =>
     path.isNotEmpty &&
     path[0].kind == CipPathSegmentKind.classId &&
     path[0].id == kCipIdentityObjectClassId;
+
+/// True iff [path]'s first segment is the Program Name Object class.
+bool isProgramNameObjectPath(List<CipPathSegment> path) =>
+    path.isNotEmpty &&
+    path[0].kind == CipPathSegmentKind.classId &&
+    path[0].id == kCipProgramNameObjectClassId;
+
+/// The Program Name Object Get Attributes All reply: the whole reply data is a
+/// single Logix `STRING` — a u16 byte-length followed by that many
+/// ISO-8859-1/ASCII bytes — exactly what pycomm3's `get_plc_name`
+/// (`data_type=STRING`) decodes. [name] is the honest project controller name;
+/// non-ASCII bytes are replaced with '?', and it is truncated to 0xFFFF bytes
+/// (the u16 length field's max). Never throws.
+CipResponse buildProgramNameGetAttributesAllResponse(int requestService, String name) {
+  final capped = name.length > 0xFFFF ? name.substring(0, 0xFFFF) : name;
+  final nameBytes = Uint8List.fromList(
+    [for (final u in capped.codeUnits) u <= 0x7F ? u : 0x3F],
+  );
+  final out = BytesBuilder();
+  final lenField = ByteData(2)..setUint16(0, nameBytes.length, Endian.little);
+  out.add(lenField.buffer.asUint8List());
+  out.add(nameBytes);
+  return CipResponse(service: requestService, generalStatus: kCipStatusSuccess, data: out.toBytes());
+}
 
 /// The packed Identity attribute struct (shared by Get Attributes All and the
 /// ListIdentity item body).

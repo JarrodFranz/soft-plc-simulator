@@ -119,9 +119,15 @@ CipResponse dispatchCipService(PlcProject project, CipMap map, CipRequest req, {
       case kCipServiceGetInstanceAttributeList:
         return _symbolBrowse(project, map, req, responseBudget);
       case kCipServiceGetAttributesAll:
-        return isIdentityObjectPath(req.path)
-            ? buildIdentityGetAttributesAllResponse(req.service)
-            : _errorResponse(req.service, kCipStatusServiceNotSupported);
+        if (isIdentityObjectPath(req.path)) {
+          return buildIdentityGetAttributesAllResponse(req.service);
+        }
+        if (isProgramNameObjectPath(req.path)) {
+          return buildProgramNameGetAttributesAllResponse(req.service, project.controllerName);
+        }
+        return _errorResponse(req.service, kCipStatusServiceNotSupported);
+      case kCipServiceUnconnectedSend:
+        return _unconnectedSend(project, map, req);
       default:
         return _errorResponse(req.service, kCipStatusServiceNotSupported);
     }
@@ -156,6 +162,52 @@ CipResponse _symbolBrowse(PlcProject project, CipMap map, CipRequest req, int? r
   }
   final budget = responseBudget ?? kCipUcmmBrowseReplyCap;
   return buildSymbolInstanceListResponse(project, map, parsed, replyBudget: budget);
+}
+
+// --- Unconnected Send (0x52) ----------------------------------------------
+
+/// Unwraps a CIP Unconnected Send (0x52) addressed to the Connection Manager
+/// (class 0x06) and re-dispatches the embedded request TRANSPARENTLY, returning
+/// the embedded service's response verbatim (Unconnected Send adds no reply
+/// wrapper of its own — a real Logix target returns the embedded reply
+/// directly). pycomm3's `LogixDriver` sends `get_plc_info`/`get_plc_name` this
+/// way (`unconnected_send=True`).
+///
+/// Request data layout (matches pycomm3's `wrap_unconnected_send`):
+///   priority/tick u8, timeout_ticks u8, embedded-message size u16,
+///   that many embedded-request bytes, one 0x00 pad byte iff the size is odd,
+///   then route-path size u8 (words) + reserved u8 + route-path words.
+/// Only the embedded message is needed here; the route path is ignored because
+/// this host is the end device. Never throws — a malformed wrapper returns a
+/// non-success [CipResponse], and the embedded dispatch runs through the same
+/// never-throwing [dispatchCipService]. The embedded request is dispatched as
+/// UCMM (no negotiated `responseBudget`).
+CipResponse _unconnectedSend(PlcProject project, CipMap map, CipRequest req) {
+  final path = req.path;
+  final isConnMgrPath = path.isNotEmpty &&
+      path[0].kind == CipPathSegmentKind.classId &&
+      path[0].id == kCipConnectionManagerClassId;
+  if (!isConnMgrPath) {
+    return _errorResponse(req.service, kCipStatusPathSegmentError);
+  }
+  final data = req.data;
+  // Need at least priority(1) + timeout(1) + size(2) before the embedded bytes.
+  if (data.length < 4) {
+    return _errorResponse(req.service, kCipStatusNotEnoughData);
+  }
+  final msgLen = _readU16(data, 2);
+  const embeddedStart = 4;
+  final embeddedEnd = embeddedStart + msgLen;
+  if (embeddedEnd > data.length) {
+    return _errorResponse(req.service, kCipStatusNotEnoughData);
+  }
+  final embeddedBytes = Uint8List.sublistView(data, embeddedStart, embeddedEnd);
+  final embeddedReq = parseCipRequest(embeddedBytes);
+  if (embeddedReq == null) {
+    return _errorResponse(req.service, kCipStatusEmbeddedServiceError);
+  }
+  // Transparent unwrap: the embedded service's own response IS the reply.
+  return dispatchCipService(project, map, embeddedReq);
 }
 
 /// Joins a path's ANSI Extended Symbol segments into a dotted resolver path

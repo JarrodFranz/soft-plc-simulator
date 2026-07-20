@@ -125,8 +125,20 @@ const int kCipStatusEmbeddedServiceError = 0x1E;
 const int kCipServiceMultipleServicePacket = 0x0A;
 
 /// Get Attributes All — returns an object instance's attributes as one
-/// packed structure. Served here only for the Identity Object.
+/// packed structure. Served here for the Identity Object and the Program
+/// Name Object (both read at connect by a Logix-style client).
 const int kCipServiceGetAttributesAll = 0x01;
+
+/// Unconnected Send — a Connection Manager (class 0x06) service that wraps
+/// (encapsulates) another CIP request plus a route path, so an UNCONNECTED
+/// (UCMM) originator can reach a target across a routing hop without opening a
+/// connection. pycomm3's `LogixDriver` sends `get_plc_info`/`get_plc_name`
+/// this way (`unconnected_send=True`). This host is the end device, so it
+/// treats 0x52 as a TRANSPARENT wrapper: it unwraps the embedded request,
+/// dispatches it, and returns the embedded reply verbatim (Unconnected Send
+/// adds no reply wrapper of its own). NOT the same namespace as a general
+/// status — this is a request `service` byte.
+const int kCipServiceUnconnectedSend = 0x52;
 
 // --- CIP object class ids (served objects) -------------------------------
 
@@ -136,6 +148,17 @@ const int kCipSymbolObjectClassId = 0x6B;
 /// Identity Object — vendor/product/revision/serial a Logix-style client
 /// reads at connect (via Get Attributes All) before uploading tags.
 const int kCipIdentityObjectClassId = 0x01;
+
+/// Connection Manager — the object (instance 1) that owns Forward Open/Close
+/// and the Unconnected Send ([kCipServiceUnconnectedSend]) service. An
+/// Unconnected Send request's path must address it.
+const int kCipConnectionManagerClassId = 0x06;
+
+/// Program Name Object — a Logix-style client reads the controller/program
+/// name from this class (Get Attributes All → a Logix STRING) at connect
+/// (pycomm3's `get_plc_name`), after the Identity read and before the tag
+/// upload. See `cip_identity.dart` for the honest, deterministic value.
+const int kCipProgramNameObjectClassId = 0x64;
 
 // --- CIP elementary data-type codes -------------------------------------
 

@@ -60,6 +60,27 @@ Uint8List _buildMsp(List<Uint8List> embedded) {
   return out.toBytes();
 }
 
+/// Wraps [embedded] (a raw CIP request's bytes) in a CIP Unconnected Send
+/// (0x52) request data payload, mirroring pycomm3's `wrap_unconnected_send`:
+/// priority u8, timeout u8, embedded-message size u16, the embedded bytes, one
+/// 0x00 pad byte iff the size is odd, then the route path (size u8 words +
+/// reserved u8 + [routePathWords]). Default route path is a single port
+/// segment (port 1) — the host ignores it, but a realistic wrapper carries one.
+Uint8List _wrapUnconnectedSend(Uint8List embedded, {List<int> routePathWords = const [0x01, 0x00]}) {
+  final out = BytesBuilder();
+  out.addByte(0x0a); // priority / time_tick
+  out.addByte(0x05); // timeout ticks
+  out.add(_u16le(embedded.length));
+  out.add(embedded);
+  if (embedded.length.isOdd) {
+    out.addByte(0x00); // pad so the route path starts on a word boundary
+  }
+  out.addByte(routePathWords.length ~/ 2); // route path size, in 16-bit words
+  out.addByte(0x00); // reserved
+  out.add(routePathWords);
+  return out.toBytes();
+}
+
 /// A small fixture for the Symbol Object browse routing tests, mirroring
 /// Task 1's `buildProject()` / `buildMap()` in `cip_symbol_test.dart`: three
 /// scalar leaves, each a flat atomic symbol the browse enumerates.
@@ -797,6 +818,136 @@ void main() {
         data: Uint8List.fromList([0x01, 0x00, 0x01, 0x00]),
       );
       final resp = dispatchCipService(_browseProject(), _browseMap(), req);
+      expect(resp.generalStatus, kCipStatusServiceNotSupported);
+    });
+  });
+
+  group('dispatchCipService — Unconnected Send (0x52) transparent wrapper', () {
+    test('unwraps and dispatches the embedded request, returning its response verbatim', () {
+      final project = buildProject();
+      final map = buildMap();
+      final embedded = _embeddedRequest(
+          kCipServiceReadTag, [CipPathSegment.symbol('Int32_Tag')], _readData());
+      final wrapped = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: [CipPathSegment.classId(kCipConnectionManagerClassId), CipPathSegment.instanceId(1)],
+        data: _wrapUnconnectedSend(embedded),
+      );
+      final viaWrapper = dispatchCipService(project, map, wrapped);
+      // Transparent: byte-identical to dispatching the embedded request
+      // directly as UCMM — no wrapper is added to the reply.
+      final direct = dispatchCipService(buildProject(), buildMap(), parseCipRequest(embedded)!);
+      expect(viaWrapper.service, kCipServiceReadTag);
+      expect(viaWrapper.service, direct.service);
+      expect(viaWrapper.generalStatus, kCipStatusSuccess);
+      expect(viaWrapper.data, direct.data);
+      // The embedded Read actually round-tripped: type DINT + value 98765.
+      expect(_readU16(viaWrapper.data, 0), kCipTypeDint);
+      expect(ByteData.sublistView(viaWrapper.data, 2, 6).getInt32(0, Endian.little), 98765);
+    });
+
+    test('carries an embedded Identity Get Attributes All through unchanged', () {
+      final embedded = _embeddedRequest(
+        kCipServiceGetAttributesAll,
+        [CipPathSegment.classId(kCipIdentityObjectClassId), CipPathSegment.instanceId(1)],
+        Uint8List(0),
+      );
+      final wrapped = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: [CipPathSegment.classId(kCipConnectionManagerClassId), CipPathSegment.instanceId(1)],
+        data: _wrapUnconnectedSend(embedded),
+      );
+      final resp = dispatchCipService(buildProject(), buildMap(), wrapped);
+      expect(resp.service, kCipServiceGetAttributesAll);
+      expect(resp.generalStatus, kCipStatusSuccess);
+      expect(_readU16(resp.data, 0), 0); // Vendor ID 0 (honest, no vendor).
+      expect(_readU16(resp.data, 2), 0x000E); // Device Type: PLC.
+    });
+
+    test('an odd-length embedded message (route path preceded by a pad byte) is parsed exactly', () {
+      // 3-byte embedded data makes the embedded request odd-length, so the
+      // wrapper inserts a pad byte before the route path. The host must read
+      // exactly `size` bytes and never let the pad/route-path bleed in.
+      final embedded = _embeddedRequest(
+          kCipServiceReadTag, [CipPathSegment.symbol('Int32_Tag')], Uint8List.fromList([1, 0, 0]));
+      expect(embedded.length.isOdd, isTrue);
+      final wrapped = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: [CipPathSegment.classId(kCipConnectionManagerClassId), CipPathSegment.instanceId(1)],
+        data: _wrapUnconnectedSend(embedded),
+      );
+      final resp = dispatchCipService(buildProject(), buildMap(), wrapped);
+      expect(resp.service, kCipServiceReadTag);
+      expect(resp.generalStatus, kCipStatusSuccess);
+      expect(_readU16(resp.data, 0), kCipTypeDint);
+    });
+
+    test('a wrapper addressed to a non-Connection-Manager class is refused, never throws', () {
+      final embedded = _embeddedRequest(
+          kCipServiceReadTag, [CipPathSegment.symbol('Int32_Tag')], _readData());
+      final wrapped = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: [CipPathSegment.classId(0x02), CipPathSegment.instanceId(1)], // Message Router, not Conn Mgr
+        data: _wrapUnconnectedSend(embedded),
+      );
+      late CipResponse resp;
+      expect(() => resp = dispatchCipService(buildProject(), buildMap(), wrapped), returnsNormally);
+      expect(resp.generalStatus, isNot(kCipStatusSuccess));
+    });
+
+    test('a malformed wrapper (declared embedded size exceeds the data) returns an error, never throws', () {
+      // Header claims a 200-byte embedded message but only a few bytes follow.
+      final data = Uint8List.fromList([0x0a, 0x05, 0xC8, 0x00, 0x01, 0x02]);
+      final wrapped = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: [CipPathSegment.classId(kCipConnectionManagerClassId), CipPathSegment.instanceId(1)],
+        data: data,
+      );
+      late CipResponse resp;
+      expect(() => resp = dispatchCipService(buildProject(), buildMap(), wrapped), returnsNormally);
+      expect(resp.generalStatus, isNot(kCipStatusSuccess));
+    });
+
+    test('an embedded request that itself fails only sets THAT status, still no throw', () {
+      // Embedded read of an unmapped tag → 0x05 comes back through the wrapper
+      // verbatim (the wrapper is transparent, not a batch that could fail).
+      final embedded = _embeddedRequest(
+          kCipServiceReadTag, [CipPathSegment.symbol('Unexposed_Tag')], _readData());
+      final wrapped = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: [CipPathSegment.classId(kCipConnectionManagerClassId), CipPathSegment.instanceId(1)],
+        data: _wrapUnconnectedSend(embedded),
+      );
+      final resp = dispatchCipService(buildProject(), buildMap(), wrapped);
+      expect(resp.service, kCipServiceReadTag);
+      expect(resp.generalStatus, kCipStatusPathDestinationUnknown);
+    });
+  });
+
+  group('dispatchCipService — Program Name Object (0x64) Get Attributes All', () {
+    test('returns the controller name as a Logix STRING (u16 len + ascii)', () {
+      final project = buildProject(); // controllerName: 'PLC_CIP_TAGS'
+      final req = CipRequest(
+        service: kCipServiceGetAttributesAll,
+        path: [CipPathSegment.classId(kCipProgramNameObjectClassId), CipPathSegment.instanceId(1)],
+        data: Uint8List(0),
+      );
+      final resp = dispatchCipService(project, buildMap(), req);
+      expect(resp.service, kCipServiceGetAttributesAll);
+      expect(resp.generalStatus, kCipStatusSuccess);
+      const expected = 'PLC_CIP_TAGS';
+      expect(_readU16(resp.data, 0), expected.length);
+      expect(String.fromCharCodes(resp.data.sublist(2, 2 + expected.length)), expected);
+      expect(resp.data.length, 2 + expected.length);
+    });
+
+    test('Get Attributes All on an unhandled class is Service Not Supported', () {
+      final req = CipRequest(
+        service: kCipServiceGetAttributesAll,
+        path: [CipPathSegment.classId(0x77), CipPathSegment.instanceId(1)],
+        data: Uint8List(0),
+      );
+      final resp = dispatchCipService(buildProject(), buildMap(), req);
       expect(resp.generalStatus, kCipStatusServiceNotSupported);
     });
   });
