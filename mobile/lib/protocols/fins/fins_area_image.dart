@@ -8,19 +8,21 @@
 // overlaps. It mirrors protocols/s7/s7_area_image.dart almost exactly; the
 // only difference is that FINS addresses by WORD (2 bytes), not by byte.
 //
-// *** ENDIANNESS + THE 32-BIT WORD-ORDER DECISION ***
+// *** ENDIANNESS + THE 32-BIT WORD-ORDER DECISION (settled by the E2E) ***
 // FINS is BIG-ENDIAN within each 16-bit word. A 32-bit value (DINT/REAL) spans
 // TWO consecutive words, and Omron's word order for those (which of the two
 // words holds the high half) is a documented gotcha that a build->parse
-// round-trip CANNOT detect. The choice made here is: treat the whole 32/64-bit
-// value as a single big-endian byte string laid across the words with NO word
-// swap, so the HIGH word sits at the LOWER word address. Concretely, DINT
-// 0x12345678 occupies word N = 0x1234 (high) and word N+1 = 0x5678 (low). This
-// is the natural, least-surprising layout given the rest of the FINS stack is
-// big-endian throughout, and it lets the integer encode/decode reuse
-// `ByteData.setInt32/getInt32(Endian.big)` verbatim. Task 5's real `fins` E2E
-// round-trip of a 32-bit value is the ULTIMATE authority — if it disagrees,
-// the client is right and this word order gets swapped (and reported).
+// round-trip CANNOT detect. Task 4 provisionally chose HIGH-WORD-FIRST; Task
+// 5's real `fins` E2E (a third-party client reading a value the fixture SEEDED
+// independently) OVERTURNED that — the `fins` library serializes a multi-word
+// value LOW-WORD-FIRST (it word-reverses the big-endian byte string; see
+// `fins.fins_common.reverse_word_order`). The client is the authority, so the
+// order here is now LOW-WORD-FIRST: the LOW word sits at the LOWER word
+// address, each word still big-endian internally. Concretely, DINT 0x12345678
+// occupies word N = 0x5678 (low) and word N+1 = 0x1234 (high). Implemented as
+// a plain big-endian encode/decode (`ByteData.setInt32/getInt32(Endian.big)`)
+// wrapped by [_reverseWordOrder], which swaps the 2-byte words. For a 1-word
+// value (INT16/BOOL) the wrap is a no-op, so those paths are unchanged.
 //
 // Semantics (mirroring the approved S7 decisions):
 //  - **Gaps read as zero.** Unmapped words inside a requested range are served
@@ -76,30 +78,53 @@ String? finsAreaNameForCode(int areaCode) {
 /// nonsensical count cannot force a huge allocation.
 const int kFinsMaxAreaImageWords = 0x8000; // 32768 words
 
-/// Decodes a 4-byte BIG-ENDIAN IEEE-754 single-precision FINS REAL into a Dart
-/// double. Returns 0.0 if [bytes] is shorter than 4 bytes (never throws).
+/// Reverses the 2-byte WORD order of [bytes] (whose length must be even),
+/// keeping each word's own bytes big-endian. FINS lays a multi-word value out
+/// LOW-WORD-FIRST (word-reversed relative to a plain big-endian dword) — the
+/// LOW word at the lower address — as the real `fins` client's round-trip
+/// settled (see the file header). For a single word this is a no-op, so
+/// INT16/BOOL are unaffected; for DINT/LINT/REAL it swaps the words.
+Uint8List _reverseWordOrder(Uint8List bytes) {
+  final n = bytes.length;
+  final words = n ~/ 2;
+  final out = Uint8List(n);
+  for (var w = 0; w < words; w++) {
+    final src = w * 2;
+    final dst = (words - 1 - w) * 2;
+    out[dst] = bytes[src];
+    out[dst + 1] = bytes[src + 1];
+  }
+  return out;
+}
+
+/// Decodes a 4-byte FINS REAL (IEEE-754 single precision) into a Dart double.
+/// The two words are LOW-WORD-FIRST on the wire (see the file header), so they
+/// are un-swapped back to big-endian before decoding. Returns 0.0 if [bytes]
+/// is shorter than 4 bytes (never throws).
 double decodeFinsReal(Uint8List bytes) {
   if (bytes.length < 4) {
     return 0.0;
   }
-  return ByteData.sublistView(bytes, 0, 4).getFloat32(0, Endian.big);
+  final be = _reverseWordOrder(Uint8List.sublistView(bytes, 0, 4));
+  return ByteData.sublistView(be).getFloat32(0, Endian.big);
 }
 
-/// Encodes [value] as a 4-byte BIG-ENDIAN FINS REAL. This is a NARROWING
-/// conversion: the app stores FLOAT64 doubles and FINS REAL is 32-bit, so the
-/// encoded value is the float32 approximation of [value].
+/// Encodes [value] as a 4-byte FINS REAL, LOW-WORD-FIRST (see the file header).
+/// This is a NARROWING conversion: the app stores FLOAT64 doubles and FINS REAL
+/// is 32-bit, so the encoded value is the float32 approximation of [value].
 Uint8List encodeFinsReal(double value) {
-  final out = Uint8List(4);
-  ByteData.sublistView(out).setFloat32(0, value, Endian.big);
-  return out;
+  final be = Uint8List(4);
+  ByteData.sublistView(be).setFloat32(0, value, Endian.big);
+  return _reverseWordOrder(be);
 }
 
-/// Encodes a signed integer as [widthBytes] BIG-ENDIAN bytes (two's
-/// complement). For a multi-word value this places the HIGH word first (see
-/// the file header's word-order decision).
+/// Encodes a signed integer as [widthBytes] bytes (two's complement), each word
+/// big-endian, with the WORDS in LOW-WORD-FIRST order (see the file header's
+/// word-order decision). For a 1-word (2-byte) value this is a plain big-endian
+/// encode.
 Uint8List _encodeInt(int value, int widthBytes) {
-  final out = Uint8List(widthBytes);
-  final bd = ByteData.sublistView(out);
+  final be = Uint8List(widthBytes);
+  final bd = ByteData.sublistView(be);
   switch (widthBytes) {
     case 2:
       bd.setInt16(0, value.toSigned(16), Endian.big);
@@ -113,13 +138,15 @@ Uint8List _encodeInt(int value, int widthBytes) {
     default:
       break;
   }
-  return out;
+  return _reverseWordOrder(be);
 }
 
-/// Decodes [widthBytes] BIG-ENDIAN bytes as a signed integer (two's
-/// complement), HIGH word first.
+/// Decodes [widthBytes] bytes as a signed integer (two's complement). The words
+/// are LOW-WORD-FIRST on the wire (see the file header), so they are un-swapped
+/// back to big-endian before decoding.
 int _decodeInt(Uint8List bytes, int widthBytes) {
-  final bd = ByteData.sublistView(bytes, 0, widthBytes);
+  final be = _reverseWordOrder(Uint8List.sublistView(bytes, 0, widthBytes));
+  final bd = ByteData.sublistView(be);
   switch (widthBytes) {
     case 2:
       return bd.getInt16(0, Endian.big);
@@ -178,9 +205,9 @@ bool _readDataBit(Uint8List data, int relWord, int bitOffset) {
 /// [kFinsAreaNames]) starting at [startWord], packing in the current value of
 /// every [map] entry that intersects the requested window.
 ///
-/// All multi-byte values are encoded BIG-ENDIAN, high word first. Words not
-/// covered by any map entry read as `0x0000`. A tag only partially inside the
-/// window contributes only its overlapping words.
+/// Each word is big-endian; a multi-word value's words are LOW-WORD-FIRST (see
+/// the file header). Words not covered by any map entry read as `0x0000`. A tag
+/// only partially inside the window contributes only its overlapping words.
 ///
 /// Returns an EMPTY list — and never throws — for a non-positive [wordCount], a
 /// negative [startWord], or a [wordCount] above [kFinsMaxAreaImageWords].
@@ -282,8 +309,9 @@ class FinsWriteResult {
 /// [area] starting at [startWord], decoding it back onto every [map] entry the
 /// range covers.
 ///
-/// All multi-byte values are decoded BIG-ENDIAN, high word first. Behaviour,
-/// per the file header: words not covered by any entry are DISCARDED and not
+/// Each word is big-endian; a multi-word value's words are LOW-WORD-FIRST (see
+/// the file header). Behaviour, per the file header: words not covered by any
+/// entry are DISCARDED and not
 /// reported; a partially covered multi-word tag is NOT written but IS reported;
 /// a `ReadOnly` entry, a FORCED root tag, or a tag the shared write-gate
 /// refuses is refused with the tag left unchanged.

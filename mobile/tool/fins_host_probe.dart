@@ -1,15 +1,18 @@
 // A tiny `dart run` CLI that hosts Omron FINS over a real `RawDatagramSocket`
 // (UDP), prints `READY` once bound, then serves until killed. Used by
-// `tool/fins_e2e.sh` as the Dart half of the v1 FINS workstream's Task 3 EARLY
-// E2E machine-proof: a REAL third-party client — the pure-Python `fins`
-// library, driven by `tool/py/fins_probe.py` — connects here and completes a
-// Memory Area Read.
+// `tool/fins_e2e.sh` as the Dart half of the v1 FINS workstream's E2E
+// machine-proof: a REAL third-party client — the pure-Python `fins` library,
+// driven by `tool/py/fins_probe.py` — connects here and completes a full
+// read -> write -> independent read-back, INCLUDING a 32-bit value that
+// settles the two-word order.
 //
 // WHY A REAL CLIENT RUNS AT ALL: every FINS unit test in this repo exercises
 // frames our own codec built, which proves self-consistency, not conformance.
 // This fixture is where a client written independently of us reads our wire
-// bytes — the FIRST time our UDP framing (the suite's first `RawDatagramSocket`
-// host) is seen by anything but ourselves.
+// bytes — and, crucially for the 32-bit word order, reads a value this fixture
+// SEEDED into a tag independently of the client. A write->read-back round trip
+// alone cannot settle the word order (it is byte-transparent through our
+// symmetric encode/decode); reading a seeded value is what pins it.
 //
 // IMPORTANT: this does NOT import `services/fins_host.dart`. `FinsHost extends
 // ChangeNotifier` (`package:flutter/foundation.dart`), which transitively pulls
@@ -19,13 +22,15 @@
 // note this mirrors.
 //
 // *** HOW THIS STAYS FAITHFUL TO THE SHIPPED HOST ***
-// The Memory Area Read path below is NOT mirrored — it is SHARED: both this
-// fixture and `FinsHost` call the single pure `dispatchFinsDatagram`
-// (`protocols/fins/fins_dispatch.dart`), which builds every response byte. So
-// the bytes the `fins` client validates here are, by construction rather than
-// by diff, the same bytes the shipped app puts on the wire. Only the small
-// `RawDatagramSocket` receive loop is re-implemented here (as
-// `s7_host_probe.dart` re-implements the TCP accept/reassembly loop).
+// The Read/Write path below is NOT mirrored — it is SHARED: both this fixture
+// and `FinsHost` call the single pure `dispatchFinsDatagram`
+// (`protocols/fins/fins_dispatch.dart`) against a `FinsTagImage`
+// (`protocols/fins/fins_area_image.dart`), which builds every response byte
+// AND performs the multi-word encode/decode. So the bytes the `fins` client
+// validates here are, by construction rather than by diff, the same bytes the
+// shipped app puts on the wire, and the word order the client round-trips is
+// the actual `fins_area_image.dart` word order. Only the small
+// `RawDatagramSocket` receive loop is re-implemented here.
 //
 // *** THE UDP SHAPE ***
 // One datagram = one complete FINS frame. There is no reassembly, no
@@ -38,38 +43,97 @@
 // Usage: dart run tool/fins_host_probe.dart <port>
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:soft_plc_mobile/models/fins_map.dart';
+import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/protocols/fins/fins_dispatch.dart';
-import 'package:soft_plc_mobile/protocols/fins/fins_memory.dart';
 
-// --- Fixture values the probe asserts against -------------------------------
+// --- Fixture tag values the probe asserts against ---------------------------
 //
-// These are the DM words `tool/py/fins_probe.py` expects to READ. Keep the two
-// files in step: the probe names each constant it depends on in a comment.
-// Each word's two bytes DIFFER, so a byte-order fault cannot pass unnoticed.
+// Every constant below is pinned in `tool/py/fins_probe.py`. Keep the two files
+// in step: the probe names each constant it depends on in a comment. Each
+// value's bytes are chosen to DIFFER so a byte-order or word-order fault cannot
+// pass unnoticed.
 
-/// Number of DM words in the fixture bank (zero-filled; only the seeded words
-/// below hold a non-zero value).
-const int _dmWordCount = 512;
+/// `W0` — DM word 100 (INT16). Two bytes differ. (Probe steps 2/3.)
+const int _w0Word = 100;
+const int _w0Value = 0x1234;
 
-/// `DM100` — first seeded word. 0x1234's two bytes differ.
-const int _dm100Address = 100;
-const int _dm100Value = 0x1234;
+/// `W1` — DM word 101 (INT16), adjacent to W0 so a two-word read proves the
+/// order of adjacent WORDS. (Probe step 4.)
+const int _w1Word = 101;
+const int _w1Value = 0x5678;
 
-/// `DM101` — adjacent seeded word, so a 2-word read proves word ordering.
-const int _dm101Address = 101;
-const int _dm101Value = 0x5678;
+/// `Reg32` — DM words 110..111 (INT32). The 32-bit WORD-ORDER settler: all four
+/// bytes distinct AND the high word differs from the low, so reading this
+/// SEEDED value back through the client's own multi-word decode exposes any
+/// word-order disagreement. (Probe steps 5, 7.)
+const int _reg32Word = 110;
+const int _reg32Value = 0x1A2B3C4D;
 
-/// Builds the fixture image the E2E probe reads from: a zero-filled DM word
-/// bank with two seeded words. Mirrors `FinsHost`'s Task-3 fixture shape (both
-/// go through the same `FinsWordImage`/`dispatchFinsDatagram`), but the values
-/// are pinned HERE for the Python probe to assert.
-FinsWordImage _fixtureImage() {
-  final dm = Uint16List(_dmWordCount);
-  dm[_dm100Address] = _dm100Value;
-  dm[_dm101Address] = _dm101Value;
-  return FinsWordImage(<int, Uint16List>{kFinsAreaDM: dm});
+/// `Real1` — DM words 112..113 (FLOAT64 narrowed to a 4-byte FINS REAL).
+/// 12.5 is exactly representable in float32, so the narrowing does not blur the
+/// assertion, and the REAL rides the same two-word order as the DINT. (Step 6.)
+const int _real1Word = 112;
+const double _real1Value = 12.5;
+
+/// `Flag` — DM word 114, bit 0 (BOOL). Starts FALSE so the probe's write to
+/// TRUE (by setting bit 0 of the word) is an observable change. (Step 8.)
+const int _flagWord = 114;
+const int _flagBit = 0;
+
+/// `CioReg` — CIO word 5 (INT16). A SECOND memory area (CIO, not DM): if the
+/// area code were ignored this would read as DM. (Step 9.)
+const int _cioRegWord = 5;
+const int _cioRegValue = 0x0A0B;
+
+/// `Locked` — DM word 116 (INT16), mapped ReadOnly: the probe asserts a write
+/// here is REFUSED and the value is unchanged. (Step 10.)
+const int _lockedWord = 116;
+const int _lockedValue = 250;
+
+/// Builds the fixture project + FINS map the E2E probe reads and writes. Tag
+/// name == path (single top-level names) so a map entry's `tag` resolves
+/// directly. Addresses are pinned EXPLICITLY here (not taken from
+/// `FinsMap.autoGenerate`), so the probe can address literal words and a future
+/// change to the auto-layout cannot silently move them. This is served through
+/// the SAME `FinsTagImage`/`dispatchFinsDatagram` the shipped host uses.
+PlcProject _fixtureProject() {
+  final project = PlcProject(
+    id: 'proj_fins_e2e_fixture',
+    name: 'FINS E2E Fixture',
+    controllerName: 'PLC_E2E',
+    structDefs: [],
+    programs: [],
+    tasks: [],
+    hmis: [],
+    tags: [
+      PlcTag(name: 'W0', path: 'W0', dataType: 'INT16', value: _w0Value, ioType: 'Internal'),
+      PlcTag(name: 'W1', path: 'W1', dataType: 'INT16', value: _w1Value, ioType: 'Internal'),
+      PlcTag(name: 'Reg32', path: 'Reg32', dataType: 'INT32', value: _reg32Value, ioType: 'Internal'),
+      PlcTag(name: 'Real1', path: 'Real1', dataType: 'FLOAT64', value: _real1Value, ioType: 'Internal'),
+      PlcTag(name: 'Flag', path: 'Flag', dataType: 'BOOL', value: false, ioType: 'Internal'),
+      PlcTag(name: 'CioReg', path: 'CioReg', dataType: 'INT16', value: _cioRegValue, ioType: 'Internal'),
+      PlcTag(name: 'Locked', path: 'Locked', dataType: 'INT16', value: _lockedValue, ioType: 'Internal'),
+    ],
+  );
+
+  project.protocols = ProtocolSettings.defaults(project);
+  project.protocols!.fins = FinsProtocolConfig(
+    enabled: true,
+    port: 9600, // overwritten in main() with the real bound port before use
+    map: FinsMap(entries: [
+      FinsMapEntry(tag: 'W0', area: kFinsAreaNameDM, wordAddress: _w0Word),
+      FinsMapEntry(tag: 'W1', area: kFinsAreaNameDM, wordAddress: _w1Word),
+      FinsMapEntry(tag: 'Reg32', area: kFinsAreaNameDM, wordAddress: _reg32Word),
+      FinsMapEntry(tag: 'Real1', area: kFinsAreaNameDM, wordAddress: _real1Word),
+      FinsMapEntry(tag: 'Flag', area: kFinsAreaNameDM, wordAddress: _flagWord, bitOffset: _flagBit),
+      FinsMapEntry(tag: 'CioReg', area: kFinsAreaNameCIO, wordAddress: _cioRegWord),
+      FinsMapEntry(tag: 'Locked', area: kFinsAreaNameDM, wordAddress: _lockedWord, access: 'ReadOnly'),
+    ]),
+  );
+  return project;
 }
 
 Future<void> main(List<String> args) async {
@@ -83,7 +147,11 @@ Future<void> main(List<String> args) async {
     exit(64);
   }
 
-  final image = _fixtureImage();
+  final project = _fixtureProject();
+  // The image is backed by the project's tags via the persisted FINS map — the
+  // same `FinsTagImage` the shipped host serves, so a write mutates the project
+  // in place and a following read observes it.
+  final image = FinsTagImage(project, project.protocols!.fins!.map);
 
   RawDatagramSocket socket;
   try {

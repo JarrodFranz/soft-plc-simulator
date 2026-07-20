@@ -16,12 +16,13 @@
 //
 // *** SCOPE ***
 // Serves a Memory Area Read (0x0101) and a Memory Area Write (0x0102) against a
-// [FinsMemoryImage]. Two concrete images exist: [FinsWordImage], a seeded
-// per-area word bank used by the E2E fixture host and tests; and [FinsTagImage]
-// (Task 4), backed by the project's tags via a `FinsMap` and the pure area
-// word-image (`fins_area_image.dart`) — this is what the shipped host serves.
-// A command this file does not serve returns `null`, and the host drops the
-// datagram.
+// [FinsMemoryImage]. Two concrete images exist: [FinsTagImage] (Task 4), backed
+// by the project's tags via a `FinsMap` and the pure area word-image
+// (`fins_area_image.dart`) — this is what BOTH the shipped host and the E2E
+// fixture host serve, so the real `fins` client's round-trip exercises the
+// actual tag encode/decode; and [FinsWordImage], a simpler seeded per-area word
+// bank available for tests. A command this file does not serve returns `null`,
+// and the host drops the datagram.
 //
 // Safety contract: [dispatchFinsDatagram] returns `null` — and never throws —
 // on malformed, truncated, unsupported, or otherwise hostile input, since the

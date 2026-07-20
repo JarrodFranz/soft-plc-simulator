@@ -10,6 +10,7 @@
 
 import 'cip_map.dart';
 import 'dnp3_map.dart';
+import 'fins_map.dart';
 import 'modbus_map.dart';
 import 'mqtt_map.dart';
 import 'opcua_map.dart';
@@ -508,6 +509,57 @@ class S7ProtocolConfig {
       );
 }
 
+/// Per-project Omron FINS outbound-protocol configuration: whether the in-app
+/// FINS host is enabled, the UDP port it listens on, and the tag <-> memory
+/// area/word map that decides which tags appear at which address and whether
+/// each accepts writes.
+///
+/// Unlike S7comm's port 102, the FINS default port [kFinsDefaultPortConfig]
+/// (9600) is ABOVE 1023, so binding it needs NO elevated privilege — there is
+/// no privileged-port caveat to surface in the Outbound Protocols card. FINS
+/// runs over UDP (the suite's only datagram protocol); see
+/// `docs/protocols/fins.md`.
+class FinsProtocolConfig {
+  bool enabled;
+  int port;
+  FinsMap map;
+
+  FinsProtocolConfig({
+    this.enabled = false,
+    this.port = kFinsDefaultPortConfig,
+    required this.map,
+  });
+
+  factory FinsProtocolConfig.fromJson(Map<String, dynamic> j) => FinsProtocolConfig(
+        enabled: j['enabled'] == true,
+        port: (j['port'] as num?)?.toInt() ?? kFinsDefaultPortConfig,
+        map: j['map'] != null
+            ? FinsMap.fromJson(j['map'] as Map<String, dynamic>)
+            : FinsMap(entries: []),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'enabled': enabled,
+        'port': port,
+        'map': map.toJson(),
+      };
+
+  /// Sane defaults for a project that has never configured FINS: disabled, the
+  /// standard FINS UDP port, and an auto-generated map packing the project's
+  /// current scalar tags into the DM area.
+  static FinsProtocolConfig defaults(PlcProject p) => FinsProtocolConfig(
+        enabled: false,
+        port: kFinsDefaultPortConfig,
+        map: FinsMap.autoGenerate(p),
+      );
+}
+
+/// The standard Omron FINS UDP port. Declared here (rather than importing the
+/// `dart:io` FINS host's `kFinsDefaultPort`) so this pure model stays free of
+/// any Flutter/`dart:io` dependency; the two constants are the same value by
+/// construction and asserted equal in tests.
+const int kFinsDefaultPortConfig = 9600;
+
 /// Per-project outbound-protocol settings: the shared gateway endpoint plus
 /// one config slot per protocol.
 ///
@@ -522,6 +574,7 @@ class ProtocolSettings {
   DnpProtocolConfig? dnp3;
   CipProtocolConfig? ethernetIp;
   S7ProtocolConfig? s7;
+  FinsProtocolConfig? fins;
 
   ProtocolSettings({
     this.gatewayUrl = kDefaultGatewayUrl,
@@ -531,6 +584,7 @@ class ProtocolSettings {
     this.dnp3,
     this.ethernetIp,
     this.s7,
+    this.fins,
   });
 
   Map<String, dynamic> toJson() => {
@@ -541,6 +595,7 @@ class ProtocolSettings {
         if (dnp3 != null) 'dnp3': dnp3!.toJson(),
         if (ethernetIp != null) 'ethernet_ip': ethernetIp!.toJson(),
         if (s7 != null) 's7comm': s7!.toJson(),
+        if (fins != null) 'fins': fins!.toJson(),
       };
 
   factory ProtocolSettings.fromJson(Map<String, dynamic> j) => ProtocolSettings(
@@ -553,6 +608,7 @@ class ProtocolSettings {
             ? CipProtocolConfig.fromJson(j['ethernet_ip'] as Map<String, dynamic>)
             : null,
         s7: j['s7comm'] != null ? S7ProtocolConfig.fromJson(j['s7comm'] as Map<String, dynamic>) : null,
+        fins: j['fins'] != null ? FinsProtocolConfig.fromJson(j['fins'] as Map<String, dynamic>) : null,
       );
 
   static ProtocolSettings defaults(PlcProject p) => ProtocolSettings(
@@ -563,5 +619,6 @@ class ProtocolSettings {
         dnp3: DnpProtocolConfig.defaults(p),
         ethernetIp: CipProtocolConfig.defaults(p),
         s7: S7ProtocolConfig.defaults(p),
+        fins: FinsProtocolConfig.defaults(p),
       );
 }

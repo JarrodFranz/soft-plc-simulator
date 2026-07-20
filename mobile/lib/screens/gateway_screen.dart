@@ -17,6 +17,7 @@ import 'package:flutter/material.dart';
 
 import '../models/cip_map.dart';
 import '../models/dnp3_map.dart';
+import '../models/fins_map.dart';
 import '../models/modbus_map.dart';
 import '../models/mqtt_map.dart';
 import '../models/opcua_map.dart';
@@ -26,6 +27,7 @@ import '../models/s7_map.dart';
 import '../models/tag_resolver.dart';
 import '../services/dnp3_host.dart';
 import '../services/enip_host.dart';
+import '../services/fins_host.dart';
 import '../services/modbus_host.dart';
 import '../services/mqtt_host.dart';
 import '../services/opcua_host.dart';
@@ -112,6 +114,7 @@ class GatewayScreen extends StatefulWidget {
   final DnpHost dnpHost;
   final EnipHost enipHost;
   final S7Host s7Host;
+  final FinsHost finsHost;
   final VoidCallback onProjectUpdated;
 
   /// Whether this platform can host the in-app OPC UA/Modbus/DNP3/EtherNet-IP
@@ -132,6 +135,7 @@ class GatewayScreen extends StatefulWidget {
     required this.dnpHost,
     required this.enipHost,
     required this.s7Host,
+    required this.finsHost,
     required this.onProjectUpdated,
     this.hostingSupported = !kIsWeb,
   });
@@ -150,6 +154,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
   late final TextEditingController _dnpMasterAddressController;
   late final TextEditingController _enipPortController;
   late final TextEditingController _s7PortController;
+  late final TextEditingController _finsPortController;
 
   /// The MQTT broker password: held ONLY here, in ephemeral widget State —
   /// never written to `currentProject`/`MqttProtocolConfig` (see that
@@ -194,6 +199,9 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
     _s7PortController = TextEditingController(
       text: widget.currentProject.protocols!.s7!.port.toString(),
+    );
+    _finsPortController = TextEditingController(
+      text: widget.currentProject.protocols!.fins!.port.toString(),
     );
   }
 
@@ -269,6 +277,13 @@ class _GatewayScreenState extends State<GatewayScreen> {
           selection: TextSelection.collapsed(offset: newS7Port.length),
         );
       }
+      final newFinsPort = widget.currentProject.protocols!.fins!.port.toString();
+      if (_finsPortController.text != newFinsPort) {
+        _finsPortController.value = TextEditingValue(
+          text: newFinsPort,
+          selection: TextSelection.collapsed(offset: newFinsPort.length),
+        );
+      }
       _mqttPassword = '';
     }
   }
@@ -284,6 +299,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
     _dnpMasterAddressController.dispose();
     _enipPortController.dispose();
     _s7PortController.dispose();
+    _finsPortController.dispose();
     super.dispose();
   }
 
@@ -397,6 +413,28 @@ class _GatewayScreenState extends State<GatewayScreen> {
     }
   }
 
+  String _finsStatusLabel(FinsHostStatus s) {
+    switch (s) {
+      case FinsHostStatus.stopped:
+        return 'Stopped';
+      case FinsHostStatus.running:
+        return 'Running';
+      case FinsHostStatus.error:
+        return 'Error';
+    }
+  }
+
+  Color _finsStatusColor(FinsHostStatus s) {
+    switch (s) {
+      case FinsHostStatus.stopped:
+        return Colors.grey;
+      case FinsHostStatus.running:
+        return Colors.greenAccent;
+      case FinsHostStatus.error:
+        return Colors.redAccent;
+    }
+  }
+
   String _mqttStatusLabel(MqttHostStatus s) {
     switch (s) {
       case MqttHostStatus.stopped:
@@ -461,6 +499,17 @@ class _GatewayScreenState extends State<GatewayScreen> {
 
   Future<void> _stopS7Hosting() async {
     await widget.s7Host.stop();
+  }
+
+  Future<void> _startFinsHosting() async {
+    // The FinsHost binds the persisted port field; sync it before starting so
+    // the port typed into the card is the one bound.
+    widget.finsHost.port = widget.currentProject.protocols!.fins!.port;
+    await widget.finsHost.start(() => widget.currentProject);
+  }
+
+  Future<void> _stopFinsHosting() async {
+    await widget.finsHost.stop();
   }
 
   Future<void> _connectMqtt() async {
@@ -636,6 +685,36 @@ class _GatewayScreenState extends State<GatewayScreen> {
     widget.onProjectUpdated();
   }
 
+  void _autoGenerateFinsMap() {
+    setState(() {
+      _ensureFins();
+      widget.currentProject.protocols!.fins!.map = FinsMap.autoGenerate(widget.currentProject);
+    });
+    widget.onProjectUpdated();
+  }
+
+  /// Appends a default entry to the FINS area map — mirrors `_addS7Entry`. New
+  /// entries land in the DM area at word 0; the operator moves them from there.
+  void _addFinsEntry(List<String> tagOptions) {
+    setState(() {
+      _ensureFins();
+      widget.currentProject.protocols!.fins!.map.entries.add(FinsMapEntry(
+        tag: tagOptions.isNotEmpty ? tagOptions.first : '',
+        area: kFinsAreaNameDM,
+        wordAddress: 0,
+        access: 'ReadWrite',
+      ));
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _deleteFinsEntry(FinsMapEntry entry) {
+    setState(() {
+      widget.currentProject.protocols!.fins!.map.entries.remove(entry);
+    });
+    widget.onProjectUpdated();
+  }
+
   /// Creates a default `ProtocolSettings` (and its OPC UA config) in place
   /// when the project has none yet, mirroring WS16's `_ensureMap`: mutate in
   /// memory only — do NOT call `onProjectUpdated` here, so an untouched
@@ -649,6 +728,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
     _ensureDnp();
     _ensureEnip();
     _ensureS7();
+    _ensureFins();
   }
 
   /// Creates a default `S7ProtocolConfig` in place when the project has none
@@ -658,6 +738,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
   void _ensureS7() {
     widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
     widget.currentProject.protocols!.s7 ??= S7ProtocolConfig.defaults(widget.currentProject);
+  }
+
+  /// Creates a default `FinsProtocolConfig` in place when the project has none
+  /// yet — mirrors `_ensureS7`: mutate in memory only, no `onProjectUpdated`
+  /// call here, so a project that has merely been LOOKED at stays
+  /// serialization-clean (additive persistence).
+  void _ensureFins() {
+    widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
+    widget.currentProject.protocols!.fins ??= FinsProtocolConfig.defaults(widget.currentProject);
   }
 
   /// Creates a default `CipProtocolConfig` in place when the project has
@@ -793,6 +882,28 @@ class _GatewayScreenState extends State<GatewayScreen> {
     }
     setState(() {
       widget.currentProject.protocols!.s7!.port = parsed;
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _setFinsEnabled(bool enabled) {
+    setState(() {
+      _ensureFins();
+      widget.currentProject.protocols!.fins!.enabled = enabled;
+    });
+    if (!enabled && widget.finsHost.status != FinsHostStatus.stopped) {
+      unawaited(widget.finsHost.stop());
+    }
+    widget.onProjectUpdated();
+  }
+
+  void _setFinsPort(String value) {
+    final parsed = int.tryParse(value.trim());
+    if (parsed == null || parsed < 0 || parsed > 65535) {
+      return; // ignore invalid input; keep the last-valid persisted port
+    }
+    setState(() {
+      widget.currentProject.protocols!.fins!.port = parsed;
     });
     widget.onProjectUpdated();
   }
@@ -1045,6 +1156,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
     Tab(key: Key('protocol_tab_dnp3'), text: 'DNP3'),
     Tab(key: Key('protocol_tab_enip'), text: 'EtherNet/IP'),
     Tab(key: Key('protocol_tab_s7'), text: 'S7comm'),
+    Tab(key: Key('protocol_tab_fins'), text: 'FINS'),
   ];
 
   @override
@@ -1110,6 +1222,12 @@ class _GatewayScreenState extends State<GatewayScreen> {
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(12),
                 child: _buildS7Card(context, tagOptions),
+              ),
+            ),
+            _KeepAliveTabBody(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(12),
+                child: _buildFinsCard(context, tagOptions),
               ),
             ),
           ],
@@ -2925,6 +3043,210 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
   }
 
+  /// The FINS protocol card: header + enable switch, hosting controls
+  /// (Start/Stop, port, status, endpoint), and (when enabled) the area<->word
+  /// map editor. Mirrors `_buildS7Card`, with two FINS-specific differences:
+  /// the transport is UDP (the suite's only datagram protocol) and the default
+  /// port 9600 is ABOVE 1023, so there is NO privileged-port caveat.
+  Widget _buildFinsCard(BuildContext context, List<String> tagOptions) {
+    final fins = widget.currentProject.protocols!.fins!;
+    final isCompact = context.isCompact;
+
+    return Card(
+      color: const Color(0xFF1E293B),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'FINS',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                  ),
+                ),
+                Switch(
+                  key: const Key('fins_enable_switch'),
+                  value: fins.enabled,
+                  onChanged: _setFinsEnabled,
+                ),
+              ],
+            ),
+            if (!fins.enabled)
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text(
+                  'Disabled — no tags are exposed to this protocol.',
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+              )
+            else ...[
+              const SizedBox(height: 12),
+              const Text(
+                'Omron FINS over UDP. Addressed by memory area (DM/CIO/WR/HR) '
+                'and word offset, so a driver can block-read a whole area in one '
+                'request.',
+                style: TextStyle(color: Colors.white70, fontSize: 11),
+              ),
+              const SizedBox(height: 12),
+              // ── Hosting controls ────────────────────────────────────
+              // Scoped to `widget.finsHost` alone (the WS-perf-task-1 pattern
+              // every other card here follows): only the status chip, recent
+              // source count, port field's enabled state and Start/Stop
+              // buttons are driven by host notifies. The virtualized area map
+              // below is never rebuilt by a host `notifyListeners()`.
+              ListenableBuilder(
+                listenable: widget.finsHost,
+                builder: (context, _) {
+                  final status = widget.finsHost.status;
+                  final running = status == FinsHostStatus.running;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 10,
+                                height: 10,
+                                decoration:
+                                    BoxDecoration(color: _finsStatusColor(status), shape: BoxShape.circle),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                _finsStatusLabel(status),
+                                style: const TextStyle(
+                                    color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                            ],
+                          ),
+                          Text(
+                            'Mapped tags: ${fins.map.entries.length}',
+                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                          ),
+                          if (widget.finsHost.recentPeerCount > 0)
+                            Text(
+                              'Recent sources: ${widget.finsHost.recentPeerCount}',
+                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        key: const Key('fins_port_field'),
+                        controller: _finsPortController,
+                        enabled: !running,
+                        keyboardType: TextInputType.number,
+                        style: const TextStyle(fontSize: 12, color: Colors.white),
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          labelText: 'Port',
+                          helperText: 'Default: 9600',
+                          filled: true,
+                          fillColor: Color(0xFF0F172A),
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: _setFinsPort,
+                      ),
+                      // No privileged-port caveat: FINS's default 9600 is above
+                      // 1023, so binding it needs no elevation on any platform.
+                      const SizedBox(height: 12),
+                      Flex(
+                        direction: isCompact ? Axis.vertical : Axis.horizontal,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(
+                            width: isCompact ? double.infinity : null,
+                            child: ElevatedButton(
+                              onPressed: (running || !widget.hostingSupported) ? null : _startFinsHosting,
+                              child: const Text('Start hosting'),
+                            ),
+                          ),
+                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                            width: isCompact ? double.infinity : null,
+                            child: OutlinedButton(
+                              onPressed: running ? _stopFinsHosting : null,
+                              child: const Text('Stop hosting'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (!widget.hostingSupported) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Hosting runs the FINS server inside the app on a UDP socket, '
+                          'which web browsers do not allow (they cannot bind an inbound '
+                          'UDP port). Run the desktop (Windows/macOS/Linux) or mobile '
+                          '(Android/iOS) app to host — you can still design the area map '
+                          'here.',
+                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                        ),
+                      ],
+                      if (running && widget.finsHost.endpointUrl != null) ...[
+                        const SizedBox(height: 8),
+                        SelectableText(
+                          widget.finsHost.endpointUrl!,
+                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                        ),
+                      ],
+                      // A failed bind must never look like a card that simply
+                      // has not turned green yet: it gets its own bordered,
+                      // labelled block naming the failure.
+                      if (status == FinsHostStatus.error && widget.finsHost.lastError != null) ...[
+                        const SizedBox(height: 8),
+                        Container(
+                          key: const Key('fins_error_banner'),
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.redAccent.withValues(alpha: 0.12),
+                            border: Border.all(color: Colors.redAccent.withValues(alpha: 0.6)),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Not hosting — the server did not start.',
+                                style: TextStyle(
+                                    color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 12),
+                              ),
+                              const SizedBox(height: 4),
+                              SelectableText(
+                                widget.finsHost.lastError!,
+                                style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ] else if (widget.finsHost.lastError != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Last error: ${widget.finsHost.lastError}',
+                          style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                        ),
+                      ],
+                    ],
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
+              _finsMapEditorCard(context, fins.map, tagOptions),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _s7MapEditorCard(BuildContext context, S7Map map, List<String> tagOptions) {
     return Container(
       decoration: BoxDecoration(
@@ -3121,6 +3443,194 @@ class _GatewayScreenState extends State<GatewayScreen> {
               SizedBox(width: 70, child: dbField),
               const SizedBox(width: 8),
               SizedBox(width: 70, child: byteField),
+              const SizedBox(width: 8),
+              SizedBox(width: 60, child: bitField),
+              const SizedBox(width: 8),
+              SizedBox(width: 150, child: accessDropdown),
+              SizedBox(width: 40, child: deleteButton),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _finsMapEditorCard(BuildContext context, FinsMap map, List<String> tagOptions) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            runSpacing: 4,
+            children: [
+              const Text(
+                'FINS Area Map',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+              Wrap(
+                spacing: 4,
+                children: [
+                  TextButton.icon(
+                    icon: const Icon(Icons.add, size: 16, color: Colors.cyanAccent),
+                    label: const Text('Add entry', style: TextStyle(color: Colors.cyanAccent)),
+                    onPressed: () => _addFinsEntry(tagOptions),
+                  ),
+                  TextButton.icon(
+                    icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
+                    label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
+                    onPressed: _autoGenerateFinsMap,
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Words no entry covers read as zero and discard writes. A tag only '
+            'partly inside a written range is left unchanged. A 32-bit value '
+            'spans two words, low word first.',
+            style: TextStyle(color: Colors.grey, fontSize: 11),
+          ),
+          const SizedBox(height: 8),
+          if (map.entries.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                'No entries yet. Tap Regenerate to build a default map from the project tags.',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            )
+          else
+            _virtualizedMapList<FinsMapEntry>(
+              map.entries,
+              (e) => e.tag,
+              (e) => _finsRow(e, tagOptions),
+              listKey: const Key('fins_map_list'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _finsRow(FinsMapEntry entry, List<String> tagOptions) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isCompact = context.isCompact;
+          final tagField = TagAutocompleteField(
+            options: tagOptions,
+            initialValue: entry.tag,
+            label: 'Tag',
+            onChanged: (v) {
+              entry.tag = v;
+              widget.onProjectUpdated();
+            },
+          );
+          final areaDropdown = DropdownButtonFormField<String>(
+            initialValue: kFinsAreaNames.contains(entry.area) ? entry.area : kFinsAreaNameDM,
+            decoration: const InputDecoration(isDense: true, labelText: 'Area'),
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            dropdownColor: const Color(0xFF1E293B),
+            items: kFinsAreaNames
+                .map((a) => DropdownMenuItem(value: a, child: Text(a)))
+                .toList(),
+            onChanged: (v) {
+              if (v == null) {
+                return;
+              }
+              setState(() => entry.area = v);
+              widget.onProjectUpdated();
+            },
+          );
+          final wordField = TextFormField(
+            initialValue: entry.wordAddress.toString(),
+            keyboardType: TextInputType.number,
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            decoration: const InputDecoration(isDense: true, labelText: 'Word'),
+            onChanged: (v) {
+              final parsed = int.tryParse(v.trim());
+              if (parsed == null || parsed < 0) {
+                return;
+              }
+              entry.wordAddress = parsed;
+              widget.onProjectUpdated();
+            },
+          );
+          // Only meaningful for BOOL tags; 0..15 within the word.
+          final bitField = TextFormField(
+            initialValue: entry.bitOffset.toString(),
+            keyboardType: TextInputType.number,
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            decoration: const InputDecoration(isDense: true, labelText: 'Bit'),
+            onChanged: (v) {
+              final parsed = int.tryParse(v.trim());
+              if (parsed == null || parsed < 0 || parsed > 15) {
+                return;
+              }
+              entry.bitOffset = parsed;
+              widget.onProjectUpdated();
+            },
+          );
+          final accessDropdown = DropdownButtonFormField<String>(
+            initialValue: entry.access,
+            decoration: const InputDecoration(isDense: true, labelText: 'Access'),
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            dropdownColor: const Color(0xFF1E293B),
+            items: const [
+              DropdownMenuItem(value: 'ReadOnly', child: Text('ReadOnly')),
+              DropdownMenuItem(value: 'ReadWrite', child: Text('ReadWrite')),
+            ],
+            onChanged: (v) {
+              if (v == null) {
+                return;
+              }
+              setState(() => entry.access = v);
+              widget.onProjectUpdated();
+            },
+          );
+          final deleteButton = IconButton(
+            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+            tooltip: 'Delete entry',
+            onPressed: () => _deleteFinsEntry(entry),
+          );
+
+          if (isCompact) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                tagField,
+                const SizedBox(height: 4),
+                areaDropdown,
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Expanded(child: wordField),
+                    const SizedBox(width: 4),
+                    Expanded(child: bitField),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                accessDropdown,
+                Align(alignment: Alignment.centerRight, child: deleteButton),
+              ],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(flex: 3, child: tagField),
+              const SizedBox(width: 8),
+              SizedBox(width: 90, child: areaDropdown),
+              const SizedBox(width: 8),
+              SizedBox(width: 80, child: wordField),
               const SizedBox(width: 8),
               SizedBox(width: 60, child: bitField),
               const SizedBox(width: 8),

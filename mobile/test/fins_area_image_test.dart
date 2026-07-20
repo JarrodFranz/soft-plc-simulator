@@ -5,18 +5,19 @@
 // and, in the write direction, decodes a word range back onto the tags it
 // overlaps.
 //
-// *** ENDIANNESS + THE 32-BIT WORD-ORDER TRAP ***
+// *** ENDIANNESS + THE 32-BIT WORD-ORDER TRAP (settled by the E2E) ***
 // FINS is BIG-ENDIAN within each 16-bit word. A 32-bit value (DINT/REAL)
 // spans TWO consecutive words, and which word holds the high half is the
 // documented Omron gotcha. This suite pins the layout with LITERAL expected
 // bytes AND a hand-built two-word assertion of a known DINT: a build->parse
 // round-trip would cancel a word-order error and prove nothing.
 //
-// CHOSEN ORDER: big-endian throughout, HIGH WORD FIRST (at the lower word
-// address) — a 32-bit value's bytes laid out big-endian across both words with
-// no word swap. This is consistent with the rest of the FINS stack being
-// big-endian. Task 5's real `fins` E2E round-trip of a 32-bit value is the
-// ultimate authority; if it disagrees, the client is right.
+// SETTLED ORDER: big-endian within each word, LOW WORD FIRST (at the lower
+// word address). Task 4 provisionally chose high-word-first; Task 5's real
+// `fins` E2E overturned it — the `fins` client word-reverses a multi-word
+// value, so the low word sits at the lower address. The client is the
+// authority (see fins_area_image.dart's header). DINT 0x12345678 => low word
+// 0x5678 at the lower address, high word 0x1234 at the higher.
 
 import 'dart:typed_data';
 
@@ -109,25 +110,27 @@ void main() {
     });
 
     // THE WORD-ORDER TRAP: a hand-built assertion of a known DINT across two
-    // words. 0x12345678 => high word 0x1234 at the LOWER word address, low word
-    // 0x5678 at the higher. A word-swapped implementation FAILS here even
-    // though it would pass a build->parse round-trip.
-    test('INT32 spans two words HIGH-WORD-FIRST, big-endian within each word', () {
+    // words. As the Task-5 E2E settled, 0x12345678 => low word 0x5678 at the
+    // LOWER word address, high word 0x1234 at the higher (the `fins` client
+    // word-reverses a multi-word value). A high-word-first implementation FAILS
+    // here even though it would pass a build->parse round-trip.
+    test('INT32 spans two words LOW-WORD-FIRST, big-endian within each word', () {
       final p = buildProject();
       writePath(p, 'Dint1', 0x12345678);
       final img = readAreaImage(p, buildMap(), 'DM', 4, 2);
       expect(img.length, 4);
-      expect(img, equals([0x12, 0x34, 0x56, 0x78]));
-      // Word 4 (bytes 0..1) holds the HIGH half; word 5 (bytes 2..3) the low.
-      expect(img.sublist(0, 2), equals([0x12, 0x34]), reason: 'high word at lower address');
-      expect(img.sublist(2, 4), equals([0x56, 0x78]), reason: 'low word at higher address');
+      expect(img, equals([0x56, 0x78, 0x12, 0x34]));
+      // Word 4 (bytes 0..1) holds the LOW half; word 5 (bytes 2..3) the high.
+      expect(img.sublist(0, 2), equals([0x56, 0x78]), reason: 'low word at lower address');
+      expect(img.sublist(2, 4), equals([0x12, 0x34]), reason: 'high word at higher address');
     });
 
-    test('INT64 encodes as four big-endian words', () {
+    test('INT64 encodes as four big-endian words, low word first', () {
       final p = buildProject();
       writePath(p, 'Lint1', 0x0102030405060708);
       final img = readAreaImage(p, buildMap(), 'DM', 8, 4);
-      expect(img, equals([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]));
+      // Words reversed: [0708][0506][0304][0102], each big-endian.
+      expect(img, equals([0x07, 0x08, 0x05, 0x06, 0x03, 0x04, 0x01, 0x02]));
     });
 
     test('a negative INT16 encodes in two\'s complement, big-endian', () {
@@ -143,9 +146,12 @@ void main() {
       writePath(p, 'Real1', original);
       final img = readAreaImage(p, buildMap(), 'DM', 12, 2);
       expect(img.length, 4, reason: 'REAL is 4 bytes / 2 words, not 8');
-      // Sign+exponent high bits land FIRST — big-endian.
-      expect(img[0], 0x44);
-      expect(img[1], 0x9A);
+      // Big-endian float bytes are 44 9A 52 2B; LOW word first swaps the words
+      // to 52 2B 44 9A. The low word (52 2B) lands at the lower address.
+      expect(img[0], 0x52);
+      expect(img[1], 0x2B);
+      expect(img[2], 0x44);
+      expect(img[3], 0x9A);
 
       final back = decodeFinsReal(img);
       // Tolerance sits just above the true float32 round-trip error
@@ -210,9 +216,10 @@ void main() {
     test('a range partially overlapping a multi-word tag returns the overlapping words', () {
       final p = buildProject();
       writePath(p, 'Dint1', 0x12345678);
-      // Read just the low word of Dint1 (word 5).
+      // Read just the SECOND word of Dint1 (word 5). Low-word-first puts the
+      // LOW word at word 4, so word 5 holds the HIGH half (0x1234).
       final img = readAreaImage(p, buildMap(), 'DM', 5, 1);
-      expect(img, equals([0x56, 0x78]));
+      expect(img, equals([0x12, 0x34]));
     });
 
     test('malformed / out-of-range read arguments never throw', () {
@@ -243,20 +250,23 @@ void main() {
       expect(results.where((r) => r.status == FinsWriteStatus.written).map((r) => r.tag), contains('Word1'));
     });
 
-    test('a fully covered INT32 and INT64 are decoded big-endian, high word first', () {
+    test('a fully covered INT32 and INT64 are decoded big-endian, low word first', () {
       final p = buildProject();
-      applyAreaWrite(p, buildMap(), 'DM', 4, toBytes([0x12, 0x34, 0x56, 0x78]));
+      // Wire is LOW-WORD-FIRST: [5678][1234] decodes to 0x12345678.
+      applyAreaWrite(p, buildMap(), 'DM', 4, toBytes([0x56, 0x78, 0x12, 0x34]));
       expect(readPath(p, 'Dint1'), 0x12345678);
+      // [0708][0506][0304][0102] decodes to 0x0102030405060708.
       applyAreaWrite(
         p, buildMap(), 'DM', 8,
-        toBytes([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]),
+        toBytes([0x07, 0x08, 0x05, 0x06, 0x03, 0x04, 0x01, 0x02]),
       );
       expect(readPath(p, 'Lint1'), 0x0102030405060708);
     });
 
     test('a REAL write decodes into the FLOAT64 tag (narrowing canary)', () {
       final p = buildProject();
-      applyAreaWrite(p, buildMap(), 'DM', 12, toBytes([0x44, 0x9A, 0x52, 0x2B]));
+      // Big-endian float 44 9A 52 2B, LOW word first on the wire is 52 2B 44 9A.
+      applyAreaWrite(p, buildMap(), 'DM', 12, toBytes([0x52, 0x2B, 0x44, 0x9A]));
       final v = readPath(p, 'Real1');
       expect(v, isA<double>());
       expect(v as double, closeTo(1234.5678, 1e-4));

@@ -38,11 +38,13 @@
 //
 // *** SCOPE ***
 // This host serves Memory Area Read AND Write against an image backed by the
-// project's tags via `FinsMap` (Task 4). The map is auto-generated FRESH from
-// the current project on every datagram (`projectProvider` is called per
-// datagram); a later task swaps in a persisted, user-editable map from the
-// project's FINS config without any lifecycle rework — the swap is confined to
-// [_imageForProject].
+// project's tags via `FinsMap` (Task 4). The map is the project's PERSISTED,
+// user-editable FINS config map (`project.protocols.fins.map`, edited in the
+// Outbound Protocols card) when one exists, falling back to a fresh
+// `FinsMap.autoGenerate` for a project that has never configured FINS. It is
+// read FRESH per datagram (`projectProvider` is called per datagram), so a map
+// edit or a project swap is reflected on the next request — the map source is
+// confined to [_imageForProject].
 //
 // The app is byte-identical when hosting is stopped: nothing here runs unless
 // [start] is called (an explicit, opt-in action).
@@ -296,11 +298,15 @@ class FinsHost extends ChangeNotifier {
   }
 
   /// The memory image this host serves. It is backed by [project]'s tags via a
-  /// `FinsMap` auto-generated FRESH per datagram, so a project edit is reflected
-  /// immediately. A later task swaps the map source for the project's persisted,
-  /// user-editable FINS config map — that change is confined to this one method.
-  FinsMemoryImage _imageForProject(PlcProject project) =>
-      FinsTagImage(project, FinsMap.autoGenerate(project));
+  /// `FinsMap`: the project's PERSISTED, user-editable FINS config map when one
+  /// exists (`project.protocols.fins.map`, edited in the Outbound Protocols
+  /// card), falling back to a fresh [FinsMap.autoGenerate] for a project that
+  /// has never configured FINS. Read FRESH per datagram, so a map edit or tag
+  /// change is reflected on the very next request without a restart.
+  FinsMemoryImage _imageForProject(PlcProject project) {
+    final configured = project.protocols?.fins?.map;
+    return FinsTagImage(project, configured ?? FinsMap.autoGenerate(project));
+  }
 
   void _recordPeer(Datagram dg) {
     final label = '${dg.address.address}:${dg.port}';

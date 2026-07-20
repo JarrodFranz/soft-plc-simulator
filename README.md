@@ -8,11 +8,11 @@
 
 ## 🚀 Overview
 
-The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators, students, and system developers to execute IEC 61131-3 style control logic on portable mobile devices (Android/iOS) and desktop platforms. It provides a real-time scan cycle engine that **executes ladder logic for real**, a structured tag database (DUT-typed struct tags, arrays, bit-addressable members), a rule-driven simulated I/O engine, custom HMI dashboard builders, and industrial protocol adapters to expose virtual PLCs to SCADA systems like Ignition, Kepware, UAExpert, MQTT brokers, Modbus clients, DNP3 masters, EtherNet/IP + CIP clients, and S7comm drivers.
+The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators, students, and system developers to execute IEC 61131-3 style control logic on portable mobile devices (Android/iOS) and desktop platforms. It provides a real-time scan cycle engine that **executes ladder logic for real**, a structured tag database (DUT-typed struct tags, arrays, bit-addressable members), a rule-driven simulated I/O engine, custom HMI dashboard builders, and industrial protocol adapters to expose virtual PLCs to SCADA systems like Ignition, Kepware, UAExpert, MQTT brokers, Modbus clients, DNP3 masters, EtherNet/IP + CIP clients, S7comm drivers, and Omron FINS drivers.
 
 ---
 
-## ✨ Features & Progress (Full Protocol Suite Shipped — OPC UA, Modbus TCP, MQTT+Sparkplug B, DNP3, EtherNet/IP + CIP, S7comm)
+## ✨ Features & Progress (Full Protocol Suite Shipped — OPC UA, Modbus TCP, MQTT+Sparkplug B, DNP3, EtherNet/IP + CIP, S7comm, Omron FINS)
 
 - **ALL IEC 61131-3 Programming Languages Supported**:
   - **Structured Text (ST)**: Textual IDE with live autocomplete suggestions (`IF`, `WHILE`, `FOR`, `TON`), code templates, AST compilation, and real-time AST interpreter.
@@ -261,7 +261,7 @@ flutter analyze
 - [DECISIONS.md](DECISIONS.md) — Architecture Decision Records (ADRs).
 - [DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md) — Guidelines for human & AI developers.
 - [SECURITY_AND_SAFETY.md](SECURITY_AND_SAFETY.md) — Security policies and safety disclaimers.
-- [docs/protocols/](docs/protocols/) — Protocol adapter specifications (OPC UA, Modbus TCP, MQTT, DNP3, EtherNet/IP, S7comm).
+- [docs/protocols/](docs/protocols/) — Protocol adapter specifications (OPC UA, Modbus TCP, MQTT, DNP3, EtherNet/IP, S7comm, Omron FINS).
 - [docs/protocols/ethernet-ip.md](docs/protocols/ethernet-ip.md) — EtherNet/IP + CIP explicit messaging: v1 scope, symbolic tag addressing, the `CipMap` exposure model, what is deferred to v2 and why, and the Python probe lane.
 - [docs/protocols/s7comm.md](docs/protocols/s7comm.md) — S7comm (device side): v1 scope, memory-area + byte-offset addressing, the `S7Map` exposure model, gap/partial-coverage/refusal semantics, the negotiated-PDU response budget, and the two wire details the real client settled.
 - [docs/trends.md](docs/trends.md) — Tag historian & trend charts (pens, the Trends section, the HMI trend component, and the trace cursor).

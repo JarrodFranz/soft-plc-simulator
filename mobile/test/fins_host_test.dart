@@ -20,7 +20,9 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:soft_plc_mobile/models/fins_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 import 'package:soft_plc_mobile/protocols/fins/fins_frame.dart';
 import 'package:soft_plc_mobile/protocols/fins/fins_memory.dart';
@@ -316,5 +318,76 @@ void main() {
     final endCode = (r[12] << 8) | r[13];
     expect(endCode, kFinsEndNotWritable, reason: 'a refused write reports not-writable');
     expect(readPath(project, 'Locked'), 42, reason: 'the refused write must not land');
+  });
+
+  group('serves the PERSISTED FINS config map (not just autoGenerate)', () {
+    late FinsHost mappedHost;
+    late PlcProject mappedProject;
+
+    // A hand-authored map that deliberately does NOT match auto-generation
+    // order: W1 is placed at word 40 in the CIO area and W0 at word 20 in DM,
+    // so a host serving `autoGenerate` (DM words 0,1,2 in leaf order) could
+    // never answer these addresses. Serving them proves the persisted config
+    // map is what backs the image.
+    setUp(() async {
+      mappedProject = _buildHostProject();
+      mappedProject.protocols = ProtocolSettings.defaults(mappedProject);
+      mappedProject.protocols!.fins = FinsProtocolConfig(
+        enabled: true,
+        port: 9600,
+        map: FinsMap(entries: [
+          FinsMapEntry(tag: 'W0', area: kFinsAreaNameDM, wordAddress: 20),
+          FinsMapEntry(tag: 'W1', area: kFinsAreaNameCIO, wordAddress: 40),
+          FinsMapEntry(tag: 'Locked', area: kFinsAreaNameDM, wordAddress: 21, access: 'ReadOnly'),
+        ]),
+      );
+      mappedHost = FinsHost()..port = 0;
+      await mappedHost.start(() => mappedProject);
+      expect(mappedHost.status, FinsHostStatus.running, reason: mappedHost.lastError);
+    });
+
+    tearDown(() async {
+      await mappedHost.stop();
+    });
+
+    test('an end-to-end Memory Area Read returns a mapped tag value from the config map',
+        () async {
+      // A raw datagram socket is single-subscription (it cannot be re-listened
+      // after a cancel), so each request uses a fresh client.
+      final dmClient = await _UdpClient.bind();
+      addTearDown(dmClient.close);
+
+      // DM word 20 -> W0 (0x1234), an address only the persisted map defines.
+      final dmReply = await dmClient.request(
+        _memAreaReadCmd(areaCode: kFinsAreaDM, wordAddress: 20, count: 1),
+        mappedHost.boundPort!,
+      );
+      expect(dmReply, isNotNull);
+      expect(dmReply!.sublist(12, 14), [0x00, 0x00], reason: 'normal end code');
+      expect(dmReply.sublist(14), [(_w0Value >> 8) & 0xFF, _w0Value & 0xFF]);
+
+      // CIO word 40 -> W1 (0x5678), in a DIFFERENT area, also config-only.
+      final cioClient = await _UdpClient.bind();
+      addTearDown(cioClient.close);
+      final cioReply = await cioClient.request(
+        _memAreaReadCmd(areaCode: kFinsAreaCIO, wordAddress: 40, count: 1),
+        mappedHost.boundPort!,
+      );
+      expect(cioReply, isNotNull);
+      expect(cioReply!.sublist(14), [(_w1Value >> 8) & 0xFF, _w1Value & 0xFF]);
+    });
+
+    test('a Memory Area Write to a config-mapped tag updates it', () async {
+      final client = await _UdpClient.bind();
+      addTearDown(client.close);
+
+      final writeReply = await client.request(
+        _memAreaWriteCmd(areaCode: kFinsAreaCIO, wordAddress: 40, words: [0x0F0E]),
+        mappedHost.boundPort!,
+      );
+      expect(writeReply, isNotNull);
+      expect(writeReply!.sublist(12, 14), [0x00, 0x00], reason: 'normal end code');
+      expect(readPath(mappedProject, 'W1'), 0x0F0E, reason: 'the config-mapped tag changed');
+    });
   });
 }

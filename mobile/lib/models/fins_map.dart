@@ -14,9 +14,11 @@
 // Type mapping (see fins_area_image.dart for the encoding itself):
 //   BOOL    -> 1 bit inside a word (16 bits per word, bit 0..15)
 //   INT16   -> INT,  1 word
-//   INT32   -> DINT, 2 words — HIGH WORD FIRST (at the lower word address),
-//              big-endian within each word (see fins_area_image.dart's header
-//              for the word-order decision and its Task-5 authority).
+//   INT32   -> DINT, 2 words — LOW WORD FIRST (at the lower word address),
+//              big-endian within each word. The Task-5 real `fins` E2E settled
+//              this: the client word-reverses a multi-word value, overturning
+//              the provisional high-word-first choice (see fins_area_image.dart's
+//              header).
 //   INT64   -> LINT, 4 words
 //   FLOAT64 -> REAL, 2 words — a NARROWING conversion to IEEE-754 single
 //              precision. The app stores doubles; FINS REAL is 32-bit, so a

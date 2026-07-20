@@ -31,8 +31,27 @@ WHAT THIS PROVES, in order:
   3. read()                -- the same word via the library's high-level
                              INT decode, cross-checking the interpreted value.
   4. a two-word read       -- proves word ordering across adjacent DM words.
+  5. read() a 32-bit DINT  -- reads a value the FIXTURE seeded independently of
+                             this client and asserts it EXACTLY. This is what
+                             SETTLES the two-word order: a write->read-back is
+                             byte-transparent through our symmetric encode/decode
+                             and cannot detect a word swap, but a seeded value
+                             read through the client's own multi-word decode can.
+                             Also asserts the raw on-wire word order (low word
+                             at the lower address).
+  6. read() a REAL         -- a seeded FLOAT64-narrowed-to-REAL, riding the same
+                             two-word order.
+  7. write()+read() DINT   -- writes a NEW 32-bit value and reads it back in a
+                             SEPARATE request, asserting the exact value: the
+                             core read -> write -> independent read-back.
+  8. BOOL bit round trip   -- reads the BOOL's word (bit clear), writes the word
+                             with the bit set, reads it back (bit set).
+  9. CIO second area       -- read / write / independent read-back in a
+                             DIFFERENT memory area (CIO, not DM).
+  10. ReadOnly refusal      -- a write to a ReadOnly-mapped tag is REFUSED (a
+                             not-writable end code) and the value is unchanged.
 
-Step 2 is the point of the file: a real client parsing OUR response frame is
+Step 2 is one point of the file: a real client parsing OUR response frame is
 the first independent confirmation that the 10-byte header, the DNA/DA1/DA2 <->
 SNA/SA1/SA2 node swap, the ICF response bit, the echoed SID, the command-code
 echo, the end code, and the big-endian word data are all on the wire where the
@@ -42,6 +61,13 @@ non-zero node-address values set on the connection before the request (see
 completely broken swap indistinguishable from a correct one, since a UDP
 client's reply is delivered by the socket's 4-tuple regardless of what the
 FINS node bytes inside the header say.
+
+Step 5 is the OTHER point: the 32-bit two-word order. The `fins` library
+serializes a multi-word value LOW-WORD-FIRST (it word-reverses the big-endian
+byte string -- see `fins.fins_common.reverse_word_order`), so this probe is the
+authority that overturned our provisional high-word-first choice. Because the
+fixture seeds the DINT into a tag independently of this client, reading it back
+through the client's own decode is a true conformance check, not a round trip.
 
 Usage: python fins_probe.py <host> <port>
 """
@@ -58,12 +84,44 @@ from fins.udp import FinsHeader, FinsPLCMemoryAreas, UDPFinsConnection
 # --- The fixture's layout ---------------------------------------------------
 #
 # Every constant below is pinned in `mobile/tool/fins_host_probe.dart`
-# (`_fixtureImage`). Keep the two files in step.
+# (`_fixtureProject`). Keep the two files in step.
 
-DM100_ADDRESS = 100  # DM word 100
+DM100_ADDRESS = 100  # DM word 100 -> W0
 DM100_VALUE = 0x1234  # its value; two bytes DIFFER so byte order is testable
-DM101_ADDRESS = 101  # adjacent DM word
+DM101_ADDRESS = 101  # adjacent DM word -> W1
 DM101_VALUE = 0x5678
+
+# Reg32 -- INT32 across DM words 110..111. All four bytes distinct AND the high
+# word differs from the low, so a word-order fault cannot survive the seeded
+# read in step 5. Low word (bits 0..15) and high word (bits 16..31) are named
+# separately for the on-wire word-order assertion.
+REG32_ADDRESS = 110
+REG32_VALUE = 0x1A2B3C4D
+REG32_LOW_WORD = REG32_VALUE & 0xFFFF  # 0x3C4D
+REG32_HIGH_WORD = (REG32_VALUE >> 16) & 0xFFFF  # 0x1A2B
+REG32_WRITTEN = 0x5B6C7D0E  # step 7 writes this; distinct bytes again
+
+# Real1 -- FLOAT64 narrowed to a 4-byte FINS REAL, DM words 112..113. 12.5 is
+# exactly representable in float32, so the narrowing does not blur the assert.
+REAL1_ADDRESS = 112
+REAL1_VALUE = 12.5
+
+# Flag -- a BOOL at DM word 114, bit 0. Starts False.
+FLAG_ADDRESS = 114
+FLAG_BIT = 0
+
+# CioReg -- INT16 in the CIO area (word 5), a DIFFERENT memory area from DM.
+CIO_REG_ADDRESS = 5
+CIO_REG_VALUE = 0x0A0B
+CIO_REG_WRITTEN = 0x0C0D
+
+# Locked -- INT16 at DM word 116, mapped ReadOnly.
+LOCKED_ADDRESS = 116
+LOCKED_VALUE = 250
+
+# The FINS not-writable end code (`kFinsEndNotWritable` in
+# mobile/lib/protocols/fins/fins_frame.dart), returned for a refused write.
+FINS_END_NOT_WRITABLE = b"\x21\x01"
 
 # --- Distinct node addresses for the response-header swap assertion --------
 #
@@ -142,6 +200,12 @@ def run(host: str, port: int) -> None:
         _step2_raw_memory_area_read(connection, memory_areas)
         _step3_high_level_read(connection)
         _step4_two_word_read(connection, memory_areas)
+        _step5_read_32bit_settles_word_order(connection, memory_areas)
+        _step6_read_real(connection)
+        _step7_write_32bit_and_read_back(connection)
+        _step8_bool_bit_round_trip(connection)
+        _step9_cio_second_area(connection)
+        _step10_readonly_refused(connection)
     finally:
         # --- teardown: close the client socket --------------------------------
         try:
@@ -349,6 +413,207 @@ def _step4_two_word_read(
         f"means the words came back in the wrong order.",
     )
     print(f"[probe] step 4 OK: two-word read returned {hexs(text)} (DM{DM100_ADDRESS} then DM{DM101_ADDRESS})")
+
+
+# --- Step 5: THE 32-BIT WORD-ORDER SETTLER ----------------------------------
+
+
+def _step5_read_32bit_settles_word_order(
+    connection: UDPFinsConnection, memory_areas: FinsPLCMemoryAreas
+) -> None:
+    """Reads Reg32 (a DINT the FIXTURE seeded to 0x1A2B3C4D) two ways and asserts
+    both, SETTLING the two-word order.
+
+    (a) The library's high-level `di` (two-word signed) decode. Because the
+        value was seeded into a tag independently of this client, a correct
+        read-back can only happen if OUR encode word order matches what the
+        client's decode expects -- this is NOT a byte-transparent round trip.
+    (b) The RAW two words, to document the on-wire order explicitly: the LOW
+        word (0x3C4D) must sit at the LOWER address and the HIGH word (0x1A2B)
+        at the higher, i.e. LOW-WORD-FIRST. If a future `fins` version changed
+        its convention, this raw assertion localizes the disagreement.
+    """
+    try:
+        value = connection.read("d", REG32_ADDRESS, data_type="di")
+    except socket.timeout as err:
+        raise ProbeFailure(
+            f"STEP 5 (read 32-bit DINT): no response within {SOCKET_TIMEOUT_S}s."
+        ) from err
+    except Exception as err:  # noqa: BLE001 - reported verbatim
+        raise ProbeFailure(f"STEP 5 (read 32-bit DINT): request failed: {err!r}") from err
+
+    check(
+        value == REG32_VALUE,
+        f"STEP 5 (32-bit WORD ORDER): the fins client decoded the SEEDED DINT at "
+        f"DM{REG32_ADDRESS} as 0x{value & 0xFFFFFFFF:08X} ({value!r}), expected "
+        f"0x{REG32_VALUE:08X}. This value was seeded into the tag independently of "
+        f"this client, so a mismatch means OUR two-word order disagrees with the "
+        f"client's -- the `fins` library is LOW-WORD-FIRST (it word-reverses a "
+        f"multi-word value); flip the word order in fins_area_image.dart.",
+    )
+
+    raw = connection.memory_area_read(
+        memory_areas.DATA_MEMORY_WORD, _beginning_address(REG32_ADDRESS), 2
+    )[14:]
+    expected_raw = struct.pack(">HH", REG32_LOW_WORD, REG32_HIGH_WORD)
+    check(
+        raw == expected_raw,
+        f"STEP 5 (on-wire word order): the two raw words of DM{REG32_ADDRESS} are "
+        f"{hexs(raw)}, expected {hexs(expected_raw)} (LOW word 0x{REG32_LOW_WORD:04X} "
+        f"at the lower address, HIGH word 0x{REG32_HIGH_WORD:04X} at the higher -- "
+        f"LOW-WORD-FIRST, each big-endian).",
+    )
+    print(
+        f"[probe] step 5 OK: seeded DINT DM{REG32_ADDRESS} = 0x{value & 0xFFFFFFFF:08X} "
+        f"settled LOW-WORD-FIRST (raw words {hexs(raw)})"
+    )
+
+
+# --- Step 6 -----------------------------------------------------------------
+
+
+def _step6_read_real(connection: UDPFinsConnection) -> None:
+    """Reads Real1, a seeded FLOAT64 narrowed to a 4-byte FINS REAL, via the
+    library's `r` (two-word float) decode -- it rides the same two-word order as
+    the DINT."""
+    try:
+        value = connection.read("d", REAL1_ADDRESS, data_type="r")
+    except socket.timeout as err:
+        raise ProbeFailure(
+            f"STEP 6 (read REAL): no response within {SOCKET_TIMEOUT_S}s."
+        ) from err
+    except Exception as err:  # noqa: BLE001 - reported verbatim
+        raise ProbeFailure(f"STEP 6 (read REAL): request failed: {err!r}") from err
+
+    check(
+        abs(value - REAL1_VALUE) < 1e-6,
+        f"STEP 6 (read REAL): the fins client decoded the seeded REAL at "
+        f"DM{REAL1_ADDRESS} as {value!r}, expected {REAL1_VALUE!r}. A wildly "
+        f"different value means the REAL was not encoded as a big-endian IEEE-754 "
+        f"single across the two words in the settled order.",
+    )
+    print(f"[probe] step 6 OK: seeded REAL DM{REAL1_ADDRESS} = {value}")
+
+
+# --- Step 7 -----------------------------------------------------------------
+
+
+def _step7_write_32bit_and_read_back(connection: UDPFinsConnection) -> None:
+    """Writes a NEW 32-bit value to Reg32 and reads it back in a SEPARATE request,
+    asserting the exact value -- the core read -> write -> independent read-back
+    for a multi-word value. With step 5 having proven the read (encode) order, a
+    correct read-back here proves the write (decode) order too."""
+    try:
+        connection.write(REG32_WRITTEN, "d", REG32_ADDRESS, data_type="di")
+    except Exception as err:  # noqa: BLE001 - reported verbatim
+        raise ProbeFailure(
+            f"STEP 7 (write 32-bit DINT): writing DM{REG32_ADDRESS} = "
+            f"0x{REG32_WRITTEN:08X} was rejected: {err!r}"
+        ) from err
+
+    value = connection.read("d", REG32_ADDRESS, data_type="di")
+    check(
+        value == REG32_WRITTEN,
+        f"STEP 7 (write 32-bit read-back): wrote 0x{REG32_WRITTEN:08X} to "
+        f"DM{REG32_ADDRESS} and an INDEPENDENT read returned 0x{value & 0xFFFFFFFF:08X} "
+        f"({value!r}). A word-swapped result means the write path decoded the two "
+        f"words in the wrong order.",
+    )
+    print(
+        f"[probe] step 7 OK: wrote 0x{REG32_WRITTEN:08X} to DM{REG32_ADDRESS} and read "
+        f"back exactly 0x{value & 0xFFFFFFFF:08X}"
+    )
+
+
+# --- Step 8 -----------------------------------------------------------------
+
+
+def _step8_bool_bit_round_trip(connection: UDPFinsConnection) -> None:
+    """Exercises a BOOL bit. The `fins` library's high-level read/write have no
+    BOOL codec and our host serves only WORD areas, so a BOOL is addressed
+    through its containing word: read the word (bit clear), write the word with
+    the bit set, read the word back (bit set)."""
+    word = connection.read("d", FLAG_ADDRESS, data_type="ui")
+    check(
+        (word >> FLAG_BIT) & 1 == 0,
+        f"STEP 8 (BOOL initial): DM{FLAG_ADDRESS} bit {FLAG_BIT} (Flag) read as set "
+        f"(word 0x{word:04X}); the fixture seeds it False (clear).",
+    )
+
+    try:
+        connection.write(1 << FLAG_BIT, "d", FLAG_ADDRESS, data_type="ui")
+    except Exception as err:  # noqa: BLE001 - reported verbatim
+        raise ProbeFailure(
+            f"STEP 8 (BOOL write): writing DM{FLAG_ADDRESS} bit {FLAG_BIT} = True was "
+            f"rejected: {err!r}"
+        ) from err
+
+    word = connection.read("d", FLAG_ADDRESS, data_type="ui")
+    check(
+        (word >> FLAG_BIT) & 1 == 1,
+        f"STEP 8 (BOOL read-back): after setting DM{FLAG_ADDRESS} bit {FLAG_BIT} = "
+        f"True, an INDEPENDENT read returned word 0x{word:04X}, whose bit {FLAG_BIT} "
+        f"is not set. The bit write did not land.",
+    )
+    print(f"[probe] step 8 OK: BOOL bit at DM{FLAG_ADDRESS}.{FLAG_BIT} written and read back set")
+
+
+# --- Step 9 -----------------------------------------------------------------
+
+
+def _step9_cio_second_area(connection: UDPFinsConnection) -> None:
+    """Exercises a SECOND memory area -- CIO, not DM -- with a read, a write, and
+    an independent read-back. If the area code were ignored (everything served
+    from DM), CioReg would read as DM word 5 instead."""
+    value = connection.read("c", CIO_REG_ADDRESS, data_type="i")
+    check(
+        value == CIO_REG_VALUE,
+        f"STEP 9 (CIO read): CIO word {CIO_REG_ADDRESS} read as {value!r}, expected "
+        f"0x{CIO_REG_VALUE:04X}. If this does not match, the CIO area code is not "
+        f"discriminating between memory areas.",
+    )
+
+    try:
+        connection.write(CIO_REG_WRITTEN, "c", CIO_REG_ADDRESS, data_type="i")
+    except Exception as err:  # noqa: BLE001 - reported verbatim
+        raise ProbeFailure(f"STEP 9 (CIO write): writing CIO word {CIO_REG_ADDRESS} was rejected: {err!r}") from err
+
+    read_back = connection.read("c", CIO_REG_ADDRESS, data_type="i")
+    check(
+        read_back == CIO_REG_WRITTEN,
+        f"STEP 9 (CIO read-back): wrote 0x{CIO_REG_WRITTEN:04X} to CIO word "
+        f"{CIO_REG_ADDRESS} and an INDEPENDENT read returned {read_back!r}.",
+    )
+    print(
+        f"[probe] step 9 OK: CIO area read/write/read-back "
+        f"(CIO word {CIO_REG_ADDRESS} = 0x{read_back & 0xFFFF:04X})"
+    )
+
+
+# --- Step 10 ----------------------------------------------------------------
+
+
+def _step10_readonly_refused(connection: UDPFinsConnection) -> None:
+    """Locked is mapped ReadOnly. The write must be REFUSED with a not-writable
+    end code and the value must be UNCHANGED afterwards -- a refusal that still
+    mutated the tag would be worse than no refusal at all."""
+    response = connection.write(999, "d", LOCKED_ADDRESS, data_type="i")
+    end_code = response.end_code
+    check(
+        end_code == FINS_END_NOT_WRITABLE,
+        f"STEP 10 (ReadOnly refusal): writing DM{LOCKED_ADDRESS} (a ReadOnly map "
+        f"entry) returned end code {hexs(end_code)}, expected "
+        f"{hexs(FINS_END_NOT_WRITABLE)} (not writable). A normal end code means the "
+        f"refusal did not fire.",
+    )
+
+    value = connection.read("d", LOCKED_ADDRESS, data_type="i")
+    check(
+        value == LOCKED_VALUE,
+        f"STEP 10 (ReadOnly refusal): after the refused write, DM{LOCKED_ADDRESS} "
+        f"reads {value!r}, expected the UNCHANGED {LOCKED_VALUE}.",
+    )
+    print(f"[probe] step 10 OK: ReadOnly write refused ({hexs(end_code)}) and the value is unchanged ({value})")
 
 
 def main(argv: list[str]) -> int:
