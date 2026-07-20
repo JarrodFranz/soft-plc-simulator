@@ -797,11 +797,22 @@ Run: `bash tool/enip_e2e.sh`
 If `LogixDriver.open()` still fails, its error names the missing object/attribute — serve exactly that (most likely an additional Identity attribute, or a specific Device Type/Product Code that steers LogixDriver onto the Symbol-Object tag-list path) and re-run. Record in the report precisely what `open()` required and whether the dotted-name representation (`Tank.Level`) survived `get_tag_list()`. If pycomm3 rejects dotted atomic symbols, fall back (sanitized separator or top-level-only) and report. **Do not weaken the assertion to pass.**
 Expected on success: `[probe] step 9 OK: LogixDriver browsed 7 tags and read one back` and `ENIP PROBE PASS`.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 10 (gate-surfaced, CONTROLLER-AUTHORIZED): serve Unconnected Send (0x52) + Program Name Object (0x64)**
+
+The Task-3 gate revealed `LogixDriver.open()` needs two more small, honest CIP surfaces before it reaches `get_tag_list()` — NOT the out-of-scope Template Object. Both are authorized (they are exactly the "controller attributes the gate surfaces" this plan's design sanctions; Ignition's Logix driver reads the same info):
+
+- **CIP Unconnected Send (service 0x52, Connection Manager class 0x06/instance 0x01).** `get_plc_info`/`get_plc_name` wrap their reads in an Unconnected Send. Handle it as a transparent wrapper: parse the embedded request (priority/tick u8, timeout_ticks u8, embedded-message size u16, that many embedded-request bytes [pad byte if size odd], route-path size u8 + reserved u8 + route path), re-dispatch the embedded `CipRequest` through `dispatchCipService` (UCMM → `responseBudget: null`), and return the embedded service's response directly (the Unconnected Send adds no reply wrapper). Verify the exact request layout against pycomm3's `pycomm3/packets/util.py` / `cip/` in the installed venv — the client is the authority. Pure Dart; never throw (malformed → an error-status response). Add byte-exact unit tests.
+- **Program Name Object (class 0x64) Get Attributes All → STRING.** `get_plc_name()` reads this unconditionally on the non-Micro800 path. Return `project.controllerName` (honest, deterministic) encoded as the Logix STRING attribute layout pycomm3 expects (verify against its parser). Route it in `dispatchCipService` alongside the Identity case. Add byte-exact unit tests.
+
+Keep the Identity + Symbol work from Steps 1–9. Keep determinism/never-throw/purity and the honest, non-impersonating identity. The **Template Object (class 0x6C) / UDT modelling remains the hard out-of-scope boundary** — if anything beyond 0x52 + 0x64 + the served Symbol attributes is still demanded, STOP and escalate rather than build it.
+
+- [ ] **Step 11: Flip on the LogixDriver browse gate + commit**
+
+With 0x52 + 0x64 served, the `LogixDriver.open()` → `get_tag_list()` → read step (from Step 8) must now PASS against the fixture; commit it into `enip_probe.py` as a live step so the shared `tool/enip_e2e.sh` proves the full browse path (do NOT commit a red step — only enable it once green). Record what `open()` finally required and whether the dotted-name representation survived `get_tag_list()`.
 
 ```bash
-git add mobile/lib/protocols/enip/cip_identity.dart mobile/lib/protocols/enip/cip_tags.dart mobile/lib/services/enip_host.dart mobile/test/cip_identity_test.dart tool/py/enip_probe.py
-git commit -m "feat(enip): Identity Object + ListIdentity; full LogixDriver browse gate"
+git add mobile/lib/protocols/enip/cip_identity.dart mobile/lib/protocols/enip/cip_symbol.dart mobile/lib/protocols/enip/cip_tags.dart mobile/lib/services/enip_host.dart mobile/test/cip_identity_test.dart mobile/test/cip_symbol_test.dart tool/py/enip_probe.py
+git commit -m "feat(enip): Identity + Program Name + Unconnected Send; full LogixDriver browse gate"
 ```
 
 ---
