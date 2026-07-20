@@ -61,11 +61,20 @@ import '../../models/project_model.dart';
 import '../../models/tag_resolver.dart';
 import '../../models/tag_write_gate.dart';
 import 'cip.dart';
+import 'cip_symbol.dart';
 
 /// The Message Router object identity (class 0x02, instance 0x01) that a
 /// Multiple Service Packet request's path must address.
 const int _kMessageRouterClassId = 0x02;
 const int _kMessageRouterInstanceId = 0x01;
+
+/// The reply-size cap applied to a Symbol Object browse arriving over an
+/// UNCONNECTED (UCMM / SendRRData) send, which has no negotiated connection
+/// size. Kept comfortably within a single UCMM reply so the browse paginates
+/// (status 0x06) rather than emitting an oversized frame; a Logix client
+/// re-requests from the last instance id + 1. Connected sends use the
+/// negotiated `responseBudget` instead.
+const int kCipUcmmBrowseReplyCap = 480;
 
 /// The minimum on-wire cost, in bytes, of ONE embedded item in a Multiple
 /// Service Packet reply: its 2-byte reply-offset-list entry plus the 4-byte
@@ -106,6 +115,8 @@ CipResponse dispatchCipService(PlcProject project, CipMap map, CipRequest req, {
         return _writeTag(project, map, req);
       case kCipServiceMultipleServicePacket:
         return _multipleServicePacket(project, map, req, responseBudget);
+      case kCipServiceGetInstanceAttributeList:
+        return _symbolBrowse(project, map, req, responseBudget);
       default:
         return _errorResponse(req.service, kCipStatusServiceNotSupported);
     }
@@ -119,6 +130,28 @@ CipResponse dispatchCipService(PlcProject project, CipMap map, CipRequest req, {
 
 CipResponse _errorResponse(int service, int status) =>
     CipResponse(service: service, generalStatus: status, data: Uint8List(0));
+
+// --- Symbol Object browse (0x55, Get Instance Attribute List) -------------
+
+/// Routes a Get Instance Attribute List (0x55) to the Symbol Object browse
+/// codec (`cip_symbol.dart`). Only the Symbol Object (class 0x6B) is served;
+/// 0x55 addressed to any other class stays 0x08 (Service Not Supported). On a
+/// CONNECTED send [responseBudget] is the negotiated T->O connection size that
+/// bounds the reply; on an UNCONNECTED (UCMM) send it is null, and a fixed
+/// [kCipUcmmBrowseReplyCap] is used so the browse still paginates (status 0x06)
+/// rather than emitting an oversized frame. Never throws.
+CipResponse _symbolBrowse(PlcProject project, CipMap map, CipRequest req, int? responseBudget) {
+  if (!isSymbolObjectPath(req.path)) {
+    // Get Instance Attribute List is only served for the Symbol Object here.
+    return _errorResponse(req.service, kCipStatusServiceNotSupported);
+  }
+  final parsed = parseGetInstanceAttrListRequest(req);
+  if (parsed == null) {
+    return _errorResponse(req.service, kCipStatusEmbeddedListError);
+  }
+  final budget = responseBudget ?? kCipUcmmBrowseReplyCap;
+  return buildSymbolInstanceListResponse(project, map, parsed, replyBudget: budget);
+}
 
 /// Joins a path's ANSI Extended Symbol segments into a dotted resolver path
 /// (e.g. `Tank.Level`). Returns `null` if [path] is empty or contains any

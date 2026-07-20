@@ -16,6 +16,7 @@ import 'package:soft_plc_mobile/models/cip_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 import 'package:soft_plc_mobile/protocols/enip/cip.dart';
+import 'package:soft_plc_mobile/protocols/enip/cip_symbol.dart';
 import 'package:soft_plc_mobile/protocols/enip/cip_tags.dart';
 
 Uint8List _u16le(int v) => Uint8List.fromList([v & 0xFF, (v >> 8) & 0xFF]);
@@ -58,6 +59,30 @@ Uint8List _buildMsp(List<Uint8List> embedded) {
   }
   return out.toBytes();
 }
+
+/// A small fixture for the Symbol Object browse routing tests, mirroring
+/// Task 1's `buildProject()` / `buildMap()` in `cip_symbol_test.dart`: three
+/// scalar leaves, each a flat atomic symbol the browse enumerates.
+PlcProject _browseProject() => PlcProject(
+      id: 'browse_proj',
+      name: 'browse',
+      controllerName: 'PLC',
+      tags: [
+        PlcTag(name: 'Running', path: 'Internal.Running', dataType: 'BOOL', value: true, ioType: 'Internal'),
+        PlcTag(name: 'Speed', path: 'Internal.Speed', dataType: 'INT32', value: 100, ioType: 'Internal'),
+        PlcTag(name: 'Level', path: 'Internal.Level', dataType: 'FLOAT64', value: 1.5, ioType: 'Internal'),
+      ],
+      structDefs: [],
+      programs: [],
+      tasks: [],
+      hmis: [],
+    );
+
+CipMap _browseMap() => CipMap(entries: [
+      CipMapEntry(tagName: 'Running', access: 'ReadWrite'),
+      CipMapEntry(tagName: 'Speed', access: 'ReadWrite'),
+      CipMapEntry(tagName: 'Level', access: 'ReadWrite'),
+    ]);
 
 void main() {
   PlcProject buildProject() => PlcProject(
@@ -749,6 +774,30 @@ void main() {
         CipRequest(service: kCipServiceMultipleServicePacket, path: routerPath, data: data),
       );
       expect(resp.generalStatus, kCipStatusEmbeddedListError);
+    });
+  });
+
+  group('dispatchCipService — Symbol Object browse routing', () {
+    test('0x55 addressed to class 0x6B returns a Symbol instance list', () {
+      final req = CipRequest(
+        service: kCipServiceGetInstanceAttributeList,
+        path: [CipPathSegment.classId(kCipSymbolObjectClassId), CipPathSegment.instanceId(0)],
+        data: Uint8List.fromList([0x02, 0x00, 0x01, 0x00, 0x02, 0x00]),
+      );
+      final resp = dispatchCipService(_browseProject(), _browseMap(), req);
+      expect(resp.service, kCipServiceGetInstanceAttributeList);
+      expect(resp.generalStatus, anyOf(kCipStatusSuccess, kCipStatusPartialTransfer));
+      expect(resp.data, isNotEmpty);
+    });
+
+    test('0x55 addressed to a non-Symbol class is Service Not Supported', () {
+      final req = CipRequest(
+        service: kCipServiceGetInstanceAttributeList,
+        path: [CipPathSegment.classId(0x04), CipPathSegment.instanceId(0)],
+        data: Uint8List.fromList([0x01, 0x00, 0x01, 0x00]),
+      );
+      final resp = dispatchCipService(_browseProject(), _browseMap(), req);
+      expect(resp.generalStatus, kCipStatusServiceNotSupported);
     });
   });
 
