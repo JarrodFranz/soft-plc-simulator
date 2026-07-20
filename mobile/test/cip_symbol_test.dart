@@ -72,6 +72,51 @@ void main() {
       expect(ByteData.sublistView(d, 13, 15).getUint16(0, Endian.little), kCipTypeBool);
     });
 
+    test('serves the full LogixDriver attribute set {1,2,3,5,6,8} in ascending order, byte-exact', () {
+      // pycomm3's LogixDriver.get_tag_list() requests attrs 1,2,3,5,6,8 and
+      // parses each instance as: instance(u32), name(u16 len + ascii),
+      // type(u16), symbol_address(u32), symbol_object_address(u32),
+      // software_control(u32), dim1/dim2/dim3(u32). This asserts that exact
+      // layout for the first instance (id=1, "Running", BOOL).
+      const parsed = GetInstanceAttrListRequest(startInstance: 0, attributeIds: [1, 2, 3, 5, 6, 8]);
+      final resp = buildSymbolInstanceListResponse(buildProject(), buildMap(), parsed, replyBudget: 4096);
+      expect(resp.generalStatus, kCipStatusSuccess);
+      final d = resp.data;
+      var off = 0;
+      expect(ByteData.sublistView(d, off, off + 4).getUint32(0, Endian.little), 1); // instance id
+      off += 4;
+      expect(ByteData.sublistView(d, off, off + 2).getUint16(0, Endian.little), 7); // name len
+      off += 2;
+      expect(String.fromCharCodes(d.sublist(off, off + 7)), 'Running');
+      off += 7;
+      expect(ByteData.sublistView(d, off, off + 2).getUint16(0, Endian.little), kCipTypeBool); // attr 2
+      off += 2;
+      expect(ByteData.sublistView(d, off, off + 4).getUint32(0, Endian.little), 0); // attr 3 symbol address
+      off += 4;
+      expect(ByteData.sublistView(d, off, off + 4).getUint32(0, Endian.little), 0); // attr 5 object address
+      off += 4;
+      expect(ByteData.sublistView(d, off, off + 4).getUint32(0, Endian.little), 1 << 26); // attr 6 BASE_TAG_BIT
+      off += 4;
+      expect(ByteData.sublistView(d, off, off + 4).getUint32(0, Endian.little), 0); // attr 8 dim1
+      off += 4;
+      expect(ByteData.sublistView(d, off, off + 4).getUint32(0, Endian.little), 0); // dim2
+      off += 4;
+      expect(ByteData.sublistView(d, off, off + 4).getUint32(0, Endian.little), 0); // dim3
+      off += 4;
+      // Next instance (id=2, "Speed", DINT) begins immediately after — no
+      // padding, no trailing attribute bytes leaked from instance 1.
+      expect(ByteData.sublistView(d, off, off + 4).getUint32(0, Endian.little), 2);
+    });
+
+    test('type attribute (attr 2) keeps bit 15 clear so a scalar reads as ATOMIC, never a struct', () {
+      const parsed = GetInstanceAttrListRequest(startInstance: 0, attributeIds: [1, 2]);
+      final resp = buildSymbolInstanceListResponse(buildProject(), buildMap(), parsed, replyBudget: 4096);
+      // instance 1 "Running" type field at offset 13 (4 id + 2 len + 7 name).
+      final typeCode = ByteData.sublistView(resp.data, 13, 15).getUint16(0, Endian.little);
+      expect(typeCode & 0x8000, 0); // bit 15 clear = atomic, not a template ref.
+      expect(typeCode & 0xFF, kCipTypeBool); // low byte carries the CIP type.
+    });
+
     test('a tiny budget returns only the instances that fit, with status 0x06 (partial)', () {
       const parsed = GetInstanceAttrListRequest(startInstance: 0, attributeIds: [1, 2]);
       // Budget only large enough for the first instance.

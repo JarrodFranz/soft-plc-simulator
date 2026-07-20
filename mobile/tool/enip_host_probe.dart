@@ -37,6 +37,7 @@ import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/protocols/enip/cip.dart';
 import 'package:soft_plc_mobile/protocols/enip/cip_connection.dart';
+import 'package:soft_plc_mobile/protocols/enip/cip_identity.dart';
 import 'package:soft_plc_mobile/protocols/enip/cip_tags.dart';
 import 'package:soft_plc_mobile/protocols/enip/enip_encap.dart';
 
@@ -205,6 +206,13 @@ class _Connection {
     final data = Uint8List.sublistView(frame, kEnipHeaderLen);
     switch (header.command) {
       case kEnipCommandNop:
+        return;
+      case kEnipCommandListIdentity:
+        final idItem = buildListIdentityItem();
+        final listIdentityData = Uint8List(2 + idItem.length);
+        ByteData.sublistView(listIdentityData, 0, 2).setUint16(0, 1, Endian.little);
+        listIdentityData.setRange(2, listIdentityData.length, idItem);
+        socket.add(_reply(header, 0, listIdentityData));
         return;
       case kEnipCommandRegisterSession:
         _handleRegisterSession(header, data, allocateSessionHandle);

@@ -61,6 +61,7 @@ import '../../models/project_model.dart';
 import '../../models/tag_resolver.dart';
 import '../../models/tag_write_gate.dart';
 import 'cip.dart';
+import 'cip_identity.dart';
 import 'cip_symbol.dart';
 
 /// The Message Router object identity (class 0x02, instance 0x01) that a
@@ -117,6 +118,10 @@ CipResponse dispatchCipService(PlcProject project, CipMap map, CipRequest req, {
         return _multipleServicePacket(project, map, req, responseBudget);
       case kCipServiceGetInstanceAttributeList:
         return _symbolBrowse(project, map, req, responseBudget);
+      case kCipServiceGetAttributesAll:
+        return isIdentityObjectPath(req.path)
+            ? buildIdentityGetAttributesAllResponse(req.service)
+            : _errorResponse(req.service, kCipStatusServiceNotSupported);
       default:
         return _errorResponse(req.service, kCipStatusServiceNotSupported);
     }
