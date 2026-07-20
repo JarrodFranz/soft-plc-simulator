@@ -1,17 +1,18 @@
 // A tiny `dart run` CLI that hosts Mitsubishi SLMP (MELSEC Communication, 3E
 // binary) over a real `ServerSocket` (TCP), prints `READY` once bound, then
 // serves until killed. Used by `tool/slmp_e2e.sh` as the Dart half of the v1
-// SLMP workstream's EARLY E2E machine-proof: a REAL third-party client — the
+// SLMP workstream's E2E machine-proof: a REAL third-party client — the
 // pure-Python `pymcprotocol` library, driven by `tool/py/slmp_probe.py` —
-// connects here and batch-reads a known device word.
+// connects here and completes a full read -> write -> independent read-back,
+// INCLUDING a 32-bit value that settles the two-word order.
 //
 // WHY A REAL CLIENT RUNS AT ALL: every SLMP unit test in this repo exercises
 // frames our own codec built, which proves self-consistency, not conformance.
 // This fixture is where a client written independently of us reads our wire
-// bytes. It runs at Task 3 — before any tag-map logic exists — precisely so the
-// framing (the length-field convention, the big-endian subheader vs
-// little-endian body, the device codes, the end code) is settled against a real
-// client at the earliest possible point.
+// bytes — and, crucially for the 32-bit word order, reads a value this fixture
+// SEEDED into a tag independently of the client. A write->read-back round trip
+// alone cannot settle the word order (it is byte-transparent through our
+// symmetric encode/decode); reading a seeded value is what pins it.
 //
 // IMPORTANT: this does NOT import `services/slmp_host.dart`. `SlmpHost extends
 // ChangeNotifier` (`package:flutter/foundation.dart`), which transitively pulls
@@ -21,14 +22,17 @@
 // note this mirrors.
 //
 // *** HOW THIS STAYS FAITHFUL TO THE SHIPPED HOST ***
-// The dispatch path below is NOT mirrored — it is SHARED: both this fixture and
-// `SlmpHost` call the single pure `dispatchSlmpFrame`
-// (`protocols/slmp/slmp_dispatch.dart`), which builds every response byte. So
-// the bytes `pymcprotocol` validates here are, by construction rather than by
-// diff, the same bytes the shipped app puts on the wire. Only the small
-// length-prefixed TCP reassembly loop is re-implemented here, mirroring
-// `SlmpHost._Connection` line for line (that file is authoritative; if the two
-// ever diverge, it wins).
+// The Read/Write path below is NOT mirrored — it is SHARED: both this fixture
+// and `SlmpHost` call the single pure `dispatchSlmpFrame`
+// (`protocols/slmp/slmp_dispatch.dart`) against a `SlmpTagImage`
+// (`protocols/slmp/slmp_dispatch.dart` over `slmp_device_image.dart`), which
+// builds every response byte AND performs the multi-word encode/decode. So the
+// bytes the `pymcprotocol` client validates here are, by construction rather
+// than by diff, the same bytes the shipped app puts on the wire, and the word
+// order the client round-trips is the actual `slmp_device_image.dart` word
+// order. Only the small length-prefixed TCP reassembly loop is re-implemented
+// here, mirroring `SlmpHost._Connection` line for line (that file is
+// authoritative; if the two ever diverge, it wins).
 //
 // *** THE LENGTH CONVENTION ***
 // The 3E `requestDataLength` u16 (little-endian, at byte offset 7) counts the
@@ -44,14 +48,17 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:soft_plc_mobile/protocols/slmp/slmp_commands.dart';
+import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/protocol_settings.dart';
+import 'package:soft_plc_mobile/models/slmp_map.dart';
 import 'package:soft_plc_mobile/protocols/slmp/slmp_dispatch.dart';
 
-// --- Fixture device values the probe asserts against ------------------------
+// --- Fixture tag values the probe asserts against ---------------------------
 //
 // Every constant below is pinned in `tool/py/slmp_probe.py`. Keep the two files
 // in step: the probe names each constant it depends on in a comment. Each
-// value's two bytes DIFFER so a byte-order fault cannot pass unnoticed.
+// value's bytes are chosen to DIFFER so a byte-order or word-order fault cannot
+// pass unnoticed.
 
 /// `D100` (INT16). Two bytes differ so little-endian word data is testable.
 const int _d100Address = 100;
@@ -68,21 +75,66 @@ const int _d103Value = 0xDEF0;
 const int _w0Address = 0;
 const int _w0Value = 0x0A0B;
 
-/// Builds the fixture device image the E2E probe reads: a D word bank and a W
-/// word bank with the known values above. Served through the SAME
-/// `SlmpWordImage`/`dispatchSlmpFrame` seam the shipped host uses.
-SlmpDeviceImage _fixtureImage() {
-  final dBank = Uint16List(256);
-  dBank[_d100Address] = _d100Value;
-  dBank[_d100Address + 1] = _d101Value;
-  dBank[_d100Address + 2] = _d102Value;
-  dBank[_d100Address + 3] = _d103Value;
-  final wBank = Uint16List(64);
-  wBank[_w0Address] = _w0Value;
-  return SlmpWordImage({
-    kSlmpDevD: dBank,
-    kSlmpDevW: wBank,
-  });
+/// `Reg32` — D words 110..111 (INT32). The 32-bit WORD-ORDER settler: all four
+/// bytes distinct AND the high word differs from the low, so reading this
+/// SEEDED value back through the client's own per-word decode exposes any
+/// word-order disagreement.
+const int _reg32Address = 110;
+const int _reg32Value = 0x1A2B3C4D;
+
+/// `Flag` — D word 114, bit 0 (BOOL). Starts FALSE so the probe's write to
+/// TRUE (by setting bit 0 of the word) is an observable change.
+const int _flagAddress = 114;
+const int _flagBit = 0;
+
+/// `Locked` — D word 116 (INT16), mapped ReadOnly: the probe asserts a write
+/// here is REFUSED (SLMP end code 0xC05B) and the value is unchanged.
+const int _lockedAddress = 116;
+const int _lockedValue = 250;
+
+/// Builds the fixture project + SLMP map the E2E probe reads and writes. Tag
+/// name == path (single top-level names) so a map entry's `tag` resolves
+/// directly. Addresses are pinned EXPLICITLY here (not taken from
+/// `SlmpMap.autoGenerate`), so the probe can address literal device numbers and
+/// a future change to the auto-layout cannot silently move them. This is served
+/// through the SAME `SlmpTagImage`/`dispatchSlmpFrame` the shipped host uses.
+PlcProject _fixtureProject() {
+  final project = PlcProject(
+    id: 'proj_slmp_e2e_fixture',
+    name: 'SLMP E2E Fixture',
+    controllerName: 'PLC_E2E',
+    structDefs: [],
+    programs: [],
+    tasks: [],
+    hmis: [],
+    tags: [
+      PlcTag(name: 'D100v', path: 'D100v', dataType: 'INT16', value: _d100Value, ioType: 'Internal'),
+      PlcTag(name: 'D101v', path: 'D101v', dataType: 'INT16', value: _d101Value, ioType: 'Internal'),
+      PlcTag(name: 'D102v', path: 'D102v', dataType: 'INT16', value: _d102Value, ioType: 'Internal'),
+      PlcTag(name: 'D103v', path: 'D103v', dataType: 'INT16', value: _d103Value, ioType: 'Internal'),
+      PlcTag(name: 'W0v', path: 'W0v', dataType: 'INT16', value: _w0Value, ioType: 'Internal'),
+      PlcTag(name: 'Reg32', path: 'Reg32', dataType: 'INT32', value: _reg32Value, ioType: 'Internal'),
+      PlcTag(name: 'Flag', path: 'Flag', dataType: 'BOOL', value: false, ioType: 'Internal'),
+      PlcTag(name: 'Locked', path: 'Locked', dataType: 'INT16', value: _lockedValue, ioType: 'Internal'),
+    ],
+  );
+
+  project.protocols = ProtocolSettings.defaults(project);
+  project.protocols!.slmp = SlmpProtocolConfig(
+    enabled: true,
+    port: 5007, // overwritten in main() with the real bound port before use
+    map: SlmpMap(entries: [
+      SlmpMapEntry(tag: 'D100v', device: kSlmpDeviceNameD, address: _d100Address),
+      SlmpMapEntry(tag: 'D101v', device: kSlmpDeviceNameD, address: _d100Address + 1),
+      SlmpMapEntry(tag: 'D102v', device: kSlmpDeviceNameD, address: _d100Address + 2),
+      SlmpMapEntry(tag: 'D103v', device: kSlmpDeviceNameD, address: _d100Address + 3),
+      SlmpMapEntry(tag: 'W0v', device: kSlmpDeviceNameW, address: _w0Address),
+      SlmpMapEntry(tag: 'Reg32', device: kSlmpDeviceNameD, address: _reg32Address),
+      SlmpMapEntry(tag: 'Flag', device: kSlmpDeviceNameD, address: _flagAddress, bitOffset: _flagBit),
+      SlmpMapEntry(tag: 'Locked', device: kSlmpDeviceNameD, address: _lockedAddress, access: 'ReadOnly'),
+    ]),
+  );
+  return project;
 }
 
 // --- Length-prefixed reassembly constants — mirror `slmp_host.dart` ---------
@@ -169,7 +221,11 @@ Future<void> main(List<String> args) async {
     exit(64);
   }
 
-  final image = _fixtureImage();
+  final project = _fixtureProject();
+  // The image is backed by the project's tags via the persisted SLMP map — the
+  // same `SlmpTagImage` the shipped host serves, so a write mutates the project
+  // in place and a following read observes it.
+  final image = SlmpTagImage(project, project.protocols!.slmp!.map);
 
   ServerSocket serverSocket;
   try {

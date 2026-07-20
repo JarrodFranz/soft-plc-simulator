@@ -115,6 +115,34 @@ Uint8List _buildBatchReadD(int deviceNumber, int count) {
 /// before the counted body is 9 bytes.
 const int _kLenPrefixEnd = 9;
 
+/// Builds a 3E binary Batch Write (word) request writing [values] (one
+/// LITTLE-ENDIAN word each) starting at D[deviceNumber]. Same framing as
+/// [_buildBatchReadD]; the `requestDataLength` counts timer(2) + command(2) +
+/// subcommand(2) + device spec(6) + write data (2 per word).
+Uint8List _buildBatchWriteD(int deviceNumber, List<int> values) {
+  final requestDataLength = 2 + 2 + 2 + kSlmpDeviceSpecLen + values.length * 2;
+  final out = Uint8List(_kLenPrefixEnd + requestDataLength);
+  final bd = ByteData.sublistView(out);
+  bd.setUint16(0, kSlmpRequestSubheader, Endian.big); // subheader BIG-ENDIAN
+  out[2] = 0x00; // network
+  out[3] = 0xFF; // pc
+  bd.setUint16(4, 0x03FF, Endian.little); // destModuleIo
+  out[6] = 0x00; // destModuleStation
+  bd.setUint16(7, requestDataLength, Endian.little); // requestDataLength
+  bd.setUint16(9, 0x0000, Endian.little); // monitoringTimer
+  bd.setUint16(11, kSlmpCmdBatchWriteWord, Endian.little); // command
+  bd.setUint16(13, kSlmpSubcmdWord, Endian.little); // subcommand
+  out[15] = deviceNumber & 0xFF;
+  out[16] = (deviceNumber >> 8) & 0xFF;
+  out[17] = (deviceNumber >> 16) & 0xFF;
+  out[18] = kSlmpDevD;
+  bd.setUint16(19, values.length, Endian.little); // point count
+  for (var i = 0; i < values.length; i++) {
+    bd.setUint16(21 + i * 2, values[i], Endian.little); // write words, LE
+  }
+  return out;
+}
+
 /// Reads the little-endian word at data offset [wordIndex] out of a Batch Read
 /// response (words start at [kSlmpResponseFixedLen]).
 int _responseWord(Uint8List response, int wordIndex) {
@@ -181,6 +209,38 @@ void main() {
     expect(bd.getUint16(9, Endian.little), kSlmpEndNormal);
     // The word data, little-endian, is the tag D0Val encoded at D0.
     expect(_responseWord(response, 0), _kD0Value);
+
+    await collector.cancel();
+    socket.destroy();
+  });
+
+  test('a Batch Write updates a mapped tag, observed by a following read', () async {
+    final project = _fixtureProject();
+    await host.start(() => project);
+    final socket = await _connect(host);
+    final collector = _SocketCollector(socket);
+
+    // Write a NEW value to D0 (the auto-generated address of tag D0Val).
+    const newValue = 0x4321;
+    socket.add(_buildBatchWriteD(0, const [newValue]));
+    await socket.flush();
+
+    // The Batch Write response is the fixed header + end code only (no data).
+    final writeReply = await collector.readAtLeast(kSlmpResponseFixedLen);
+    final bd = ByteData.sublistView(writeReply);
+    expect(bd.getUint16(9, Endian.little), kSlmpEndNormal);
+
+    // The underlying tag was mutated in place.
+    expect(project.tags.firstWhere((t) => t.name == 'D0Val').value, newValue);
+
+    // And an INDEPENDENT read now observes the written value. The read reply
+    // follows the write reply (kSlmpResponseFixedLen bytes) in the stream.
+    socket.add(_buildBatchReadD(0, 1));
+    await socket.flush();
+    final both =
+        await collector.readAtLeast(kSlmpResponseFixedLen + _kOneWordReplyLen);
+    final readReply = Uint8List.sublistView(both, kSlmpResponseFixedLen);
+    expect(_responseWord(readReply, 0), newValue);
 
     await collector.cancel();
     socket.destroy();

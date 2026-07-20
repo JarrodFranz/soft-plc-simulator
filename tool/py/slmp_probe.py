@@ -41,9 +41,31 @@ WHAT THIS PROVES, in order:
                                instead of its seeded 0x0A0B -- so this proves the
                                device code is not discarded.
 
-Write, bit units, and the 32-bit two-word order are DEFERRED to Task 5's
-extended probe (they need the tag-backed device image and map, which Task 4
-builds). This Task-3 probe deliberately proves connect + read only.
+Task 5 EXTENDS this to a full read -> write -> independent read-back, adding:
+
+  5. read D110..D111 (2)     -- the 32-bit WORD-ORDER SETTLER. The fixture seeds
+                               Reg32 = 0x1A2B3C4D (an INT32 tag) INDEPENDENTLY of
+                               this client; reading its two words back through
+                               `pymcprotocol`'s own per-word little-endian decode
+                               and asserting the LITERAL word order (low word
+                               0x3C4D at the LOWER address, high word 0x1A2B at
+                               the higher) settles the two-word order. A
+                               write->read-back round trip alone could NOT catch
+                               a word swap (it is byte-transparent through our
+                               symmetric encode/decode); reading an
+                               independently-seeded value is what pins it.
+  6. write + read D110..D111 -- write a NEW DINT and read it back, proving the
+                               WRITE (decode) path round-trips consistently with
+                               the read (encode) path settled by step 5.
+  7. BOOL bit at D114        -- read the containing word (bit clear), write it
+                               with the bit set, read back (bit set).
+  8. write D116 (ReadOnly)   -- the write MUST be refused with SLMP end code
+                               0xC05B (the force/read-only write-protect code)
+                               and the value MUST be unchanged afterwards.
+
+The fixture is served through the tag-backed `SlmpTagImage` (a `SlmpMap` over
+real project tags), so a write mutates a tag and a following read observes it --
+exactly the shipped host's path.
 
 Usage: python slmp_probe.py <host> <port>
 """
@@ -55,6 +77,7 @@ import sys
 import traceback
 
 import pymcprotocol
+from pymcprotocol.mcprotocolerror import MCProtocolError
 
 # --- The fixture's layout ---------------------------------------------------
 #
@@ -68,6 +91,31 @@ D_BLOCK_VALUES = [0x1234, 0x5678, 0x9ABC, 0xDEF0]
 
 W0_DEVICE = "W0"  # W (link register) word 0 -- device code 0xB4, NOT D's 0xA8
 W0_VALUE = 0x0A0B
+
+# --- The 32-bit word-order settler (step 5) ---------------------------------
+# Reg32 is an INT32 tag the fixture SEEDS to 0x1A2B3C4D (all four bytes
+# distinct, high word != low word) at D110..D111, independently of this client.
+REG32_HEAD = "D110"  # low word (D110) then high word (D111)
+REG32_VALUE = 0x1A2B3C4D
+REG32_LOW_WORD = REG32_VALUE & 0xFFFF  # 0x3C4D -- sits at the LOWER address
+REG32_HIGH_WORD = (REG32_VALUE >> 16) & 0xFFFF  # 0x1A2B -- at the higher address
+
+# A NEW DINT written back in step 6 (also asymmetric, distinct from the seed).
+REG32_WRITTEN = 0x11223344
+REG32_WRITTEN_LOW = REG32_WRITTEN & 0xFFFF  # 0x3344
+REG32_WRITTEN_HIGH = (REG32_WRITTEN >> 16) & 0xFFFF  # 0x1122
+
+# --- BOOL bit (step 7) ------------------------------------------------------
+FLAG_DEVICE = "D114"  # Flag (BOOL) lives in bit 0 of this word; starts False.
+FLAG_BIT = 0
+
+# --- ReadOnly refusal (step 8) ----------------------------------------------
+LOCKED_DEVICE = "D116"  # Locked (INT16), mapped ReadOnly.
+LOCKED_VALUE = 250
+# The SLMP end code the host returns for a write refused by the write gate
+# (ReadOnly entry / forced root / reserved System). See
+# `kSlmpEndWriteProtect` in slmp_device_image.dart.
+SLMP_END_WRITE_PROTECT = "0xC05B"
 
 # How long any single socket operation may block, in seconds. Every request
 # this probe issues is a single round trip against a loopback fixture host, so a
@@ -113,6 +161,10 @@ def run(host: str, port: int) -> None:
         _step2_read_d100(mc)
         _step3_read_d_block(mc)
         _step4_read_w0_device_code(mc)
+        _step5_read_32bit_settles_word_order(mc)
+        _step6_write_32bit_and_read_back(mc)
+        _step7_bool_bit_round_trip(mc)
+        _step8_readonly_refused(mc)
     finally:
         # --- teardown: close the client socket ---------------------------------
         try:
@@ -230,6 +282,173 @@ def _step4_read_w0_device_code(mc: "pymcprotocol.Type3E") -> None:
     print(
         f"[probe] step 4 OK: batchread_wordunits({W0_DEVICE}, 1) = "
         f"0x{_u16(values[0]):04X} (W device code 0xB4 discriminated from D 0xA8)"
+    )
+
+
+# --- Step 5: THE 32-BIT WORD-ORDER SETTLER ----------------------------------
+
+
+def _step5_read_32bit_settles_word_order(mc: "pymcprotocol.Type3E") -> None:
+    """Reads the two words of Reg32 (a DINT the FIXTURE seeded to 0x1A2B3C4D)
+    and asserts their LITERAL order, SETTLING the two-word order.
+
+    `batchread_wordunits` returns each word decoded by the client's OWN per-word
+    little-endian logic (`int.from_bytes(2 bytes, "little")`). Because the value
+    was seeded into a tag INDEPENDENTLY of this client, the only way the low word
+    (0x3C4D) lands at the LOWER address and the high word (0x1A2B) at the higher
+    is if OUR multi-word encode places the low word first -- this is NOT a
+    byte-transparent round trip. A word-swapped host would return
+    [0x1A2B, 0x3C4D] and fail here. Reconstructing the full DINT the way
+    `pymcprotocol.randomread`'s dword decode would (a 4-byte little-endian
+    `int.from_bytes`) then yields exactly 0x1A2B3C4D."""
+    try:
+        values = mc.batchread_wordunits(headdevice=REG32_HEAD, readsize=2)
+    except socket.timeout as err:
+        raise ProbeFailure(
+            f"STEP 5 (read 32-bit {REG32_HEAD}): no response within {SOCKET_TIMEOUT_S}s."
+        ) from err
+    except Exception as err:  # noqa: BLE001 - reported verbatim
+        raise ProbeFailure(f"STEP 5 (read 32-bit {REG32_HEAD}): request failed: {err!r}") from err
+
+    got = [_u16(v) for v in values]
+    check(
+        got == [REG32_LOW_WORD, REG32_HIGH_WORD],
+        f"STEP 5 (32-bit WORD ORDER): the SEEDED DINT 0x{REG32_VALUE:08X} at "
+        f"{REG32_HEAD}..D111 read back as words {[f'0x{v:04X}' for v in got]}, expected "
+        f"[0x{REG32_LOW_WORD:04X}, 0x{REG32_HIGH_WORD:04X}] (LOW word at the lower "
+        f"address, HIGH word at the higher -- LOW-WORD-FIRST). This value was seeded "
+        f"into the tag independently of this client, so a swap means OUR two-word "
+        f"order disagrees with a little-endian client; flip _wordSlot in "
+        f"slmp_device_image.dart.",
+    )
+    # Reconstruct the full value the client's own dword decode would (4-byte
+    # little-endian), documenting that low-word-first yields the seed exactly.
+    reconstructed = got[0] | (got[1] << 16)
+    check(
+        reconstructed == REG32_VALUE,
+        f"STEP 5 (32-bit reconstruction): the two words reconstruct to "
+        f"0x{reconstructed:08X}, expected the seeded 0x{REG32_VALUE:08X}.",
+    )
+    print(
+        f"[probe] step 5 OK: seeded DINT {REG32_HEAD} = 0x{REG32_VALUE:08X} settled "
+        f"LOW-WORD-FIRST (words 0x{got[0]:04X}, 0x{got[1]:04X})"
+    )
+
+
+# --- Step 6: write a 32-bit value and read it back --------------------------
+
+
+def _step6_write_32bit_and_read_back(mc: "pymcprotocol.Type3E") -> None:
+    """Writes a NEW DINT to Reg32 (as two LOW-WORD-FIRST words) and reads it back
+    in a SEPARATE request, asserting the exact words. With step 5 having settled
+    the read (encode) order, a correct read-back here proves the write (decode)
+    order round-trips consistently."""
+    try:
+        mc.batchwrite_wordunits(
+            headdevice=REG32_HEAD, values=[REG32_WRITTEN_LOW, REG32_WRITTEN_HIGH]
+        )
+    except Exception as err:  # noqa: BLE001 - reported verbatim
+        raise ProbeFailure(
+            f"STEP 6 (write 32-bit {REG32_HEAD}): writing 0x{REG32_WRITTEN:08X} was "
+            f"rejected: {err!r}"
+        ) from err
+
+    try:
+        values = mc.batchread_wordunits(headdevice=REG32_HEAD, readsize=2)
+    except Exception as err:  # noqa: BLE001 - reported verbatim
+        raise ProbeFailure(f"STEP 6 (32-bit read-back): request failed: {err!r}") from err
+
+    got = [_u16(v) for v in values]
+    check(
+        got == [REG32_WRITTEN_LOW, REG32_WRITTEN_HIGH],
+        f"STEP 6 (write 32-bit read-back): wrote 0x{REG32_WRITTEN:08X} to "
+        f"{REG32_HEAD}..D111 and an INDEPENDENT read returned words "
+        f"{[f'0x{v:04X}' for v in got]}, expected "
+        f"[0x{REG32_WRITTEN_LOW:04X}, 0x{REG32_WRITTEN_HIGH:04X}]. A word-swapped "
+        f"result means the write path decoded the two words in the wrong order.",
+    )
+    print(
+        f"[probe] step 6 OK: wrote 0x{REG32_WRITTEN:08X} to {REG32_HEAD} and read back "
+        f"words 0x{got[0]:04X}, 0x{got[1]:04X}"
+    )
+
+
+# --- Step 7: BOOL bit round trip --------------------------------------------
+
+
+def _step7_bool_bit_round_trip(mc: "pymcprotocol.Type3E") -> None:
+    """Exercises a BOOL bit through its containing word: read the word (bit
+    clear), write the word with the bit set, read the word back (bit set). The
+    host maps Flag as BOOL at D114 bit 0 and serves/decodes only the addressed
+    bit of the word."""
+    try:
+        word = _u16(mc.batchread_wordunits(headdevice=FLAG_DEVICE, readsize=1)[0])
+    except Exception as err:  # noqa: BLE001 - reported verbatim
+        raise ProbeFailure(f"STEP 7 (BOOL initial read): request failed: {err!r}") from err
+    check(
+        (word >> FLAG_BIT) & 1 == 0,
+        f"STEP 7 (BOOL initial): {FLAG_DEVICE} bit {FLAG_BIT} (Flag) read as set "
+        f"(word 0x{word:04X}); the fixture seeds it False (clear).",
+    )
+
+    try:
+        mc.batchwrite_wordunits(headdevice=FLAG_DEVICE, values=[1 << FLAG_BIT])
+    except Exception as err:  # noqa: BLE001 - reported verbatim
+        raise ProbeFailure(
+            f"STEP 7 (BOOL write): writing {FLAG_DEVICE} bit {FLAG_BIT} = True was "
+            f"rejected: {err!r}"
+        ) from err
+
+    word = _u16(mc.batchread_wordunits(headdevice=FLAG_DEVICE, readsize=1)[0])
+    check(
+        (word >> FLAG_BIT) & 1 == 1,
+        f"STEP 7 (BOOL read-back): after setting {FLAG_DEVICE} bit {FLAG_BIT} = True, "
+        f"an INDEPENDENT read returned word 0x{word:04X}, whose bit {FLAG_BIT} is not "
+        f"set. The bit write did not land.",
+    )
+    print(f"[probe] step 7 OK: BOOL bit at {FLAG_DEVICE}.{FLAG_BIT} written and read back set")
+
+
+# --- Step 8: ReadOnly write is refused --------------------------------------
+
+
+def _step8_readonly_refused(mc: "pymcprotocol.Type3E") -> None:
+    """Locked is mapped ReadOnly. The write MUST be refused with the SLMP
+    write-protect end code (0xC05B), which `pymcprotocol` surfaces by raising
+    `MCProtocolError`; the value MUST be unchanged afterwards -- a refusal that
+    still mutated the tag would be worse than no refusal at all."""
+    try:
+        mc.batchwrite_wordunits(headdevice=LOCKED_DEVICE, values=[999])
+    except MCProtocolError as err:
+        # MCProtocolError renders errorcode as e.g. "0xC05B" (a lowercase "0x"
+        # prefix + uppercase hex); compare case-insensitively on the hex digits.
+        check(
+            err.errorcode.lower() == SLMP_END_WRITE_PROTECT.lower(),
+            f"STEP 8 (ReadOnly refusal): writing {LOCKED_DEVICE} (a ReadOnly map "
+            f"entry) raised end code {err.errorcode}, expected {SLMP_END_WRITE_PROTECT} "
+            f"(write protect). A different code means the refusal fired for the wrong "
+            f"reason.",
+        )
+    except Exception as err:  # noqa: BLE001 - reported verbatim
+        raise ProbeFailure(
+            f"STEP 8 (ReadOnly refusal): writing {LOCKED_DEVICE} failed with an "
+            f"unexpected error (not an MC-protocol end code): {err!r}"
+        ) from err
+    else:
+        raise ProbeFailure(
+            f"STEP 8 (ReadOnly refusal): writing {LOCKED_DEVICE} (a ReadOnly map entry) "
+            f"was ACCEPTED (no error). The write gate did not refuse it."
+        )
+
+    value = _u16(mc.batchread_wordunits(headdevice=LOCKED_DEVICE, readsize=1)[0])
+    check(
+        value == LOCKED_VALUE,
+        f"STEP 8 (ReadOnly refusal): after the refused write, {LOCKED_DEVICE} reads "
+        f"0x{value:04X} ({value}), expected the UNCHANGED {LOCKED_VALUE}.",
+    )
+    print(
+        f"[probe] step 8 OK: ReadOnly write refused ({SLMP_END_WRITE_PROTECT}) and the "
+        f"value is unchanged ({value})"
     )
 
 

@@ -319,13 +319,17 @@ class SlmpHost extends ChangeNotifier {
   }
 
   /// The image to serve [project] against: a tag-backed [SlmpTagImage] over the
-  /// project's tags via a freshly auto-generated `SlmpMap` (Task 4). Read FRESH
-  /// per frame (see `_Connection._handleFrame`), so a tag change is reflected on
-  /// the very next request without a restart. Task 5 sources the map from the
-  /// persisted, user-editable `SlmpProtocolConfig` when one exists, falling back
-  /// to this auto-generated default — mirroring `FinsHost._imageForProject`.
-  SlmpDeviceImage _imageFor(PlcProject project) =>
-      SlmpTagImage(project, SlmpMap.autoGenerate(project));
+  /// project's tags. Read FRESH per frame (see `_Connection._handleFrame`), so
+  /// a tag change is reflected on the very next request without a restart. The
+  /// map comes from the persisted, user-editable `SlmpProtocolConfig`
+  /// (`project.protocols.slmp.map`, edited in the Outbound Protocols card) when
+  /// one exists (Task 5), falling back to a freshly auto-generated `SlmpMap`
+  /// for a project that has never configured SLMP — mirroring
+  /// `FinsHost._imageForProject`.
+  SlmpDeviceImage _imageFor(PlcProject project) {
+    final configured = project.protocols?.slmp?.map;
+    return SlmpTagImage(project, configured ?? SlmpMap.autoGenerate(project));
+  }
 
   /// Starts hosting on [port], serving the tag-backed image.
   ///

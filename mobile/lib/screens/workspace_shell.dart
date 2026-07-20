@@ -23,6 +23,7 @@ import '../services/s7_host.dart';
 import '../services/modbus_host.dart';
 import '../services/mqtt_host.dart';
 import '../services/opcua_host.dart';
+import '../services/slmp_host.dart';
 import '../services/notify_throttle.dart';
 import '../services/tag_historian.dart';
 import '../ui/responsive.dart';
@@ -130,6 +131,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   late final EnipHost _enipHost = EnipHost(logger: _logger);
   late final S7Host _s7Host = S7Host(logger: _logger);
   late final FinsHost _finsHost = FinsHost(logger: _logger);
+  late final SlmpHost _slmpHost = SlmpHost(logger: _logger);
 
   // Repaint-pulse infrastructure (see live_tick.dart). `_executeScan` no
   // longer setStates the whole shell each tick — it writes the model
@@ -226,6 +228,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     _enipHost.dispose();
     _s7Host.dispose();
     _finsHost.dispose();
+    _slmpHost.dispose();
     _repaintThrottle.dispose();
     _liveTick.dispose();
     super.dispose();
@@ -793,6 +796,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     unawaited(_enipHost.stop());
     unawaited(_s7Host.stop());
     unawaited(_finsHost.stop());
+    unawaited(_slmpHost.stop());
     ensureSystemTag(proj);
     setState(() {
       _activeProject = proj;
@@ -1066,6 +1070,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _enipHost.stop();
     await _s7Host.stop();
     await _finsHost.stop();
+    await _slmpHost.stop();
 
     final blank = PlcProject(
       id: 'proj_new_${DateTime.now().millisecondsSinceEpoch}',
@@ -1108,6 +1113,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _enipHost.stop();
     await _s7Host.stop();
     await _finsHost.stop();
+    await _slmpHost.stop();
     final newId = await repo.duplicateProject(_activeProject.id, newName: '${_activeProject.name} Copy');
     final copy = await repo.loadProject(newId);
     if (copy == null) return;
@@ -1172,6 +1178,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _enipHost.stop();
     await _s7Host.stop();
     await _finsHost.stop();
+    await _slmpHost.stop();
     final deletedId = _activeProject.id;
     final deletedName = _activeProject.name;
     await repo.deleteProject(deletedId);
@@ -1231,6 +1238,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _enipHost.stop();
     await _s7Host.stop();
     await _finsHost.stop();
+    await _slmpHost.stop();
     await repo.resetToDefaults();
     final catalog = await repo.listProjects();
     var loaded = <PlcProject>[];
@@ -1384,6 +1392,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _enipHost.stop();
     await _s7Host.stop();
     await _finsHost.stop();
+    await _slmpHost.stop();
     final repo = _repo;
     if (repo != null) {
       await repo.saveProject(imported);
@@ -2963,6 +2972,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         enipHost: _enipHost,
         s7Host: _s7Host,
         finsHost: _finsHost,
+        slmpHost: _slmpHost,
         onProjectUpdated: _markDirtyAndAutosave,
       );
     } else if (_activeViewId == 'LOGS') {
