@@ -38,6 +38,7 @@ import 'sfc_editor_screen.dart';
 import 'memory_manager_screen.dart';
 import 'hmi_dashboard_builder_screen.dart';
 import 'simulated_io_screen.dart';
+import 'logs_screen.dart';
 import 'pid_autotune_screen.dart';
 import 'interaction_analysis_screen.dart';
 import 'gateway_screen.dart';
@@ -2976,11 +2977,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         onProjectUpdated: _markDirtyAndAutosave,
       );
     } else if (_activeViewId == 'LOGS') {
-      // Placeholder only — Task 5 replaces this with the real Logs screen
-      // (source/level filter bar, virtualized entry list, live-tail via
-      // `LiveTick`). Building that UI here would be building ahead into
-      // Task 5, which this project's YAGNI stance treats as a defect.
-      return const Center(child: Text('Logs (coming soon)'));
+      return LogsScreen(logger: _logger);
     }
     return const Center(child: Text('Select an HMI, Memory, or Program from the Left Dock'));
   }

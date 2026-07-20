@@ -19,6 +19,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:soft_plc_mobile/models/app_log.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/screens/workspace_shell.dart';
+import 'package:soft_plc_mobile/screens/logs_screen.dart';
 
 import 'support/responsive_test_utils.dart';
 
@@ -99,9 +100,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(state.debugActiveViewId, 'LOGS');
-    // The Task-5 screen doesn't exist yet — this is the placeholder Task 4
-    // wires up so Task 5 has somewhere to land its real screen.
-    expect(find.text('Logs (coming soon)'), findsOneWidget);
+    // The LOGS view must render the real Logs screen, not the old
+    // "coming soon" placeholder — the shell routes 'LOGS' to LogsScreen.
+    expect(find.byType(LogsScreen), findsOneWidget);
+    expect(find.text('Logs (coming soon)'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
