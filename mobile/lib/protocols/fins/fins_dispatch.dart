@@ -14,13 +14,14 @@
 // FINS multi-byte fields are BIG-ENDIAN (see fins_frame.dart / fins_memory.dart).
 // This file builds the read-response word data big-endian via [FinsWordImage].
 //
-// *** SCOPE (this task) ***
-// Serves a Memory Area Read (0x0101) against a [FinsMemoryImage]. Memory Area
-// Write (0x0102) and wiring against the real tag map (`FinsMap`) are a later
-// task, which will implement [FinsMemoryImage] over the project's tags and add
-// the write branch to [dispatchFinsDatagram] — the [FinsMemoryImage] seam is
-// kept deliberately general so that map can slot straight in. A command this
-// task does not serve returns `null`, and the host drops the datagram.
+// *** SCOPE ***
+// Serves a Memory Area Read (0x0101) and a Memory Area Write (0x0102) against a
+// [FinsMemoryImage]. Two concrete images exist: [FinsWordImage], a seeded
+// per-area word bank used by the E2E fixture host and tests; and [FinsTagImage]
+// (Task 4), backed by the project's tags via a `FinsMap` and the pure area
+// word-image (`fins_area_image.dart`) — this is what the shipped host serves.
+// A command this file does not serve returns `null`, and the host drops the
+// datagram.
 //
 // Safety contract: [dispatchFinsDatagram] returns `null` — and never throws —
 // on malformed, truncated, unsupported, or otherwise hostile input, since the
@@ -30,6 +31,9 @@ library fins_dispatch;
 
 import 'dart:typed_data';
 
+import '../../models/fins_map.dart';
+import '../../models/project_model.dart';
+import 'fins_area_image.dart';
 import 'fins_frame.dart';
 import 'fins_memory.dart';
 
@@ -53,17 +57,40 @@ class FinsReadOutcome {
       FinsReadOutcome(endCode, Uint8List(0));
 }
 
-/// The memory an incoming Memory Area Read is served from. Deliberately
-/// abstract so the shipped host and the fixture host can each supply their own
-/// backing (a seeded [FinsWordImage] at this task), and so a later task can
-/// supply an implementation backed by the project's tags via `FinsMap` without
-/// touching [dispatchFinsDatagram].
+/// The outcome of one [FinsMemoryImage.writeWords] call: a FINS end code.
+/// [kFinsEndNormal] means the write landed (or fell entirely into an unmapped
+/// gap, which is discarded-as-success by design, mirroring the S7 area image);
+/// any other code (e.g. [kFinsEndNotWritable], [kFinsEndAddressRange],
+/// [kFinsEndNoArea]) means the write was refused or out of range and the tags
+/// were left unchanged.
+class FinsWriteOutcome {
+  final int endCode;
+
+  const FinsWriteOutcome(this.endCode);
+
+  /// A successful (or discarded-gap) write.
+  factory FinsWriteOutcome.ok() => const FinsWriteOutcome(kFinsEndNormal);
+
+  /// A failed write carrying only [endCode].
+  factory FinsWriteOutcome.error(int endCode) => FinsWriteOutcome(endCode);
+}
+
+/// The memory an incoming Memory Area Read/Write is served against.
+/// Deliberately abstract so the shipped host serves a tag-backed
+/// [FinsTagImage] while the E2E fixture host serves a seeded [FinsWordImage],
+/// both through the one [dispatchFinsDatagram].
 abstract class FinsMemoryImage {
   /// Reads [count] words starting at [wordAddress] from the area identified by
   /// the wire [areaCode] (e.g. [kFinsAreaDM]). Must NEVER throw: an
   /// unsupported area or an out-of-range address is reported as an error
   /// [FinsReadOutcome], not an exception.
   FinsReadOutcome readWords(int areaCode, int wordAddress, int count);
+
+  /// Writes the BIG-ENDIAN word bytes [data] (`2 * words` long) starting at
+  /// [wordAddress] into the area identified by the wire [areaCode]. Must NEVER
+  /// throw: an unsupported area, an out-of-range address, or a refused write is
+  /// reported as an error [FinsWriteOutcome], not an exception.
+  FinsWriteOutcome writeWords(int areaCode, int wordAddress, Uint8List data);
 }
 
 /// A simple, pure, zero-filled per-area word image: a fixed-size word bank per
@@ -96,6 +123,114 @@ class FinsWordImage implements FinsMemoryImage {
     }
     return FinsReadOutcome.ok(out);
   }
+
+  @override
+  FinsWriteOutcome writeWords(int areaCode, int wordAddress, Uint8List data) {
+    final bank = _areas[areaCode];
+    if (bank == null) {
+      return FinsWriteOutcome.error(kFinsEndNoArea);
+    }
+    if (wordAddress < 0 || data.length.isOdd) {
+      return FinsWriteOutcome.error(kFinsEndAddressRange);
+    }
+    final count = data.length ~/ 2;
+    if (wordAddress + count > bank.length) {
+      return FinsWriteOutcome.error(kFinsEndAddressRange);
+    }
+    final bd = ByteData.sublistView(data);
+    for (var i = 0; i < count; i++) {
+      bank[wordAddress + i] = bd.getUint16(i * 2, Endian.big);
+    }
+    return FinsWriteOutcome.ok();
+  }
+}
+
+/// A [FinsMemoryImage] backed by the project's tags via a [FinsMap] and the
+/// pure area word-image (`fins_area_image.dart`). This is what the shipped
+/// `FinsHost` serves: a Memory Area Read materializes the mapped tags into a
+/// word image, and a Memory Area Write decodes the written words back onto the
+/// tags the range covers (force- and access-aware). Both directions honour
+/// the S7-proven area-image semantics: unmapped words read `0x0000`, writes to
+/// gaps are discarded, a partially covered multi-word tag is not written, and a
+/// forced / read-only / reserved-`System` tag refuses writes.
+class FinsTagImage implements FinsMemoryImage {
+  final PlcProject project;
+  final FinsMap map;
+
+  FinsTagImage(this.project, this.map);
+
+  @override
+  FinsReadOutcome readWords(int areaCode, int wordAddress, int count) {
+    final area = finsAreaNameForCode(areaCode);
+    if (area == null) {
+      return FinsReadOutcome.error(kFinsEndNoArea);
+    }
+    if (wordAddress < 0 || count < 0 || wordAddress + count > kFinsMaxAreaImageWords) {
+      return FinsReadOutcome.error(kFinsEndAddressRange);
+    }
+    if (count == 0) {
+      return FinsReadOutcome.ok(Uint8List(0));
+    }
+    final image = readAreaImage(project, map, area, wordAddress, count);
+    if (image.length != count * 2) {
+      // readAreaImage only returns short for arguments this method already
+      // rejected; treat any residual mismatch as an address-range error rather
+      // than emit a malformed response.
+      return FinsReadOutcome.error(kFinsEndAddressRange);
+    }
+    return FinsReadOutcome.ok(image);
+  }
+
+  @override
+  FinsWriteOutcome writeWords(int areaCode, int wordAddress, Uint8List data) {
+    final area = finsAreaNameForCode(areaCode);
+    if (area == null) {
+      return FinsWriteOutcome.error(kFinsEndNoArea);
+    }
+    if (wordAddress < 0 || data.length.isOdd ||
+        wordAddress + (data.length ~/ 2) > kFinsMaxAreaImageWords) {
+      return FinsWriteOutcome.error(kFinsEndAddressRange);
+    }
+    final results = applyAreaWrite(project, map, area, wordAddress, data);
+    return FinsWriteOutcome(finsWriteEndCode(results));
+  }
+}
+
+/// Collapses the per-tag outcomes [applyAreaWrite] reported for one Memory Area
+/// Write into that write's single FINS end code, mirroring S7's
+/// `s7WriteReturnCode`.
+///
+/// An EMPTY [results] list means the range covered no map entry at all — a
+/// write into a gap, DISCARDED silently by design and reported as success,
+/// exactly as a real controller reports a write into an unused word.
+///
+/// A refusal wins over everything else so a client is never told a write it was
+/// denied succeeded: a `ReadOnly` entry, a FORCED root tag, or the write-time
+/// hard backstop all yield [kFinsEndNotWritable]. A partially covered
+/// multi-word tag yields [kFinsEndAddressRange]; a tag with no v1 FINS
+/// representation also yields [kFinsEndAddressRange] (only if nothing was
+/// refused).
+int finsWriteEndCode(List<FinsWriteResult> results) {
+  var code = kFinsEndNormal;
+  for (final r in results) {
+    switch (r.status) {
+      case FinsWriteStatus.written:
+        break;
+      case FinsWriteStatus.refusedReadOnly:
+      case FinsWriteStatus.refusedForced:
+      case FinsWriteStatus.refusedNotExternallyWritable:
+        return kFinsEndNotWritable;
+      case FinsWriteStatus.partiallyCovered:
+        code = kFinsEndAddressRange;
+        break;
+      case FinsWriteStatus.unsupported:
+        if (code == kFinsEndNormal) {
+          code = kFinsEndAddressRange;
+        }
+        break;
+    }
+  }
+  return code;
 }
 
 /// Dispatches one raw FINS command [datagram] against [image], returning the
@@ -125,9 +260,24 @@ Uint8List? dispatchFinsDatagram(Uint8List datagram, FinsMemoryImage image) {
         endCode: outcome.endCode,
         data: buildMemReadResponseData(outcome.words),
       );
+    case kFinsCmdMemAreaWrite:
+      final parsed = parseMemAreaWriteItem(frame.text);
+      if (parsed == null) {
+        return null;
+      }
+      final outcome = image.writeWords(
+        parsed.item.areaCode,
+        parsed.item.wordAddress,
+        parsed.writeData,
+      );
+      // A Memory Area Write response carries only the end code (no data).
+      return buildFinsResponse(
+        requestHeader: frame.header,
+        commandCode: frame.commandCode,
+        endCode: outcome.endCode,
+      );
     default:
-      // Memory Area Write (0x0102) and any other command are added in a later
-      // task; drop unserved commands here (no reply).
+      // Any other command is not served; drop it here (no reply).
       return null;
   }
 }

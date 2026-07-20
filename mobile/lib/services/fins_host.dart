@@ -36,31 +36,26 @@
 // — so sharing ONE dispatch is what makes that proof apply to the shipped
 // host, instead of relying on two hand-written copies staying byte-identical.
 //
-// *** SCOPE (this task) ***
-// This host serves a Memory Area Read against a small built-in fixture image
-// (there is no `FinsMap` yet). A later task replaces [_imageForProject] with an
-// image backed by the project's tags via `FinsMap`, and adds Memory Area
-// Write. `projectProvider` is already called FRESH on every datagram so that
-// swap is a one-line change with no lifecycle rework.
+// *** SCOPE ***
+// This host serves Memory Area Read AND Write against an image backed by the
+// project's tags via `FinsMap` (Task 4). The map is auto-generated FRESH from
+// the current project on every datagram (`projectProvider` is called per
+// datagram); a later task swaps in a persisted, user-editable map from the
+// project's FINS config without any lifecycle rework — the swap is confined to
+// [_imageForProject].
 //
 // The app is byte-identical when hosting is stopped: nothing here runs unless
 // [start] is called (an explicit, opt-in action).
 
 import 'dart:async';
 import 'dart:io';
-// `Uint16List` (used to seed the fixture word bank) is NOT among the typed-data
-// symbols `package:flutter/foundation.dart` re-exports, so it is imported here
-// explicitly — `foundation.dart` (imported below for `ChangeNotifier`) still
-// provides `Uint8List`, and this import is therefore genuinely necessary rather
-// than redundant.
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 
 import '../models/app_log.dart';
+import '../models/fins_map.dart';
 import '../models/project_model.dart';
 import '../protocols/fins/fins_dispatch.dart';
-import '../protocols/fins/fins_memory.dart';
 import 'app_logger.dart';
 
 /// Lifecycle status of the [FinsHost].
@@ -69,39 +64,6 @@ enum FinsHostStatus { stopped, running, error }
 /// The standard Omron FINS UDP port. Above 1023, so binding it needs no
 /// elevated privilege (unlike S7comm's port 102).
 const int kFinsDefaultPort = 9600;
-
-// --- Task-3 fixture -----------------------------------------------------------
-//
-// The Memory Area Read this host serves is answered from this fixture until a
-// later task backs it with the project's tags via `FinsMap`. The values are
-// pinned here so `mobile/test/fins_host_test.dart` can assert against them.
-// Each word's two bytes DIFFER so a byte-order fault cannot pass a read-back.
-
-/// Number of DM words in the fixture bank (zero-filled; only the words below
-/// are seeded, the rest read as `0x0000` like a real controller's data area).
-const int kFinsFixtureDmWordCount = 512;
-
-/// DM word address of the first seeded fixture value.
-const int kFinsFixtureDmWord0Address = 100;
-
-/// Value at DM word [kFinsFixtureDmWord0Address] (`0x1234`).
-const int kFinsFixtureDmWord0Value = 0x1234;
-
-/// DM word address of the second seeded fixture value (adjacent to the first).
-const int kFinsFixtureDmWord1Address = 101;
-
-/// Value at DM word [kFinsFixtureDmWord1Address] (`0x5678`).
-const int kFinsFixtureDmWord1Value = 0x5678;
-
-/// Builds the Task-3 fixture image: a zero-filled DM word bank with two seeded
-/// words. Pure and deterministic. Replaced by a `FinsMap`-backed image in a
-/// later task.
-FinsWordImage _buildFixtureImage() {
-  final dm = Uint16List(kFinsFixtureDmWordCount);
-  dm[kFinsFixtureDmWord0Address] = kFinsFixtureDmWord0Value;
-  dm[kFinsFixtureDmWord1Address] = kFinsFixtureDmWord1Value;
-  return FinsWordImage(<int, Uint16List>{kFinsAreaDM: dm});
-}
 
 /// Best-effort LAN IPv4 address for display in the endpoint line
 /// (`fins-udp://<ip>:<port>`). Falls back to `localhost` if none can be found
@@ -333,11 +295,12 @@ class FinsHost extends ChangeNotifier {
     }
   }
 
-  /// The memory image this host serves reads from. At this task it is a small
-  /// built-in fixture (there is no `FinsMap` yet); a later task returns an
-  /// image backed by [project]'s tags via `FinsMap`. [project] is accepted now
-  /// so that swap needs no signature change or new call site.
-  FinsMemoryImage _imageForProject(PlcProject project) => _buildFixtureImage();
+  /// The memory image this host serves. It is backed by [project]'s tags via a
+  /// `FinsMap` auto-generated FRESH per datagram, so a project edit is reflected
+  /// immediately. A later task swaps the map source for the project's persisted,
+  /// user-editable FINS config map — that change is confined to this one method.
+  FinsMemoryImage _imageForProject(PlcProject project) =>
+      FinsTagImage(project, FinsMap.autoGenerate(project));
 
   void _recordPeer(Datagram dg) {
     final label = '${dg.address.address}:${dg.port}';
