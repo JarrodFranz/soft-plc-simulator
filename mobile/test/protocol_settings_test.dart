@@ -17,6 +17,7 @@ import 'package:soft_plc_mobile/models/mqtt_map.dart';
 import 'package:soft_plc_mobile/models/opcua_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
+import 'package:soft_plc_mobile/models/slmp_map.dart';
 
 void main() {
   group('OpcUaProtocolConfig.toJson / fromJson', () {
@@ -1096,6 +1097,148 @@ void main() {
       expect(settings.fins!.enabled, isFalse);
       expect(settings.fins!.port, 9600);
       expect(settings.fins!.map.entries, isNotEmpty);
+    });
+  });
+
+  group('SlmpProtocolConfig / ProtocolSettings.slmp (Mitsubishi SLMP)', () {
+    /// A bare project the effective-config assertions can be materialized
+    /// against.
+    PlcProject bareProject(String id) => PlcProject(
+          id: id,
+          name: 'SLMP Test Project',
+          controllerName: 'PLC_SLMP',
+          tags: [
+            PlcTag(
+              name: 'Level',
+              path: 'Internal.Level',
+              dataType: 'INT16',
+              value: 0,
+              ioType: 'Internal',
+            ),
+          ],
+          structDefs: const [],
+          programs: const [],
+          tasks: const [],
+          hmis: const [],
+        );
+
+    test('SlmpProtocolConfig defaults to disabled on port 5007', () {
+      final cfg = SlmpProtocolConfig(map: SlmpMap(entries: []));
+      expect(cfg.enabled, isFalse);
+      expect(cfg.port, 5007);
+    });
+
+    test('SlmpProtocolConfig round-trips through toJson/fromJson', () {
+      final cfg = SlmpProtocolConfig(
+        enabled: true,
+        port: 15007,
+        map: SlmpMap(entries: [
+          SlmpMapEntry(
+            tag: 'Level',
+            device: kSlmpDeviceNameW,
+            address: 6,
+            bitOffset: 3,
+            access: 'ReadOnly',
+          ),
+        ]),
+      );
+      final rt = SlmpProtocolConfig.fromJson(cfg.toJson());
+      expect(rt.enabled, isTrue);
+      expect(rt.port, 15007);
+      expect(rt.map.entries, hasLength(1));
+      expect(rt.map.entries.first.tag, 'Level');
+      expect(rt.map.entries.first.device, kSlmpDeviceNameW);
+      expect(rt.map.entries.first.address, 6);
+      expect(rt.map.entries.first.bitOffset, 3);
+      expect(rt.map.entries.first.access, 'ReadOnly');
+    });
+
+    test('a project JSON without slmp loads with the feature DISABLED and port 5007 '
+        '(additive/back-compat)', () {
+      final settings = ProtocolSettings.fromJson({'gateway_url': kDefaultGatewayUrl});
+      expect(settings.slmp, isNull);
+
+      // Prove the title's claim rather than just the null check: materialize
+      // the effective config exactly the way the app does for a project that
+      // has no SLMP config yet (mirrors `_ensureSlmp` in gateway_screen.dart:
+      // `protocols!.slmp ??= SlmpProtocolConfig.defaults(project)`), and assert
+      // BOTH properties.
+      final effective = settings.slmp ?? SlmpProtocolConfig.defaults(bareProject('slmp_backcompat_proj'));
+      expect(effective.enabled, isFalse, reason: 'an unconfigured project must not host SLMP');
+      expect(effective.port, 5007, reason: 'the SLMP default TCP port is 5007');
+    });
+
+    test('a project JSON whose slmp block is present round-trips through PlcProject', () {
+      final project = bareProject('slmp_rt_proj');
+      project.protocols = ProtocolSettings(
+        slmp: SlmpProtocolConfig(
+          enabled: true,
+          port: 15007,
+          map: SlmpMap(entries: [
+            SlmpMapEntry(tag: 'Level', device: kSlmpDeviceNameD, address: 4),
+          ]),
+        ),
+      );
+      final rt = PlcProject.fromJson(jsonDecode(jsonEncode(project.toJson())) as Map<String, dynamic>);
+      expect(rt.protocols!.slmp, isNotNull);
+      expect(rt.protocols!.slmp!.enabled, isTrue);
+      expect(rt.protocols!.slmp!.port, 15007);
+      expect(rt.protocols!.slmp!.map.entries.single.address, 4);
+    });
+
+    test('SlmpProtocolConfig.fromJson tolerates a missing map key', () {
+      final cfg = SlmpProtocolConfig.fromJson({'enabled': true});
+      expect(cfg.enabled, isTrue);
+      expect(cfg.map.entries, isEmpty);
+    });
+
+    test('SlmpProtocolConfig.fromJson on a record with no "port" key back-fills 5007', () {
+      final cfg = SlmpProtocolConfig.fromJson({'enabled': true, 'map': {'entries': []}});
+      expect(cfg.port, 5007);
+    });
+
+    test('ProtocolSettings with slmp == null omits the slmp key entirely', () {
+      final settings = ProtocolSettings(opcua: OpcUaProtocolConfig.defaults(bareProject('slmp_omit_proj')));
+      expect(settings.slmp, isNull);
+      expect(settings.toJson().containsKey('slmp'), isFalse);
+    });
+
+    test('SIBLING protocol keys are untouched when slmp is present', () {
+      final project = bareProject('slmp_siblings_proj');
+      final settings = ProtocolSettings(
+        opcua: OpcUaProtocolConfig.defaults(project),
+        fins: FinsProtocolConfig(map: FinsMap(entries: [])),
+        slmp: SlmpProtocolConfig(map: SlmpMap(entries: [])),
+      );
+
+      final json = settings.toJson();
+      expect(json.containsKey('opcua'), isTrue);
+      expect(json.containsKey('modbus'), isFalse);
+      expect(json.containsKey('mqtt'), isFalse);
+      expect(json.containsKey('dnp3'), isFalse);
+      expect(json.containsKey('ethernet_ip'), isFalse);
+      expect(json.containsKey('s7comm'), isFalse);
+      expect(json.containsKey('fins'), isTrue);
+      expect(json.containsKey('slmp'), isTrue);
+
+      final rt = ProtocolSettings.fromJson(json);
+      expect(rt.opcua, isNotNull);
+      expect(rt.modbus, isNull);
+      expect(rt.mqtt, isNull);
+      expect(rt.dnp3, isNull);
+      expect(rt.ethernetIp, isNull);
+      expect(rt.s7, isNull);
+      expect(rt.fins, isNotNull);
+      expect(rt.slmp, isNotNull);
+    });
+
+    test('ProtocolSettings.defaults builds a disabled slmp config with port 5007 and a '
+        'populated map', () {
+      final settings = ProtocolSettings.defaults(bareProject('slmp_def_proj'));
+      expect(settings.slmp, isNotNull);
+      expect(settings.slmp!.enabled, isFalse);
+      expect(settings.slmp!.port, 5007);
+      expect(settings.slmp!.map.entries, isNotEmpty);
     });
   });
 }

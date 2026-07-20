@@ -24,6 +24,7 @@ import '../models/opcua_map.dart';
 import '../models/project_model.dart';
 import '../models/protocol_settings.dart';
 import '../models/s7_map.dart';
+import '../models/slmp_map.dart';
 import '../models/tag_resolver.dart';
 import '../services/dnp3_host.dart';
 import '../services/enip_host.dart';
@@ -32,6 +33,7 @@ import '../services/modbus_host.dart';
 import '../services/mqtt_host.dart';
 import '../services/opcua_host.dart';
 import '../services/s7_host.dart';
+import '../services/slmp_host.dart';
 import '../ui/responsive.dart';
 import '../widgets/tag_autocomplete_field.dart';
 
@@ -115,6 +117,7 @@ class GatewayScreen extends StatefulWidget {
   final EnipHost enipHost;
   final S7Host s7Host;
   final FinsHost finsHost;
+  final SlmpHost slmpHost;
   final VoidCallback onProjectUpdated;
 
   /// Whether this platform can host the in-app OPC UA/Modbus/DNP3/EtherNet-IP
@@ -136,6 +139,7 @@ class GatewayScreen extends StatefulWidget {
     required this.enipHost,
     required this.s7Host,
     required this.finsHost,
+    required this.slmpHost,
     required this.onProjectUpdated,
     this.hostingSupported = !kIsWeb,
   });
@@ -155,6 +159,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
   late final TextEditingController _enipPortController;
   late final TextEditingController _s7PortController;
   late final TextEditingController _finsPortController;
+  late final TextEditingController _slmpPortController;
 
   /// The MQTT broker password: held ONLY here, in ephemeral widget State —
   /// never written to `currentProject`/`MqttProtocolConfig` (see that
@@ -202,6 +207,9 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
     _finsPortController = TextEditingController(
       text: widget.currentProject.protocols!.fins!.port.toString(),
+    );
+    _slmpPortController = TextEditingController(
+      text: widget.currentProject.protocols!.slmp!.port.toString(),
     );
   }
 
@@ -284,6 +292,13 @@ class _GatewayScreenState extends State<GatewayScreen> {
           selection: TextSelection.collapsed(offset: newFinsPort.length),
         );
       }
+      final newSlmpPort = widget.currentProject.protocols!.slmp!.port.toString();
+      if (_slmpPortController.text != newSlmpPort) {
+        _slmpPortController.value = TextEditingValue(
+          text: newSlmpPort,
+          selection: TextSelection.collapsed(offset: newSlmpPort.length),
+        );
+      }
       _mqttPassword = '';
     }
   }
@@ -300,6 +315,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
     _enipPortController.dispose();
     _s7PortController.dispose();
     _finsPortController.dispose();
+    _slmpPortController.dispose();
     super.dispose();
   }
 
@@ -435,6 +451,28 @@ class _GatewayScreenState extends State<GatewayScreen> {
     }
   }
 
+  String _slmpStatusLabel(SlmpHostStatus s) {
+    switch (s) {
+      case SlmpHostStatus.stopped:
+        return 'Stopped';
+      case SlmpHostStatus.running:
+        return 'Running';
+      case SlmpHostStatus.error:
+        return 'Error';
+    }
+  }
+
+  Color _slmpStatusColor(SlmpHostStatus s) {
+    switch (s) {
+      case SlmpHostStatus.stopped:
+        return Colors.grey;
+      case SlmpHostStatus.running:
+        return Colors.greenAccent;
+      case SlmpHostStatus.error:
+        return Colors.redAccent;
+    }
+  }
+
   String _mqttStatusLabel(MqttHostStatus s) {
     switch (s) {
       case MqttHostStatus.stopped:
@@ -510,6 +548,17 @@ class _GatewayScreenState extends State<GatewayScreen> {
 
   Future<void> _stopFinsHosting() async {
     await widget.finsHost.stop();
+  }
+
+  Future<void> _startSlmpHosting() async {
+    // The SlmpHost binds the persisted port field; sync it before starting so
+    // the port typed into the card is the one bound.
+    widget.slmpHost.port = widget.currentProject.protocols!.slmp!.port;
+    await widget.slmpHost.start(() => widget.currentProject);
+  }
+
+  Future<void> _stopSlmpHosting() async {
+    await widget.slmpHost.stop();
   }
 
   Future<void> _connectMqtt() async {
@@ -715,6 +764,37 @@ class _GatewayScreenState extends State<GatewayScreen> {
     widget.onProjectUpdated();
   }
 
+  void _autoGenerateSlmpMap() {
+    setState(() {
+      _ensureSlmp();
+      widget.currentProject.protocols!.slmp!.map = SlmpMap.autoGenerate(widget.currentProject);
+    });
+    widget.onProjectUpdated();
+  }
+
+  /// Appends a default entry to the SLMP device map — mirrors `_addFinsEntry`.
+  /// New entries land in the D device at address 0; the operator moves them
+  /// from there.
+  void _addSlmpEntry(List<String> tagOptions) {
+    setState(() {
+      _ensureSlmp();
+      widget.currentProject.protocols!.slmp!.map.entries.add(SlmpMapEntry(
+        tag: tagOptions.isNotEmpty ? tagOptions.first : '',
+        device: kSlmpDeviceNameD,
+        address: 0,
+        access: 'ReadWrite',
+      ));
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _deleteSlmpEntry(SlmpMapEntry entry) {
+    setState(() {
+      widget.currentProject.protocols!.slmp!.map.entries.remove(entry);
+    });
+    widget.onProjectUpdated();
+  }
+
   /// Creates a default `ProtocolSettings` (and its OPC UA config) in place
   /// when the project has none yet, mirroring WS16's `_ensureMap`: mutate in
   /// memory only — do NOT call `onProjectUpdated` here, so an untouched
@@ -729,6 +809,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
     _ensureEnip();
     _ensureS7();
     _ensureFins();
+    _ensureSlmp();
   }
 
   /// Creates a default `S7ProtocolConfig` in place when the project has none
@@ -747,6 +828,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
   void _ensureFins() {
     widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
     widget.currentProject.protocols!.fins ??= FinsProtocolConfig.defaults(widget.currentProject);
+  }
+
+  /// Creates a default `SlmpProtocolConfig` in place when the project has none
+  /// yet — mirrors `_ensureFins`: mutate in memory only, no `onProjectUpdated`
+  /// call here, so a project that has merely been LOOKED at stays
+  /// serialization-clean (additive persistence).
+  void _ensureSlmp() {
+    widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
+    widget.currentProject.protocols!.slmp ??= SlmpProtocolConfig.defaults(widget.currentProject);
   }
 
   /// Creates a default `CipProtocolConfig` in place when the project has
@@ -904,6 +994,28 @@ class _GatewayScreenState extends State<GatewayScreen> {
     }
     setState(() {
       widget.currentProject.protocols!.fins!.port = parsed;
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _setSlmpEnabled(bool enabled) {
+    setState(() {
+      _ensureSlmp();
+      widget.currentProject.protocols!.slmp!.enabled = enabled;
+    });
+    if (!enabled && widget.slmpHost.status != SlmpHostStatus.stopped) {
+      unawaited(widget.slmpHost.stop());
+    }
+    widget.onProjectUpdated();
+  }
+
+  void _setSlmpPort(String value) {
+    final parsed = int.tryParse(value.trim());
+    if (parsed == null || parsed < 0 || parsed > 65535) {
+      return; // ignore invalid input; keep the last-valid persisted port
+    }
+    setState(() {
+      widget.currentProject.protocols!.slmp!.port = parsed;
     });
     widget.onProjectUpdated();
   }
@@ -1157,6 +1269,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
     Tab(key: Key('protocol_tab_enip'), text: 'EtherNet/IP'),
     Tab(key: Key('protocol_tab_s7'), text: 'S7comm'),
     Tab(key: Key('protocol_tab_fins'), text: 'FINS'),
+    Tab(key: Key('protocol_tab_slmp'), text: 'SLMP'),
   ];
 
   @override
@@ -1228,6 +1341,12 @@ class _GatewayScreenState extends State<GatewayScreen> {
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(12),
                 child: _buildFinsCard(context, tagOptions),
+              ),
+            ),
+            _KeepAliveTabBody(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(12),
+                child: _buildSlmpCard(context, tagOptions),
               ),
             ),
           ],
@@ -3243,6 +3362,394 @@ class _GatewayScreenState extends State<GatewayScreen> {
             ],
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildSlmpCard(BuildContext context, List<String> tagOptions) {
+    final slmp = widget.currentProject.protocols!.slmp!;
+    final isCompact = context.isCompact;
+
+    return Card(
+      color: const Color(0xFF1E293B),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'SLMP',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                  ),
+                ),
+                Switch(
+                  key: const Key('slmp_enable_switch'),
+                  value: slmp.enabled,
+                  onChanged: _setSlmpEnabled,
+                ),
+              ],
+            ),
+            if (!slmp.enabled)
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text(
+                  'Disabled — no tags are exposed to this protocol.',
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+              )
+            else ...[
+              const SizedBox(height: 12),
+              const Text(
+                'Mitsubishi SLMP (MELSEC Communication), 3E binary over TCP. '
+                'Addressed by device (D/M/W/R) and device number, so a driver '
+                'can block-read a whole device in one request. All body data is '
+                'little-endian.',
+                style: TextStyle(color: Colors.white70, fontSize: 11),
+              ),
+              const SizedBox(height: 12),
+              // ── Hosting controls ────────────────────────────────────
+              // Scoped to `widget.slmpHost` alone (the WS-perf-task-1 pattern
+              // every other card here follows): only the status chip, client
+              // count, port field's enabled state and Start/Stop buttons are
+              // driven by host notifies. The virtualized device map below is
+              // never rebuilt by a host `notifyListeners()`.
+              ListenableBuilder(
+                listenable: widget.slmpHost,
+                builder: (context, _) {
+                  final status = widget.slmpHost.status;
+                  final running = status == SlmpHostStatus.running;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 10,
+                                height: 10,
+                                decoration:
+                                    BoxDecoration(color: _slmpStatusColor(status), shape: BoxShape.circle),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                _slmpStatusLabel(status),
+                                style: const TextStyle(
+                                    color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                            ],
+                          ),
+                          Text(
+                            'Mapped tags: ${slmp.map.entries.length}',
+                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                          ),
+                          if (widget.slmpHost.clientCount > 0)
+                            Text(
+                              'Clients: ${widget.slmpHost.clientCount}',
+                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        key: const Key('slmp_port_field'),
+                        controller: _slmpPortController,
+                        enabled: !running,
+                        keyboardType: TextInputType.number,
+                        style: const TextStyle(fontSize: 12, color: Colors.white),
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          labelText: 'Port',
+                          helperText: 'Default: 5007',
+                          filled: true,
+                          fillColor: Color(0xFF0F172A),
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: _setSlmpPort,
+                      ),
+                      // No privileged-port caveat: SLMP's default 5007 is above
+                      // 1023, so binding it needs no elevation on any platform.
+                      const SizedBox(height: 12),
+                      Flex(
+                        direction: isCompact ? Axis.vertical : Axis.horizontal,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(
+                            width: isCompact ? double.infinity : null,
+                            child: ElevatedButton(
+                              onPressed: (running || !widget.hostingSupported) ? null : _startSlmpHosting,
+                              child: const Text('Start hosting'),
+                            ),
+                          ),
+                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                            width: isCompact ? double.infinity : null,
+                            child: OutlinedButton(
+                              onPressed: running ? _stopSlmpHosting : null,
+                              child: const Text('Stop hosting'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (!widget.hostingSupported) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Hosting runs the SLMP server inside the app on a TCP socket, '
+                          'which web browsers do not allow (they cannot bind an inbound '
+                          'TCP port). Run the desktop (Windows/macOS/Linux) or mobile '
+                          '(Android/iOS) app to host — you can still design the device map '
+                          'here.',
+                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                        ),
+                      ],
+                      if (running && widget.slmpHost.endpointUrl != null) ...[
+                        const SizedBox(height: 8),
+                        SelectableText(
+                          widget.slmpHost.endpointUrl!,
+                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                        ),
+                      ],
+                      // A failed bind must never look like a card that simply
+                      // has not turned green yet: it gets its own bordered,
+                      // labelled block naming the failure.
+                      if (status == SlmpHostStatus.error && widget.slmpHost.lastError != null) ...[
+                        const SizedBox(height: 8),
+                        Container(
+                          key: const Key('slmp_error_banner'),
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.redAccent.withValues(alpha: 0.12),
+                            border: Border.all(color: Colors.redAccent.withValues(alpha: 0.6)),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Not hosting — the server did not start.',
+                                style: TextStyle(
+                                    color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 12),
+                              ),
+                              const SizedBox(height: 4),
+                              SelectableText(
+                                widget.slmpHost.lastError!,
+                                style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ] else if (widget.slmpHost.lastError != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Last error: ${widget.slmpHost.lastError}',
+                          style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                        ),
+                      ],
+                    ],
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
+              _slmpMapEditorCard(context, slmp.map, tagOptions),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _slmpMapEditorCard(BuildContext context, SlmpMap map, List<String> tagOptions) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            runSpacing: 4,
+            children: [
+              const Text(
+                'SLMP Device Map',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+              Wrap(
+                spacing: 4,
+                children: [
+                  TextButton.icon(
+                    icon: const Icon(Icons.add, size: 16, color: Colors.cyanAccent),
+                    label: const Text('Add entry', style: TextStyle(color: Colors.cyanAccent)),
+                    onPressed: () => _addSlmpEntry(tagOptions),
+                  ),
+                  TextButton.icon(
+                    icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
+                    label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
+                    onPressed: _autoGenerateSlmpMap,
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Words no entry covers read as zero and discard writes. A tag only '
+            'partly inside a written range is left unchanged. A 32-bit value '
+            'spans two words, low word first.',
+            style: TextStyle(color: Colors.grey, fontSize: 11),
+          ),
+          const SizedBox(height: 8),
+          if (map.entries.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                'No entries yet. Tap Regenerate to build a default map from the project tags.',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            )
+          else
+            _virtualizedMapList<SlmpMapEntry>(
+              map.entries,
+              (e) => e.tag,
+              (e) => _slmpRow(e, tagOptions),
+              listKey: const Key('slmp_map_list'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _slmpRow(SlmpMapEntry entry, List<String> tagOptions) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isCompact = context.isCompact;
+          final tagField = TagAutocompleteField(
+            options: tagOptions,
+            initialValue: entry.tag,
+            label: 'Tag',
+            onChanged: (v) {
+              entry.tag = v;
+              widget.onProjectUpdated();
+            },
+          );
+          final deviceDropdown = DropdownButtonFormField<String>(
+            initialValue: kSlmpDeviceNames.contains(entry.device) ? entry.device : kSlmpDeviceNameD,
+            decoration: const InputDecoration(isDense: true, labelText: 'Device'),
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            dropdownColor: const Color(0xFF1E293B),
+            items: kSlmpDeviceNames
+                .map((d) => DropdownMenuItem(value: d, child: Text(d)))
+                .toList(),
+            onChanged: (v) {
+              if (v == null) {
+                return;
+              }
+              setState(() => entry.device = v);
+              widget.onProjectUpdated();
+            },
+          );
+          final addressField = TextFormField(
+            initialValue: entry.address.toString(),
+            keyboardType: TextInputType.number,
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            decoration: const InputDecoration(isDense: true, labelText: 'Address'),
+            onChanged: (v) {
+              final parsed = int.tryParse(v.trim());
+              if (parsed == null || parsed < 0) {
+                return;
+              }
+              entry.address = parsed;
+              widget.onProjectUpdated();
+            },
+          );
+          // Only meaningful for BOOL tags; 0..15 within the word.
+          final bitField = TextFormField(
+            initialValue: entry.bitOffset.toString(),
+            keyboardType: TextInputType.number,
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            decoration: const InputDecoration(isDense: true, labelText: 'Bit'),
+            onChanged: (v) {
+              final parsed = int.tryParse(v.trim());
+              if (parsed == null || parsed < 0 || parsed > 15) {
+                return;
+              }
+              entry.bitOffset = parsed;
+              widget.onProjectUpdated();
+            },
+          );
+          final accessDropdown = DropdownButtonFormField<String>(
+            initialValue: entry.access,
+            decoration: const InputDecoration(isDense: true, labelText: 'Access'),
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            dropdownColor: const Color(0xFF1E293B),
+            items: const [
+              DropdownMenuItem(value: 'ReadOnly', child: Text('ReadOnly')),
+              DropdownMenuItem(value: 'ReadWrite', child: Text('ReadWrite')),
+            ],
+            onChanged: (v) {
+              if (v == null) {
+                return;
+              }
+              setState(() => entry.access = v);
+              widget.onProjectUpdated();
+            },
+          );
+          final deleteButton = IconButton(
+            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+            tooltip: 'Delete entry',
+            onPressed: () => _deleteSlmpEntry(entry),
+          );
+
+          if (isCompact) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                tagField,
+                const SizedBox(height: 4),
+                deviceDropdown,
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Expanded(child: addressField),
+                    const SizedBox(width: 4),
+                    Expanded(child: bitField),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                accessDropdown,
+                Align(alignment: Alignment.centerRight, child: deleteButton),
+              ],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(flex: 3, child: tagField),
+              const SizedBox(width: 8),
+              SizedBox(width: 90, child: deviceDropdown),
+              const SizedBox(width: 8),
+              SizedBox(width: 80, child: addressField),
+              const SizedBox(width: 8),
+              SizedBox(width: 60, child: bitField),
+              const SizedBox(width: 8),
+              SizedBox(width: 150, child: accessDropdown),
+              SizedBox(width: 40, child: deleteButton),
+            ],
+          );
+        },
       ),
     );
   }

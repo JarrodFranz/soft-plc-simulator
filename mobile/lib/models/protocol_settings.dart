@@ -16,6 +16,7 @@ import 'mqtt_map.dart';
 import 'opcua_map.dart';
 import 'project_model.dart';
 import 's7_map.dart';
+import 'slmp_map.dart';
 
 /// Default gateway WebSocket endpoint. Retained for back-compat with the
 /// legacy `ProtocolSettings.gatewayUrl` field's serialized default — the
@@ -560,6 +561,59 @@ class FinsProtocolConfig {
 /// construction and asserted equal in tests.
 const int kFinsDefaultPortConfig = 9600;
 
+/// Per-project Mitsubishi SLMP (MELSEC Communication) hosting config: whether
+/// the in-app SLMP host is enabled, the TCP port it binds, and the
+/// device/address map exposing the project's tags. Mirrors
+/// [FinsProtocolConfig] (both solve the same named-tag <-> numeric-address
+/// problem); the two contrasts are that SLMP rides length-prefixed TCP (not
+/// FINS UDP) and is LITTLE-endian (not big-endian).
+///
+/// The SLMP default port [kSlmpDefaultPortConfig] (5007) is ABOVE 1023, so
+/// binding it needs NO elevated privilege — there is no privileged-port caveat
+/// to surface in the Outbound Protocols card. See `docs/protocols/slmp.md`.
+class SlmpProtocolConfig {
+  bool enabled;
+  int port;
+  SlmpMap map;
+
+  SlmpProtocolConfig({
+    this.enabled = false,
+    this.port = kSlmpDefaultPortConfig,
+    required this.map,
+  });
+
+  factory SlmpProtocolConfig.fromJson(Map<String, dynamic> j) => SlmpProtocolConfig(
+        enabled: j['enabled'] == true,
+        port: (j['port'] as num?)?.toInt() ?? kSlmpDefaultPortConfig,
+        map: j['map'] != null
+            ? SlmpMap.fromJson(j['map'] as Map<String, dynamic>)
+            : SlmpMap(entries: []),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'enabled': enabled,
+        'port': port,
+        'map': map.toJson(),
+      };
+
+  /// Sane defaults for a project that has never configured SLMP: disabled, the
+  /// SLMP default TCP port, and an auto-generated map packing the project's
+  /// current scalar tags into the D device.
+  static SlmpProtocolConfig defaults(PlcProject p) => SlmpProtocolConfig(
+        enabled: false,
+        port: kSlmpDefaultPortConfig,
+        map: SlmpMap.autoGenerate(p),
+      );
+}
+
+/// The SLMP host's default TCP port. Declared here (rather than importing the
+/// `dart:io` SLMP host's `kSlmpDefaultPort`) so this pure model stays free of
+/// any Flutter/`dart:io` dependency; the two constants are the same value by
+/// construction. MC protocol defines no universal default port — 5007 is a
+/// widely-used convention in MELSEC MC-protocol examples and simulators, and it
+/// is unprivileged (> 1023).
+const int kSlmpDefaultPortConfig = 5007;
+
 /// Per-project outbound-protocol settings: the shared gateway endpoint plus
 /// one config slot per protocol.
 ///
@@ -575,6 +629,7 @@ class ProtocolSettings {
   CipProtocolConfig? ethernetIp;
   S7ProtocolConfig? s7;
   FinsProtocolConfig? fins;
+  SlmpProtocolConfig? slmp;
 
   ProtocolSettings({
     this.gatewayUrl = kDefaultGatewayUrl,
@@ -585,6 +640,7 @@ class ProtocolSettings {
     this.ethernetIp,
     this.s7,
     this.fins,
+    this.slmp,
   });
 
   Map<String, dynamic> toJson() => {
@@ -596,6 +652,7 @@ class ProtocolSettings {
         if (ethernetIp != null) 'ethernet_ip': ethernetIp!.toJson(),
         if (s7 != null) 's7comm': s7!.toJson(),
         if (fins != null) 'fins': fins!.toJson(),
+        if (slmp != null) 'slmp': slmp!.toJson(),
       };
 
   factory ProtocolSettings.fromJson(Map<String, dynamic> j) => ProtocolSettings(
@@ -609,6 +666,7 @@ class ProtocolSettings {
             : null,
         s7: j['s7comm'] != null ? S7ProtocolConfig.fromJson(j['s7comm'] as Map<String, dynamic>) : null,
         fins: j['fins'] != null ? FinsProtocolConfig.fromJson(j['fins'] as Map<String, dynamic>) : null,
+        slmp: j['slmp'] != null ? SlmpProtocolConfig.fromJson(j['slmp'] as Map<String, dynamic>) : null,
       );
 
   static ProtocolSettings defaults(PlcProject p) => ProtocolSettings(
@@ -620,5 +678,6 @@ class ProtocolSettings {
         ethernetIp: CipProtocolConfig.defaults(p),
         s7: S7ProtocolConfig.defaults(p),
         fins: FinsProtocolConfig.defaults(p),
+        slmp: SlmpProtocolConfig.defaults(p),
       );
 }

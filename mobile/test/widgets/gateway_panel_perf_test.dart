@@ -20,6 +20,7 @@ import 'package:soft_plc_mobile/screens/gateway_screen.dart';
 import 'package:soft_plc_mobile/services/dnp3_host.dart';
 import 'package:soft_plc_mobile/services/enip_host.dart';
 import 'package:soft_plc_mobile/services/fins_host.dart';
+import 'package:soft_plc_mobile/services/slmp_host.dart';
 import 'package:soft_plc_mobile/services/s7_host.dart';
 import 'package:soft_plc_mobile/services/modbus_host.dart';
 import 'package:soft_plc_mobile/services/mqtt_host.dart';
@@ -81,6 +82,7 @@ Widget _app(PlcProject project, MqttHost mqttHost) {
       enipHost: EnipHost(),
       s7Host: S7Host(),
       finsHost: FinsHost(),
+      slmpHost: SlmpHost(),
       onProjectUpdated: () {},
     ),
   );

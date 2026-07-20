@@ -13,6 +13,7 @@ import 'package:soft_plc_mobile/services/s7_host.dart';
 import 'package:soft_plc_mobile/services/modbus_host.dart';
 import 'package:soft_plc_mobile/services/mqtt_host.dart';
 import 'package:soft_plc_mobile/services/opcua_host.dart';
+import 'package:soft_plc_mobile/services/slmp_host.dart';
 import 'support/responsive_test_utils.dart';
 
 /// A thin instrumented subclass of the REAL [OpcUaHost] — it still binds a
@@ -289,6 +290,7 @@ Widget _app(
       enipHost: enipHost ?? _CountingEnipHost(),
       s7Host: S7Host(),
       finsHost: FinsHost(),
+      slmpHost: SlmpHost(),
       onProjectUpdated: () {},
       hostingSupported: hostingSupported,
     ),
@@ -310,6 +312,7 @@ const Key dnpTabKey = Key('protocol_tab_dnp3');
 const Key enipTabKey = Key('protocol_tab_enip');
 const Key s7TabKey = Key('protocol_tab_s7');
 const Key finsTabKey = Key('protocol_tab_fins');
+const Key slmpTabKey = Key('protocol_tab_slmp');
 
 Future<void> _selectTab(WidgetTester tester, Key tabKey) async {
   // The TabBar is `isScrollable: true` (mobile-first — see the design spec),
@@ -2189,7 +2192,7 @@ void main() {
           modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost, enipHost: enipHost));
       await tester.pumpAndSettle();
 
-      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey]) {
+      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey, s7TabKey, finsTabKey, slmpTabKey]) {
         await _selectTab(tester, tabKey);
         expect(tester.takeException(), isNull);
       }
@@ -2213,7 +2216,7 @@ void main() {
           modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost, enipHost: enipHost));
       await tester.pumpAndSettle();
 
-      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey]) {
+      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey, s7TabKey, finsTabKey, slmpTabKey]) {
         await _selectTab(tester, tabKey);
         expect(tester.takeException(), isNull);
       }
@@ -2237,7 +2240,7 @@ void main() {
           modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost, enipHost: enipHost));
       await tester.pumpAndSettle();
 
-      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey]) {
+      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey, s7TabKey, finsTabKey, slmpTabKey]) {
         await _selectTab(tester, tabKey);
         expect(tester.takeException(), isNull);
       }
@@ -2375,6 +2378,7 @@ void main() {
           enipHost: _CountingEnipHost(),
           s7Host: S7Host(),
           finsHost: FinsHost(),
+          slmpHost: SlmpHost(),
           onProjectUpdated: () => updates++,
         ),
       ));
@@ -2500,6 +2504,7 @@ void main() {
           enipHost: _CountingEnipHost(),
           s7Host: s7Host,
           finsHost: FinsHost(),
+          slmpHost: SlmpHost(),
           onProjectUpdated: () {},
         ),
       ));
@@ -2540,6 +2545,7 @@ void main() {
           enipHost: _CountingEnipHost(),
           s7Host: S7Host(),
           finsHost: FinsHost(),
+          slmpHost: SlmpHost(),
           onProjectUpdated: () => updates++,
         ),
       ));
@@ -2682,6 +2688,7 @@ void main() {
           enipHost: _CountingEnipHost(),
           s7Host: S7Host(),
           finsHost: FinsHost(),
+          slmpHost: SlmpHost(),
           onProjectUpdated: () => updates++,
         ),
       ));
@@ -2748,6 +2755,146 @@ void main() {
       await tester.pumpAndSettle();
       await _selectTab(tester, finsTabKey);
       await tester.tap(find.byKey(const Key('fins_enable_switch')));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('SLMP card', () {
+    testWidgets('renders its enable toggle, and the port field defaults to 5007', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, slmpTabKey);
+
+      expect(find.byKey(const Key('slmp_enable_switch')), findsOneWidget);
+      final sw = tester.widget<Switch>(find.byKey(const Key('slmp_enable_switch')));
+      expect(sw.value, isFalse, reason: 'SLMP hosting is opt-in and starts disabled');
+      // The port field only exists once the card is enabled.
+      expect(find.byKey(const Key('slmp_port_field')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('slmp_enable_switch')));
+      await tester.pumpAndSettle();
+
+      expect(project.protocols!.slmp!.enabled, isTrue);
+      expect(project.protocols!.slmp!.port, 5007);
+      final portField = tester.widget<TextField>(find.byKey(const Key('slmp_port_field')));
+      expect(portField.controller!.text, '5007');
+      expect(find.text('Default: 5007'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('port 5007 shows NO privileged-port note (it is above 1023)', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, slmpTabKey);
+      await tester.tap(find.byKey(const Key('slmp_enable_switch')));
+      await tester.pumpAndSettle();
+
+      // Like FINS's 9600, SLMP's 5007 needs no elevation — the card carries
+      // no privileged-port key at all.
+      expect(find.byKey(const Key('s7_privileged_port_note')), findsNothing);
+
+      await tester.enterText(find.byKey(const Key('slmp_port_field')), '15007');
+      await tester.pumpAndSettle();
+      expect(project.protocols!.slmp!.port, 15007);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Add entry / Regenerate / delete route through onProjectUpdated', (tester) async {
+      final project = _project();
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.slmp!.enabled = true;
+      project.protocols!.slmp!.map.entries.clear();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      var updates = 0;
+
+      await tester.pumpWidget(MaterialApp(
+        home: GatewayScreen(
+          currentProject: project,
+          host: host,
+          modbusHost: _CountingModbusHost(),
+          mqttHost: MqttHost(),
+          dnpHost: _CountingDnpHost(),
+          enipHost: _CountingEnipHost(),
+          s7Host: S7Host(),
+          finsHost: FinsHost(),
+          slmpHost: SlmpHost(),
+          onProjectUpdated: () => updates++,
+        ),
+      ));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, slmpTabKey);
+
+      expect(find.textContaining('No entries yet'), findsOneWidget);
+
+      await tester.tap(find.text('Add entry'));
+      await tester.pump();
+      expect(project.protocols!.slmp!.map.entries.length, 1);
+      expect(updates, greaterThan(0));
+
+      await tester.tap(find.text('Regenerate'));
+      await tester.pump();
+      expect(project.protocols!.slmp!.map.entries, isNotEmpty);
+
+      final beforeDelete = project.protocols!.slmp!.map.entries.length;
+      await tester.ensureVisible(find.byIcon(Icons.delete_outline).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.delete_outline).first);
+      await tester.pump();
+      expect(project.protocols!.slmp!.map.entries.length, beforeDelete - 1);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 320 width with the SLMP card expanded', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      await setSurface(tester, smallPhoneSize);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, slmpTabKey);
+      await tester.tap(find.byKey(const Key('slmp_enable_switch')));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 360 width with the SLMP card expanded', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      await setSurface(tester, phoneSize);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, slmpTabKey);
+      await tester.tap(find.byKey(const Key('slmp_enable_switch')));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 1400 width with the SLMP card expanded', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      await setSurface(tester, desktopSize);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, slmpTabKey);
+      await tester.tap(find.byKey(const Key('slmp_enable_switch')));
       await tester.pumpAndSettle();
 
       expect(tester.takeException(), isNull);
