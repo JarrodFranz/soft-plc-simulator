@@ -32,6 +32,7 @@ const String kLogSourceSim = 'Sim';
 const String kLogSourceHistorian = 'Historian';
 const String kLogSourceScheduler = 'Scheduler';
 const String kLogSourceFins = 'FINS';
+const String kLogSourceSlmp = 'SLMP';
 
 /// One log record. `seq` is assigned by the [LogRingBuffer] that stores it
 /// (0 until added); `tMs` is always supplied by the caller, never read from

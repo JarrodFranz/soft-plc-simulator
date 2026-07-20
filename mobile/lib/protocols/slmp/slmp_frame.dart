@@ -6,29 +6,38 @@
 // SLMP specification material.
 //
 // *** ENDIANNESS WARNING ***
-// SLMP 3E binary is LITTLE-ENDIAN throughout — subheader, length fields,
-// command/subcommand, and all word data. This is the EXACT INVERSE of the
-// two area protocols that sit right next door in this repo: S7comm
-// (protocols/s7/) and Omron FINS (protocols/fins/) are both BIG-ENDIAN. Do
-// NOT copy an `Endian.big` from either of those neighbouring files into this
-// one. Every multi-byte field here is read/written with `Endian.little`.
+// SLMP 3E binary is LITTLE-ENDIAN throughout — length fields,
+// command/subcommand, and all word data — with ONE documented exception: the
+// 2-byte `subheader` is BIG-ENDIAN (0x5000 on the wire is bytes `0x50, 0x00`;
+// 0xD000 is `0xD0, 0x00`). This mixed convention is not our invention — it is
+// exactly what the real `pymcprotocol` client emits (`type3e.py`
+// `_make_senddata`: `self.subheader.to_bytes(2, "big")`, with the literal
+// comment "subheader is big endian", while every other field goes out
+// `"little"`). The client is the authority (Task 3's E2E), and it settled this
+// against an earlier draft that wrongly wrote the subheader little-endian.
+//
+// The little-endian body is still the EXACT INVERSE of the two area protocols
+// that sit right next door in this repo: S7comm (protocols/s7/) and Omron FINS
+// (protocols/fins/) are both BIG-ENDIAN throughout. Do NOT copy an
+// `Endian.big` from either of those neighbouring files onto a body field — but
+// DO keep the subheader big-endian.
 //
 // A pure build -> parse round trip CANNOT catch an endianness bug — it
 // cancels out perfectly even when the implementation is fully broken. Tests
 // for this file assert literal expected bytes against hand-built buffers,
 // not only round-trips.
 //
-// *** WIRE LAYOUT (all LITTLE-ENDIAN) ***
-// Request: `subheader` u16 (0x5000), `network` u8, `pc` u8 (0xFF = host
-// station), `destModuleIo` u16 (0x03FF), `destModuleStation` u8,
-// `requestDataLength` u16 (counts the bytes that FOLLOW this field:
-// monitoring timer + command + subcommand + data), `monitoringTimer` u16,
-// `command` u16, `subcommand` u16, then command data.
+// *** WIRE LAYOUT (body LITTLE-ENDIAN, subheader BIG-ENDIAN) ***
+// Request: `subheader` u16 BIG-ENDIAN (0x5000 -> `0x50, 0x00`), `network` u8,
+// `pc` u8 (0xFF = host station), `destModuleIo` u16 (0x03FF),
+// `destModuleStation` u8, `requestDataLength` u16 (counts the bytes that
+// FOLLOW this field: monitoring timer + command + subcommand + data),
+// `monitoringTimer` u16, `command` u16, `subcommand` u16, then command data.
 //
-// Response: `subheader` u16 (0xD000), the echoed routing (`network`, `pc`,
-// `destModuleIo`, `destModuleStation`), `responseDataLength` u16 (counts the
-// end code + data that follow it), `endCode` u16 (0x0000 = success), then
-// data.
+// Response: `subheader` u16 BIG-ENDIAN (0xD000 -> `0xD0, 0x00`), the echoed
+// routing (`network`, `pc`, `destModuleIo`, `destModuleStation`),
+// `responseDataLength` u16 (counts the end code + data that follow it),
+// `endCode` u16 (0x0000 = success), then data.
 //
 // *** THE RESPONSE IS NOT THE REQUEST ECHOED VERBATIM ***
 // [buildSlmpResponse] emits the RESPONSE subheader (0xD000, not the
@@ -58,12 +67,13 @@ import 'dart:typed_data';
 
 // --- Subheaders ----------------------------------------------------------
 
-/// The 3E binary REQUEST subheader, LITTLE-ENDIAN on the wire (bytes
-/// `0x00, 0x50`).
+/// The 3E binary REQUEST subheader, BIG-ENDIAN on the wire (bytes
+/// `0x50, 0x00`). The subheader is the one big-endian field in an otherwise
+/// little-endian frame — see the ENDIANNESS WARNING at the top of this file.
 const int kSlmpRequestSubheader = 0x5000;
 
-/// The 3E binary RESPONSE subheader, LITTLE-ENDIAN on the wire (bytes
-/// `0x00, 0xD0`). [buildSlmpResponse] always emits this — never the
+/// The 3E binary RESPONSE subheader, BIG-ENDIAN on the wire (bytes
+/// `0xD0, 0x00`). [buildSlmpResponse] always emits this — never the
 /// request's [kSlmpRequestSubheader].
 const int kSlmpResponseSubheader = 0xD000;
 
@@ -198,8 +208,10 @@ SlmpFrame? parseSlmpRequest(Uint8List buffer) {
 /// `responseDataLength` u16 equal to `2 + data.length` (the byte count of
 /// the end code plus [data] — NOT the request's span, which additionally
 /// counted a monitoring timer, command, and subcommand that the response
-/// does not have), the [endCode] u16, then [data] (empty by default). All
-/// multi-byte fields are written LITTLE-ENDIAN.
+/// does not have), the [endCode] u16, then [data] (empty by default). The
+/// subheader is written BIG-ENDIAN (the one big-endian field — see the
+/// ENDIANNESS WARNING at the top of this file); every other multi-byte field
+/// is written LITTLE-ENDIAN.
 Uint8List buildSlmpResponse({
   required SlmpHeader requestHeader,
   required int endCode,
@@ -210,7 +222,9 @@ Uint8List buildSlmpResponse({
   final out = Uint8List(kSlmpResponseFixedLen + effectiveData.length);
   final bd = ByteData.sublistView(out);
 
-  bd.setUint16(0, kSlmpResponseSubheader, Endian.little);
+  // The subheader is the one BIG-ENDIAN field (see the ENDIANNESS WARNING at
+  // the top of this file): 0xD000 must go out as bytes `0xD0, 0x00`.
+  bd.setUint16(0, kSlmpResponseSubheader, Endian.big);
   out[2] = requestHeader.network & 0xFF;
   out[3] = requestHeader.pc & 0xFF;
   bd.setUint16(4, requestHeader.destModuleIo & 0xFFFF, Endian.little);

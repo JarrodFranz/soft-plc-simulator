@@ -35,3 +35,16 @@ python-snap7==3.1.0
 # implementation of the wire format. This is the FINS-over-UDP first use of
 # this lane — every prior client here (pycomm3, python-snap7) spoke TCP.
 fins==1.0.5
+
+# pymcprotocol — a real, third-party Mitsubishi SLMP / MELSEC Communication (MC
+# protocol) client. Used by `tool/py/slmp_probe.py` (driven by
+# `tool/slmp_e2e.sh`) to verify this project's in-app SLMP host against a client
+# written entirely independently of us. It is PURE PYTHON (socket-based, no
+# `ctypes`): `pymcprotocol/type3e.py` opens an ordinary `socket.socket` and
+# builds/parses the 3E binary frames itself with `int.to_bytes`/`int.from_bytes`
+# (no native library, nothing to install at the system level), so the bytes our
+# TCP host is judged against come from an INDEPENDENT second implementation of
+# the wire format. `Type3E` defaults to binary + Q-series; it was the arbiter
+# that settled the 3E length-field convention and confirmed the D/M/W/R device
+# codes and the big-endian subheader at Task 3.
+pymcprotocol==0.3.0

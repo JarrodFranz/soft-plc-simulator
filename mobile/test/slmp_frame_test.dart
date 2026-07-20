@@ -4,15 +4,20 @@
 // layers (batch read/write commands, the device image, the TCP host, the
 // tag map) build on.
 //
-// CRITICAL #1: SLMP 3E binary is LITTLE-ENDIAN throughout. The two area
-// protocols built immediately before this one in this repo — S7comm
-// (protocols/s7/) and Omron FINS (protocols/fins/) — are both BIG-ENDIAN. Do
-// NOT pattern-match an `Endian.big` from either neighbouring file into this
-// one. A pure build -> parse round trip CANNOT catch an endianness bug (it
-// cancels out perfectly even when fully broken), so every fixture below
-// asserts literal expected bytes against a hand-built buffer, and the
-// command fixture uses two DIFFERENT bytes (0x01, 0x04 -> 0x0401, NOT
-// 0x0104) so a big-endian implementation fails instead of silently passing.
+// CRITICAL #1: SLMP 3E binary is LITTLE-ENDIAN for its body, with ONE
+// documented exception — the 2-byte `subheader` is BIG-ENDIAN (0x5000 ->
+// bytes `0x50, 0x00`; 0xD000 -> `0xD0, 0x00`). This is what the real
+// `pymcprotocol` client emits (`type3e.py`: `subheader.to_bytes(2, "big")`,
+// everything else `"little"`) and it settled an earlier draft that wrongly
+// wrote the subheader little-endian. The two area protocols built immediately
+// before this one in this repo — S7comm (protocols/s7/) and Omron FINS
+// (protocols/fins/) — are both BIG-ENDIAN throughout. Do NOT pattern-match an
+// `Endian.big` from either neighbouring file onto a body field. A pure build
+// -> parse round trip CANNOT catch an endianness bug (it cancels out perfectly
+// even when fully broken), so every fixture below asserts literal expected
+// bytes against a hand-built buffer, and the command fixture uses two
+// DIFFERENT bytes (0x01, 0x04 -> 0x0401, NOT 0x0104) so a big-endian
+// implementation fails instead of silently passing.
 //
 // CRITICAL #2: buildSlmpResponse does NOT echo the request verbatim. It
 // emits the RESPONSE subheader (0xD000, not the request's 0x5000), the
@@ -31,7 +36,7 @@ void main() {
   group('parseSlmpRequest', () {
     test('decodes a hand-built little-endian request, exact fields', () {
       final bytes = Uint8List.fromList([
-        0x00, 0x50, // subheader = 0x5000 (LE)
+        0x50, 0x00, // subheader = 0x5000 (BIG-ENDIAN)
         0x01, // network
         0xFF, // pc (host station)
         0xFF, 0x03, // destModuleIo = 0x03FF (LE)
@@ -58,7 +63,7 @@ void main() {
 
     test('reads destModuleIo 0xFF, 0x03 as 0x03FF — NOT 0xFF03 (little-endian canary)', () {
       final bytes = Uint8List.fromList([
-        0x00, 0x50, // subheader
+        0x50, 0x00, // subheader (BIG-ENDIAN)
         0x00, // network
         0xFF, // pc
         0xFF, 0x03, // destModuleIo bytes: 0xFF then 0x03
@@ -89,7 +94,7 @@ void main() {
 
     test('parses successfully at exactly kSlmpRequestFixedLen bytes with empty data', () {
       final bytes = Uint8List.fromList([
-        0x00, 0x50, // subheader
+        0x50, 0x00, // subheader (BIG-ENDIAN)
         0x01, // network
         0xFF, // pc
         0xFF, 0x03, // destModuleIo
@@ -127,7 +132,7 @@ void main() {
       expect(
         response,
         equals(Uint8List.fromList([
-          0x00, 0xD0, // subheader = 0xD000 (LE)
+          0xD0, 0x00, // subheader = 0xD000 (BIG-ENDIAN)
           0x01, // network echoed
           0xFF, // pc echoed
           0xFF, 0x03, // destModuleIo echoed = 0x03FF (LE)
@@ -157,7 +162,7 @@ void main() {
       expect(
         response,
         equals(Uint8List.fromList([
-          0x00, 0xD0, // subheader
+          0xD0, 0x00, // subheader (BIG-ENDIAN)
           0x00, // network
           0xFF, // pc
           0xFF, 0x03, // destModuleIo
@@ -171,7 +176,7 @@ void main() {
     test('a response built from a parsed request round-trips through parseSlmpRequest-shaped '
         'assertions on routing', () {
       final requestBytes = Uint8List.fromList([
-        0x00, 0x50, // subheader
+        0x50, 0x00, // subheader (BIG-ENDIAN)
         0x02, // network
         0xFF, // pc
         0xFF, 0x03, // destModuleIo
@@ -189,7 +194,7 @@ void main() {
         endCode: kSlmpEndAddressRange,
       );
 
-      expect(responseBytes.sublist(0, 2), equals(Uint8List.fromList([0x00, 0xD0])));
+      expect(responseBytes.sublist(0, 2), equals(Uint8List.fromList([0xD0, 0x00])));
       expect(responseBytes[2], request.header.network);
       expect(responseBytes[3], request.header.pc);
       expect(responseBytes.sublist(4, 6), equals(Uint8List.fromList([0xFF, 0x03])));
