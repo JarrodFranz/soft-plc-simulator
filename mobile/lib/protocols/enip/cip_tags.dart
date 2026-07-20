@@ -93,6 +93,23 @@ const int kCipMspItemHeaderLen = 6;
 /// connection size before charging items.
 const int _kCipMspReplyFixedOverhead = 6;
 
+/// The hard cap on how deeply embedded requests may be re-dispatched back
+/// through [dispatchCipService]. Two services re-dispatch: Unconnected Send
+/// (0x52) unwraps and re-dispatches its embedded request, and Multiple Service
+/// Packet (0x0A) re-dispatches each of its embedded requests — and 0x0A may
+/// itself carry a 0x52 (and vice-versa), so the `0x52 <-> 0x0A` cycle can
+/// otherwise recurse once per nesting level, bounded only by the ~64 KB frame
+/// cap (thousands of levels), each level `sublist`-copying its embedded slice —
+/// a resource-exhaustion vector. A [depth] counter threaded through both
+/// re-dispatch sites hard-bounds this regardless of frame size: before routing
+/// to EITHER recursive service, a request at or beyond this depth is refused
+/// with an error status instead of recursing. Legitimate real-client nesting is
+/// at most ~2 levels (an Unconnected Send wrapping a Multiple Service Packet
+/// wrapping leaf reads), so 8 sits far above any legit depth while still being a
+/// trivial constant bound. It must be > 1 so a legitimate 0x52-wrapping-MSP
+/// batch is not broken.
+const int kMaxEmbeddedDispatchDepth = 8;
+
 /// Dispatches a parsed [CipRequest] against [project]'s tags, exposed
 /// through [map], and returns the [CipResponse] to send back. Handles Read
 /// Tag (0x4C), Write Tag (0x4D), and the Multiple Service Packet (0x0A); any
@@ -107,7 +124,14 @@ const int _kCipMspReplyFixedOverhead = 6;
 /// with 0x11 (Reply Data Too Large) rather than emitting an oversized frame.
 /// A batch that fits the budget — and every non-MSP service — is byte-
 /// identical whether or not a budget is supplied.
-CipResponse dispatchCipService(PlcProject project, CipMap map, CipRequest req, {int? responseBudget}) {
+///
+/// [depth] is the embedded re-dispatch recursion depth (0 for a request off the
+/// wire; incremented at each of the two re-dispatch sites — see
+/// [kMaxEmbeddedDispatchDepth]). It is additive: existing callers keep the
+/// default 0. A request routed to either recursive service (Unconnected Send /
+/// Multiple Service Packet) at or beyond [kMaxEmbeddedDispatchDepth] is refused
+/// with an error status instead of recursing.
+CipResponse dispatchCipService(PlcProject project, CipMap map, CipRequest req, {int? responseBudget, int depth = 0}) {
   try {
     switch (req.service) {
       case kCipServiceReadTag:
@@ -115,7 +139,10 @@ CipResponse dispatchCipService(PlcProject project, CipMap map, CipRequest req, {
       case kCipServiceWriteTag:
         return _writeTag(project, map, req);
       case kCipServiceMultipleServicePacket:
-        return _multipleServicePacket(project, map, req, responseBudget);
+        if (depth >= kMaxEmbeddedDispatchDepth) {
+          return _errorResponse(req.service, kCipStatusServiceNotSupported);
+        }
+        return _multipleServicePacket(project, map, req, responseBudget, depth);
       case kCipServiceGetInstanceAttributeList:
         return _symbolBrowse(project, map, req, responseBudget);
       case kCipServiceGetAttributesAll:
@@ -127,7 +154,10 @@ CipResponse dispatchCipService(PlcProject project, CipMap map, CipRequest req, {
         }
         return _errorResponse(req.service, kCipStatusServiceNotSupported);
       case kCipServiceUnconnectedSend:
-        return _unconnectedSend(project, map, req);
+        if (depth >= kMaxEmbeddedDispatchDepth) {
+          return _errorResponse(req.service, kCipStatusServiceNotSupported);
+        }
+        return _unconnectedSend(project, map, req, depth);
       default:
         return _errorResponse(req.service, kCipStatusServiceNotSupported);
     }
@@ -181,8 +211,11 @@ CipResponse _symbolBrowse(PlcProject project, CipMap map, CipRequest req, int? r
 /// this host is the end device. Never throws — a malformed wrapper returns a
 /// non-success [CipResponse], and the embedded dispatch runs through the same
 /// never-throwing [dispatchCipService]. The embedded request is dispatched as
-/// UCMM (no negotiated `responseBudget`).
-CipResponse _unconnectedSend(PlcProject project, CipMap map, CipRequest req) {
+/// UCMM (no negotiated `responseBudget`). [depth] is threaded from
+/// [dispatchCipService] and forwarded (incremented) to the embedded re-dispatch
+/// so the `0x52 <-> 0x0A` recursion cycle is hard-bounded — see
+/// [kMaxEmbeddedDispatchDepth].
+CipResponse _unconnectedSend(PlcProject project, CipMap map, CipRequest req, int depth) {
   final path = req.path;
   final isConnMgrPath = path.isNotEmpty &&
       path[0].kind == CipPathSegmentKind.classId &&
@@ -206,19 +239,19 @@ CipResponse _unconnectedSend(PlcProject project, CipMap map, CipRequest req) {
   if (embeddedReq == null) {
     return _errorResponse(req.service, kCipStatusEmbeddedServiceError);
   }
-  // Reject a nested Unconnected Send BEFORE re-dispatching. Re-dispatch routes
-  // 0x52 back into this function, so a crafted 0x52-inside-0x52 frame would
-  // recurse once per nesting level — bounded only by the ~64 KB frame cap, i.e.
-  // thousands of levels, each COPYING its embedded slice (parseCipRequest uses
-  // sublist, not a view). That is a resource-exhaustion DoS that can OOM the
-  // isolate before the host's try/catch can degrade it to a dropped connection.
-  // A real Logix target never nests Unconnected Send, so bounding the unwrap to
-  // exactly one level costs the legitimate path nothing.
+  // Reject a DIRECT nested Unconnected Send (0x52-inside-0x52) here, cheaply, at
+  // exactly one level — a real Logix target never nests Unconnected Send. This
+  // is subsumed by the [kMaxEmbeddedDispatchDepth] counter that bounds the
+  // broader `0x52 <-> 0x0A` re-dispatch cycle (an embedded 0x0A can itself carry
+  // a 0x52, and vice-versa), but is kept as a fast, obvious guard for the common
+  // direct case; the two do not conflict.
   if (embeddedReq.service == kCipServiceUnconnectedSend) {
     return _errorResponse(req.service, kCipStatusServiceNotSupported);
   }
-  // Transparent unwrap: the embedded service's own response IS the reply.
-  return dispatchCipService(project, map, embeddedReq);
+  // Transparent unwrap: the embedded service's own response IS the reply. The
+  // embedded dispatch is charged one level of recursion depth so the
+  // `0x52 <-> 0x0A` cycle is hard-bounded.
+  return dispatchCipService(project, map, embeddedReq, depth: depth + 1);
 }
 
 /// Joins a path's ANSI Extended Symbol segments into a dotted resolver path
@@ -374,7 +407,7 @@ CipResponse _writeTag(PlcProject project, CipMap map, CipRequest req) {
 /// of one bad embedded request — a malformed embedded request or an
 /// embedded service returning a non-zero status only affects that request's
 /// own response entry.
-CipResponse _multipleServicePacket(PlcProject project, CipMap map, CipRequest req, int? responseBudget) {
+CipResponse _multipleServicePacket(PlcProject project, CipMap map, CipRequest req, int? responseBudget, int depth) {
   final path = req.path;
   final isRouterPath = path.length == 2 &&
       path[0].kind == CipPathSegmentKind.classId &&
@@ -418,7 +451,10 @@ CipResponse _multipleServicePacket(PlcProject project, CipMap map, CipRequest re
       responses.add(_errorResponse(0x00, kCipStatusEmbeddedServiceError));
       continue;
     }
-    responses.add(dispatchCipService(project, map, embeddedReq));
+    // Each embedded dispatch is charged one level of recursion depth: an
+    // embedded request may itself be a 0x52/0x0A, so this bounds the
+    // `0x52 <-> 0x0A` cycle via [kMaxEmbeddedDispatchDepth].
+    responses.add(dispatchCipService(project, map, embeddedReq, depth: depth + 1));
   }
 
   // Build the embedded response bodies. On a CONNECTED send `responseBudget`

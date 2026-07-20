@@ -86,7 +86,7 @@ falls back to the regular Forward Open — a path the E2E exercises deliberately
 | Forward Close | 0x4E | Matched by (connection serial, vendor id, originator serial), never by connection id — a Forward Close request does not carry one. |
 | Get Instance Attribute List | 0x55 | Served only over the Symbol Object (class 0x6B) — the tag-directory browse. See *Symbol Object browse (tag directory upload)* below. |
 | Get Attributes All | 0x01 | Served over the Identity Object (class 0x01) and the Program Name Object (class 0x64) — the connect-time controller-info reads. See *Controller identity* below. |
-| Unconnected Send | 0x52 | A Connection Manager (class 0x06) service that wraps another CIP request plus a route path. This host is always the end device, so it treats 0x52 as a **transparent wrapper**: unwrap the embedded request, dispatch it through the same `dispatchCipService`, and return the embedded reply verbatim. A nested 0x52-inside-0x52 is refused with `Service Not Supported` (0x08) rather than recursed — see *Controller identity* below. |
+| Unconnected Send | 0x52 | A Connection Manager (class 0x06) service that wraps another CIP request plus a route path. This host is always the end device, so it treats 0x52 as a **transparent wrapper**: unwrap the embedded request, dispatch it through the same `dispatchCipService`, and return the embedded reply verbatim. Embedded re-dispatch is bounded by a small fixed depth cap so a crafted nested frame cannot recurse without limit — see *Controller identity* below. |
 
 Any other service code returns `Service Not Supported` (0x08).
 
@@ -229,10 +229,17 @@ app actually is, impersonating no real vendor or product:
   `0x52` as a transparent wrapper — unwrap the embedded request, dispatch it
   through the same `dispatchCipService` every other service goes through, and
   return the embedded reply verbatim (Unconnected Send adds no framing of its
-  own). A **nested** `0x52`-inside-`0x52` is refused with `Service Not
-  Supported` (0x08) rather than recursed — an unwrap bounded to exactly one
-  level, so a crafted nested frame cannot use the host's own re-dispatch as a
-  resource-exhaustion vector.
+  own). Embedded re-dispatch is **hard-bounded by a small fixed depth cap (a
+  depth counter, cap 8)**: two services re-dispatch — Unconnected Send (`0x52`)
+  and Multiple Service Packet (`0x0A`) — and each can carry the other, so the
+  `0x52` ↔ `0x0A` cycle could otherwise recurse once per nesting level (bounded
+  only by the ~64 KB frame cap, i.e. thousands of levels, each copying its
+  embedded slice). A counter threaded through both re-dispatch sites refuses any
+  request that reaches the cap with `Service Not Supported` (0x08) instead of
+  recursing, so a crafted nested frame cannot use the host's own re-dispatch as
+  a resource-exhaustion vector regardless of frame size. Legit client nesting is
+  at most ~2 levels, far below the cap. A direct `0x52`-inside-`0x52` is also
+  refused immediately (the cap subsumes it).
 
 Together, these settle what the earlier *Deferred to v2* note left open: a
 real `LogixDriver.open()` succeeds against this host, and the dotted-name

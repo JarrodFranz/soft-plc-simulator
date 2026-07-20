@@ -247,5 +247,67 @@ void main() {
       expect(ByteData.sublistView(resp.data, 4, 6).getUint16(0, Endian.little), 10); // "Tank.Level"
       expect(String.fromCharCodes(resp.data.sublist(6, 16)), 'Tank.Level');
     });
+
+    test('Fix 2: a budget smaller than one instance emits exactly ONE over-budget instance, and a resume loop still terminates', () {
+      // Single-instance check: budget far below one instance's encoded cost.
+      // Instance 1 "Running" with attrs {1,2} costs id(4)+namelen(2)+name(7)+
+      // type(2) = 15 bytes; budget 5 is smaller than that.
+      const parsed = GetInstanceAttrListRequest(startInstance: 0, attributeIds: [1, 2]);
+      final resp = buildSymbolInstanceListResponse(buildProject(), buildMap(), parsed, replyBudget: 5);
+      // Status 0x06 (two more instances remain) with EXACTLY ONE instance emitted
+      // even though it is over budget — the make-progress override fired.
+      expect(resp.generalStatus, kCipStatusPartialTransfer);
+      expect(ByteData.sublistView(resp.data, 0, 4).getUint32(0, Endian.little), 1);
+      expect(resp.data.length, greaterThan(5)); // over the budget on purpose
+      expect(resp.data.length, 15); // and it is exactly one instance, not two
+
+      // Driven resume loop over the real LogixDriver attribute set {1,2,3,5,6,8}
+      // with a budget (10) smaller than a single instance (~34 bytes): without
+      // the make-progress guard this livelocks (0 instances + 0x06 forever). It
+      // must terminate, return every listable instance exactly once, deliver at
+      // least one instance per page, and end on 0x00.
+      final tags = [
+        for (var i = 0; i < 5; i++)
+          PlcTag(name: 'T$i', path: 'Internal.T$i', dataType: 'INT32', value: i, ioType: 'Internal'),
+      ];
+      final project = PlcProject(
+          id: 'p', name: 'p', controllerName: 'PLC', tags: tags, structDefs: [], programs: [], tasks: [], hmis: []);
+      final map = CipMap(entries: [for (var i = 0; i < 5; i++) CipMapEntry(tagName: 'T$i')]);
+      const attrs = [1, 2, 3, 5, 6, 8];
+      final seen = <int>[];
+      var start = 0;
+      var status = kCipStatusPartialTransfer;
+      var guard = 0;
+      while (status == kCipStatusPartialTransfer && guard++ < 50) {
+        final page = buildSymbolInstanceListResponse(
+            project, map, GetInstanceAttrListRequest(startInstance: start, attributeIds: attrs), replyBudget: 10);
+        status = page.generalStatus;
+        var off = 0;
+        var lastId = start;
+        var thisPage = 0;
+        while (off + 4 <= page.data.length) {
+          final id = ByteData.sublistView(page.data, off, off + 4).getUint32(0, Endian.little);
+          off += 4;
+          final nlen = ByteData.sublistView(page.data, off, off + 2).getUint16(0, Endian.little);
+          off += 2;
+          off += nlen; // attr 1 name bytes
+          off += 2; // attr 2 type
+          off += 4; // attr 3 symbol address
+          off += 4; // attr 5 symbol object address
+          off += 4; // attr 6 software control
+          off += 12; // attr 8 array dims (3 x u32)
+          seen.add(id);
+          lastId = id;
+          thisPage++;
+        }
+        // Progress guarantee: every page delivers at least one instance even
+        // though the budget is smaller than a single instance's cost.
+        expect(thisPage, greaterThanOrEqualTo(1));
+        start = lastId + 1;
+      }
+      expect(guard, lessThan(50)); // terminated by real progress, not the spin guard
+      expect(seen, [1, 2, 3, 4, 5]);
+      expect(status, kCipStatusSuccess); // the final page's last instance -> 0x00
+    });
   });
 }

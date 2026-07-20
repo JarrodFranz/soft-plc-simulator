@@ -946,6 +946,115 @@ void main() {
     });
   });
 
+  group('Fix 1: embedded re-dispatch depth cap (0x52 <-> 0x0A cycle)', () {
+    final routerPath = [CipPathSegment.classId(0x02), CipPathSegment.instanceId(0x01)];
+    final connMgrPath = [
+      CipPathSegment.classId(kCipConnectionManagerClassId),
+      CipPathSegment.instanceId(1),
+    ];
+
+    /// A leaf Read Tag embedded-request byte blob.
+    Uint8List leafRead() =>
+        _embeddedRequest(kCipServiceReadTag, [CipPathSegment.symbol('Int32_Tag')], _readData());
+
+    /// Wraps [inner] request bytes in an Unconnected Send (0x52) embedded request.
+    Uint8List wrap52(Uint8List inner) =>
+        _embeddedRequest(kCipServiceUnconnectedSend, connMgrPath, _wrapUnconnectedSend(inner));
+
+    /// Wraps [inner] request bytes in a single-item Multiple Service Packet (0x0A)
+    /// embedded request.
+    Uint8List wrap0A(Uint8List inner) =>
+        _embeddedRequest(kCipServiceMultipleServicePacket, routerPath, _buildMsp([inner]));
+
+    test(
+        'a 0x52 -> 0x0A -> 0x52 -> ... interleaved frame far deeper than the cap '
+        'never throws and never deep-recurses', () {
+      // Build from the leaf outward, alternating MSP (0x0A) and Unconnected Send
+      // (0x52) so re-dispatch bounces through the 0x52 <-> 0x0A cycle the depth
+      // counter exists to bound. 40 wraps is far past cap 8; with the cap, the
+      // dispatch only ever recurses 8 levels deep no matter how deep the frame.
+      var inner = leafRead();
+      for (var level = 0; level < 40; level++) {
+        inner = level.isEven ? wrap0A(inner) : wrap52(inner);
+      }
+      // After 40 wraps (last is odd -> wrap52) the outermost blob is a 0x52.
+      final top = parseCipRequest(inner)!;
+      expect(top.service, kCipServiceUnconnectedSend);
+
+      late CipResponse resp;
+      expect(() => resp = dispatchCipService(buildProject(), buildMap(), top), returnsNormally);
+      // The outer 0x52 is a transparent wrapper around a 0x0A whose envelope
+      // parses fine, so the top-level general status is success — the depth
+      // guard fired deep inside and its error is carried in a nested embedded
+      // body (an MSP never fails its envelope for a bad item). What this proves
+      // is bounded recursion: the call RETURNS instead of overflowing the stack.
+      expect(resp.generalStatus, kCipStatusSuccess);
+    });
+
+    test('the depth guard refuses either recursive service AT the cap with an error status', () {
+      // depth is additive, so a caller can drive it directly. At depth == cap,
+      // BOTH recursive services are refused with an error general status rather
+      // than recursing.
+      final send52 = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: connMgrPath,
+        data: _wrapUnconnectedSend(leafRead()),
+      );
+      final mspReq = CipRequest(
+        service: kCipServiceMultipleServicePacket,
+        path: routerPath,
+        data: _buildMsp([leafRead()]),
+      );
+
+      late CipResponse resp52;
+      expect(
+        () => resp52 = dispatchCipService(buildProject(), buildMap(), send52, depth: kMaxEmbeddedDispatchDepth),
+        returnsNormally,
+      );
+      expect(resp52.generalStatus, kCipStatusServiceNotSupported);
+
+      late CipResponse respMsp;
+      expect(
+        () => respMsp = dispatchCipService(buildProject(), buildMap(), mspReq, depth: kMaxEmbeddedDispatchDepth),
+        returnsNormally,
+      );
+      expect(respMsp.generalStatus, kCipStatusServiceNotSupported);
+
+      // One below the cap still processes normally: the 0x52 unwraps its leaf
+      // read at depth cap-1 and the embedded read (not recursive) succeeds.
+      final resp52Ok =
+          dispatchCipService(buildProject(), buildMap(), send52, depth: kMaxEmbeddedDispatchDepth - 1);
+      expect(resp52Ok.service, kCipServiceReadTag);
+      expect(resp52Ok.generalStatus, kCipStatusSuccess);
+    });
+
+    test('a legit 0x52 wrapping a 0x0A of leaf reads still succeeds (cap must not break 2-level nesting)', () {
+      // The real LogixDriver path: Unconnected Send (depth 0) wrapping a Multiple
+      // Service Packet (depth 1) of leaf reads (depth 2) — all below cap 8. Cap 1
+      // would have broken this; cap 8 leaves it untouched.
+      final read0 = _embeddedRequest(kCipServiceReadTag, [CipPathSegment.symbol('Bool_Tag')], _readData());
+      final read1 = _embeddedRequest(kCipServiceReadTag, [CipPathSegment.symbol('Int32_Tag')], _readData());
+      final msp = _embeddedRequest(kCipServiceMultipleServicePacket, routerPath, _buildMsp([read0, read1]));
+      final top = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: connMgrPath,
+        data: _wrapUnconnectedSend(msp),
+      );
+      final resp = dispatchCipService(buildProject(), buildMap(), top);
+      // Transparent 0x52 -> the MSP reply verbatim; envelope success, both items
+      // succeed.
+      expect(resp.service, kCipServiceMultipleServicePacket);
+      expect(resp.generalStatus, kCipStatusSuccess);
+      expect(_readU16(resp.data, 0), 2);
+      final off0 = _readU16(resp.data, 2);
+      final off1 = _readU16(resp.data, 4);
+      final body0 = resp.data.sublist(2 + off0, 2 + off1);
+      final body1 = resp.data.sublist(2 + off1);
+      expect(body0[2], kCipStatusSuccess);
+      expect(body1[2], kCipStatusSuccess);
+    });
+  });
+
   group('dispatchCipService — Program Name Object (0x64) Get Attributes All', () {
     test('returns the controller name as a Logix STRING (u16 len + ascii)', () {
       final project = buildProject(); // controllerName: 'PLC_CIP_TAGS'

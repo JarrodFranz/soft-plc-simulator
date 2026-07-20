@@ -122,6 +122,15 @@ GetInstanceAttrListRequest? parseGetInstanceAttrListRequest(CipRequest req) {
 /// over the LISTABLE entries (an entry with no CIP type is skipped and
 /// consumes no id). Emits instances until the next would exceed [replyBudget],
 /// then sets status 0x06; otherwise 0x00. Never throws.
+///
+/// Forward-progress guarantee: if the FIRST admissible instance for this page
+/// already exceeds [replyBudget], exactly ONE instance is emitted anyway (over
+/// budget) so pagination always advances. Without this, a budget smaller than a
+/// single instance's encoded cost would emit zero instances with status 0x06
+/// forever — an infinite pagination livelock against a client that re-requests
+/// from the same start id. (Essentially unreachable with real budgets — it
+/// needs a tag name longer than a UCMM reply — but the failure mode is a hang,
+/// so it is guarded.)
 CipResponse buildSymbolInstanceListResponse(
   PlcProject project,
   CipMap map,
@@ -152,6 +161,16 @@ CipResponse buildSymbolInstanceListResponse(
     // measured, not estimated.
     final block = _encodeInstance(sym.id, sym.name, sym.typeCode, parsed.attributeIds);
     if (out.length + block.length > replyBudget) {
+      if (out.isEmpty) {
+        // Forward-progress guarantee (see doc comment): nothing has been
+        // admitted for this page yet, so emit this one instance even though it
+        // is over budget. Pagination advances — the next page resumes after it.
+        // Any FURTHER instance necessarily fails the same check (out is now
+        // over budget), so exactly one is emitted; whether it was the last
+        // decides the status below (loop-exhausted -> 0x00, else 0x06).
+        out.add(block);
+        continue;
+      }
       partial = true;
       break;
     }
