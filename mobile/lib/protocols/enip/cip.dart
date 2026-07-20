@@ -54,9 +54,19 @@ const int kCipServiceReadTag = 0x4C;
 /// Write Tag Service — writes a symbolic tag's value(s) by EPATH.
 const int kCipServiceWriteTag = 0x4D;
 
+/// Get Instance Attribute List — enumerates a class's instances and the
+/// requested attributes of each. Used here only against the Symbol Object
+/// (class 0x6B) to serve a Logix-style client's tag-directory upload.
+const int kCipServiceGetInstanceAttributeList = 0x55;
+
 // --- CIP general status codes -------------------------------------------
 
 const int kCipStatusSuccess = 0x00;
+
+/// "Partial Transfer" — a Get Instance Attribute List reply that could not
+/// fit every remaining instance in one reply; the client re-requests from
+/// the last returned instance id + 1 until a success (0x00) completes it.
+const int kCipStatusPartialTransfer = 0x06;
 
 /// "Connection failure" — used by the Connection Manager (`cip_connection.dart`
 /// — Forward Open/Forward Close) both for a Forward Open that cannot be
@@ -113,6 +123,19 @@ const int kCipStatusEmbeddedServiceError = 0x1E;
 /// `cip_tags.dart`, which previously defined it locally because Task 2's
 /// scope was limited to the Read/Write Tag service codes above).
 const int kCipServiceMultipleServicePacket = 0x0A;
+
+/// Get Attributes All — returns an object instance's attributes as one
+/// packed structure. Served here only for the Identity Object.
+const int kCipServiceGetAttributesAll = 0x01;
+
+// --- CIP object class ids (served objects) -------------------------------
+
+/// Symbol Object — the controller tag directory a Logix-style client uploads.
+const int kCipSymbolObjectClassId = 0x6B;
+
+/// Identity Object — vendor/product/revision/serial a Logix-style client
+/// reads at connect (via Get Attributes All) before uploading tags.
+const int kCipIdentityObjectClassId = 0x01;
 
 // --- CIP elementary data-type codes -------------------------------------
 
