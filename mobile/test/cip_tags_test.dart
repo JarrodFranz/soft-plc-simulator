@@ -16,7 +16,6 @@ import 'package:soft_plc_mobile/models/cip_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 import 'package:soft_plc_mobile/protocols/enip/cip.dart';
-import 'package:soft_plc_mobile/protocols/enip/cip_symbol.dart';
 import 'package:soft_plc_mobile/protocols/enip/cip_tags.dart';
 
 Uint8List _u16le(int v) => Uint8List.fromList([v & 0xFF, (v >> 8) & 0xFF]);

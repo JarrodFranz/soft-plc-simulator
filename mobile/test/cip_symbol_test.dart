@@ -142,6 +142,88 @@ void main() {
       expect(resp.data, isEmpty);
     });
 
+    test('paginating with a small budget returns every listable entry exactly once', () {
+      // Mirrors the REAL browse: pycomm3's LogixDriver.get_tag_list() requests
+      // attrs {1,2,3,5,6,8} (see cip_symbol.dart), not a reduced {1,2} set, so
+      // this test drives the actual per-instance byte cost the browse relies
+      // on, not a smaller stand-in.
+      final tags = [for (var i = 0; i < 10; i++)
+          PlcTag(name: 'T$i', path: 'Internal.T$i', dataType: 'INT32', value: i, ioType: 'Internal')];
+      final project = PlcProject(id: 'p', name: 'p', controllerName: 'PLC',
+          tags: tags, structDefs: [], programs: [], tasks: [], hmis: []);
+      final map = CipMap(entries: [for (var i = 0; i < 10; i++) CipMapEntry(tagName: 'T$i')]);
+      const attrs = [1, 2, 3, 5, 6, 8];
+      final seen = <int>[];
+      var start = 0;
+      var status = kCipStatusPartialTransfer;
+      var guard = 0;
+      while (status == kCipStatusPartialTransfer && guard++ < 50) {
+        final resp = buildSymbolInstanceListResponse(project, map,
+            GetInstanceAttrListRequest(startInstance: start, attributeIds: attrs), replyBudget: 80);
+        status = resp.generalStatus;
+        var off = 0;
+        var lastId = start;
+        while (off + 4 <= resp.data.length) {
+          final id = ByteData.sublistView(resp.data, off, off + 4).getUint32(0, Endian.little);
+          off += 4;
+          final nlen = ByteData.sublistView(resp.data, off, off + 2).getUint16(0, Endian.little);
+          off += 2;
+          off += nlen; // attr 1 name bytes
+          off += 2; // attr 2 type
+          off += 4; // attr 3 symbol address
+          off += 4; // attr 5 symbol object address
+          off += 4; // attr 6 software control
+          off += 12; // attr 8 array dims (3 x u32)
+          seen.add(id);
+          lastId = id;
+        }
+        start = lastId + 1;
+      }
+      // Terminated because pagination made real progress each page, not
+      // because a too-small-for-one-instance budget forced the spin guard.
+      expect(guard, lessThan(50));
+      expect(seen, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+      expect(status, kCipStatusSuccess);
+    });
+
+    test('a stale/unresolvable entry between two listable entries burns no instance id', () {
+      // 'Label' is a STRING tag: cipTypeForTagType('STRING') is null (Symbol
+      // browse v1 serves atomic scalars only), so the map entry pointing at
+      // it is skipped by buildSymbolInstanceListResponse and — per the
+      // instance-numbering contract — consumes no instance id. 'Speed' (the
+      // third map entry) must therefore be instance 2, not 3.
+      final project = PlcProject(
+        id: 'p', name: 'p', controllerName: 'PLC',
+        tags: [
+          PlcTag(name: 'Running', path: 'Internal.Running', dataType: 'BOOL', value: true, ioType: 'Internal'),
+          PlcTag(name: 'Label', path: 'Internal.Label', dataType: 'STRING', value: '', ioType: 'Internal'),
+          PlcTag(name: 'Speed', path: 'Internal.Speed', dataType: 'INT32', value: 100, ioType: 'Internal'),
+        ],
+        structDefs: [], programs: [], tasks: [], hmis: [],
+      );
+      final map = CipMap(entries: [
+        CipMapEntry(tagName: 'Running'),
+        CipMapEntry(tagName: 'Label'), // STRING: no CIP type -- skipped, no id burned.
+        CipMapEntry(tagName: 'Speed'),
+      ]);
+      const parsed = GetInstanceAttrListRequest(startInstance: 0, attributeIds: [1, 2]);
+      final resp = buildSymbolInstanceListResponse(project, map, parsed, replyBudget: 4096);
+      expect(resp.generalStatus, kCipStatusSuccess);
+      final d = resp.data;
+      // First instance: id=1, "Running".
+      expect(ByteData.sublistView(d, 0, 4).getUint32(0, Endian.little), 1);
+      final firstNameLen = ByteData.sublistView(d, 4, 6).getUint16(0, Endian.little);
+      final off = 6 + firstNameLen + 2; // name bytes + attr 2 type, then next instance.
+      // The only other instance present is "Speed" -- its id is 2, not 3:
+      // the skipped STRING entry burned no instance id.
+      expect(ByteData.sublistView(d, off, off + 4).getUint32(0, Endian.little), 2);
+      final secondNameLen = ByteData.sublistView(d, off + 4, off + 6).getUint16(0, Endian.little);
+      expect(String.fromCharCodes(d.sublist(off + 6, off + 6 + secondNameLen)), 'Speed');
+      // And there is no third instance -- exactly two listable entries.
+      // (off + id[4] + nlen[2] + name + attr-2 type[2] is the end of instance 2.)
+      expect(off + 6 + secondNameLen + 2, d.length);
+    });
+
     test('a dotted-name entry is listed verbatim as one flat symbol', () {
       // 'Tank' is an instance of struct type 'TankType', which has an INT32
       // field 'Level' — dataTypeOfPath resolves the dotted path 'Tank.Level'

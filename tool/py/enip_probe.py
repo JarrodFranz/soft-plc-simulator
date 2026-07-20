@@ -23,11 +23,21 @@ with a message naming the step):
   7. Refusal semantics: ReadOnly-mapped write and forced-tag write are both
      refused with CIP general status 0x0F (Privilege Violation) and leave the
      value unchanged; an unmapped tag name returns 0x05.
-  8. Symbol Object browse: Get Instance Attribute List (0x55) walked over the
-     Symbol Object (class 0x6B), asserting every fixture tag's name + CIP type
-     code. This is the generic-messaging tag-directory upload -- the same path
-     LogixDriver walks -- proved WITHOUT LogixDriver.open() (a later task).
-  9. Forward Close (0x4E), then UnRegisterSession (0x66)
+  8. Symbol Object browse (generic messaging): Get Instance Attribute List
+     (0x55) walked over the Symbol Object (class 0x6B), asserting every
+     fixture tag's name + CIP type code. This is the deterministic codec
+     proof -- the same wire path LogixDriver walks -- driven WITHOUT
+     LogixDriver.open(), over pycomm3's lower-level CIPDriver.
+  9. Forward Close (0x4E)
+  10. UnRegisterSession (0x66)
+  11. LogixDriver browse + read: a SEPARATE session (LogixDriver.open() does
+      its own RegisterSession + Forward Open) proving the real-goal path --
+      Identity/Program-Name discovery, then get_tag_list() over the Symbol
+      Object, then a read of a browsed tag through LogixDriver's own read
+      path. Run after step 1-10's session has cleanly closed (rather than
+      interleaved with it) because LogixDriver.open() always negotiates its
+      own session/connection; the two proofs are independent client
+      lifecycles talking to the same host, not one continuous session.
 
 USING pycomm3's LOWER-LEVEL GENERIC CIP MESSAGING (NOT `LogixDriver`)
 ---------------------------------------------------------------------
@@ -107,7 +117,7 @@ EXPECTED_SYMBOLS = {
     "Temp": REAL.code,      # 0xCA (ReadOnly-mapped, but still browsable)
     "Forced_Speed": DINT.code,  # 0xC4
     # A DOTTED struct-member symbol: proves the dotted name survives the browse
-    # (and, at step 10, LogixDriver.get_tag_list()) intact, not split or dropped.
+    # (and, at step 11, LogixDriver.get_tag_list()) intact, not split or dropped.
     "Tank.Level": DINT.code,  # 0xC4
 }
 
@@ -331,7 +341,7 @@ def logix_browse(host: str, port: int) -> None:
         for expected in ("Speed", "Running", "Level"):
             check(
                 expected in names,
-                f"STEP 10 (LogixDriver browse): {expected!r} not in tag list "
+                f"STEP 11 (LogixDriver browse): {expected!r} not in tag list "
                 f"{sorted(names)}",
             )
         # The dotted struct-member symbol must survive get_tag_list() intact --
@@ -340,7 +350,7 @@ def logix_browse(host: str, port: int) -> None:
         # the Template Object we deliberately do not serve).
         check(
             "Tank.Level" in names,
-            f"STEP 10 (LogixDriver browse): dotted name 'Tank.Level' did not "
+            f"STEP 11 (LogixDriver browse): dotted name 'Tank.Level' did not "
             f"survive get_tag_list(); got {sorted(names)}",
         )
         # Read one browsed tag back through LogixDriver's OWN read path (which
@@ -349,10 +359,10 @@ def logix_browse(host: str, port: int) -> None:
         result = drv.read("Speed")
         check(
             result and result.value is not None,
-            "STEP 10 (LogixDriver browse): LogixDriver read of a browsed tag failed",
+            "STEP 11 (LogixDriver browse): LogixDriver read of a browsed tag failed",
         )
     print(
-        f"[probe] step 10 OK: LogixDriver browsed {len(names)} tags and read one "
+        f"[probe] step 11 OK: LogixDriver browsed {len(names)} tags and read one "
         f"back (Speed={result.value})"
     )
 
@@ -504,13 +514,25 @@ def run(host: str, port: int) -> None:
             "STEP 9 (Forward Close): the host did not accept the Forward Close",
         )
         print("[probe] step 9 OK: forward close accepted")
+
+        # --- Step 10: UnRegisterSession ------------------------------------
+        # Encapsulation command 0x66 defines no reply (fire-and-forget), so
+        # the assertion is that sending it does not raise and the driver
+        # clears its own session handle -- not a reply status.
+        driver._un_register_session()
+        check(
+            driver._session is None,
+            "STEP 10 (UnRegisterSession): the driver still holds a session "
+            "handle after UnRegisterSession",
+        )
+        print("[probe] step 10 OK: session unregistered")
     finally:
         try:
             driver.close()
         except Exception:  # noqa: BLE001 - teardown must not mask a real failure
             pass
 
-    # --- Step 10: the full LogixDriver browse gate (own session) ---------
+    # --- Step 11: the full LogixDriver browse gate (own session) ---------
     logix_browse(host, port)
 
     print("ENIP PROBE PASS")
