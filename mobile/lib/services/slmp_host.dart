@@ -334,12 +334,13 @@ class SlmpHost extends ChangeNotifier {
   /// Starts hosting on [port], serving the tag-backed image.
   ///
   /// [projectProvider] is called fresh on every dispatched frame, so a project
-  /// swap while the server is running is safe (Task 4) — but the *port* is read
-  /// once, at start time.
+  /// swap while the server is running is safe — but the *port* is read once, at
+  /// start time.
   ///
-  /// Task 5 adds a `SlmpProtocolConfig`-driven `enabled`/`port` gate here
-  /// (mirroring `S7Host.start`'s `project.protocols.s7` check); at Task 3,
-  /// calling [start] IS the opt-in.
+  /// Calling [start] IS the opt-in (mirroring `FinsHost.start`): the gateway UI
+  /// drives the `enabled` toggle by calling [start]/[stop] and sets [port]
+  /// before start. There is no `SlmpProtocolConfig`-driven self-gate inside
+  /// [start].
   Future<void> start(PlcProject Function() projectProvider) async {
     if (_status == SlmpHostStatus.running) {
       return; // already running; caller should stop() first to change port

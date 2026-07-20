@@ -609,9 +609,9 @@ class SlmpProtocolConfig {
 /// The SLMP host's default TCP port. Declared here (rather than importing the
 /// `dart:io` SLMP host's `kSlmpDefaultPort`) so this pure model stays free of
 /// any Flutter/`dart:io` dependency; the two constants are the same value by
-/// construction and asserted equal in tests. MC protocol defines no universal
-/// default port — 5007 is a widely-used convention in MELSEC MC-protocol
-/// examples and simulators, and it is unprivileged (> 1023).
+/// construction. MC protocol defines no universal default port — 5007 is a
+/// widely-used convention in MELSEC MC-protocol examples and simulators, and it
+/// is unprivileged (> 1023).
 const int kSlmpDefaultPortConfig = 5007;
 
 /// Per-project outbound-protocol settings: the shared gateway endpoint plus
