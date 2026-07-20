@@ -49,19 +49,18 @@ void main() {
       expect(spec.pointCount, 5);
     });
 
-    test('decodes deviceNumber from three DIFFERING bytes: '
-        '0x00,0x01,0x00 (LE) -> 256, NOT a big-endian misread', () {
+    test('decodes deviceNumber from three FULLY ASYMMETRIC bytes: '
+        '0x01,0x02,0x03 (LE) -> 0x030201 = 197121, catches byte-swap bugs', () {
       final data = Uint8List.fromList([
-        0x00, 0x01, 0x00, // device number = 0x000100 = 256 (LE)
+        0x01, 0x02, 0x03, // device number = 0x030201 = 197121 (LE)
         0x90, // device code: M
         0x01, 0x00, // point count = 1
       ]);
 
       final spec = parseBatchReadRequest(data);
       expect(spec, isNotNull);
-      expect(spec!.deviceNumber, 256);
-      expect(spec.deviceNumber, isNot(0x000001)); // canary: big-endian misread would give 1
-      expect(spec.deviceNumber, isNot(65536)); // canary: fully reversed byte order
+      expect(spec!.deviceNumber, 197121);
+      expect(spec.deviceNumber, isNot(0x010203)); // canary: full byte reversal (big-endian) would give 66051
       expect(spec.deviceCode, kSlmpDevM);
     });
 
