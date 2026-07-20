@@ -35,6 +35,7 @@ import 'dart:typed_data';
 import '../../models/modbus_map.dart';
 import '../../models/project_model.dart';
 import '../../models/tag_resolver.dart';
+import '../../models/tag_write_gate.dart';
 
 /// Modbus exception codes (used in the 2-byte exception response body:
 /// `(functionCode | 0x80)` + this code).
@@ -290,9 +291,18 @@ PlcTag? _findRootTag(PlcProject project, String path) {
 /// resolution — find the ROOT tag of the (possibly dotted) path and honor
 /// its `isForced` flag, so forcing a struct tag (e.g. `Motor`) skips writes
 /// to any of its members (e.g. `Motor.Speed`), not just a bare top-level
-/// write — except Modbus skips SILENTLY and still answers with the normal
-/// echo response (no exception), unlike the OPC UA path which refuses
-/// visibly with Bad_UserAccessDenied.
+/// write.
+///
+/// Protocol-hardening workstream, Task 3: this predicate only DETECTS a
+/// forced root; every write handler below now REFUSES the write visibly
+/// (an exception PDU, `ModbusEx.illegalDataAddress` — the same code the
+/// ReadOnly gate already answers with) instead of applying it silently and
+/// still echoing success. Before this fix, a forced write was accepted at
+/// the wire level with a normal success echo while the value was silently
+/// discarded — a master had no way to tell its write never landed. Modbus
+/// was the last of the four in-app protocol servers to still do this; OPC
+/// UA (`Bad_UserAccessDenied`), CIP (forced-root member-write refusal), and
+/// EtherNet/IP already refuse a forced write visibly.
 bool _isForcedSkip(PlcProject project, String path) {
   final root = _findRootTag(project, path);
   return root != null && root.isForced && root.value is! Map && root.value is! List;
@@ -361,10 +371,12 @@ dynamic _decodeRegsForType(String dataType, List<int> regs,
 
 /// Decodes Modbus PDUs (all 8 classic function codes) against the project's
 /// `ModbusMap` + live tags. Reads never fail (unmapped/out-of-range gaps
-/// within a legal address range 0-fill); writes are force-aware (a forced
-/// root tag silently discards the write but still echoes success) and never
-/// throw — every internal error becomes a 0x04 Server Device Failure
-/// exception PDU instead of an uncaught exception.
+/// within a legal address range 0-fill); writes are force-aware — a write
+/// targeting a forced root tag is refused with an exception PDU
+/// (`ModbusEx.illegalDataAddress`, same as the ReadOnly refusal) rather than
+/// being silently discarded and echoed as success (see `_isForcedSkip`) —
+/// and never throw, since every internal error becomes a 0x04 Server Device
+/// Failure exception PDU instead of an uncaught exception.
 class ModbusServer {
   final PlcProject Function() projectProvider;
 
@@ -490,12 +502,24 @@ class ModbusServer {
     }
     final map = _mapFor(project);
     final entry = _findEntry(project, map, 'coil', address);
-    if (entry == null || entry.access == 'ReadOnly') {
+    // Write-time hard backstop (protocol-hardening workstream, Task 2): the
+    // ModbusMap entry above is a MUTABLE map that a hand-edit could
+    // re-target at the reserved System tag. `isExternallyWritable`
+    // re-checks the underlying ROOT tag itself, independent of whatever
+    // this entry's own `access` claims — a hard, non-overridable rule,
+    // never a replacement for the per-entry check above. Short-circuiting
+    // `||` means `entry.tag` is never touched when `entry` is null.
+    if (entry == null || entry.access == 'ReadOnly' || !isExternallyWritable(project, entry.tag)) {
       return encodeExceptionResponse(fc, ModbusEx.illegalDataAddress);
     }
-    if (!_isForcedSkip(project, entry.tag)) {
-      writePath(project, entry.tag, rawValue == 0xFF00);
+    // Protocol-hardening workstream, Task 3: a forced root tag refuses the
+    // write VISIBLY (same exception code as the ReadOnly refusal above, for
+    // a master-side-consistent "you can't write this right now") instead of
+    // silently discarding it and still echoing success.
+    if (_isForcedSkip(project, entry.tag)) {
+      return encodeExceptionResponse(fc, ModbusEx.illegalDataAddress);
     }
+    writePath(project, entry.tag, rawValue == 0xFF00);
     return Uint8List.fromList(pdu.sublist(0, 5));
   }
 
@@ -508,19 +532,30 @@ class ModbusServer {
     final rawValue = _u16(pdu, 3);
     final map = _mapFor(project);
     final entry = _findEntry(project, map, 'holding', address);
-    if (entry == null || entry.access == 'ReadOnly') {
+    // Write-time hard backstop (protocol-hardening workstream, Task 2): the
+    // ModbusMap entry above is a MUTABLE map that a hand-edit could
+    // re-target at the reserved System tag. `isExternallyWritable`
+    // re-checks the underlying ROOT tag itself, independent of whatever
+    // this entry's own `access` claims — a hard, non-overridable rule,
+    // never a replacement for the per-entry check above. Short-circuiting
+    // `||` means `entry.tag` is never touched when `entry` is null.
+    if (entry == null || entry.access == 'ReadOnly' || !isExternallyWritable(project, entry.tag)) {
       return encodeExceptionResponse(fc, ModbusEx.illegalDataAddress);
     }
     if (_widthForEntry(project, entry) != 1) {
       // Can't half-write a multi-register (INT32/FLOAT64) tag via FC06.
       return encodeExceptionResponse(fc, ModbusEx.illegalDataValue);
     }
-    if (!_isForcedSkip(project, entry.tag)) {
-      final dt = _tagDataType(project, entry.tag) ?? 'INT16';
-      final byteSwap = _byteSwapFor(project);
-      final value = _decodeRegsForType(dt, [rawValue], byteSwap: byteSwap);
-      writePath(project, entry.tag, value);
+    // Protocol-hardening workstream, Task 3: a forced root tag refuses the
+    // write VISIBLY (same exception code as the ReadOnly refusal above)
+    // instead of silently discarding it and still echoing success.
+    if (_isForcedSkip(project, entry.tag)) {
+      return encodeExceptionResponse(fc, ModbusEx.illegalDataAddress);
     }
+    final dt = _tagDataType(project, entry.tag) ?? 'INT16';
+    final byteSwap = _byteSwapFor(project);
+    final value = _decodeRegsForType(dt, [rawValue], byteSwap: byteSwap);
+    writePath(project, entry.tag, value);
     return Uint8List.fromList(pdu.sublist(0, 5));
   }
 
@@ -549,16 +584,28 @@ class ModbusServer {
     for (var i = 0; i < qty; i++) {
       final addr = start + i;
       final entry = _findEntry(project, map, 'coil', addr);
-      if (entry == null || entry.access == 'ReadOnly') {
+      // Write-time hard backstop (protocol-hardening workstream, Task 2): the
+      // ModbusMap entry above is a MUTABLE map that a hand-edit could
+      // re-target at the reserved System tag. `isExternallyWritable`
+      // re-checks the underlying ROOT tag itself, independent of whatever
+      // this entry's own `access` claims — a hard, non-overridable rule,
+      // never a replacement for the per-entry check above. Short-circuiting
+      // `||` means `entry.tag` is never touched when `entry` is null.
+      if (entry == null || entry.access == 'ReadOnly' || !isExternallyWritable(project, entry.tag)) {
+        return encodeExceptionResponse(fc, ModbusEx.illegalDataAddress);
+      }
+      // Protocol-hardening workstream, Task 3: refuse the WHOLE request
+      // atomically (same as the gate above) if any touched address covers a
+      // forced root tag, instead of silently skipping just that one coil
+      // while still echoing success for the batch.
+      if (_isForcedSkip(project, entry.tag)) {
         return encodeExceptionResponse(fc, ModbusEx.illegalDataAddress);
       }
       targets[addr] = entry;
     }
     for (var i = 0; i < qty; i++) {
       final entry = targets[start + i]!;
-      if (!_isForcedSkip(project, entry.tag)) {
-        writePath(project, entry.tag, bits[i]);
-      }
+      writePath(project, entry.tag, bits[i]);
     }
     return _echoStartQty(fc, start, qty);
   }
@@ -590,7 +637,21 @@ class ModbusServer {
     for (var i = 0; i < qty; i++) {
       final addr = start + i;
       final entry = _findEntry(project, map, 'holding', addr);
-      if (entry == null || entry.access == 'ReadOnly') {
+      // Write-time hard backstop (protocol-hardening workstream, Task 2): the
+      // ModbusMap entry above is a MUTABLE map that a hand-edit could
+      // re-target at the reserved System tag. `isExternallyWritable`
+      // re-checks the underlying ROOT tag itself, independent of whatever
+      // this entry's own `access` claims — a hard, non-overridable rule,
+      // never a replacement for the per-entry check above. Short-circuiting
+      // `||` means `entry.tag` is never touched when `entry` is null.
+      if (entry == null || entry.access == 'ReadOnly' || !isExternallyWritable(project, entry.tag)) {
+        return encodeExceptionResponse(fc, ModbusEx.illegalDataAddress);
+      }
+      // Protocol-hardening workstream, Task 3: refuse the WHOLE request
+      // atomically (same as the gate above) if any touched address covers a
+      // forced root tag, instead of silently skipping just that one entry
+      // while still echoing success for the batch.
+      if (_isForcedSkip(project, entry.tag)) {
         return encodeExceptionResponse(fc, ModbusEx.illegalDataAddress);
       }
       touched.add(entry);
@@ -606,9 +667,6 @@ class ModbusServer {
       }
     }
     for (final entry in touched) {
-      if (_isForcedSkip(project, entry.tag)) {
-        continue;
-      }
       final width = _widthForEntry(project, entry);
       final offset = entry.address - start;
       final words = regs.sublist(offset, offset + width);

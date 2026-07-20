@@ -11,6 +11,7 @@
 
 import 'project_model.dart';
 import 'tag_resolver.dart';
+import 'tag_write_gate.dart';
 
 /// One DNP3 point-map entry, binding a project tag to an index within one
 /// of the four DNP3 point types.
@@ -82,12 +83,13 @@ class DnpMap {
   ///
   /// Access/point-type selection is inherited from the ROOT tag (the tag
   /// whose name is the leaf path's first segment): `SimulatedOutput` or an
-  /// explicit `ReadOnly` tag `access` (e.g. the reserved `System` tag) is
-  /// read-only; everything else (`SimulatedInput`, `Internal`) is
-  /// read-write. Point type selection: `BOOL` -> `binaryInput` (RO) /
-  /// `binaryOutput` (RW); numeric -> `analogInput` (RO) / `analogOutput`
-  /// (RW). Indexes are assigned sequentially per point type in leaf order,
-  /// each starting from 0.
+  /// explicit `ReadOnly` tag `access` (e.g. the reserved `System` tag,
+  /// checked by name, not just its `access` field, so this holds even if
+  /// `System`'s own `access` were ever left at its default) is read-only;
+  /// everything else (`SimulatedInput`, `Internal`) is read-write. Point type
+  /// selection: `BOOL` -> `binaryInput` (RO) / `binaryOutput` (RW); numeric ->
+  /// `analogInput` (RO) / `analogOutput` (RW). Indexes are assigned
+  /// sequentially per point type in leaf order, each starting from 0.
   static DnpMap autoGenerate(PlcProject p) {
     const skipTypes = {'TIMER', 'COUNTER', 'STRING'};
     const scalarTypes = {'BOOL', 'INT16', 'INT32', 'FLOAT64'};
@@ -103,8 +105,7 @@ class DnpMap {
       if (skipTypes.contains(dataType) || !scalarTypes.contains(dataType)) {
         continue;
       }
-      final root = rootTagOf(p, leaf.path);
-      final ro = root?.ioType == 'SimulatedOutput' || root?.access == 'ReadOnly';
+      final ro = !defaultsExternallyWritable(p, leaf.path);
       final String pointType;
       if (dataType == 'BOOL') {
         pointType = ro ? 'binaryInput' : 'binaryOutput';

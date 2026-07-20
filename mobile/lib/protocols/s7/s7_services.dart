@@ -217,7 +217,9 @@ Uint8List? buildReadVarResponse(
 /// controller reports a write into an unused byte of a data block.
 ///
 /// A refusal wins over everything else so a client is never told a write it
-/// was denied succeeded: a `ReadOnly` entry or a FORCED root tag yields
+/// was denied succeeded: a `ReadOnly` entry, a FORCED root tag, or the
+/// write-time hard backstop (a mismatched map entry against the reserved
+/// System tag or a tag whose own `access` is `ReadOnly`) all yield
 /// [kS7ReturnAccessDenied]. A partially covered multi-byte tag (writing a
 /// fragment would corrupt it) yields [kS7ReturnAddressOutOfRange], and a tag
 /// with no v1 S7 representation yields [kS7ReturnObjectDoesNotExist].
@@ -229,6 +231,7 @@ int s7WriteReturnCode(List<S7WriteResult> results) {
         break;
       case S7WriteStatus.refusedReadOnly:
       case S7WriteStatus.refusedForced:
+      case S7WriteStatus.refusedNotExternallyWritable:
         return kS7ReturnAccessDenied;
       case S7WriteStatus.partiallyCovered:
         code = kS7ReturnAddressOutOfRange;

@@ -9,6 +9,7 @@
 
 import 'project_model.dart';
 import 'tag_resolver.dart';
+import 'tag_write_gate.dart';
 
 /// One OPC UA `Variable` node, bound to a project tag by name.
 ///
@@ -77,8 +78,10 @@ class OpcuaMap {
   /// `Arr[0]`) — a bare scalar tag yields itself, unchanged from before.
   /// STRING leaves are allowed. Access is inherited from the ROOT tag (the
   /// tag whose name is the leaf path's first segment): `SimulatedOutput` or
-  /// an explicit `ReadOnly` tag `access` (e.g. the reserved `System` tag)
-  /// yields `ReadOnly`; everything else (`SimulatedInput`, `Internal`) is
+  /// an explicit `ReadOnly` tag `access` (e.g. the reserved `System` tag,
+  /// checked by name, not just its `access` field, so this holds even if
+  /// `System`'s own `access` were ever left at its default) yields
+  /// `ReadOnly`; everything else (`SimulatedInput`, `Internal`) is
   /// `ReadWrite`.
   ///
   /// The OPC UA `nodeId` string and the `tag` resolver key are intentionally
@@ -94,7 +97,7 @@ class OpcuaMap {
     final nodes = <OpcuaNode>[];
     for (final leaf in scalarLeaves(p)) {
       final root = rootTagOf(p, leaf.path);
-      final readOnly = root?.ioType == 'SimulatedOutput' || root?.access == 'ReadOnly';
+      final readOnly = !defaultsExternallyWritable(p, leaf.path);
       final access = readOnly ? 'ReadOnly' : 'ReadWrite';
       final rootName = leaf.path.split(RegExp(r'[.\[]')).first;
       final suffix = leaf.path.substring(rootName.length);

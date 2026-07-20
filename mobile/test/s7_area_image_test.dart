@@ -17,6 +17,8 @@ import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/s7_map.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 import 'package:soft_plc_mobile/protocols/s7/s7_area_image.dart';
+import 'package:soft_plc_mobile/protocols/s7/s7_pdu.dart';
+import 'package:soft_plc_mobile/protocols/s7/s7_services.dart';
 
 void main() {
   PlcProject buildProject() => PlcProject(
@@ -29,6 +31,9 @@ void main() {
         structDefs: [
           PlcStructDef(name: 'VesselType', fields: [
             StructFieldDef(name: 'Level', dataType: 'INT16', defaultValue: 0),
+          ]),
+          PlcStructDef(name: 'SystemType', fields: [
+            StructFieldDef(name: 'Cmd', dataType: 'INT16', defaultValue: 0),
           ]),
         ],
         tags: [
@@ -54,6 +59,21 @@ void main() {
             value: {'Level': 11},
             ioType: 'Internal',
           ),
+          // Task 2 hardening fixtures ------------------------------------
+          // Reserved System tag; its OWN `access` is deliberately 'ReadWrite'
+          // (not 'ReadOnly') so the backstop test below isolates the
+          // NAME-based rule from the ordinary access-field rule.
+          PlcTag(
+            name: 'System',
+            path: 'System',
+            dataType: 'SystemType',
+            value: {'Cmd': 0},
+            ioType: 'Internal',
+            access: 'ReadWrite',
+          ),
+          // A SimulatedOutput tag with a deliberately writable map entry
+          // (see buildMap) — the carve-out (decision 1) that must survive.
+          PlcTag(name: 'SimOut', path: 'SimOut', dataType: 'INT16', value: 7, ioType: 'SimulatedOutput'),
         ],
       );
 
@@ -70,6 +90,9 @@ void main() {
         S7MapEntry(tag: 'Forced1', area: 'DB', dbNumber: 1, byteOffset: 30, bitOffset: 0),
         S7MapEntry(tag: 'Tank.Level', area: 'DB', dbNumber: 1, byteOffset: 32, bitOffset: 0),
         S7MapEntry(tag: 'Vessel.Level', area: 'DB', dbNumber: 1, byteOffset: 34, bitOffset: 0),
+        // Task 2 hardening fixtures: both entries deliberately 'ReadWrite'.
+        S7MapEntry(tag: 'System.Cmd', area: 'DB', dbNumber: 1, byteOffset: 36, bitOffset: 0),
+        S7MapEntry(tag: 'SimOut', area: 'DB', dbNumber: 1, byteOffset: 38, bitOffset: 0),
       ]);
 
   group('readAreaImage — encoding, width and BIG-ENDIAN byte order', () {
@@ -400,6 +423,42 @@ void main() {
       final results = applyAreaWrite(p, m, 'DB', 1, 0, toBytes([0x41, 0x42]));
       expect(readPath(p, 'Txt'), 'x');
       expect(results.every((r) => r.status != S7WriteStatus.written), isTrue);
+    });
+
+    group('Task 2 hardening: write-time backstop', () {
+      test(
+          'a WRITABLE map entry pointing at a System member is REFUSED with access-denied, member unchanged '
+          '(the map entry alone would otherwise allow this write)', () {
+        final p = buildProject();
+        final systemTag = p.tags.firstWhere((t) => t.name == 'System');
+        expect(systemTag.access, 'ReadWrite', reason: "the tag's OWN access is deliberately not ReadOnly");
+        final before = (systemTag.value as Map)['Cmd'];
+
+        final results = applyAreaWrite(p, buildMap(), 'DB', 1, 36, toBytes([0x03, 0xE7]));
+        final after = (p.tags.firstWhere((t) => t.name == 'System').value as Map)['Cmd'];
+        expect(after, before, reason: 'a refused write must never land');
+        final refused = results.where((r) => r.tag == 'System.Cmd');
+        expect(refused, isNotEmpty);
+        expect(refused.single.status, isNot(S7WriteStatus.written));
+        expect(s7WriteReturnCode(results), kS7ReturnAccessDenied);
+      });
+
+      test('a WRITABLE map entry pointing at a SimulatedOutput tag still succeeds (deliberate override survives)',
+          () {
+        final p = buildProject();
+        final results = applyAreaWrite(p, buildMap(), 'DB', 1, 38, toBytes([0x01, 0x41]));
+        expect(readPath(p, 'SimOut'), 0x0141);
+        final ok = results.where((r) => r.tag == 'SimOut' && r.status == S7WriteStatus.written);
+        expect(ok, isNotEmpty);
+      });
+
+      test('a normal Internal ReadWrite tag still writes successfully — the backstop is not over-broad', () {
+        final p = buildProject();
+        final results = applyAreaWrite(p, buildMap(), 'DB', 1, 2, toBytes([0x00, 0x64]));
+        expect(readPath(p, 'Word1'), 100);
+        final ok = results.where((r) => r.tag == 'Word1' && r.status == S7WriteStatus.written);
+        expect(ok, isNotEmpty);
+      });
     });
   });
 }

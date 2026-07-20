@@ -60,6 +60,10 @@ class OpcUaStatusCodes {
   static const badIdentityTokenRejected = 0x80210000; // status_codes.rs:118
   static const badSecurityChecksFailed = 0x80130000; // status_codes.rs:110
   static const badApplicationSignatureInvalid = 0x80580000; // status_codes.rs:168
+  // "The response message size exceeds limits set by the client." — emitted
+  // when a built response would overrun the send-buffer size negotiated in the
+  // Hello handshake, instead of putting an oversize chunk on the wire.
+  static const badResponseTooLarge = 0x80B90000; // status_codes.rs:246
 }
 
 /// MessageSecurityMode enum values (enums.rs:856-861, Int32-encoded):
@@ -266,6 +270,15 @@ class OpcUaServerSession {
   /// first sequence number is 1).
   int _serverSequenceNumber = 1;
 
+  /// The send-buffer size (bytes) negotiated with the client in the
+  /// Hello/Acknowledge handshake — the largest single MSG chunk this server
+  /// promised to emit. Set in [_handleHello]; defaults to the ceiling so no
+  /// pre-Hello framing (there is none in practice) can ever spuriously fault.
+  /// [_buildMsgOut] refuses to emit a chunk larger than this, substituting a
+  /// Bad_ResponseTooLarge ServiceFault (a deliberate v1 backstop — F/C
+  /// chunking and Browse continuation points are out of scope here).
+  int _negotiatedSendSize = _maxNegotiatedBufferSize;
+
   /// Lazily created the first time a subscription-service request arrives
   /// AND [sampler] is non-null (a `sampler: null` session always faults
   /// subscription services with Bad_ServiceUnsupported, preserving pre-Task-3
@@ -400,6 +413,7 @@ class OpcUaServerSession {
 
     final recvSize = negotiate(hello.sendBufferSize); // our receive <= their send
     final sendSize = negotiate(hello.receiveBufferSize); // our send <= their receive
+    _negotiatedSendSize = sendSize; // honored by every outbound MSG chunk
 
     if (hello.endpointUrl.isNotEmpty) {
       _clientEndpointUrl = hello.endpointUrl;
@@ -742,11 +756,9 @@ class OpcUaServerSession {
     );
   }
 
-  List<Uint8List> _fault(
-    OpcChunk requestChunk, {
-    required int requestHandle,
-    required int serviceResult,
-  }) {
+  /// Encodes a ServiceFault response BODY (type-id NodeId + ResponseHeader,
+  /// no service payload) echoing [requestHandle] and carrying [serviceResult].
+  Uint8List _faultBody(int requestHandle, int serviceResult) {
     final w = OpcUaWriter();
     w.nodeId(const OpcNodeId.numeric(0, _Ids.serviceFault));
     w.responseHeader(ResponseHeader(
@@ -754,7 +766,15 @@ class OpcUaServerSession {
       requestHandle: requestHandle,
       serviceResult: serviceResult,
     ));
-    return [_wrapMsgResponse(requestChunk, w.take())];
+    return w.take();
+  }
+
+  List<Uint8List> _fault(
+    OpcChunk requestChunk, {
+    required int requestHandle,
+    required int serviceResult,
+  }) {
+    return [_wrapMsgResponse(requestChunk, _faultBody(requestHandle, serviceResult))];
   }
 
   /// Verifies+decrypts a secured inbound MSG/CLO chunk into a plaintext
@@ -815,11 +835,39 @@ class OpcUaServerSession {
     return _buildMsgOut(requestChunk.requestId, body);
   }
 
+  /// The exact on-wire byte length the MSG chunk carrying a [bodyLength]-byte
+  /// service body would occupy — the pure-arithmetic mirror of [_buildMsgOut]'s
+  /// framing, computed WITHOUT building the frame or consuming a sequence
+  /// number. Lets the send-buffer ceiling be enforced before a frame (and its
+  /// sequence number) is committed.
+  int _msgFrameLength(int bodyLength) {
+    final channel = _secureChannel;
+    if (_channelSecured && channel != null) {
+      return channel.securedMsgLength(bodyLength);
+    }
+    // Plain MSG: chunk header (12) + symmetric security header (tokenId, 4) +
+    // sequence header (8) + body — matches buildMsgChunk / _buildChunk.
+    return kChunkHeaderLen + 4 + 8 + bodyLength;
+  }
+
   /// Frames one outbound MSG body — secured via [OpcSecureChannel.buildSecuredMsg]
   /// on a secured channel, or a plain [buildMsgChunk] otherwise (byte-identical
   /// to the pre-security host). Uses the current channel/token ids and the
   /// server's own next sequence number.
+  ///
+  /// This is the single outbound-MSG framing chokepoint, so the negotiated
+  /// send-buffer ceiling is enforced HERE — bounding every response, solicited
+  /// (Browse/Read/Write) and unsolicited (Publish notifications) alike. A body
+  /// that would frame larger than the ceiling is replaced (fail-loud) with a
+  /// Bad_ResponseTooLarge ServiceFault rather than an oversize chunk a strict
+  /// client would drop. The size is checked BEFORE a sequence number is taken,
+  /// so the fault carries the next sequence number with no gap (the discarded
+  /// body is never framed). Solicited services pre-check at dispatch to echo
+  /// the request's handle; an unsolicited notification falls back to handle 0.
   Uint8List _buildMsgOut(int requestId, Uint8List body) {
+    if (_msgFrameLength(body.length) > _negotiatedSendSize) {
+      body = _faultBody(0, OpcUaStatusCodes.badResponseTooLarge);
+    }
     final channel = _secureChannel;
     if (_channelSecured && channel != null) {
       return channel.buildSecuredMsg(
@@ -1396,6 +1444,18 @@ class OpcUaServerSession {
         chunk,
         requestHandle: header.requestHandle,
         serviceResult: OpcUaStatusCodes.badServiceUnsupported,
+      );
+    }
+    // Fail loud if the built response would overrun the negotiated send buffer
+    // (a large Browse of a big address space is the main amplifier). Echo the
+    // request handle here so the client can correlate the fault; the universal
+    // ceiling in [_buildMsgOut] is the backstop for any path that reaches
+    // framing without this pre-check.
+    if (_msgFrameLength(responseBody.length) > _negotiatedSendSize) {
+      return _fault(
+        chunk,
+        requestHandle: header.requestHandle,
+        serviceResult: OpcUaStatusCodes.badResponseTooLarge,
       );
     }
     return [_wrapMsgResponse(chunk, responseBody)];

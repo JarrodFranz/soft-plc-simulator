@@ -108,6 +108,34 @@ void main() {
       expect(pump.access, 'ReadWrite');
     });
 
+    test('marks the reserved System tag ReadOnly by name, even if its own access is left at the default ReadWrite', () {
+      final project = PlcProject(
+        id: 'sys_proj',
+        name: 'System Project',
+        controllerName: 'PLC_SYS',
+        tags: [
+          PlcTag(
+            name: 'System',
+            path: 'System',
+            dataType: 'SYSTEM',
+            value: 0,
+            ioType: 'Internal',
+            // access intentionally left at its default 'ReadWrite', to
+            // prove the name-based rule -- not the access field -- is
+            // what forces this ReadOnly.
+          ),
+        ],
+        structDefs: [],
+        programs: [],
+        tasks: [],
+        hmis: [],
+      );
+
+      final map = OpcuaMap.autoGenerate(project);
+      final system = map.nodes.firstWhere((n) => n.tag == 'System');
+      expect(system.access, 'ReadOnly');
+    });
+
     test('array tags expand into one node per scalar element', () {
       final project = PlcProject(
         id: 'arr_proj',

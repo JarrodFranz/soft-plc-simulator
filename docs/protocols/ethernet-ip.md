@@ -79,11 +79,50 @@ falls back to the regular Forward Open — a path the E2E exercises deliberately
 | --- | --- | --- |
 | Read Tag | 0x4C | Reply is type code (`u16`) + packed value. Element count in the request is tolerated; v1 exposes only scalar leaves, so there is never more than one element. |
 | Write Tag | 0x4D | Request is type code (`u16`) + element count (`u16`) + value. A type code that does not match the tag's actual CIP type is refused with 0x09. |
-| Multiple Service Packet | 0x0A | Batches embedded Read/Write Tag requests. The request path must address the Message Router (class 0x02, instance 0x01). One embedded request failing only sets that embedded response's status — it never fails the batch. |
-| Forward Open | 0x54 | Regular form only. |
+| Multiple Service Packet | 0x0A | Batches embedded Read/Write Tag requests. The request path must address the Message Router (class 0x02, instance 0x01). One embedded request failing only sets that embedded response's status — it never fails the batch. Over a connected send, the reply is bounded by the negotiated connection size (see *Response-size budget*). |
+| Forward Open | 0x54 | Regular form only. The T→O and O→T Network Connection Parameters words are parsed and the connection sizes stored on the connection (see *Response-size budget*). |
 | Forward Close | 0x4E | Matched by (connection serial, vendor id, originator serial), never by connection id — a Forward Close request does not carry one. |
 
 Any other service code returns `Service Not Supported` (0x08).
+
+### Response-size budget on connected sends
+
+A `Forward Open` request carries, in its **Network Connection Parameters**
+words, the size of the connection each direction negotiates. The low 9 bits of
+each `u16` word are the connection size in bytes (the regular Forward Open,
+`0x54`; the Large Forward Open with its wider `u32` fields is not implemented).
+The connection manager decodes both words and stores them on the connection —
+the **T→O size** (the size of the frames *this target sends*) is the one that
+bounds a reply. A connected `SendUnitData` therefore carries that size into
+`dispatchCipService` as a **response budget**.
+
+The budget applies to the **Multiple Service Packet (0x0A)** reply, the one
+service that can amplify a small request into a large reply. It mirrors the S7
+Read Var budget (`s7_services.dart buildReadVarResponse`): each embedded
+response's on-wire cost — its 2-byte reply-offset entry plus its
+`buildCipResponse` body — is charged as it is admitted, and a fixed minimum
+(`kCipMspItemHeaderLen`, a header-only error item) is reserved for every
+still-to-come item, because the reply's item count must equal the request's, so
+no item can be dropped. An embedded response that does not fit the remaining
+room is replaced by a **header-only `0x11` (Reply Data Too Large)** item rather
+than an oversized frame. The finished CIP response is therefore never larger
+than the connection size the client agreed to.
+
+Two behaviours are deliberately preserved:
+
+- **Unconnected (UCMM / `SendRRData`) messaging is unbounded.** It negotiates no
+  connection size, so no budget is applied — a UCMM batch behaves byte-for-byte
+  as before this hardening pass.
+- **A connected batch that fits its budget is byte-identical** to the same batch
+  with no budget. Only a batch that *would* overrun changes; its over-budget
+  items carry `0x11`.
+
+A separate, always-on guard rejects a batch whose reply framing would exceed the
+`u16` offset field: the emitted CIP response is `cursor + 6` bytes (the 2-byte
+service count plus the 4-byte outer response header), so the bound is
+`0xFFFF - 6`, not `0xFFFF`. A `cursor` in `(0xFFFF - 6, 0xFFFF]` builds a frame
+whose own length runs past `0xFFFF` — a self-inconsistency the outer frame
+length does not catch — and is refused with `0x0A` (Embedded List Error).
 
 ### Supported data types
 

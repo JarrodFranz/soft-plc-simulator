@@ -56,6 +56,21 @@ library dnp3_app;
 
 import 'dart:typed_data';
 
+// --- Application-fragment size bound -----------------------------------------
+
+/// Maximum size (in bytes) of a single DNP3 APPLICATION-layer fragment this
+/// outstation will emit — application control + function code + IIN + objects.
+///
+/// This is the `dnp3` reference crate's `rx_buffer_size`, whose value is *both*
+/// its minimum and its default (2048). A master cannot raise it, so any single
+/// application fragment larger than this is silently dropped by the master's
+/// reassembler — which is why a Class 0 integrity read of a large database
+/// (~408 analog INT32 points ≈ 2051 bytes in one fragment) must be paged across
+/// several fragments, each at or under this bound, rather than emitted whole.
+/// The bound is the whole application fragment, header included, not just the
+/// object payload.
+const int kDnpMaxAppFragment = 2048;
+
 // --- Function codes ---------------------------------------------------------
 
 /// DNP3 Application Layer function codes relevant to a v1 outstation.

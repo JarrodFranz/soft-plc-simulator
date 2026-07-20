@@ -34,6 +34,7 @@ const _writeResponseId = 676;
 const _activateSessionRequestId = 467;
 const _createSessionRequestId = 461;
 const _openSecureChannelRequestId = 446;
+const _serviceFaultId = 397; // node_ids.rs:1662
 
 // --- StatusCodes, verified against types/status_codes.rs --------------------
 const _statusGood = 0;
@@ -44,6 +45,12 @@ const _statusBadNotWritable = 0x803B0000;
 const _statusBadUserAccessDenied = 0x801F0000;
 const _statusBadTypeMismatch = 0x80740000;
 const _statusBadNothingToDo = 0x800F0000;
+// Bad_ResponseTooLarge: "The response message size exceeds limits set by the
+// client." (status_codes.rs:246 / :762). NOTE the task brief's 0x80B80000 is
+// Bad_RequestTooLarge; the semantically-correct code for a response overrunning
+// the client's negotiated send buffer is 0x80B90000 (verified against the
+// vendored opcua 0.12.0 reference).
+const _statusBadResponseTooLarge = 0x80B90000;
 
 // --- AttributeIds, verified against types/attribute.rs ----------------------
 const _attrNodeClass = 2;
@@ -208,6 +215,93 @@ PlcProject _buildProject() {
           OpcuaNode(nodeId: 'ns=1;s=Temperature', tag: 'Temperature', access: 'ReadOnly'),
           OpcuaNode(nodeId: 'ns=1;s=Counter', tag: 'Counter', access: 'ReadWrite'),
           // 'Hidden' tag deliberately NOT mapped.
+        ],
+      ),
+    ),
+  );
+  return project;
+}
+
+/// Builds a project whose OPC UA map exposes [tagCount] flat root-level
+/// variables — the large-address-space shape the size audit flagged: a single
+/// Browse of Objects must serialize one ReferenceDescription per tag, which for
+/// ~1400 tags overruns a 65536-byte negotiated send buffer in one un-chunked
+/// frame. All tags are plain Internal ReadWrite ints; only the COUNT matters
+/// for the size bound under test.
+PlcProject _buildLargeRootProject(int tagCount) {
+  final tags = <PlcTag>[];
+  final nodes = <OpcuaNode>[];
+  for (var i = 0; i < tagCount; i++) {
+    final name = 'Tag${i.toString().padLeft(4, '0')}';
+    tags.add(PlcTag(
+      name: name,
+      path: name,
+      dataType: 'INT32',
+      value: 0,
+      ioType: 'Internal',
+    ));
+    nodes.add(OpcuaNode(nodeId: 'ns=1;s=$name', tag: name, access: 'ReadWrite'));
+  }
+  final project = PlcProject(
+    id: 'proj_large',
+    name: 'Large Address Space',
+    controllerName: 'PLC_LARGE',
+    tags: tags,
+    structDefs: [],
+    programs: [],
+    tasks: [],
+    hmis: [],
+  );
+  project.protocols = ProtocolSettings(
+    opcua: OpcUaProtocolConfig(
+      enabled: true,
+      namespaceUri: 'urn:test:large',
+      map: OpcuaMap(
+        namespaceUri: 'urn:test:large',
+        nodes: nodes,
+      ),
+    ),
+  );
+  return project;
+}
+
+/// Task 2 hardening fixture project: kept SEPARATE from [_buildProject]
+/// because several existing tests above pin exact Browse reference counts
+/// against that fixture's tag set — adding tags there would silently shift
+/// those counts. This one has its own reserved `System` tag (own `access`
+/// deliberately 'ReadWrite', isolating the NAME-based backstop rule from the
+/// ordinary access-field rule) and a `SimulatedOutput` tag with a
+/// deliberately writable map node (the decision-1 override carve-out).
+PlcProject _buildHardeningProject() {
+  final project = PlcProject(
+    id: 'proj_hardening',
+    name: 'Hardening Test Project',
+    controllerName: 'PLC_HARDEN',
+    tags: [
+      PlcTag(name: 'System', path: 'System', dataType: 'INT32', value: 0, ioType: 'Internal', access: 'ReadWrite'),
+      PlcTag(
+          name: 'SimOutOverride',
+          path: 'SimOutOverride',
+          dataType: 'INT32',
+          value: 9,
+          ioType: 'SimulatedOutput'),
+      PlcTag(name: 'Plain', path: 'Plain', dataType: 'INT32', value: 5, ioType: 'Internal'),
+    ],
+    structDefs: [],
+    programs: [],
+    tasks: [],
+    hmis: [],
+  );
+  project.protocols = ProtocolSettings(
+    opcua: OpcUaProtocolConfig(
+      enabled: true,
+      namespaceUri: 'urn:test:harden',
+      map: OpcuaMap(
+        namespaceUri: 'urn:test:harden',
+        nodes: [
+          OpcuaNode(nodeId: 'ns=1;s=System', tag: 'System', access: 'ReadWrite'),
+          OpcuaNode(nodeId: 'ns=1;s=SimOutOverride', tag: 'SimOutOverride', access: 'ReadWrite'),
+          OpcuaNode(nodeId: 'ns=1;s=Plain', tag: 'Plain', access: 'ReadWrite'),
         ],
       ),
     ),
@@ -881,6 +975,68 @@ void main() {
     });
   });
 
+  group('Task 2 hardening: write-time backstop', () {
+    test(
+        'Write to a WRITABLE map node pointing at the System tag is refused with Bad_UserAccessDenied, '
+        'value unchanged (the map node alone would otherwise allow this write)', () {
+      final project = _buildHardeningProject();
+      final services = OpcUaProjectServices(projectProvider: () => project);
+      final systemTag = project.tags.firstWhere((t) => t.name == 'System');
+      expect(systemTag.access, 'ReadWrite', reason: "the tag's OWN access is deliberately not ReadOnly");
+
+      final space = OpcUaAddressSpace.build(project);
+      final nodeId = space.byNodeId(const OpcNodeId.string(1, 'System'))!.nodeId;
+      final body = _writeRequestBody(toWrite: [
+        (nodeId: nodeId, attributeId: _attrValue, indexRange: null, value: const OpcVariant(typeId: 6, value: 999)),
+      ]);
+      final h = _reqHeader();
+      final resp = services.handle(_writeRequestId, body, h, _respondBuilder(h))!;
+      final reader = OpcUaReader(resp);
+      reader.nodeId();
+      reader.responseHeader();
+      expect(reader.int32(), 1);
+      expect(reader.statusCode(), _statusBadUserAccessDenied);
+      expect(readPath(project, 'System'), 0);
+    });
+
+    test('Write to a WRITABLE map node pointing at a SimulatedOutput tag still succeeds '
+        '(deliberate override survives)', () {
+      final project = _buildHardeningProject();
+      final services = OpcUaProjectServices(projectProvider: () => project);
+      final space = OpcUaAddressSpace.build(project);
+      final nodeId = space.byNodeId(const OpcNodeId.string(1, 'SimOutOverride'))!.nodeId;
+      final body = _writeRequestBody(toWrite: [
+        (nodeId: nodeId, attributeId: _attrValue, indexRange: null, value: const OpcVariant(typeId: 6, value: 321)),
+      ]);
+      final h = _reqHeader();
+      final resp = services.handle(_writeRequestId, body, h, _respondBuilder(h))!;
+      final reader = OpcUaReader(resp);
+      reader.nodeId();
+      reader.responseHeader();
+      expect(reader.int32(), 1);
+      expect(reader.statusCode(), _statusGood);
+      expect(readPath(project, 'SimOutOverride'), 321);
+    });
+
+    test('a normal Internal ReadWrite tag still writes successfully — the backstop is not over-broad', () {
+      final project = _buildHardeningProject();
+      final services = OpcUaProjectServices(projectProvider: () => project);
+      final space = OpcUaAddressSpace.build(project);
+      final nodeId = space.byNodeId(const OpcNodeId.string(1, 'Plain'))!.nodeId;
+      final body = _writeRequestBody(toWrite: [
+        (nodeId: nodeId, attributeId: _attrValue, indexRange: null, value: const OpcVariant(typeId: 6, value: 77)),
+      ]);
+      final h = _reqHeader();
+      final resp = services.handle(_writeRequestId, body, h, _respondBuilder(h))!;
+      final reader = OpcUaReader(resp);
+      reader.nodeId();
+      reader.responseHeader();
+      expect(reader.int32(), 1);
+      expect(reader.statusCode(), _statusGood);
+      expect(readPath(project, 'Plain'), 77);
+    });
+  });
+
   group('Full-stack through OpcUaServerSession', () {
     const info = OpcUaServerInfo(
       applicationName: 'Mobile Soft PLC',
@@ -1035,6 +1191,107 @@ void main() {
       respReader.byteString();
       final refCount = respReader.int32();
       expect(refCount, 4); // Server + StartPB + Temperature + Counter (Task 2)
+    });
+
+    // --- Negotiated send-buffer ceiling (audit: an oversize Browse) ---------
+
+    /// Drives a full HEL/OPN/CreateSession/ActivateSession handshake against a
+    /// fresh session for [project], negotiating [clientReceiveBufferSize] as
+    /// the client's receive buffer (which becomes the server's SEND ceiling),
+    /// then issues a single Browse of the Objects folder and returns the raw
+    /// response frame(s).
+    List<Uint8List> runBrowseObjects(
+      PlcProject project, {
+      required int clientReceiveBufferSize,
+    }) {
+      final services = OpcUaProjectServices(projectProvider: () => project);
+      final session = OpcUaServerSession(info: info, services: services);
+
+      final hello = HelloMessage(
+        protocolVersion: 0,
+        receiveBufferSize: clientReceiveBufferSize,
+        sendBufferSize: 65536,
+        maxMessageSize: 0,
+        maxChunkCount: 0,
+        endpointUrl: 'opc.tcp://127.0.0.1:4840',
+      ).build();
+      session.onBytes(hello, 0);
+
+      final opnFrames = session.onBytes(buildTestOpn(1, 10), 0);
+      final opnReader = OpcUaReader(parseChunk(opnFrames.single).body);
+      opnReader.nodeId();
+      opnReader.responseHeader();
+      opnReader.uint32();
+      final channelId = opnReader.uint32();
+      final tokenId = opnReader.uint32();
+
+      final createFrames =
+          session.onBytes(buildTestCreateSession(channelId, tokenId, 2, 11), 0);
+      final createReader = OpcUaReader(parseChunk(createFrames.single).body);
+      createReader.nodeId();
+      createReader.responseHeader();
+      createReader.nodeId(); // sessionId
+      final authToken = createReader.nodeId();
+
+      session.onBytes(
+          buildTestActivateSession(channelId, tokenId, 3, 12, authToken), 0);
+      return session.onBytes(
+          buildTestBrowseObjects(channelId, tokenId, 4, 13, authToken), 0);
+    }
+
+    test('a small Browse under the negotiated buffer is unchanged (Ignition path)', () {
+      final frames = runBrowseObjects(_buildProject(), clientReceiveBufferSize: 65536);
+      expect(frames, hasLength(1));
+      final frame = frames.single;
+      expect(frame.length, lessThanOrEqualTo(65536));
+      final r = OpcUaReader(parseChunk(frame).body);
+      expect(r.nodeId().numericId, _browseResponseId); // NOT a ServiceFault
+      expect(r.responseHeader().serviceResult, _statusGood);
+      expect(r.int32(), 1); // one BrowseResult
+      expect(r.statusCode(), _statusGood);
+    });
+
+    test('Browse of a ~1400-tag address space over a 65536 buffer -> Bad_ResponseTooLarge, never an oversize frame', () {
+      final frames =
+          runBrowseObjects(_buildLargeRootProject(1400), clientReceiveBufferSize: 65536);
+      expect(frames, hasLength(1));
+      final frame = frames.single;
+      // The invariant the audit demands: we NEVER put more bytes on the wire
+      // than the client agreed to receive.
+      expect(frame.length, lessThanOrEqualTo(65536));
+      final r = OpcUaReader(parseChunk(frame).body);
+      expect(r.nodeId().numericId, _serviceFaultId);
+      final header = r.responseHeader();
+      expect(header.serviceResult, _statusBadResponseTooLarge);
+      expect(header.requestHandle, 1); // echoed from the request header
+    });
+
+    test('the ceiling is honored at byte granularity: fits at L, faults at L-1', () {
+      final project = _buildLargeRootProject(1400);
+
+      // With a 1 MB buffer the full Browse is emitted un-faulted; capture its
+      // exact frame length L. This ALSO proves the dataset genuinely overruns
+      // a 65536 buffer (so the fault test above is exercising a real overflow).
+      final bigFrames = runBrowseObjects(project, clientReceiveBufferSize: 1048576);
+      expect(bigFrames, hasLength(1));
+      final l = bigFrames.single.length;
+      expect(l, greaterThan(65536));
+      expect(OpcUaReader(parseChunk(bigFrames.single).body).nodeId().numericId,
+          _browseResponseId);
+
+      // Negotiating exactly L: the frame fits (length == ceiling, not over) and
+      // is emitted unchanged — the same L bytes, a real BrowseResponse.
+      final atLimit = runBrowseObjects(project, clientReceiveBufferSize: l);
+      expect(atLimit.single.length, l);
+      expect(OpcUaReader(parseChunk(atLimit.single).body).nodeId().numericId,
+          _browseResponseId);
+
+      // One byte tighter and the same Browse must fail loud, not overrun.
+      final overLimit = runBrowseObjects(project, clientReceiveBufferSize: l - 1);
+      expect(overLimit.single.length, lessThanOrEqualTo(l - 1));
+      final r = OpcUaReader(parseChunk(overLimit.single).body);
+      expect(r.nodeId().numericId, _serviceFaultId);
+      expect(r.responseHeader().serviceResult, _statusBadResponseTooLarge);
     });
   });
 }

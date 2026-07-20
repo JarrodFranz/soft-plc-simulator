@@ -50,6 +50,21 @@
 //!      force-aware `readPath` resolver (shared with the scan engine and the
 //!      OPC UA server) is actually being consulted by the Modbus register
 //!      handler.
+//!   5b. `write_single_coil(1, false)` on that SAME forced coil and assert
+//!      the call returns `Err(ExceptionCode::IllegalDataAddress)`, NOT
+//!      `Ok(())` — the protocol-hardening workstream's Task 3 machine-proof.
+//!      Before Task 3 this write was silently discarded server-side but
+//!      still answered with a normal success echo (a deceptive-success bug:
+//!      the master believed its write landed when it never did). This step
+//!      proves, via the REAL tokio-modbus client's own typed error, that (a)
+//!      the server now answers a genuine Modbus exception PDU instead of a
+//!      success echo, and (b) the chosen exception code (Illegal Data
+//!      Address, `0x02` — the same code the ReadOnly/unmapped refusals
+//!      already use) decodes cleanly through a third-party client rather
+//!      than being misparsed, causing a protocol desync, or requiring
+//!      special-case handling. A follow-up `read_coils(1, 1)` re-confirms
+//!      the coil still reads `true` (forced value intact, never touched by
+//!      the refused write).
 //!   6. `read_holding_registers(1, 2)` and decode as a big-endian,
 //!      high-word-first INT32, asserting it equals the `Motor.Speed`
 //!      struct-member field's value — proof a dotted struct-member map entry
@@ -267,6 +282,58 @@ async fn run(host: &str, port: u16) -> Result<(), String> {
             return Err(format!(
                 "expected coil[{FORCED_COIL_ADDR}] == Some(true) (Forced_Bool's forced value read through to Modbus), got {other:?}"
             ))
+        }
+    }
+
+    // --- Step 4b: write to the SAME forced coil must be REFUSED -----------
+    //
+    // Protocol-hardening workstream, Task 3 machine-proof. Before this fix,
+    // a write to a forced tag was silently discarded server-side but the
+    // server still answered with a normal SUCCESS echo -- a
+    // deceptive-success bug: the master believed its write landed when it
+    // never did. This step drives the REAL tokio-modbus client's own
+    // `write_single_coil` and inspects its typed result directly (not the
+    // string-collapsing helpers above) so a transport-level failure, a
+    // silent success, and a genuine Modbus exception are all distinguishable
+    // -- only the last is correct now.
+    println!(
+        "[probe] write_single_coil({FORCED_COIL_ADDR}, false) on the FORCED coil -- expect a Modbus exception, not success..."
+    );
+    match timeout(CALL_TIMEOUT, ctx.write_single_coil(FORCED_COIL_ADDR, false)).await {
+        Err(_) => return Err(format!("write_single_coil({FORCED_COIL_ADDR}) timed out")),
+        Ok(Err(transport_err)) => {
+            return Err(format!(
+                "write_single_coil({FORCED_COIL_ADDR}) transport error (expected a clean Modbus exception instead): {transport_err}"
+            ));
+        }
+        Ok(Ok(Ok(()))) => {
+            return Err(format!(
+                "write_single_coil({FORCED_COIL_ADDR}) SUCCEEDED (Ok) -- this is the deceptive-success bug Task 3 fixes; a forced-tag write must be refused with a Modbus exception, not silently accepted"
+            ));
+        }
+        Ok(Ok(Err(exception))) => {
+            if exception != ExceptionCode::IllegalDataAddress {
+                return Err(format!(
+                    "expected ExceptionCode::IllegalDataAddress for a forced-tag write, got {exception:?}"
+                ));
+            }
+            println!(
+                "[probe] forced-write refusal OK: server answered Modbus exception {exception:?} (0x{:02X}), not a success echo",
+                u8::from(exception)
+            );
+        }
+    }
+    // Re-read the forced coil to confirm the refused write never touched
+    // the underlying value -- it must still read the forced `true`.
+    let still_forced = read_coils(&mut ctx, FORCED_COIL_ADDR, 1).await?;
+    match still_forced.first().copied() {
+        Some(true) => println!(
+            "[probe] forced coil still reads true after the refused write (unchanged, as expected)"
+        ),
+        other => {
+            return Err(format!(
+                "expected coil[{FORCED_COIL_ADDR}] to remain Some(true) after the refused write, got {other:?}"
+            ));
         }
     }
 

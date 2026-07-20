@@ -10,6 +10,7 @@
 
 import 'project_model.dart';
 import 'tag_resolver.dart';
+import 'tag_write_gate.dart';
 
 /// One MQTT tag<->metric map entry, binding a project tag to a published
 /// metric name.
@@ -75,8 +76,10 @@ class MqttMap {
   /// Metric name defaults to the leaf's dotted path, prefixed with the ROOT
   /// tag's folder (the tag whose name is the leaf path's first segment);
   /// `SimulatedOutput` tags or an explicit `ReadOnly` root tag `access`
-  /// (e.g. the reserved `System` tag) are read-only, everything else
-  /// (`SimulatedInput`, `Internal`) is writable.
+  /// (e.g. the reserved `System` tag, checked by name, not just its `access`
+  /// field, so this holds even if `System`'s own `access` were ever left at
+  /// its default) are read-only, everything else (`SimulatedInput`, `Internal`)
+  /// is writable.
   static MqttMap autoGenerate(PlcProject p) {
     const scalarTypes = {'BOOL', 'INT16', 'INT32', 'FLOAT64', 'STRING'};
     final entries = <MqttMapEntry>[];
@@ -86,7 +89,7 @@ class MqttMap {
       }
       final root = rootTagOf(p, leaf.path);
       final rootFolder = root?.folder ?? '';
-      final writable = root?.ioType != 'SimulatedOutput' && root?.access != 'ReadOnly';
+      final writable = defaultsExternallyWritable(p, leaf.path);
       entries.add(MqttMapEntry(
         tag: leaf.path,
         metric: rootFolder.isEmpty ? leaf.path : '$rootFolder/${leaf.path}',

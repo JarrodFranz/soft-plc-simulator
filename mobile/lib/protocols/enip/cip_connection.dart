@@ -152,6 +152,16 @@ const int kInitialTargetConnectionId = 1;
 /// the variable-length connection path.
 const int _kForwardOpenFixedLen = 36;
 
+/// Mask selecting the Connection Size (in bytes) from a regular Forward Open
+/// Network Connection Parameters u16 word: the low 9 bits (bits 0-8). The
+/// remaining bits carry the connection type, priority, size type (fixed vs
+/// variable) and redundant-owner flag — none of which this target needs to
+/// bound a reply, which depends only on the byte count. (The Large Forward
+/// Open, service `0x5B`, whose parameters are u32 with a wider size field, is
+/// deliberately not implemented — see the file header and the E2E, which
+/// proves the regular-`0x54` fallback path.)
+const int _kNetworkConnectionSizeMask = 0x01FF;
+
 /// Byte length of the fixed-position Forward Close request fields, before
 /// the variable-length connection path.
 const int _kForwardCloseFixedLen = 12;
@@ -174,6 +184,21 @@ class CipConnection {
   /// consumes T->O traffic, so the originator allocates its id).
   final int connectionIdTO;
 
+  /// The **Target-to-Originator** connection size in bytes, decoded from the
+  /// T->O Network Connection Parameters word of the Forward Open request.
+  /// This is the size of the replies the TARGET sends, so it is the budget a
+  /// connected [dispatchCipService] must keep a Multiple Service Packet reply
+  /// within — a client that negotiates this size must never be handed a
+  /// larger connected frame. See `cip_tags.dart`'s MSP budget.
+  final int connectionSizeTO;
+
+  /// The **Originator-to-Target** connection size in bytes, decoded from the
+  /// O->T Network Connection Parameters word. This bounds the size of the
+  /// requests the originator sends; the target does not enforce it (it only
+  /// bounds what it SENDS, via [connectionSizeTO]), but it is decoded and
+  /// retained alongside its T->O counterpart for completeness.
+  final int connectionSizeOT;
+
   /// Connection Serial Number, from the Forward Open request. Part of the
   /// triple a Forward Close matches against.
   final int connectionSerial;
@@ -189,6 +214,8 @@ class CipConnection {
   CipConnection({
     required this.connectionIdOT,
     required this.connectionIdTO,
+    required this.connectionSizeTO,
+    required this.connectionSizeOT,
     required this.connectionSerial,
     required this.vendorId,
     required this.originatorSerial,
@@ -228,7 +255,17 @@ class CipConnectionManager {
     final vendorId = bd.getUint16(12, Endian.little);
     final originatorSerial = bd.getUint32(14, Endian.little);
     final otRpi = bd.getUint32(22, Endian.little);
+    // O->T (offset 26) and T->O (offset 32) Network Connection Parameters —
+    // the connection-size words this codec previously skipped. The low 9 bits
+    // of each are the connection size in bytes (see
+    // `_kNetworkConnectionSizeMask`). The T->O size is the one that matters
+    // for response budgeting: it is the size of the frames THIS target sends,
+    // so it bounds a connected Multiple Service Packet reply.
+    final otParams = bd.getUint16(26, Endian.little);
     final toRpi = bd.getUint32(28, Endian.little);
+    final toParams = bd.getUint16(32, Endian.little);
+    final connectionSizeOT = otParams & _kNetworkConnectionSizeMask;
+    final connectionSizeTO = toParams & _kNetworkConnectionSizeMask;
     final pathSizeWords = data[35];
     final pathByteLen = pathSizeWords * 2;
     if (data.length < _kForwardOpenFixedLen + pathByteLen) {
@@ -240,6 +277,8 @@ class CipConnectionManager {
     _byConnectionId[connectionIdOT] = CipConnection(
       connectionIdOT: connectionIdOT,
       connectionIdTO: connectionIdTO,
+      connectionSizeTO: connectionSizeTO,
+      connectionSizeOT: connectionSizeOT,
       connectionSerial: connectionSerial,
       vendorId: vendorId,
       originatorSerial: originatorSerial,

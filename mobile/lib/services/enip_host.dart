@@ -427,7 +427,11 @@ class _Connection {
             '${cipBytes.length} request bytes.',
       );
       final project = projectProvider();
-      resp = dispatchCipService(project, _currentMap(project), req);
+      // Connected send: bound the reply to the T->O connection size the
+      // client negotiated at Forward Open (see cip_connection.dart and the
+      // MSP budget in cip_tags.dart). UCMM (SendRRData, above) passes no
+      // budget and stays unbounded.
+      resp = dispatchCipService(project, _currentMap(project), req, responseBudget: conn.connectionSizeTO);
     }
 
     final respBytes = buildCipResponse(resp);

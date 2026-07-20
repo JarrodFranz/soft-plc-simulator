@@ -28,6 +28,14 @@ PlcProject _buildProject() {
       PlcTag(name: 'Hold32', path: 'Hold32', dataType: 'INT32', value: 0, ioType: 'Internal'),
       PlcTag(name: 'InFloat', path: 'InFloat', dataType: 'FLOAT64', value: 0.0, ioType: 'SimulatedOutput'),
       PlcTag(name: 'RoHold', path: 'RoHold', dataType: 'INT16', value: 42, ioType: 'SimulatedOutput'),
+      // Task 2 hardening fixtures ------------------------------------------
+      // Reserved System tag; its OWN `access` is deliberately 'ReadWrite'
+      // (not 'ReadOnly') so the backstop test below isolates the NAME-based
+      // rule from the ordinary access-field rule.
+      PlcTag(name: 'System', path: 'System', dataType: 'INT16', value: 0, ioType: 'Internal', access: 'ReadWrite'),
+      // A SimulatedOutput tag with a deliberately writable map entry (see
+      // below) — the carve-out (decision 1) that must survive the backstop.
+      PlcTag(name: 'SimOutOverride', path: 'SimOutOverride', dataType: 'INT16', value: 9, ioType: 'SimulatedOutput'),
     ],
     protocols: ProtocolSettings(
       modbus: ModbusProtocolConfig(
@@ -39,6 +47,10 @@ PlcProject _buildProject() {
           ModbusMapEntry(tag: 'Hold32', table: 'holding', address: 1, access: 'ReadWrite'),
           ModbusMapEntry(tag: 'InFloat', table: 'input', address: 0, access: 'ReadOnly'),
           ModbusMapEntry(tag: 'RoHold', table: 'holding', address: 10, access: 'ReadOnly'),
+          // Task 2 hardening fixtures: both deliberately 'ReadWrite' at the map level.
+          ModbusMapEntry(tag: 'System', table: 'holding', address: 20, access: 'ReadWrite'),
+          ModbusMapEntry(tag: 'System', table: 'coil', address: 5, access: 'ReadWrite'),
+          ModbusMapEntry(tag: 'SimOutOverride', table: 'holding', address: 21, access: 'ReadWrite'),
         ]),
       ),
     ),
@@ -115,14 +127,22 @@ void main() {
     expect(readPath(project, 'RoHold'), 42); // unchanged
   });
 
-  test('write a forced tag: value unchanged but normal echo returned', () {
+  // Protocol-hardening workstream, Task 3: a write to a forced tag used to
+  // fall through `_isForcedSkip` silently discarded but still echoed as a
+  // normal SUCCESS response -- a deceptive-success bug (the master believed
+  // its write landed when it never did). It now must be refused VISIBLY
+  // with an exception PDU, same as every other refused write. See the
+  // dedicated 'Task 3 hardening' group below for full FC05/06/0F/10
+  // coverage; this test (FC05, the original bug report) is kept in place
+  // (renamed) so its git history/blame stays attached to the fix.
+  test('write a forced tag: refused with an exception, value unchanged (Task 3 fix)', () {
     final tag = project.tags.firstWhere((t) => t.name == 'Coil0');
     tag.isForced = true;
     tag.forcedValue = false;
     final req = _bytes([0x05, 0x00, 0x00, 0xFF, 0x00]);
     final resp = server.handle(_req(req));
-    expect(resp, req); // still echoes success
-    expect(readPath(project, 'Coil0'), false); // write silently skipped
+    expect(resp, encodeExceptionResponse(0x05, ModbusEx.illegalDataAddress));
+    expect(readPath(project, 'Coil0'), false); // unchanged (still the forced value)
   });
 
   test('FC06 to holding address 1 (part of the multi-register INT32) -> illegal data value', () {
@@ -285,6 +305,151 @@ void main() {
       final resp = server.handle(_req(_bytes([0x03, 0x00, 0x01, 0x00, 0x02])));
       final expected = encodeReadRegistersResponse(0x03, encodeInt32(123456));
       expect(resp, expected);
+    });
+  });
+
+  group('Task 2 hardening: write-time backstop', () {
+    test(
+        'FC06 write to a WRITABLE map entry pointing at the System tag is refused (illegalDataAddress), '
+        'tag unchanged — the map entry alone would otherwise allow this write', () {
+      final systemTag = project.tags.firstWhere((t) => t.name == 'System');
+      expect(systemTag.access, 'ReadWrite', reason: "the tag's OWN access is deliberately not ReadOnly");
+      final before = readPath(project, 'System');
+
+      final resp = server.handle(_req(_bytes([0x06, 0x00, 0x14, 0x03, 0xE7]))); // address 20, value 999
+      expect(resp, encodeExceptionResponse(0x06, ModbusEx.illegalDataAddress));
+      expect(readPath(project, 'System'), before);
+    });
+
+    test('FC10 (multiple write) to the System holding address is refused, tag unchanged', () {
+      final regs = encodeInt16(1234);
+      final req = _bytes([
+        0x10, 0x00, 0x14, 0x00, 0x01, 0x02, //
+        (regs[0] >> 8) & 0xFF, regs[0] & 0xFF,
+      ]);
+      final resp = server.handle(_req(req));
+      expect(resp, encodeExceptionResponse(0x10, ModbusEx.illegalDataAddress));
+      expect(readPath(project, 'System'), 0);
+    });
+
+    test('FC05 write to a WRITABLE map entry pointing at the System tag (coil address) is refused, tag unchanged',
+        () {
+      final resp = server.handle(_req(_bytes([0x05, 0x00, 0x05, 0xFF, 0x00])));
+      expect(resp, encodeExceptionResponse(0x05, ModbusEx.illegalDataAddress));
+      expect(readPath(project, 'System'), 0);
+    });
+
+    test('FC0F (multiple coil write) to the System coil address is refused, tag unchanged', () {
+      final req = _bytes([0x0F, 0x00, 0x05, 0x00, 0x01, 0x01, 0x01]);
+      final resp = server.handle(_req(req));
+      expect(resp, encodeExceptionResponse(0x0F, ModbusEx.illegalDataAddress));
+      expect(readPath(project, 'System'), 0);
+    });
+
+    test('FC06 write to a WRITABLE map entry pointing at a SimulatedOutput tag still succeeds '
+        '(deliberate override survives)', () {
+      final resp = server.handle(_req(_bytes([0x06, 0x00, 0x15, 0x00, 0x63]))); // address 21, value 99
+      expect(resp, _bytes([0x06, 0x00, 0x15, 0x00, 0x63]));
+      expect(readPath(project, 'SimOutOverride'), 99);
+    });
+
+    test('a normal Internal ReadWrite tag still writes successfully — the backstop is not over-broad', () {
+      final resp = server.handle(_req(_bytes([0x06, 0x00, 0x00, 0x00, 0x37]))); // Hold16, value 55
+      expect(resp, _bytes([0x06, 0x00, 0x00, 0x00, 0x37]));
+      expect(readPath(project, 'Hold16'), 55);
+    });
+  });
+
+  group('Task 3 hardening: forced-tag writes refuse visibly instead of echoing success', () {
+    // Before this fix, all four write handlers fell through `_isForcedSkip`
+    // silently -- the write never applied, but the response was a normal
+    // success echo, deceiving the master into believing it landed. Every
+    // case below must now return an exception PDU (illegalDataAddress, the
+    // same code the ReadOnly gate already uses) and leave the tag
+    // unchanged. Each test also has a directly-adjacent non-forced sibling
+    // proving the fix isn't over-broad -- an ordinary writable tag on the
+    // same function code still succeeds byte-identically.
+
+    test('FC05 write to a forced coil is refused (exception, not echo), coil unchanged', () {
+      final tag = project.tags.firstWhere((t) => t.name == 'Coil0');
+      tag.isForced = true;
+      tag.forcedValue = false;
+      final resp = server.handle(_req(_bytes([0x05, 0x00, 0x00, 0xFF, 0x00])));
+      expect(resp, encodeExceptionResponse(0x05, ModbusEx.illegalDataAddress));
+      expect(readPath(project, 'Coil0'), false);
+    });
+
+    test('FC06 write to a forced holding register is refused (exception, not echo), value unchanged', () {
+      final tag = project.tags.firstWhere((t) => t.name == 'Hold16');
+      tag.isForced = true;
+      tag.forcedValue = 0;
+      final resp = server.handle(_req(_bytes([0x06, 0x00, 0x00, 0x00, 0x37]))); // address 0, value 55
+      expect(resp, encodeExceptionResponse(0x06, ModbusEx.illegalDataAddress));
+      expect(readPath(project, 'Hold16'), 0); // unchanged, not 55
+    });
+
+    test('FC06 to a NON-forced holding register still succeeds — the fix is not over-broad', () {
+      final resp = server.handle(_req(_bytes([0x06, 0x00, 0x00, 0x00, 0x37]))); // Hold16, value 55
+      expect(resp, _bytes([0x06, 0x00, 0x00, 0x00, 0x37])); // normal echo
+      expect(readPath(project, 'Hold16'), 55);
+    });
+
+    test('FC0F (multiple coil write) touching a forced coil is refused atomically, coil unchanged', () {
+      final tag = project.tags.firstWhere((t) => t.name == 'Coil0');
+      tag.isForced = true;
+      tag.forcedValue = true;
+      final req = _bytes([0x0F, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01]); // addr 0, ON
+      final resp = server.handle(_req(req));
+      expect(resp, encodeExceptionResponse(0x0F, ModbusEx.illegalDataAddress));
+      expect(readPath(project, 'Coil0'), true); // still the forced value, not silently overwritten
+    });
+
+    test('FC0F to a NON-forced coil still succeeds — the fix is not over-broad', () {
+      final req = _bytes([0x0F, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01]);
+      final resp = server.handle(_req(req));
+      expect(resp, _bytes([0x0F, 0x00, 0x00, 0x00, 0x01])); // normal echo
+      expect(readPath(project, 'Coil0'), true);
+    });
+
+    test('FC10 (multiple register write) touching a forced holding register is refused atomically, '
+        'value unchanged', () {
+      final tag = project.tags.firstWhere((t) => t.name == 'Hold16');
+      tag.isForced = true;
+      tag.forcedValue = 0;
+      final regs = encodeInt16(1234);
+      final req = _bytes([
+        0x10, 0x00, 0x00, 0x00, 0x01, 0x02, //
+        (regs[0] >> 8) & 0xFF, regs[0] & 0xFF,
+      ]);
+      final resp = server.handle(_req(req));
+      expect(resp, encodeExceptionResponse(0x10, ModbusEx.illegalDataAddress));
+      expect(readPath(project, 'Hold16'), 0); // unchanged
+    });
+
+    test('FC10 to a NON-forced holding register still succeeds — the fix is not over-broad', () {
+      final regs = encodeInt16(1234);
+      final req = _bytes([
+        0x10, 0x00, 0x00, 0x00, 0x01, 0x02, //
+        (regs[0] >> 8) & 0xFF, regs[0] & 0xFF,
+      ]);
+      final resp = server.handle(_req(req));
+      expect(resp, _bytes([0x10, 0x00, 0x00, 0x00, 0x01])); // normal echo
+      expect(readPath(project, 'Hold16'), 1234);
+    });
+
+    test('FC10 touching a forced multi-register (INT32) tag is refused, tag unchanged', () {
+      final tag = project.tags.firstWhere((t) => t.name == 'Hold32');
+      tag.isForced = true;
+      tag.forcedValue = 0;
+      final regs = encodeInt32(-42);
+      final req = _bytes([
+        0x10, 0x00, 0x01, 0x00, 0x02, 0x04, //
+        (regs[0] >> 8) & 0xFF, regs[0] & 0xFF,
+        (regs[1] >> 8) & 0xFF, regs[1] & 0xFF,
+      ]);
+      final resp = server.handle(_req(req));
+      expect(resp, encodeExceptionResponse(0x10, ModbusEx.illegalDataAddress));
+      expect(readPath(project, 'Hold32'), 0); // unchanged
     });
   });
 

@@ -82,6 +82,15 @@ const int kCipStatusInvalidAttributeValue = 0x09;
 
 const int kCipStatusEmbeddedListError = 0x0A;
 const int kCipStatusPrivilegeViolation = 0x0F;
+
+/// "Reply data too large" — the standard CIP general status a target returns
+/// for an item whose reply would not fit the size the client negotiated.
+/// Used by the Multiple Service Packet handler (`cip_tags.dart`) when a
+/// connected batch's embedded responses would overrun the Forward Open T->O
+/// connection size: the over-budget items carry THIS status instead of the
+/// batch emitting a frame larger than the connection the client agreed to.
+const int kCipStatusReplyDataTooLarge = 0x11;
+
 const int kCipStatusNotEnoughData = 0x13;
 const int kCipStatusEmbeddedServiceError = 0x1E;
 

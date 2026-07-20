@@ -26,6 +26,33 @@ void main() {
     expect(m.entries.firstWhere((e) => e.tag == 'A').metric, 'A');
   });
 
+  test('marks the reserved System tag read-only by name, even if its own access is left at the default ReadWrite', () {
+    final p = PlcProject(
+      id: 'x2',
+      name: 'X2',
+      controllerName: 'C2',
+      structDefs: const [],
+      programs: const [],
+      tasks: const [],
+      hmis: const [],
+      tags: [
+        PlcTag(
+          name: 'System',
+          path: 'System',
+          dataType: 'SYSTEM',
+          value: {'ScanCount': 0, 'Running': false},
+          ioType: 'Internal',
+          // access intentionally left at its default 'ReadWrite', to prove
+          // the name-based rule -- not the access field -- is what forces
+          // this read-only.
+        ),
+      ],
+    );
+    final m = MqttMap.autoGenerate(p);
+    expect(m.entries.firstWhere((e) => e.tag == 'System.ScanCount').writable, isFalse);
+    expect(m.entries.firstWhere((e) => e.tag == 'System.Running').writable, isFalse);
+  });
+
   test('MqttMap json round-trips', () {
     final m = MqttMap(entries: [MqttMapEntry(tag: 'A', metric: 'A', writable: true)]);
     final r = MqttMap.fromJson(m.toJson());

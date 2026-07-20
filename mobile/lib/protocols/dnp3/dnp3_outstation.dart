@@ -47,6 +47,7 @@ import 'dart:typed_data';
 import '../../models/dnp3_map.dart';
 import '../../models/project_model.dart';
 import '../../models/tag_resolver.dart';
+import '../../models/tag_write_gate.dart';
 import 'dnp3_app.dart';
 import 'dnp3_events.dart';
 
@@ -55,6 +56,57 @@ import 'dnp3_events.dart';
 /// outstation actively parses objects for; this handler needs it only for
 /// the narrow IIN-clear case in [_writeClearsRestart].
 const int _funcWrite = 2;
+
+/// Fixed length of a response application-fragment header the way
+/// [buildAppResponse] frames it: APP_CONTROL(1) + FUNCTION_CODE(1) + IIN(2).
+/// Every paged fragment reserves this before its object payload so the whole
+/// fragment (header + objects) stays at or under [kDnpMaxAppFragment].
+const int _appHeaderLen = 4;
+
+/// One object to emit in a response: a group/variation plus its per-point
+/// payloads, in index order. Two shapes, both with a uniform per-point payload
+/// size:
+///  - static (range-qualified): [indexPrefixed] false, [indices] is the
+///    contiguous run `start..stop` the header covers (gap points are
+///    zero/offline-filled into [points] by the builder).
+///  - event (index-prefixed, qualifier 0x28): [indexPrefixed] true, [indices]
+///    carries each point's own (possibly non-contiguous) index.
+///
+/// This intermediate form is what lets a large read be *paged*: the packer
+/// splits an object across fragment boundaries by emitting a fresh header for
+/// each sub-range, and DNP3's application layer processes each fragment's
+/// objects independently — so every fragment must carry whole, self-describing
+/// object headers, never a header split down the middle.
+class _EmitObject {
+  final int group;
+  final int variation;
+  final bool indexPrefixed;
+  final List<int> indices;
+  final List<Uint8List> points;
+
+  _EmitObject({
+    required this.group,
+    required this.variation,
+    required this.indexPrefixed,
+    required this.indices,
+    required this.points,
+  });
+
+  int get _pointSize => points.isEmpty ? 0 : points.first.length;
+
+  /// Bytes one point contributes on the wire: an index-prefixed point also
+  /// carries its 2-byte LE index before the payload.
+  int get perPointLen => indexPrefixed ? (2 + _pointSize) : _pointSize;
+
+  /// Object-header length for this object's qualifier. A static run uses a
+  /// range16 header (7 bytes) whenever any of its indices exceeds 0xFF, else a
+  /// range8 header (5 bytes); an event object always uses the 0x28
+  /// count-prefixed header (3 group/var/qual + 2 count = 5 bytes).
+  int get headerLen => indexPrefixed ? 5 : ((indices.isNotEmpty && indices.last > 0xFF) ? 7 : 5);
+
+  /// Total serialized length (header + all points).
+  int get wireLen => headerLen + indices.length * perPointLen;
+}
 
 /// Control Status codes (IEEE 1815 Table: Control Status), used in the
 /// status byte of a CROB (g12v1) or Analog Output Block (g41v1/v3) response
@@ -131,6 +183,23 @@ class DnpOutstation {
   /// keyed by that response's application sequence.
   List<DnpEvent>? _pendingSolicitedFlush;
   int _pendingSolicitedSeq = -1;
+
+  /// Task 4 multi-fragment solicited-read continuation. When a Class 0 (or
+  /// combined static+event) read overruns [kDnpMaxAppFragment], every fragment
+  /// is built up front — a deterministic snapshot of the database at read time,
+  /// no clock and no randomness — and released one at a time: fragment 0 is
+  /// returned to the read, and each subsequent fragment is released by the
+  /// master's matching CONFIRM (see [_confirmSolicited]). Null when no paged
+  /// read is in flight.
+  List<Uint8List>? _readContFrags;
+
+  /// How many of [_readContFrags] have been emitted so far (>= 1 once a paged
+  /// read starts; the next fragment to release sits at this index).
+  int _readContSent = 0;
+
+  /// Events carried by a paged read, flushed only once the final fragment is
+  /// CONFIRMed. Null when the paged read carries no events.
+  List<DnpEvent>? _readContEvents;
 
   DnpOutstation({required this.projectProvider, int eventBufferPerClass = 200})
       : _events = DnpEventEngine(capacityPerClass: eventBufferPerClass);
@@ -234,10 +303,12 @@ class DnpOutstation {
       final uns = (frag[0] & 0x10) != 0;
       if (uns) {
         _confirmUnsolicited(rawSeq);
-      } else {
-        _confirmSolicited(rawSeq);
+        return Uint8List(0); // no response fragment for an unsolicited CONFIRM
       }
-      return Uint8List(0); // no response fragment for a CONFIRM
+      // A solicited CONFIRM ordinarily gets no reply, but the one that advances
+      // a paged multi-fragment read releases the next fragment — returning it
+      // here lets the existing host send path deliver it with no host change.
+      return _confirmSolicited(rawSeq) ?? Uint8List(0);
     }
 
     // WRITE is handled directly off the raw bytes rather than through
@@ -415,30 +486,71 @@ class DnpOutstation {
     final includeStatic = !namedAnyClass || requested.contains(0);
     final eventClasses = requested.where((c) => c >= 1 && c <= 3).toSet();
 
-    final out = BytesBuilder();
+    final objects = <_EmitObject>[];
     if (includeStatic) {
-      out.add(_buildClassZeroPayload(project, map));
+      objects.addAll(_classZeroObjects(project, map));
     }
-
-    var con = false;
+    List<DnpEvent>? pulledEvents;
     if (eventClasses.isNotEmpty) {
       final events = _events.pull(eventClasses);
       if (events.isNotEmpty) {
-        out.add(_encodeEventObjects(events));
-        con = true;
-        _pendingSolicitedFlush = events;
-        _pendingSolicitedSeq = req.seq;
+        objects.addAll(_eventObjects(events));
+        pulledEvents = events;
       }
     }
 
-    return buildAppResponse(
-      seq: req.seq,
-      fir: true,
-      fin: true,
-      con: con,
-      iin: packIin(_iin1(), _iin2Base()),
-      objectData: out.toBytes(),
-    );
+    final iin = packIin(_iin1(), _iin2Base());
+    var payloadLen = 0;
+    for (final o in objects) {
+      payloadLen += o.wireLen;
+    }
+
+    // The common case: the whole response fits in one application fragment.
+    // This path is byte-identical to the pre-Task-4 single-fragment form — a
+    // response under the bound is never paged, and a solicited event read still
+    // sets CON and defers its flush to the matching CONFIRM exactly as before.
+    if (_appHeaderLen + payloadLen <= kDnpMaxAppFragment) {
+      final con = pulledEvents != null;
+      if (con) {
+        _pendingSolicitedFlush = pulledEvents;
+        _pendingSolicitedSeq = req.seq;
+      }
+      return buildAppResponse(
+        seq: req.seq,
+        fir: true,
+        fin: true,
+        con: con,
+        iin: iin,
+        objectData: _serializeObjects(objects),
+      );
+    }
+
+    // Overrun: page the response across fragments, each at or under the bound.
+    // First fragment FIR|!FIN, last !FIR|FIN, any middle neither; a CONFIRM of
+    // each non-final fragment releases the next (see [_confirmSolicited]).
+    final payloads = _packObjects(objects);
+    final n = payloads.length;
+    final frags = <Uint8List>[];
+    for (var i = 0; i < n; i++) {
+      final fir = i == 0;
+      final fin = i == n - 1;
+      // Non-final fragments MUST set CON so the master's CONFIRM releases the
+      // next one. The final fragment sets CON only when it still carries events
+      // awaiting a flush-on-CONFIRM.
+      final con = fin ? (pulledEvents != null) : true;
+      frags.add(buildAppResponse(
+        seq: (req.seq + i) & 0x0F,
+        fir: fir,
+        fin: fin,
+        con: con,
+        iin: iin,
+        objectData: payloads[i],
+      ));
+    }
+    _readContFrags = frags;
+    _readContSent = 1; // fragment 0 is returned to this read now
+    _readContEvents = pulledEvents;
+    return frags[0];
   }
 
   /// Encodes [events] into DNP3 event objects, grouped by type and by
@@ -449,7 +561,20 @@ class DnpOutstation {
   /// point), since events carry their own point index. FIFO order is
   /// preserved within each group; empty buckets emit nothing, so an
   /// all-input event set produces exactly the 3 groups it always did.
-  Uint8List _encodeEventObjects(List<DnpEvent> events) {
+  /// Byte form of the event objects for [events] — used by the unsolicited
+  /// push path ([takeEventUnsolicited]/[takeNullUnsolicited]), which is
+  /// single-fragment by design. The solicited read path builds the same
+  /// objects via [_eventObjects] so it can page them alongside static objects
+  /// (see [_handleRead]); this wrapper keeps that one source of truth.
+  Uint8List _encodeEventObjects(List<DnpEvent> events) => _serializeObjects(_eventObjects(events));
+
+  /// Groups [events] into the 6 event object buckets — binaryInput -> g2v2,
+  /// binaryOutput -> g11v2, analogInput-int -> g32v3, analogOutput-int ->
+  /// g42v3, analogInput-float -> g32v7, analogOutput-float -> g42v7 — as
+  /// index-prefixed (qualifier 0x28) [_EmitObject]s. FIFO order is preserved
+  /// within each group and empty buckets emit nothing, so an all-input event
+  /// set produces exactly the groups it always did.
+  List<_EmitObject> _eventObjects(List<DnpEvent> events) {
     bool isOut(DnpEvent e) => e.pointType == 'binaryOutput' || e.pointType == 'analogOutput';
     final binIn = events.where((e) => e.isBinary && !isOut(e)).toList();
     final binOut = events.where((e) => e.isBinary && isOut(e)).toList();
@@ -458,61 +583,45 @@ class DnpOutstation {
     final aFloatIn = events.where((e) => !e.isBinary && e.isFloat && !isOut(e)).toList();
     final aFloatOut = events.where((e) => !e.isBinary && e.isFloat && isOut(e)).toList();
 
-    final out = BytesBuilder();
-    if (binIn.isNotEmpty) {
-      out.add(_encodeEventGroup(
-          2, 2, binIn, (e) => encodeG2V2(value: e.boolValue, flags: e.flags, timeMs: e.timeMs)));
+    final objs = <_EmitObject>[];
+    void addGroup(int group, int variation, List<DnpEvent> es, Uint8List Function(DnpEvent) encodeOne) {
+      if (es.isEmpty) {
+        return;
+      }
+      objs.add(_EmitObject(
+        group: group,
+        variation: variation,
+        indexPrefixed: true,
+        indices: [for (final e in es) e.index],
+        points: [for (final e in es) encodeOne(e)],
+      ));
     }
-    if (binOut.isNotEmpty) {
-      out.add(_encodeEventGroup(
-          11, 2, binOut, (e) => encodeG11V2(value: e.boolValue, flags: e.flags, timeMs: e.timeMs)));
-    }
-    if (aIntIn.isNotEmpty) {
-      out.add(_encodeEventGroup(
-          32, 3, aIntIn, (e) => encodeG32V3(value: e.intValue, flags: e.flags, timeMs: e.timeMs)));
-    }
-    if (aIntOut.isNotEmpty) {
-      out.add(_encodeEventGroup(
-          42, 3, aIntOut, (e) => encodeG42V3(value: e.intValue, flags: e.flags, timeMs: e.timeMs)));
-    }
-    if (aFloatIn.isNotEmpty) {
-      out.add(_encodeEventGroup(
-          32, 7, aFloatIn, (e) => encodeG32V7(value: e.floatValue, flags: e.flags, timeMs: e.timeMs)));
-    }
-    if (aFloatOut.isNotEmpty) {
-      out.add(_encodeEventGroup(
-          42, 7, aFloatOut, (e) => encodeG42V7(value: e.floatValue, flags: e.flags, timeMs: e.timeMs)));
-    }
-    return out.toBytes();
+
+    addGroup(2, 2, binIn, (e) => encodeG2V2(value: e.boolValue, flags: e.flags, timeMs: e.timeMs));
+    addGroup(11, 2, binOut, (e) => encodeG11V2(value: e.boolValue, flags: e.flags, timeMs: e.timeMs));
+    addGroup(32, 3, aIntIn, (e) => encodeG32V3(value: e.intValue, flags: e.flags, timeMs: e.timeMs));
+    addGroup(42, 3, aIntOut, (e) => encodeG42V3(value: e.intValue, flags: e.flags, timeMs: e.timeMs));
+    addGroup(32, 7, aFloatIn, (e) => encodeG32V7(value: e.floatValue, flags: e.flags, timeMs: e.timeMs));
+    addGroup(42, 7, aFloatOut, (e) => encodeG42V7(value: e.floatValue, flags: e.flags, timeMs: e.timeMs));
+    return objs;
   }
 
-  Uint8List _encodeEventGroup(
-    int group,
-    int variation,
-    List<DnpEvent> events,
-    Uint8List Function(DnpEvent) encodeOne,
-  ) {
-    final out = BytesBuilder();
-    out.add(encodeObjectHeader(
-        group: group, variation: variation, qualifier: DnpQualifier.indexPrefix16, count: events.length));
-    for (final e in events) {
-      out.addByte(e.index & 0xFF);
-      out.addByte((e.index >> 8) & 0xFF);
-      out.add(encodeOne(e));
-    }
-    return out.toBytes();
+  /// Builds the Class 0 (static integrity) objects in the fixed report order —
+  /// binaryInput (g1v2), binaryOutput (g10v2), analogInput (g30v1 ints then
+  /// g30v5 floats), analogOutput (g40v1 ints then g40v3 floats) — each as a
+  /// range-qualified [_EmitObject]. Serializing this list is byte-identical to
+  /// the previous monolithic payload; representing it as objects is what lets
+  /// [_packObjects] page it when it overruns [kDnpMaxAppFragment].
+  List<_EmitObject> _classZeroObjects(PlcProject project, DnpMap map) {
+    final objs = <_EmitObject>[];
+    objs.addAll(_binaryBucketObjects(project, map, 'binaryInput', 1, 2));
+    objs.addAll(_binaryBucketObjects(project, map, 'binaryOutput', 10, 2));
+    objs.addAll(_analogBucketObjects(project, map, 'analogInput'));
+    objs.addAll(_analogBucketObjects(project, map, 'analogOutput'));
+    return objs;
   }
 
-  Uint8List _buildClassZeroPayload(PlcProject project, DnpMap map) {
-    final out = BytesBuilder();
-    out.add(_encodeBinaryBucket(project, map, 'binaryInput', 1, 2));
-    out.add(_encodeBinaryBucket(project, map, 'binaryOutput', 10, 2));
-    out.add(_encodeAnalogBucket(project, map, 'analogInput'));
-    out.add(_encodeAnalogBucket(project, map, 'analogOutput'));
-    return out.toBytes();
-  }
-
-  Uint8List _encodeBinaryBucket(PlcProject project, DnpMap map, String pointType, int group, int variation) {
+  List<_EmitObject> _binaryBucketObjects(PlcProject project, DnpMap map, String pointType, int group, int variation) {
     final entries = <int, DnpMapEntry>{};
     for (final e in map.entries) {
       if (e.pointType == pointType) {
@@ -520,30 +629,30 @@ class DnpOutstation {
       }
     }
     if (entries.isEmpty) {
-      return Uint8List(0);
+      return const <_EmitObject>[];
     }
     final indices = entries.keys.toList()..sort();
     final runs = _buildRuns(indices, const <int>{});
-    final out = BytesBuilder();
+    final objs = <_EmitObject>[];
     for (final run in runs) {
-      final qualifier = run.stop <= 0xFF ? DnpQualifier.range8 : DnpQualifier.range16;
-      out.add(encodeObjectHeader(group: group, variation: variation, qualifier: qualifier, start: run.start, stop: run.stop));
+      final pts = <Uint8List>[];
       for (var idx = run.start; idx <= run.stop; idx++) {
         final entry = entries[idx];
         if (entry == null) {
-          out.add(group == 1 ? encodeG1V2(value: false, flags: 0) : encodeG10V2(value: false, flags: 0));
+          pts.add(group == 1 ? encodeG1V2(value: false, flags: 0) : encodeG10V2(value: false, flags: 0));
           continue;
         }
         final value = readPath(project, entry.tag) == true;
-        out.add(group == 1
+        pts.add(group == 1
             ? encodeG1V2(value: value, flags: DnpFlags.online)
             : encodeG10V2(value: value, flags: DnpFlags.online));
       }
+      objs.add(_staticRunObject(group, variation, run.start, pts));
     }
-    return out.toBytes();
+    return objs;
   }
 
-  Uint8List _encodeAnalogBucket(PlcProject project, DnpMap map, String pointType) {
+  List<_EmitObject> _analogBucketObjects(PlcProject project, DnpMap map, String pointType) {
     final intEntries = <int, DnpMapEntry>{};
     final floatEntries = <int, DnpMapEntry>{};
     for (final e in map.entries) {
@@ -561,13 +670,13 @@ class DnpOutstation {
     final floatVariation = pointType == 'analogInput' ? 5 : 3;
     const intVariation = 1; // g30v1 / g40v1
 
-    final out = BytesBuilder();
-    out.add(_encodeNumericSubBucket(project, intEntries, floatEntries.keys.toSet(), group, intVariation, isFloat: false));
-    out.add(_encodeNumericSubBucket(project, floatEntries, intEntries.keys.toSet(), group, floatVariation, isFloat: true));
-    return out.toBytes();
+    final objs = <_EmitObject>[];
+    objs.addAll(_numericSubBucketObjects(project, intEntries, floatEntries.keys.toSet(), group, intVariation, isFloat: false));
+    objs.addAll(_numericSubBucketObjects(project, floatEntries, intEntries.keys.toSet(), group, floatVariation, isFloat: true));
+    return objs;
   }
 
-  Uint8List _encodeNumericSubBucket(
+  List<_EmitObject> _numericSubBucketObjects(
     PlcProject project,
     Map<int, DnpMapEntry> bucket,
     Set<int> exclude,
@@ -576,31 +685,137 @@ class DnpOutstation {
     required bool isFloat,
   }) {
     if (bucket.isEmpty) {
-      return Uint8List(0);
+      return const <_EmitObject>[];
     }
     final indices = bucket.keys.toList()..sort();
     final runs = _buildRuns(indices, exclude);
-    final out = BytesBuilder();
+    final objs = <_EmitObject>[];
     for (final run in runs) {
-      final qualifier = run.stop <= 0xFF ? DnpQualifier.range8 : DnpQualifier.range16;
-      out.add(encodeObjectHeader(group: group, variation: variation, qualifier: qualifier, start: run.start, stop: run.stop));
+      final pts = <Uint8List>[];
       for (var idx = run.start; idx <= run.stop; idx++) {
         final entry = bucket[idx];
         if (entry == null) {
-          out.add(isFloat ? _encodeFloatPoint(group, 0.0, 0) : _encodeIntPoint(group, 0, 0));
+          pts.add(isFloat ? _encodeFloatPoint(group, 0.0, 0) : _encodeIntPoint(group, 0, 0));
           continue;
         }
         final raw = readPath(project, entry.tag);
         if (isFloat) {
           final v = raw is double ? raw : (raw is int ? raw.toDouble() : 0.0);
-          out.add(_encodeFloatPoint(group, v, DnpFlags.online));
+          pts.add(_encodeFloatPoint(group, v, DnpFlags.online));
         } else {
           final v = raw is int ? raw : (raw is double ? raw.round() : 0);
-          out.add(_encodeIntPoint(group, v, DnpFlags.online));
+          pts.add(_encodeIntPoint(group, v, DnpFlags.online));
         }
+      }
+      objs.add(_staticRunObject(group, variation, run.start, pts));
+    }
+    return objs;
+  }
+
+  /// Wraps a contiguous run of static points (the payload at successive indices
+  /// starting from [start]) as a range-qualified [_EmitObject].
+  _EmitObject _staticRunObject(int group, int variation, int start, List<Uint8List> points) {
+    return _EmitObject(
+      group: group,
+      variation: variation,
+      indexPrefixed: false,
+      indices: [for (var i = 0; i < points.length; i++) start + i],
+      points: points,
+    );
+  }
+
+  // --- Object serialization + fragment packing ----------------------------
+
+  /// Serializes [objects] to a single contiguous object-payload byte stream —
+  /// the whole-object, unpaged form used when a response fits in one fragment.
+  Uint8List _serializeObjects(List<_EmitObject> objects) {
+    final out = BytesBuilder();
+    for (final obj in objects) {
+      if (obj.indices.isEmpty) {
+        continue;
+      }
+      out.add(_serializeSub(obj, 0, obj.indices.length));
+    }
+    return out.toBytes();
+  }
+
+  /// Serializes [count] points of [obj] starting at point offset [start] as one
+  /// self-contained object (its own header + those points). For a split static
+  /// run this emits a fresh range header covering just the sub-range; for an
+  /// event object a fresh 0x28 header with just this slice's count.
+  Uint8List _serializeSub(_EmitObject obj, int start, int count) {
+    final out = BytesBuilder();
+    if (obj.indexPrefixed) {
+      out.add(encodeObjectHeader(
+          group: obj.group, variation: obj.variation, qualifier: DnpQualifier.indexPrefix16, count: count));
+      for (var j = start; j < start + count; j++) {
+        out.addByte(obj.indices[j] & 0xFF);
+        out.addByte((obj.indices[j] >> 8) & 0xFF);
+        out.add(obj.points[j]);
+      }
+    } else {
+      // Match the object's chosen header width (see [_EmitObject.headerLen]):
+      // range16 whenever any index exceeds 0xFF, else range8. Using the whole
+      // object's max index keeps the qualifier uniform across all of its
+      // sub-ranges and byte-identical to the unpaged form for a whole run.
+      final qualifier = obj.indices.last > 0xFF ? DnpQualifier.range16 : DnpQualifier.range8;
+      out.add(encodeObjectHeader(
+          group: obj.group,
+          variation: obj.variation,
+          qualifier: qualifier,
+          start: obj.indices[start],
+          stop: obj.indices[start + count - 1]));
+      for (var j = start; j < start + count; j++) {
+        out.add(obj.points[j]);
       }
     }
     return out.toBytes();
+  }
+
+  /// Packs [objects] into one-or-more object-payload byte blocks, each at or
+  /// under `kDnpMaxAppFragment - _appHeaderLen` so the finished application
+  /// fragment stays within the bound. An object larger than a fragment is split
+  /// across fragments at point boundaries, each slice re-emitting its own
+  /// header (DNP3 processes each fragment's objects independently, so a header
+  /// may never straddle a boundary). Deterministic: greedy left-to-right, no
+  /// clock or randomness.
+  List<Uint8List> _packObjects(List<_EmitObject> objects) {
+    const budget = kDnpMaxAppFragment - _appHeaderLen;
+    final frags = <Uint8List>[];
+    var cur = BytesBuilder();
+    for (final obj in objects) {
+      final total = obj.indices.length;
+      if (total == 0) {
+        continue;
+      }
+      final headerLen = obj.headerLen;
+      final perPoint = obj.perPointLen;
+      var i = 0;
+      while (i < total) {
+        var avail = budget - cur.length - headerLen;
+        if (avail < perPoint) {
+          // Not enough room for even one point of this object here: seal the
+          // current fragment and start a fresh one.
+          if (cur.length > 0) {
+            frags.add(cur.toBytes());
+            cur = BytesBuilder();
+          }
+          avail = budget - headerLen;
+        }
+        var maxCount = avail ~/ perPoint;
+        if (maxCount < 1) {
+          maxCount = 1; // a fresh fragment's budget always admits >= 1 point
+        }
+        final remaining = total - i;
+        final count = maxCount < remaining ? maxCount : remaining;
+        cur.add(_serializeSub(obj, i, count));
+        i += count;
+      }
+    }
+    if (cur.length > 0) {
+      frags.add(cur.toBytes());
+    }
+    return frags;
   }
 
   Uint8List _encodeIntPoint(int group, int value, int flags) =>
@@ -679,17 +894,59 @@ class DnpOutstation {
     );
   }
 
-  /// Confirms the events reported by the last solicited Class read (see
-  /// [_handleRead]), flushing them from the event engine — but only if
-  /// [seq] matches the sequence of the response that carried them; a stale
-  /// or mismatched CONFIRM is silently ignored (the events stay buffered).
-  void _confirmSolicited(int seq) {
+  /// Handles a solicited CONFIRM. Two jobs, in priority order:
+  ///
+  ///  1. If a paged multi-fragment read is in flight (see [_handleRead]) and
+  ///     [seq] matches the last fragment emitted, release the NEXT fragment
+  ///     (returned to the caller so the host can send it). When the final
+  ///     fragment is confirmed, any events it carried are flushed. A
+  ///     stale/mismatched CONFIRM during a paged read releases nothing —
+  ///     deterministic, so a duplicate never double-advances the cursor.
+  ///  2. Otherwise, if [seq] matches a single-fragment solicited event read,
+  ///     flush those events from the engine. A stale/mismatched CONFIRM is
+  ///     ignored (the events stay buffered).
+  ///
+  /// Returns the next paged fragment to send, or `null` when the CONFIRM
+  /// produces no fragment (the ordinary case — a CONFIRM gets no reply).
+  Uint8List? _confirmSolicited(int seq) {
+    final cont = _readContFrags;
+    if (cont != null) {
+      final lastSent = cont[_readContSent - 1];
+      if (seq != (lastSent[0] & 0x0F)) {
+        return null; // stale/mismatched CONFIRM during a paged read
+      }
+      if (_readContSent < cont.length) {
+        final next = cont[_readContSent];
+        _readContSent++;
+        // If that was the final fragment and no events need a flush-CONFIRM,
+        // the paged exchange is complete the moment this fragment is released.
+        if (_readContSent >= cont.length && _readContEvents == null) {
+          _clearReadContinuation();
+        }
+        return next;
+      }
+      // All fragments already sent; this CONFIRM acknowledges the final one and
+      // flushes any events it carried.
+      if (_readContEvents != null) {
+        _events.flush(_readContEvents!);
+        _events.clearOverflow();
+      }
+      _clearReadContinuation();
+      return null;
+    }
     if (_pendingSolicitedFlush != null && seq == _pendingSolicitedSeq) {
       _events.flush(_pendingSolicitedFlush!);
       _events.clearOverflow();
       _pendingSolicitedFlush = null;
       _pendingSolicitedSeq = -1;
     }
+    return null;
+  }
+
+  void _clearReadContinuation() {
+    _readContFrags = null;
+    _readContSent = 0;
+    _readContEvents = null;
   }
 
   /// Confirms the in-flight unsolicited fragment (see [takeNullUnsolicited]/
@@ -990,7 +1247,13 @@ class DnpOutstation {
     if (desired == null) {
       return DnpControlStatus.success;
     }
-    if (_isForcedSkip(project, entry.tag)) {
+    // Write-time hard backstop (protocol-hardening workstream, Task 2): DNP3
+    // map entries have NO `access` field at all (see `DnpMapEntry`), so a
+    // hand-retargeted `pointType` pointing at the reserved System tag has
+    // nothing else stopping it — `isExternallyWritable` re-checks the
+    // underlying ROOT tag itself, independent of the map. Never a
+    // replacement for the forced-tag check beside it.
+    if (_isForcedSkip(project, entry.tag) || !isExternallyWritable(project, entry.tag)) {
       return DnpControlStatus.notAuthorized;
     }
     if (execute) {
@@ -1007,7 +1270,9 @@ class DnpOutstation {
     if (entry == null) {
       return DnpControlStatus.notSupported;
     }
-    if (_isForcedSkip(project, entry.tag)) {
+    // Write-time hard backstop (protocol-hardening workstream, Task 2): see
+    // the identical comment in `_evaluateCrob` above.
+    if (_isForcedSkip(project, entry.tag) || !isExternallyWritable(project, entry.tag)) {
       return DnpControlStatus.notAuthorized;
     }
     if (execute) {

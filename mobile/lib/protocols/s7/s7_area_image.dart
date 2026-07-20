@@ -46,6 +46,7 @@ import 'dart:typed_data';
 import '../../models/project_model.dart';
 import '../../models/s7_map.dart';
 import '../../models/tag_resolver.dart';
+import '../../models/tag_write_gate.dart';
 import 's7_pdu.dart';
 
 /// Maps an on-the-wire S7 area CODE (`kS7Area*` in `s7_pdu.dart`) to this
@@ -249,6 +250,14 @@ enum S7WriteStatus {
   /// force.
   refusedForced,
 
+  /// Write-time hard backstop (protocol-hardening workstream, Task 2):
+  /// `isExternallyWritable` refused the write independent of the map
+  /// entry's own `access` — the ROOT tag is the reserved `System` tag, or
+  /// its own `access` is `ReadOnly` (a case the per-entry `refusedReadOnly`
+  /// above can miss if the entry's `access` doesn't reflect the tag's
+  /// current state).
+  refusedNotExternallyWritable,
+
   /// The tag path does not resolve, or its data type has no v1 S7
   /// representation (e.g. `STRING`).
   unsupported,
@@ -324,6 +333,17 @@ List<S7WriteResult> applyAreaWrite(
     }
     if (entry.access == 'ReadOnly') {
       results.add(S7WriteResult(entry.tag, S7WriteStatus.refusedReadOnly));
+      continue;
+    }
+
+    // Write-time hard backstop (protocol-hardening workstream, Task 2): the
+    // S7Map entry above is a MUTABLE map that a hand-edit could re-target at
+    // the reserved System tag. `isExternallyWritable` re-checks the
+    // underlying ROOT tag itself, independent of whatever this entry
+    // claims — a hard, non-overridable rule, never a replacement for the
+    // per-entry check above.
+    if (!isExternallyWritable(project, entry.tag)) {
+      results.add(S7WriteResult(entry.tag, S7WriteStatus.refusedNotExternallyWritable));
       continue;
     }
 
