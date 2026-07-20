@@ -35,8 +35,30 @@ library slmp_dispatch;
 
 import 'dart:typed_data';
 
+import '../../models/project_model.dart';
+import '../../models/slmp_map.dart';
 import 'slmp_commands.dart';
+import 'slmp_device_image.dart';
 import 'slmp_frame.dart';
+
+/// Maps an on-the-wire SLMP device CODE (`kSlmpDev*` in `slmp_commands.dart`) to
+/// this project's device NAME (`kSlmpDeviceName*` in `models/slmp_map.dart`), or
+/// `null` for a code this version does not serve. A `null` result must become a
+/// per-request error end code, never an exception.
+String? slmpDeviceNameForCode(int deviceCode) {
+  switch (deviceCode) {
+    case kSlmpDevD:
+      return kSlmpDeviceNameD;
+    case kSlmpDevM:
+      return kSlmpDeviceNameM;
+    case kSlmpDevW:
+      return kSlmpDeviceNameW;
+    case kSlmpDevR:
+      return kSlmpDeviceNameR;
+    default:
+      return null;
+  }
+}
 
 /// The outcome of one [SlmpDeviceImage.readWords] call: an SLMP end code plus,
 /// on [kSlmpEndNormal], the requested words as LITTLE-ENDIAN bytes
@@ -149,6 +171,102 @@ class SlmpWordImage implements SlmpDeviceImage {
     }
     return SlmpWriteOutcome.ok();
   }
+}
+
+/// A [SlmpDeviceImage] backed by the project's tags via a [SlmpMap] and the
+/// pure device word-image (`slmp_device_image.dart`). This is what the shipped
+/// `SlmpHost` serves (Task 4): a Batch Read materializes the mapped tags into a
+/// word image, and a Batch Write decodes the written words back onto the tags
+/// the range covers (force- and access-aware). Both directions honour the
+/// FINS/S7-proven area-image semantics: unmapped words read `0x0000`, writes to
+/// gaps are discarded, a partially covered multi-word tag is not written, and a
+/// forced / read-only / reserved-`System` tag refuses writes. It drops into the
+/// SAME `dispatchSlmpFrame` seam the Task-3 fixture [SlmpWordImage] occupies.
+class SlmpTagImage implements SlmpDeviceImage {
+  final PlcProject project;
+  final SlmpMap map;
+
+  SlmpTagImage(this.project, this.map);
+
+  @override
+  SlmpReadOutcome readWords(int deviceCode, int deviceNumber, int count) {
+    final device = slmpDeviceNameForCode(deviceCode);
+    if (device == null) {
+      return SlmpReadOutcome.error(kSlmpEndCommandError);
+    }
+    if (count <= 0) {
+      return SlmpReadOutcome.error(kSlmpEndPointCount);
+    }
+    if (deviceNumber < 0 ||
+        deviceNumber + count > kSlmpMaxDeviceImageWords) {
+      return SlmpReadOutcome.error(kSlmpEndAddressRange);
+    }
+    final image = readDeviceImage(project, map, device, deviceNumber, count);
+    if (image.length != count * 2) {
+      // readDeviceImage only returns short for arguments this method already
+      // rejected; treat any residual mismatch as an address-range error rather
+      // than emit a malformed response.
+      return SlmpReadOutcome.error(kSlmpEndAddressRange);
+    }
+    return SlmpReadOutcome.ok(image);
+  }
+
+  @override
+  SlmpWriteOutcome writeWords(int deviceCode, int deviceNumber, Uint8List data) {
+    final device = slmpDeviceNameForCode(deviceCode);
+    if (device == null) {
+      return SlmpWriteOutcome.error(kSlmpEndCommandError);
+    }
+    if (deviceNumber < 0 || data.length.isOdd) {
+      return SlmpWriteOutcome.error(kSlmpEndAddressRange);
+    }
+    final count = data.length ~/ 2;
+    if (count <= 0) {
+      return SlmpWriteOutcome.error(kSlmpEndPointCount);
+    }
+    if (deviceNumber + count > kSlmpMaxDeviceImageWords) {
+      return SlmpWriteOutcome.error(kSlmpEndAddressRange);
+    }
+    final results = applyDeviceWrite(project, map, device, deviceNumber, data);
+    return SlmpWriteOutcome(slmpWriteEndCode(results));
+  }
+}
+
+/// Collapses the per-tag outcomes [applyDeviceWrite] reported for one Batch
+/// Write into that write's single SLMP end code, mirroring FINS's
+/// `finsWriteEndCode`.
+///
+/// An EMPTY [results] list means the range covered no map entry at all — a
+/// write into a gap, DISCARDED silently by design and reported as success,
+/// exactly as a real controller reports a write into an unused word.
+///
+/// A refusal wins over everything else so a client is never told a write it was
+/// denied succeeded: a `ReadOnly` entry, a FORCED root tag, or the write-time
+/// hard backstop all yield [kSlmpEndWriteProtect]. A partially covered
+/// multi-word tag yields [kSlmpEndAddressRange]; a tag with no v1 SLMP
+/// representation also yields [kSlmpEndAddressRange] (only if nothing was
+/// refused).
+int slmpWriteEndCode(List<SlmpWriteResult> results) {
+  var code = kSlmpEndNormal;
+  for (final r in results) {
+    switch (r.status) {
+      case SlmpWriteStatus.written:
+        break;
+      case SlmpWriteStatus.refusedReadOnly:
+      case SlmpWriteStatus.refusedForced:
+      case SlmpWriteStatus.refusedNotExternallyWritable:
+        return kSlmpEndWriteProtect;
+      case SlmpWriteStatus.partiallyCovered:
+        code = kSlmpEndAddressRange;
+        break;
+      case SlmpWriteStatus.unsupported:
+        if (code == kSlmpEndNormal) {
+          code = kSlmpEndAddressRange;
+        }
+        break;
+    }
+  }
+  return code;
 }
 
 /// Dispatches one complete, reassembled SLMP request [frame] against [image],

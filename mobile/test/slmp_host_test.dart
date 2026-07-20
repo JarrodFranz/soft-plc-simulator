@@ -3,12 +3,13 @@
 // (port 0) — mirrors s7_host_test.dart. Every test is bounded so a stalled
 // server/socket can never hang the suite.
 //
-// SCOPE: at this task the host serves a Batch Read (word) against a small
-// built-in fixture image; Read/Write against the project's real tags arrives in
-// Task 4. These tests prove the host's length-prefixed REASSEMBLY and DISPATCH
-// behaviour — that a whole frame is answered, that a fragmented frame
-// reassembles, that coalesced frames are each answered exactly once, and that a
-// malformed frame never wedges the bind.
+// SCOPE: the host serves a Batch Read (word) against the tag-backed image (a
+// `SlmpMap.autoGenerate` over the project's tags, Task 4). These tests prove the
+// host's length-prefixed REASSEMBLY and DISPATCH behaviour — that a whole frame
+// is answered, that a fragmented frame reassembles, that coalesced frames are
+// each answered exactly once, and that a malformed frame never wedges the bind.
+// The two INT16 tags in `_fixtureProject` auto-generate to D0 and D1, so a read
+// of D0 returns a known value through the real tag encode path.
 //
 // They cannot prove wire conformance — every frame here is one this project
 // built — which is exactly why `tool/slmp_e2e.sh` drives a real third-party
@@ -74,10 +75,11 @@ class _ByteWaiter {
 /// destModuleStation 1 + responseDataLength 2 + endCode 2.)
 const int _kOneWordReplyLen = kSlmpResponseFixedLen + 2;
 
-// --- The D-word fixture values seeded in SlmpHost._buildFixtureImage ---------
+// --- The D-word values the fixture project's two INT16 tags auto-generate to.
+// `_fixtureProject`'s `D0Val`/`D1Val` pack into D0/D1 in leaf order.
 
-const int _kD100Value = 0x1234;
-const int _kD101Value = 0x5678;
+const int _kD0Value = 0x1234;
+const int _kD1Value = 0x5678;
 
 /// Builds a 3E binary Batch Read (word) request for [count] words starting at
 /// D[deviceNumber]. Big-endian subheader, little-endian body — exactly what a
@@ -120,13 +122,18 @@ int _responseWord(Uint8List response, int wordIndex) {
   return bd.getUint16(kSlmpResponseFixedLen + wordIndex * 2, Endian.little);
 }
 
-/// A minimal project — the Task-3 host serves its built-in fixture image and
-/// ignores the project, but `start` still takes a `projectProvider`.
-PlcProject _bareProject() => PlcProject(
+/// A project whose two INT16 tags auto-generate (in leaf order) to D0 and D1,
+/// so the host's tag-backed image serves known values through the real tag
+/// encode path. Values have differing bytes so a byte-order fault cannot pass
+/// unnoticed.
+PlcProject _fixtureProject() => PlcProject(
       id: 'proj_slmp_host_test',
       name: 'SLMP Host Test',
       controllerName: 'PLC_TEST',
-      tags: [],
+      tags: [
+        PlcTag(name: 'D0Val', path: 'D0Val', dataType: 'INT16', value: _kD0Value, ioType: 'Internal'),
+        PlcTag(name: 'D1Val', path: 'D1Val', dataType: 'INT16', value: _kD1Value, ioType: 'Internal'),
+      ],
       structDefs: [],
       programs: [],
       tasks: [],
@@ -151,7 +158,7 @@ void main() {
   });
 
   test('start on port 0 binds an ephemeral port and reports running', () async {
-    await host.start(_bareProject);
+    await host.start(_fixtureProject);
     expect(host.status, SlmpHostStatus.running);
     expect(host.endpointUrl, isNotNull);
     expect(host.endpointUrl, startsWith('slmp-tcp://'));
@@ -159,11 +166,11 @@ void main() {
   });
 
   test('a whole Batch Read frame gets a correct response', () async {
-    await host.start(_bareProject);
+    await host.start(_fixtureProject);
     final socket = await _connect(host);
     final collector = _SocketCollector(socket);
 
-    socket.add(_buildBatchReadD(100, 1));
+    socket.add(_buildBatchReadD(0, 1));
     await socket.flush();
 
     final response = await collector.readAtLeast(_kOneWordReplyLen);
@@ -172,19 +179,19 @@ void main() {
     // End code (LE) at offset 9 = normal.
     final bd = ByteData.sublistView(response);
     expect(bd.getUint16(9, Endian.little), kSlmpEndNormal);
-    // The word data, little-endian, is the fixture's D100.
-    expect(_responseWord(response, 0), _kD100Value);
+    // The word data, little-endian, is the tag D0Val encoded at D0.
+    expect(_responseWord(response, 0), _kD0Value);
 
     await collector.cancel();
     socket.destroy();
   });
 
   test('a fragmented frame (split mid-header and mid-body) reassembles', () async {
-    await host.start(_bareProject);
+    await host.start(_fixtureProject);
     final socket = await _connect(host);
     final collector = _SocketCollector(socket);
 
-    final frame = _buildBatchReadD(100, 2); // read D100 and D101
+    final frame = _buildBatchReadD(0, 2); // read D0 and D1
     // Split into three chunks: mid-header (before the length field is fully
     // buffered), mid-body (after the length field but before the whole frame),
     // then the remainder — each with a small gap so they arrive separately.
@@ -200,22 +207,22 @@ void main() {
     const replyLen = kSlmpResponseFixedLen + 2 * 2; // 2 words
     final response = await collector.readAtLeast(replyLen);
     expect(response.sublist(0, 2), equals(Uint8List.fromList([0xD0, 0x00])));
-    expect(_responseWord(response, 0), _kD100Value);
-    expect(_responseWord(response, 1), _kD101Value);
+    expect(_responseWord(response, 0), _kD0Value);
+    expect(_responseWord(response, 1), _kD1Value);
 
     await collector.cancel();
     socket.destroy();
   });
 
   test('two coalesced frames in one chunk both get answered exactly once', () async {
-    await host.start(_bareProject);
+    await host.start(_fixtureProject);
     final socket = await _connect(host);
     final collector = _SocketCollector(socket);
 
     // Two single-word reads back-to-back in ONE write.
     final two = BytesBuilder()
-      ..add(_buildBatchReadD(100, 1))
-      ..add(_buildBatchReadD(100, 1));
+      ..add(_buildBatchReadD(0, 1))
+      ..add(_buildBatchReadD(0, 1));
     socket.add(two.toBytes());
     await socket.flush();
 
@@ -224,8 +231,8 @@ void main() {
     // Both replies decode correctly.
     final first = Uint8List.sublistView(both, 0, _kOneWordReplyLen);
     final second = Uint8List.sublistView(both, _kOneWordReplyLen, _kOneWordReplyLen * 2);
-    expect(_responseWord(first, 0), _kD100Value);
-    expect(_responseWord(second, 0), _kD100Value);
+    expect(_responseWord(first, 0), _kD0Value);
+    expect(_responseWord(second, 0), _kD0Value);
 
     // Settle, then assert NO third reply arrived (a double-dispatch bug would
     // produce more than two).
@@ -237,7 +244,7 @@ void main() {
   });
 
   test('a malformed/short frame does NOT crash the bind', () async {
-    await host.start(_bareProject);
+    await host.start(_fixtureProject);
 
     // Connection 1: send a complete but UNSERVED frame — a valid length prefix
     // whose command code (0x0000) this host does not serve, so the dispatch
@@ -261,10 +268,10 @@ void main() {
     // The bind must still accept a fresh client and answer a valid read.
     final conn2 = await _connect(host);
     final collector2 = _SocketCollector(conn2);
-    conn2.add(_buildBatchReadD(100, 1));
+    conn2.add(_buildBatchReadD(0, 1));
     await conn2.flush();
     final response = await collector2.readAtLeast(_kOneWordReplyLen);
-    expect(_responseWord(response, 0), _kD100Value);
+    expect(_responseWord(response, 0), _kD0Value);
     expect(host.status, SlmpHostStatus.running);
 
     await collector2.cancel();

@@ -47,16 +47,12 @@
 
 import 'dart:async';
 import 'dart:io';
-// `dart:typed_data` is needed for `Uint16List` (the fixture word banks), which
-// `package:flutter/foundation.dart` does NOT re-export (it only re-exports
-// `Uint8List`/`ByteData`).
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 
 import '../models/app_log.dart';
 import '../models/project_model.dart';
-import '../protocols/slmp/slmp_commands.dart';
+import '../models/slmp_map.dart';
 import '../protocols/slmp/slmp_dispatch.dart';
 import 'app_logger.dart';
 import 'drop_log_gate.dart';
@@ -297,12 +293,6 @@ class SlmpHost extends ChangeNotifier {
   /// the WARN on each new socket. See `drop_log_gate.dart`.
   late final DropLogGate _dropGate = DropLogGate(kLogSourceSlmp, logger);
 
-  /// The device image the dispatch serves against. At Task 3 this is a small
-  /// built-in fixture (a seeded D/W word bank) so a real client can connect and
-  /// batch-read a known value before any tag-map logic exists; Task 4 replaces
-  /// `_imageFor` with a tag-backed image over the project's `SlmpMap`.
-  late final SlmpDeviceImage _fixtureImage = _buildFixtureImage();
-
   ServerSocket? _serverSocket;
   final List<_Connection> _connections = [];
   StreamSubscription<Socket>? _acceptSub;
@@ -328,13 +318,16 @@ class SlmpHost extends ChangeNotifier {
     }
   }
 
-  /// The image to serve [project] against. Task 3 ignores [project] and serves
-  /// the fixed fixture; Task 4 builds a tag-backed image from
-  /// `project.protocols.slmp.map`. Kept as one seam so the host and the E2E
-  /// fixture host stay aligned.
-  SlmpDeviceImage _imageFor(PlcProject project) => _fixtureImage;
+  /// The image to serve [project] against: a tag-backed [SlmpTagImage] over the
+  /// project's tags via a freshly auto-generated `SlmpMap` (Task 4). Read FRESH
+  /// per frame (see `_Connection._handleFrame`), so a tag change is reflected on
+  /// the very next request without a restart. Task 5 sources the map from the
+  /// persisted, user-editable `SlmpProtocolConfig` when one exists, falling back
+  /// to this auto-generated default — mirroring `FinsHost._imageForProject`.
+  SlmpDeviceImage _imageFor(PlcProject project) =>
+      SlmpTagImage(project, SlmpMap.autoGenerate(project));
 
-  /// Starts hosting on [port], serving the Task-3 fixture image.
+  /// Starts hosting on [port], serving the tag-backed image.
   ///
   /// [projectProvider] is called fresh on every dispatched frame, so a project
   /// swap while the server is running is safe (Task 4) — but the *port* is read
@@ -503,23 +496,5 @@ class SlmpHost extends ChangeNotifier {
     _disposed = true;
     unawaited(stop());
     super.dispose();
-  }
-
-  /// Builds the small Task-3 fixture image: a D (data-register) word bank and a
-  /// W (link-register) word bank with a few known values, so the host tests and
-  /// the shared-dispatch path have something concrete to batch-read. Values are
-  /// chosen with differing bytes so a byte-order fault cannot pass unnoticed.
-  static SlmpDeviceImage _buildFixtureImage() {
-    final dBank = Uint16List(256);
-    dBank[100] = 0x1234;
-    dBank[101] = 0x5678;
-    dBank[102] = 0x9ABC;
-    dBank[103] = 0xDEF0;
-    final wBank = Uint16List(64);
-    wBank[0] = 0x0A0B;
-    return SlmpWordImage({
-      kSlmpDevD: dBank,
-      kSlmpDevW: wBank,
-    });
   }
 }
