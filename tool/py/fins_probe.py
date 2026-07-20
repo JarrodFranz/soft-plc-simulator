@@ -21,18 +21,27 @@ WHAT THIS PROVES, in order:
                              host (FINS/UDP has no session handshake; this only
                              sets up the socket).
   2. memory_area_read()    -- a Memory Area Read of one DM word, asserting the
-                             raw response frame: the FINS response header, the
-                             echoed command code, a NORMAL end code, and the
-                             word data BIG-ENDIAN (a value whose two bytes DIFFER
-                             so a byte-order fault cannot pass).
+                             raw response frame: the FINS response HEADER (the
+                             DNA/DA1/DA2 <-> SNA/SA1/SA2 node swap, the ICF
+                             response bit, the SID echo -- via the library's
+                             own `FinsHeader.from_bytes`), the echoed command
+                             code, a NORMAL end code, and the word data
+                             BIG-ENDIAN (a value whose two bytes DIFFER so a
+                             byte-order fault cannot pass).
   3. read()                -- the same word via the library's high-level
                              INT decode, cross-checking the interpreted value.
   4. a two-word read       -- proves word ordering across adjacent DM words.
 
 Step 2 is the point of the file: a real client parsing OUR response frame is
 the first independent confirmation that the 10-byte header, the DNA/DA1/DA2 <->
-SNA/SA1/SA2 node swap, the echoed SID, the command-code echo, the end code, and
-the big-endian word data are all on the wire where the client expects them.
+SNA/SA1/SA2 node swap, the ICF response bit, the echoed SID, the command-code
+echo, the end code, and the big-endian word data are all on the wire where the
+client expects them. The header assertions specifically use six DISTINCT,
+non-zero node-address values set on the connection before the request (see
+`run()`) -- the library's own defaults are all zero, which would make a
+completely broken swap indistinguishable from a correct one, since a UDP
+client's reply is delivered by the socket's 4-tuple regardless of what the
+FINS node bytes inside the header say.
 
 Usage: python fins_probe.py <host> <port>
 """
@@ -44,7 +53,7 @@ import struct
 import sys
 import traceback
 
-from fins.udp import UDPFinsConnection, FinsPLCMemoryAreas
+from fins.udp import FinsHeader, FinsPLCMemoryAreas, UDPFinsConnection
 
 # --- The fixture's layout ---------------------------------------------------
 #
@@ -55,6 +64,23 @@ DM100_ADDRESS = 100  # DM word 100
 DM100_VALUE = 0x1234  # its value; two bytes DIFFER so byte order is testable
 DM101_ADDRESS = 101  # adjacent DM word
 DM101_VALUE = 0x5678
+
+# --- Distinct node addresses for the response-header swap assertion --------
+#
+# `fins.udp.FinsConnection` defaults every one of these six fields to 0, which
+# would make a broken DNA/DA1/DA2 <-> SNA/SA1/SA2 swap invisible (0 swapped
+# with 0 is still 0). Setting six DISTINCT, non-zero values means the swap
+# assertion in step 2 actually distinguishes "swapped correctly" from "not
+# swapped", "swapped into the wrong slot", or "left alone". The host
+# (`buildFinsResponse` in `mobile/lib/protocols/fins/fins_frame.dart`) accepts
+# node addressing PERMISSIVELY -- it never validates these bytes against any
+# notion of its own address, so any values are legal here.
+REQUEST_DEST_NET = 1
+REQUEST_DEST_NODE = 2
+REQUEST_DEST_UNIT = 3
+REQUEST_SRCE_NET = 4
+REQUEST_SRCE_NODE = 5
+REQUEST_SRCE_UNIT = 6
 
 # How long any single UDP socket operation may block, in seconds. Every request
 # this probe issues is a single round trip against a loopback fixture host, so a
@@ -101,6 +127,17 @@ def run(host: str, port: int) -> None:
         ) from err
     print(f"[probe] step 1 OK: fins client aimed at {host}:{port} (UDP)")
 
+    # Six distinct, non-zero node-address fields (see the module constants
+    # above) so step 2's response-header swap assertion is actually
+    # meaningful -- the library's defaults are all zero, which a broken swap
+    # could not be told apart from.
+    connection.dest_net_add = REQUEST_DEST_NET
+    connection.dest_node_add = REQUEST_DEST_NODE
+    connection.dest_unit_add = REQUEST_DEST_UNIT
+    connection.srce_net_add = REQUEST_SRCE_NET
+    connection.srce_node_add = REQUEST_SRCE_NODE
+    connection.srce_unit_add = REQUEST_SRCE_UNIT
+
     try:
         _step2_raw_memory_area_read(connection, memory_areas)
         _step3_high_level_read(connection)
@@ -122,9 +159,22 @@ def _step2_raw_memory_area_read(
     connection: UDPFinsConnection, memory_areas: FinsPLCMemoryAreas
 ) -> None:
     """Reads one DM word via `memory_area_read` and asserts the RAW response
-    frame our host built: command-code echo, NORMAL end code, and the word data
+    frame our host built: the response HEADER (node-field swap, ICF response
+    bit, SID echo), command-code echo, NORMAL end code, and the word data
     big-endian. DM100 = 0x1234, whose bytes differ, so a little-endian encoder
-    would return `34 12` and fail here."""
+    would return `34 12` and fail here.
+
+    The header assertions below are the only place in this probe that proves
+    the DNA/DA1/DA2 <-> SNA/SA1/SA2 swap and the ICF response bit against a
+    REAL client's own parsed view of the header -- not merely by the reply
+    reaching this UDP socket. A UDP client receives its reply by the socket's
+    4-tuple, not by the FINS node bytes inside the frame, so a completely
+    broken swap (or a response ICF that never got its response bit set) would
+    still be delivered here and pass every other assertion in this file. That
+    is why `run()` sets six DISTINCT, non-zero node-address fields on the
+    connection before this request: the library's own defaults are all zero,
+    which a broken swap could not be told apart from.
+    """
     try:
         response = connection.memory_area_read(
             memory_areas.DATA_MEMORY_WORD, _beginning_address(DM100_ADDRESS), 1
@@ -170,10 +220,75 @@ def _step2_raw_memory_area_read(
         f"expected {hexs(expected)} (0x{DM100_VALUE:04X} BIG-ENDIAN). A byte-swapped "
         f"result here means the response word data was encoded little-endian.",
     )
+
+    # --- The response HEADER, via the library's own parser -------------------
+    #
+    # `FinsHeader.from_bytes` is the `fins` library's own view of the header
+    # that came back on the wire (not bytes this probe hand-parses itself).
+    header = FinsHeader()
+    header.from_bytes(response[:10])
+
+    # Node-field swap: whatever this client sent as its DESTINATION
+    # (dest_net_add/dest_node_add/dest_unit_add) must come back in the
+    # response's SOURCE fields (SNA/SA1/SA2), and whatever it sent as its own
+    # SOURCE must come back in the response's DESTINATION fields (DNA/DA1/DA2)
+    # -- that is the actual swap `buildFinsResponse` performs, per
+    # `mobile/lib/protocols/fins/fins_frame.dart`.
+    response_dna_da1_da2 = header.dna + header.da1 + header.da2
+    response_sna_sa1_sa2 = header.sna + header.sa1 + header.sa2
+    expected_dna_da1_da2 = bytes(
+        (connection.srce_net_add, connection.srce_node_add, connection.srce_unit_add)
+    )
+    expected_sna_sa1_sa2 = bytes(
+        (connection.dest_net_add, connection.dest_node_add, connection.dest_unit_add)
+    )
+    check(
+        response_dna_da1_da2 == expected_dna_da1_da2,
+        f"STEP 2 (header node swap, DNA/DA1/DA2): response DNA/DA1/DA2 is "
+        f"{hexs(response_dna_da1_da2)}, expected {hexs(expected_dna_da1_da2)} -- "
+        f"the request's own SNA/SA1/SA2 (source), which must come back as the "
+        f"response's destination. A mismatch means the response header did not "
+        f"correctly swap destination<->source.",
+    )
+    check(
+        response_sna_sa1_sa2 == expected_sna_sa1_sa2,
+        f"STEP 2 (header node swap, SNA/SA1/SA2): response SNA/SA1/SA2 is "
+        f"{hexs(response_sna_sa1_sa2)}, expected {hexs(expected_sna_sa1_sa2)} -- "
+        f"the request's own DNA/DA1/DA2 (destination), which must come back as "
+        f"the response's source. A mismatch means the response header did not "
+        f"correctly swap destination<->source.",
+    )
+
+    # ICF response bit: the client always sends icf=0x80 (see
+    # `fins.fins_common.FinsConnection.fins_command_frame`'s default), and our
+    # host's response ICF must be that value with bit 6 (0x40, "this is a
+    # response") set and nothing else touched -- i.e. exactly 0xC0.
+    icf = header.icf[0]
+    check(
+        icf == 0xC0,
+        f"STEP 2 (ICF response bit): response ICF is 0x{icf:02X}, expected "
+        f"0xC0 (request ICF 0x80 with the response bit, mask 0x40, set and no "
+        f"other bit changed). This means the client's OWN parsed header does "
+        f"not have the response bit set on our reply.",
+    )
+
+    # SID echo: the client's fixed request SID must come back unchanged --
+    # this is how the client (not node addressing) correlates a reply to its
+    # request.
+    sid = header.sid[0]
+    check(
+        sid == 0x60,
+        f"STEP 2 (SID echo): response SID is 0x{sid:02X}, expected 0x60 (the "
+        f"fins client's fixed request SID). An unechoed SID would break "
+        f"request/response correlation.",
+    )
+
     print(
         f"[probe] step 2 OK: raw memory_area_read of DM{DM100_ADDRESS} returned "
         f"cmd={hexs(command_code)} end={hexs(end_code)} data={hexs(text)} "
-        f"(big-endian 0x{DM100_VALUE:04X})"
+        f"(big-endian 0x{DM100_VALUE:04X}); response header node swap "
+        f"DNA/DA1/DA2={hexs(response_dna_da1_da2)} "
+        f"SNA/SA1/SA2={hexs(response_sna_sa1_sa2)}, ICF=0x{icf:02X}, SID=0x{sid:02X}"
     )
 
 
