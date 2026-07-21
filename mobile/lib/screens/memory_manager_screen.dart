@@ -929,10 +929,13 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
   }
 
   // Live scalar-value POKE for a Memory Manager row: a small popover with one
-  // ScalarValueField + OK/Cancel. Mirrors `_toggleBoolValue` -- writes through
-  // `writePath` (which, for a root tag, sets `tag.value` directly; root force
-  // is not surfaced here, matching `_liveValueFor`'s existing behavior) then
-  // `setState` + `onProjectUpdated`. Never touches `isForced`.
+  // ScalarValueField + OK/Cancel. Follows the same force rule as the Tag
+  // Inspector's `_editScalarLiveValue` -- a poke on a FORCED scalar ROOT tag
+  // writes its `forcedValue` (the value protocols/logic/the Inspector all
+  // read through `readPath`), else it writes through `writePath` (which sets
+  // a root's `value` directly, or resolves a nested leaf). Force only applies
+  // to scalar root tags, so nested leaves and unforced roots always take the
+  // `writePath` branch. Never toggles `isForced` -- a poke is not a force.
   Future<void> _editScalarLiveValueRow(_TagRowData row) async {
     if (!_isEditableScalarRow(row)) {
       return;
@@ -958,7 +961,17 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
       ),
     );
     if (ok == true) {
-      writePath(widget.currentProject, row.path, pending);
+      final root = row.depth == 0
+          ? widget.currentProject.tags
+              .where((t) => t.name == row.path)
+              .cast<PlcTag?>()
+              .firstWhere((_) => true, orElse: () => null)
+          : null;
+      if (root != null && root.isForced) {
+        root.forcedValue = pending;
+      } else {
+        writePath(widget.currentProject, row.path, pending);
+      }
       setState(() {});
       widget.onProjectUpdated();
     }

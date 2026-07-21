@@ -213,6 +213,32 @@ void main() {
       expect(tag.value, equals(80.0));
     });
 
+    testWidgets("poking a FORCED root scalar writes forcedValue, leaving value unchanged",
+        (tester) async {
+      final project = _project();
+      final tag = project.tags.firstWhere((t) => t.name == 'Speed');
+      tag.isForced = true;
+      tag.forcedValue = 70.0;
+      await tester.pumpWidget(app(project));
+      await tester.pumpAndSettle();
+
+      // The Memory Manager displays a forced root's live value as its `value`
+      // (pre-existing `_liveValueFor` behavior), so the pill still shows 12.5.
+      await tester.tap(liveValueTextFor('Speed', '12.5'));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('scalar_value_text_field')), findsOneWidget);
+      await tester.enterText(find.byKey(const Key('scalar_value_text_field')), '80');
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('scalar_live_edit_ok')));
+      await tester.pumpAndSettle();
+
+      // The poke follows the force rule: forcedValue is updated, value untouched.
+      expect(tag.forcedValue, equals(80.0));
+      expect(tag.value, equals(12.5));
+    });
+
     testWidgets("the reserved System tag's value is not editable", (tester) async {
       final project = _project();
       ensureSystemTag(project);
