@@ -8,6 +8,7 @@ Cargo.lock
 /mobile/.dart_tool/
 /mobile/.packages
 /mobile/build/
+/mobile/android/build/
 /mobile/.flutter-plugins
 /mobile/.flutter-plugins-dependencies
 /mobile/ios/Pods/
@@ -55,6 +56,9 @@ desktop.ini
 # Reference example sources (kept locally, not tracked)
 /Source/Examples/
 gateway/pki/
+
+# Vendor/reference manuals kept locally for development, not tracked
+/Project Resources/
 
 # Python probe lane (tool/py/): the virtualenv and anything pip downloads
 # into it are build artifacts, never committed. `tool/py/requirements.txt`

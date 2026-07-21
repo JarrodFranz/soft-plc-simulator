@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mobile Soft PLC Simulator — Mind Map</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #07111F;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    color: #E2E8F0;
+    overflow: hidden;
+    user-select: none;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  #canvas {
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+    display: block;
+  }
+  #canvas.dragging { cursor: grabbing; }
+
+  /* Tooltip */
+  #tooltip {
+    position: fixed;
+    background: rgba(15, 30, 55, 0.97);
+    border: 1px solid rgba(99, 179, 237, 0.35);
+    border-radius: 10px;
+    padding: 10px 14px;
+    max-width: 260px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    z-index: 100;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  #tooltip.visible { opacity: 1; }
+  #tooltip .tt-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #93C5FD;
+    margin-bottom: 5px;
+  }
+  #tooltip .tt-body {
+    font-size: 12px;
+    color: #CBD5E1;
+    line-height: 1.5;
+  }
+
+  /* Controls */
+  #controls {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 50;
+  }
+  #controls button {
+    width: 38px;
+    height: 38px;
+    border-radius: 8px;
+    border: 1px solid rgba(99, 179, 237, 0.3);
+    background: rgba(15, 30, 55, 0.9);
+    color: #93C5FD;
+    font-size: 18px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #controls button:hover {
+    background: rgba(59, 130, 246, 0.25);
+    border-color: rgba(99, 179, 237, 0.7);
+  }
+
+  /* Legend */
+  #legend {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    background: rgba(7, 17, 31, 0.88);
+    border: 1px solid rgba(99,179,237,0.2);
+    border-radius: 12px;
+    padding: 14px 16px;
+    z-index: 50;
+  }
+  #legend h3 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #64748B;
+    margin-bottom: 10px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 7px;
+    font-size: 12px;
+    color: #CBD5E1;
+  }
+  .legend-dot {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  /* Hint */
+  #hint {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px;
+    color: #475569;
+    letter-spacing: 0.04em;
+    pointer-events: none;
+  }
+
+  /* Title */
+  #title-bar {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    pointer-events: none;
+  }
+  #title-bar h1 {
+    font-size: 15px;
+    font-weight: 700;
+    color: #E2E8F0;
+    letter-spacing: 0.04em;
+  }
+  #title-bar p {
+    font-size: 11px;
+    color: #475569;
+    margin-top: 2px;
+  }
+</style>
+</head>
+<body>
+
+<svg id="canvas" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Background dot grid -->
+    <pattern id="dotgrid" x="0" y="0" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="14" cy="14" r="1" fill="#1E3A5F" opacity="0.5"/>
+    </pattern>
+
+    <!-- Glow filters -->
+    <filter id="glow-blue" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glow-soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glow-ring" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <!-- Center radial gradient -->
+    <radialGradient id="center-grad" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#2563EB"/>
+      <stop offset="55%" stop-color="#1B4F8A"/>
+      <stop offset="100%" stop-color="#0F2D5A"/>
+    </radialGradient>
+
+    <!-- Branch colour gradients (for connector lines) -->
+    <linearGradient id="grad-blue" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#3B82F6" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#3B82F6" stop-opacity="0.2"/>
+    </linearGradient>
+
+    <!-- Clip for center text -->
+    <clipPath id="center-clip">
+      <circle cx="0" cy="0" r="68"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <rect width="100%" height="100%" fill="url(#dotgrid)"/>
+
+  <!-- Main pan/zoom group -->
+  <g id="scene">
+    <!-- Guide rings (dashed) -->
+    <circle cx="0" cy="0" r="210" fill="none" stroke="#1E3A5F" stroke-width="1" stroke-dasharray="4 6" opacity="0.5"/>
+    <circle cx="0" cy="0" r="400" fill="none" stroke="#1E3A5F" stroke-width="1" stroke-dasharray="3 8" opacity="0.35"/>
+
+    <!-- Outer ambient glow ring -->
+    <circle cx="0" cy="0" r="72" fill="none" stroke="#3B82F6" stroke-width="18" opacity="0.08" filter="url(#glow-ring)"/>
+
+    <!-- Branch lines, nodes, and labels rendered by JS -->
+    <g id="branches"></g>
+
+    <!-- Center node (on top) -->
+    <g id="center-node" style="cursor:pointer">
+      <!-- Outer pulse ring -->
+      <circle cx="0" cy="0" r="78" fill="none" stroke="#3B82F6" stroke-width="1.5" opacity="0.25"/>
+      <!-- Glow halo -->
+      <circle cx="0" cy="0" r="68" fill="#1B4F8A" opacity="0.35" filter="url(#glow-blue)"/>
+      <!-- Main fill -->
+      <circle cx="0" cy="0" r="68" fill="url(#center-grad)" stroke="#3B82F6" stroke-width="2"/>
+      <!-- Inner ring -->
+      <circle cx="0" cy="0" r="60" fill="none" stroke="#60A5FA" stroke-width="0.75" opacity="0.4"/>
+
+      <text text-anchor="middle" dominant-baseline="middle" fill="#DBEAFE" font-size="13" font-weight="800" letter-spacing="0.5" y="-18">Mobile Soft</text>
+      <text text-anchor="middle" dominant-baseline="middle" fill="#DBEAFE" font-size="13" font-weight="800" letter-spacing="0.5" y="-3">PLC</text>
+      <text text-anchor="middle" dominant-baseline="middle" fill="#DBEAFE" font-size="13" font-weight="800" letter-spacing="0.5" y="12">Simulator</text>
+      <text text-anchor="middle" dominant-baseline="middle" fill="#60A5FA" font-size="9.5" y="30">IEC 61131-3</text>
+    </g>
+  </g>
+</svg>
+
+<!-- Tooltip -->
+<div id="tooltip">
+  <div class="tt-title" id="tt-title"></div>
+  <div class="tt-body" id="tt-body"></div>
+</div>
+
+<!-- Title bar -->
+<div id="title-bar">
+  <h1>Mobile Soft PLC Simulator</h1>
+  <p>Users, Uses &amp; Ecosystem</p>
+</div>
+
+<!-- Legend -->
+<div id="legend">
+  <h3>Branches</h3>
+  <div class="legend-item"><div class="legend-dot" style="background:#3B82F6"></div>Automation Engineers</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#06B6D4"></div>SCADA / HMI Integrators</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#8B5CF6"></div>Students &amp; Educators</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#EF4444"></div>Protocol Testers &amp; Security</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#F59E0B"></div>Software Developers</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#10B981"></div>Partners &amp; Ecosystem</div>
+</div>
+
+<!-- Zoom controls -->
+<div id="controls">
+  <button id="btn-zoom-in" title="Zoom in">+</button>
+  <button id="btn-zoom-out" title="Zoom out">−</button>
+  <button id="btn-reset" title="Reset view" style="font-size:13px">⌂</button>
+</div>
+
+<!-- Hint -->
+<div id="hint">Scroll to zoom · Drag to pan · Hover nodes for details</div>
+
+<script>
+// ─── DATA ────────────────────────────────────────────────────────────────────
+const BRANCHES = [
+  {
+    angle: 0,
+    color: '#3B82F6',
+    icon: '🏭',
+    label: 'Automation\nEngineers',
+    tooltip: {
+      title: '🏭 Automation Engineers',
+      body: 'Professional PLC engineers who use Mobile Soft PLC to design, test, and validate control logic without needing physical hardware on-site.'
+    },
+    children: [
+      { label: 'Virtual\nCommissioning', tooltip: { title: 'Virtual Commissioning', body: 'Commission entire machine sequences in software before installation. Catch wiring errors and logic faults early, saving costly site visits.' } },
+      { label: 'FAT Without\nHardware', tooltip: { title: 'Factory Acceptance Testing Without Hardware', body: 'Run full Factory Acceptance Tests on-screen, letting customers sign off on logic before any PLC rack is shipped.' } },
+      { label: 'Multi-Protocol\nTesting', tooltip: { title: 'Multi-Protocol Testing', body: 'Test OPC UA, Modbus TCP, MQTT Sparkplug B, DNP3, and EtherNet/IP communication all in one app — no separate test PLCs needed.' } },
+      { label: 'PID Loop\nTuning', tooltip: { title: 'PID Loop Tuning', body: 'Model and tune PID controllers with live trend charts, testing gain/integral/derivative parameters safely in simulation.' } },
+      { label: 'On-Site Mobile\nReference', tooltip: { title: 'On-Site Mobile Reference', body: 'Use the phone or tablet as a portable PLC reference during site walks — quickly verify register addresses and tag behaviour on the spot.' } },
+      { label: '5-Language\nLogic Testing', tooltip: { title: 'All 5 IEC 61131-3 Languages', body: 'Switch between Ladder (LD), Structured Text (ST), Function Block Diagram (FBD), Sequential Function Chart (SFC), and Instruction List (IL) to test cross-language portability.' } },
+    ]
+  },
+  {
+    angle: 60,
+    color: '#06B6D4',
+    icon: '🖥',
+    label: 'SCADA / HMI\nIntegrators',
+    tooltip: {
+      title: '🖥 SCADA / HMI Integrators',
+      body: 'System integrators using Ignition, WinCC, or FactoryTalk who need a virtual PLC back-end to develop and test SCADA screens offline.'
+    },
+    children: [
+      { label: 'Test Ignition\nScreens', tooltip: { title: 'Test Ignition SCADA Screens', body: 'Connect Inductive Automation Ignition 8.3 directly via OPC UA (confirmed working) to develop HMI screens without a physical PLC rack.' } },
+      { label: 'OPC UA\nSubscriptions', tooltip: { title: 'OPC UA Tag Subscriptions', body: 'Subscribe to live PLC tags over OPC UA and verify that SCADA subscription rates, dead-bands, and alarming behave as designed.' } },
+      { label: 'Modbus Register\nMapping', tooltip: { title: 'Modbus Register Mapping', body: 'Map Modbus coils and registers to PLC variables, letting integrators validate HMI addressing spreadsheets before site delivery.' } },
+      { label: 'Tag Model\nDevelopment', tooltip: { title: 'Tag Model Development', body: 'Build and iterate the full OPC UA node/folder hierarchy and Modbus memory map in simulation, then export the tag definitions for production.' } },
+      { label: 'MQTT Sparkplug B\nValidation', tooltip: { title: 'MQTT Sparkplug B Validation', body: 'Publish Sparkplug B birth/death certificates and DDATA payloads to verify broker routing and Ignition Edge metrics before go-live.' } },
+      { label: 'Demo Without\nHardware', tooltip: { title: 'Customer Demo Without Hardware', body: 'Show a fully animated live HMI to a customer using only a laptop and phone — no PLC cabinet, no wiring, no site setup.' } },
+    ]
+  },
+  {
+    angle: 120,
+    color: '#8B5CF6',
+    icon: '🎓',
+    label: 'Students &\nEducators',
+    tooltip: {
+      title: '🎓 Students & Educators',
+      body: 'TAFE, university, and vocational students learning PLC programming, plus instructors creating labs without expensive hardware labs.'
+    },
+    children: [
+      { label: 'Learn Ladder\nLogic (LD)', tooltip: { title: 'Learn Ladder Diagram (LD)', body: 'The most common PLC language for beginners — relay contact logic on rungs. Practice with real rung editors and live coil outputs, not diagrams.' } },
+      { label: 'Structured Text\n(ST)', tooltip: { title: 'Structured Text (ST)', body: 'Learn Pascal-like high-level PLC programming for complex calculations, string handling, and data manipulation — directly executable.' } },
+      { label: 'FBD & SFC\nLanguages', tooltip: { title: 'Function Block Diagram & Sequential Function Chart', body: 'Drag function blocks and design step-transition state machines. Ideal for process control and safety system coursework.' } },
+      { label: 'Zero Hardware\nCost', tooltip: { title: 'Zero Hardware Cost Lab', body: 'A full IEC 61131-3 PLC lab for the cost of a phone. Schools and TAFEs can run 30-student classes without purchasing a single PLC.' } },
+      { label: 'Lab Supplement', tooltip: { title: 'Lab Supplement & Homework', body: 'Students take the simulator home to continue lab exercises. Logic developed in class can be resumed on a personal phone.' } },
+      { label: 'Guided\nCurriculum Mode', tooltip: { title: 'Guided Curriculum Mode (Roadmap)', body: 'Planned feature: built-in guided lessons and exercises mapped to TAFE and university curricula, with progress tracking.' } },
+    ]
+  },
+  {
+    angle: 180,
+    color: '#EF4444',
+    icon: '🔒',
+    label: 'Protocol Testers\n& Security',
+    tooltip: {
+      title: '🔒 Protocol Testers & ICS Security',
+      body: 'OT/ICS security researchers, penetration testers, and protocol validation engineers who need a safe, controllable PLC target.'
+    },
+    children: [
+      { label: 'OPC UA Security\nTesting', tooltip: { title: 'OPC UA Security Mode Testing', body: 'Test None / Sign / Sign & Encrypt security modes and certificate validation workflows against a safe simulator — not a live production PLC.' } },
+      { label: 'DNP3 Outstation\nValidation', tooltip: { title: 'DNP3 Outstation Validation', body: 'Send DNP3 Application Layer requests to the built-in outstation and verify response codes, object groups, and variation handling without SCADA infrastructure.' } },
+      { label: 'ICS Cyber\nTraining', tooltip: { title: 'ICS Cybersecurity Training', body: 'Use as a safe OT lab target for CTF challenges, SOC analyst training, and red-team exercises involving industrial protocol exploitation.' } },
+      { label: 'Firewall Rule\nTesting', tooltip: { title: 'Firewall & Network Segmentation Testing', body: 'Validate that OT firewall rules correctly permit or deny OPC UA (4840), Modbus (502), DNP3 (20000), and MQTT (1883) traffic as specified.' } },
+      { label: 'Sparkplug B\nVerification', tooltip: { title: 'Sparkplug B Payload Verification', body: 'Capture and decode Sparkplug B Protobuf payloads to validate metric encoding, timestamp accuracy, and sequence numbering against the specification.' } },
+      { label: 'EtherNet/IP\n& CIP Testing', tooltip: { title: 'EtherNet/IP & CIP Conformance', body: 'Send CIP explicit messaging requests and verify tag read/write, identity object responses, and connection management against Phase 14 implementation.' } },
+    ]
+  },
+  {
+    angle: 240,
+    color: '#F59E0B',
+    icon: '💻',
+    label: 'Software\nDevelopers',
+    tooltip: {
+      title: '💻 Software Developers',
+      body: 'SCADA developers, IIoT platform builders, and DevOps engineers who need a PLC simulator as a consistent integration test endpoint.'
+    },
+    children: [
+      { label: 'CI/CD PLC\nEndpoint', tooltip: { title: 'CI/CD PLC Test Endpoint', body: 'Spin up the simulator in a CI pipeline to run automated integration tests against OPC UA and Modbus endpoints — no hardware required in the build server.' } },
+      { label: 'SCADA Screen\nDevelopment', tooltip: { title: 'SCADA Screen Development', body: 'Develop and unit-test HMI screen bindings, tag expressions, and alarming logic against a live-behaving PLC without a physical cabinet.' } },
+      { label: 'Virtual PLC\nAPI', tooltip: { title: 'Virtual PLC REST/Protocol API', body: 'Drive PLC I/O programmatically via industrial protocols to build and test IIoT gateways, data historians, and Edge computing pipelines.' } },
+      { label: 'Protocol Client\nTesting', tooltip: { title: 'Protocol Client Library Testing', body: 'Test OPC UA client SDKs, Modbus libraries, MQTT connectors, and EtherNet/IP stacks against a deterministic simulator that responds exactly to spec.' } },
+      { label: 'Integration\nTesting', tooltip: { title: 'End-to-End Integration Testing', body: 'Chain the simulator with MQTT brokers, cloud IoT hubs, and data lakes to validate the full industrial data pipeline from PLC tag to dashboard.' } },
+      { label: 'PLCopen XML\nImport (Soon)', tooltip: { title: 'PLCopen XML Import (Roadmap)', body: 'Planned: import standard PLCopen XML project files from Codesys, TIA Portal, or Studio 5000, making real-world programs testable on-device.' } },
+    ]
+  },
+  {
+    angle: 300,
+    color: '#10B981',
+    icon: '🤝',
+    label: 'Partners &\nEcosystem',
+    tooltip: {
+      title: '🤝 Partners & Ecosystem',
+      body: 'Technology vendors, training platforms, and industry bodies whose products and platforms integrate with or complement Mobile Soft PLC.'
+    },
+    children: [
+      { label: 'Inductive\nAutomation', tooltip: { title: 'Inductive Automation (Ignition)', body: 'Confirmed OPC UA interoperability with Ignition 8.3. Partnership opportunity: co-marketing, App Store featuring, and certified connector listing.' } },
+      { label: 'Arduino PLC\nOpta', tooltip: { title: 'Arduino PLC Opta', body: 'Complement real Arduino Opta PLC hardware with Mobile Soft PLC simulation — test logic before deploying to a physical Opta device.' } },
+      { label: 'TAFE &\nColleges', tooltip: { title: 'TAFE & Technical Colleges', body: 'Institution licensing for electrical and automation trade programs. Volume pricing, curriculum packs, and instructor dashboards planned.' } },
+      { label: 'Udemy /\nCoursera', tooltip: { title: 'Udemy & Coursera Courses', body: 'Course creators can bundle a Pro subscription with their PLC programming courses, adding a hands-on simulation tool to their curriculum.' } },
+      { label: 'AWS / Azure\nIoT', tooltip: { title: 'AWS IoT & Azure IoT Hub', body: 'Route MQTT Sparkplug B data to AWS IoT Core or Azure IoT Hub for cloud analytics, digital twin demos, and Edge-to-cloud pipeline testing.' } },
+      { label: 'OPC\nFoundation', tooltip: { title: 'OPC Foundation', body: 'Submit for OPC UA Compliance Testing. Foundation membership opens co-marketing, conformance certification, and industry event exposure.' } },
+    ]
+  },
+];
+
+// ─── LAYOUT CONSTANTS ────────────────────────────────────────────────────────
+const MAIN_R   = 210;   // radius from centre to main node
+const SUB_R    = 400;   // radius from centre to sub-node
+const FAN_DEG  = 26;    // half-angle fan for children
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+const DEG = Math.PI / 180;
+function polar(angle_deg, radius) {
+  const a = angle_deg * DEG;
+  return { x: Math.cos(a) * radius, y: Math.sin(a) * radius };
+}
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+// Cubic bezier path from origin to target via two control points
+function bezier(x1, y1, x2, y2) {
+  const cx1 = x1 * 0.45, cy1 = y1 * 0.45;
+  const cx2 = x2 * 0.6,  cy2 = y2 * 0.6;
+  return `M 0 0 C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
+}
+function bezierBranch(px, py, x2, y2) {
+  const cx1 = px * 0.6 + x2 * 0.1, cy1 = py * 0.6 + y2 * 0.1;
+  const cx2 = px * 0.2 + x2 * 0.7, cy2 = py * 0.2 + y2 * 0.7;
+  return `M ${px} ${py} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
+}
+
+// ─── SVG NAMESPACE ───────────────────────────────────────────────────────────
+const NS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function svgText(lines, x, y, opts, parent) {
+  const t = el('text', {
+    x, y,
+    'text-anchor': opts.anchor || 'middle',
+    fill: opts.fill || '#E2E8F0',
+    'font-size': opts.size || 11,
+    'font-weight': opts.weight || '600',
+    'dominant-baseline': 'middle',
+  }, parent);
+  if (opts.filter) t.setAttribute('filter', opts.filter);
+  const lineH = (opts.size || 11) * 1.35;
+  const totalH = (lines.length - 1) * lineH;
+  lines.forEach((line, i) => {
+    const ts = el('tspan', {
+      x, dy: i === 0 ? -totalH / 2 : lineH,
+    }, t);
+    ts.textContent = line;
+  });
+  return t;
+}
+
+// ─── BUILD BRANCHES ──────────────────────────────────────────────────────────
+const branchGroup = document.getElementById('branches');
+const hitTargets = []; // { el, tooltip }
+
+BRANCHES.forEach((branch) => {
+  const mainPt = polar(branch.angle, MAIN_R);
+  const n = branch.children.length;
+
+  // ── Connector: centre → main node ──
+  el('path', {
+    d: bezier(0, 0, mainPt.x, mainPt.y),
+    stroke: branch.color,
+    'stroke-width': 2.5,
+    fill: 'none',
+    opacity: '0.55',
+  }, branchGroup);
+
+  // ── Sub-connectors and sub-nodes ──
+  branch.children.forEach((child, ci) => {
+    const spreadFrac = n > 1 ? (ci / (n - 1) - 0.5) * 2 : 0;
+    const childAngle = branch.angle + spreadFrac * FAN_DEG;
+    const subPt = polar(childAngle, SUB_R);
+
+    // Line main → sub
+    el('path', {
+      d: bezierBranch(mainPt.x, mainPt.y, subPt.x, subPt.y),
+      stroke: branch.color,
+      'stroke-width': 1.5,
+      fill: 'none',
+      opacity: '0.3',
+    }, branchGroup);
+
+    // Sub-node circle
+    const subCircle = el('circle', {
+      cx: subPt.x, cy: subPt.y, r: 7,
+      fill: '#0F1F36',
+      stroke: branch.color,
+      'stroke-width': 2,
+    }, branchGroup);
+
+    // Sub label
+    const rightSide = subPt.x >= 0;
+    const labelX = subPt.x + (rightSide ? 16 : -16);
+    const lines = child.label.split('\n');
+    svgText(lines, labelX, subPt.y, {
+      anchor: rightSide ? 'start' : 'end',
+      fill: '#CBD5E1',
+      size: 10.5,
+      weight: '500',
+    }, branchGroup);
+
+    // Hit target (invisible larger circle for hover)
+    const hit = el('circle', {
+      cx: subPt.x, cy: subPt.y, r: 20,
+      fill: 'transparent',
+      style: 'cursor:pointer',
+    }, branchGroup);
+    hitTargets.push({ el: hit, circle: subCircle, color: branch.color, tooltip: child.tooltip });
+  });
+
+  // ── Main node ──
+  // Glow
+  el('circle', {
+    cx: mainPt.x, cy: mainPt.y, r: 28,
+    fill: branch.color, opacity: '0.15',
+    filter: 'url(#glow-soft)',
+  }, branchGroup);
+  // Fill
+  const mainCircle = el('circle', {
+    cx: mainPt.x, cy: mainPt.y, r: 28,
+    fill: '#0D1F38',
+    stroke: branch.color,
+    'stroke-width': 2,
+    style: 'cursor:pointer',
+  }, branchGroup);
+  // Icon
+  const iconEl = el('text', {
+    x: mainPt.x, y: mainPt.y - 6,
+    'text-anchor': 'middle',
+    'dominant-baseline': 'middle',
+    'font-size': '16',
+  }, branchGroup);
+  iconEl.textContent = branch.icon;
+
+  // Label below/above node based on angle
+  const isBelow = branch.angle >= 45 && branch.angle <= 315;
+  const labelLines = branch.label.split('\n');
+  const labelDist = 42;
+  const lpt = polar(branch.angle, MAIN_R + labelDist);
+  svgText(labelLines, lpt.x, lpt.y, {
+    anchor: 'middle',
+    fill: branch.color,
+    size: 11.5,
+    weight: '700',
+  }, branchGroup);
+
+  // Main hit target
+  const mainHit = el('circle', {
+    cx: mainPt.x, cy: mainPt.y, r: 32,
+    fill: 'transparent',
+    style: 'cursor:pointer',
+  }, branchGroup);
+  hitTargets.push({ el: mainHit, circle: mainCircle, color: branch.color, tooltip: branch.tooltip, isMain: true });
+});
+
+// ─── TOOLTIP LOGIC ───────────────────────────────────────────────────────────
+const tooltip  = document.getElementById('tooltip');
+const ttTitle  = document.getElementById('tt-title');
+const ttBody   = document.getElementById('tt-body');
+let activeHit  = null;
+
+function showTooltip(e, data, color) {
+  ttTitle.textContent = data.title;
+  ttTitle.style.color = color || '#93C5FD';
+  ttBody.textContent  = data.body;
+  moveTooltip(e);
+  tooltip.classList.add('visible');
+}
+function hideTooltip() {
+  tooltip.classList.remove('visible');
+}
+function moveTooltip(e) {
+  const PAD = 14;
+  const TW = tooltip.offsetWidth || 260;
+  const TH = tooltip.offsetHeight || 80;
+  let lx = e.clientX + PAD;
+  let ly = e.clientY + PAD;
+  if (lx + TW > window.innerWidth  - 8) lx = e.clientX - TW - PAD;
+  if (ly + TH > window.innerHeight - 8) ly = e.clientY - TH - PAD;
+  tooltip.style.left = lx + 'px';
+  tooltip.style.top  = ly + 'px';
+}
+
+hitTargets.forEach(({ el: hitEl, circle, color, tooltip: ttData, isMain }) => {
+  hitEl.addEventListener('mouseenter', (e) => {
+    circle.setAttribute('fill', isMain ? '#142440' : color + '22');
+    circle.setAttribute('stroke-width', isMain ? '2.5' : '2.5');
+    showTooltip(e, ttData, color);
+    activeHit = { hitEl, circle, isMain, origFill: isMain ? '#0D1F38' : '#0F1F36' };
+  });
+  hitEl.addEventListener('mouseleave', () => {
+    circle.setAttribute('fill', isMain ? '#0D1F38' : '#0F1F36');
+    circle.setAttribute('stroke-width', isMain ? '2' : '2');
+    hideTooltip();
+    activeHit = null;
+  });
+  hitEl.addEventListener('mousemove', moveTooltip);
+});
+
+// Center node tooltip
+const centerNode = document.getElementById('center-node');
+centerNode.addEventListener('mouseenter', (e) => {
+  showTooltip(e, {
+    title: '⚙️ Mobile Soft PLC Simulator',
+    body: 'A full IEC 61131-3 PLC simulator running on iOS, Android, Windows, macOS, and Linux. Hosts OPC UA, Modbus TCP, MQTT Sparkplug B, DNP3, and EtherNet/IP servers in-app — no companion hardware required.'
+  }, '#60A5FA');
+});
+centerNode.addEventListener('mouseleave', hideTooltip);
+centerNode.addEventListener('mousemove', moveTooltip);
+
+// ─── PAN & ZOOM ──────────────────────────────────────────────────────────────
+const scene  = document.getElementById('scene');
+const canvas = document.getElementById('canvas');
+
+let tx = 0, ty = 0, scale = 1;
+let isDragging = false, startX = 0, startY = 0, startTx = 0, startTy = 0;
+
+function applyTransform() {
+  scene.setAttribute('transform', `translate(${tx},${ty}) scale(${scale})`);
+}
+
+function centreView() {
+  const W = canvas.clientWidth || window.innerWidth;
+  const H = canvas.clientHeight || window.innerHeight;
+  tx = W / 2; ty = H / 2; scale = 1;
+  applyTransform();
+}
+
+window.addEventListener('load', centreView);
+window.addEventListener('resize', centreView);
+
+canvas.addEventListener('pointerdown', (e) => {
+  if (e.target.closest('#center-node') || hitTargets.some(h => h.el === e.target)) return;
+  isDragging = true;
+  startX = e.clientX; startY = e.clientY;
+  startTx = tx; startTy = ty;
+  canvas.classList.add('dragging');
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!isDragging) return;
+  tx = startTx + (e.clientX - startX);
+  ty = startTy + (e.clientY - startY);
+  applyTransform();
+});
+canvas.addEventListener('pointerup', () => {
+  isDragging = false;
+  canvas.classList.remove('dragging');
+});
+
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.1 : 0.91;
+  const newScale = clamp(scale * factor, 0.25, 4);
+  // Zoom towards cursor
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  tx = mx - (mx - tx) * (newScale / scale);
+  ty = my - (my - ty) * (newScale / scale);
+  scale = newScale;
+  applyTransform();
+}, { passive: false });
+
+// Touch pinch
+let lastDist = null;
+canvas.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 2) {
+    lastDist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+  }
+}, { passive: true });
+canvas.addEventListener('touchmove', (e) => {
+  if (e.touches.length === 2 && lastDist !== null) {
+    const d = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+    const factor = d / lastDist;
+    scale = clamp(scale * factor, 0.25, 4);
+    lastDist = d;
+    applyTransform();
+  }
+}, { passive: true });
+canvas.addEventListener('touchend', () => { lastDist = null; });
+
+// Buttons
+document.getElementById('btn-zoom-in').addEventListener('click', () => {
+  const W = canvas.clientWidth / 2, H = canvas.clientHeight / 2;
+  const newScale = clamp(scale * 1.2, 0.25, 4);
+  tx = W - (W - tx) * (newScale / scale);
+  ty = H - (H - ty) * (newScale / scale);
+  scale = newScale;
+  applyTransform();
+});
+document.getElementById('btn-zoom-out').addEventListener('click', () => {
+  const W = canvas.clientWidth / 2, H = canvas.clientHeight / 2;
+  const newScale = clamp(scale / 1.2, 0.25, 4);
+  tx = W - (W - tx) * (newScale / scale);
+  ty = H - (H - ty) * (newScale / scale);
+  scale = newScale;
+  applyTransform();
+});
+document.getElementById('btn-reset').addEventListener('click', centreView);
+</script>
+</body>
+</html>
