@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="DemoProject"/>
+  <types>
+    <dataTypes>
+      <dataType name="MotorType">
+        <baseType><struct>
+          <variable name="Running"><type><BOOL/></type></variable>
+          <variable name="Rpm"><type><INT/></type><initialValue><simpleValue value="1500"/></initialValue></variable>
+        </struct></baseType>
+      </dataType>
+    </dataTypes>
+    <pous>
+      <pou name="Main" pouType="program">
+        <interface>
+          <localVars>
+            <variable name="Count"><type><DINT/></type><initialValue><simpleValue value="7"/></initialValue></variable>
+          </localVars>
+        </interface>
+        <body><ST><xhtml xmlns="http://www.w3.org/1999/xhtml">Count := Count + 1;</xhtml></ST></body>
+      </pou>
+      <pou name="Rung1" pouType="program">
+        <interface><localVars/></interface>
+        <body><LD>
+          <contact localId="1"><position x="10" y="20"/><variable>Start</variable>
+            <connectionPointIn/><connectionPointOut/></contact>
+          <coil localId="2"><position x="90" y="20"/><variable>Motor</variable>
+            <connectionPointIn><connection refLocalId="1"/></connectionPointIn></coil>
+        </LD></body>
+      </pou>
+    </pous>
+  </types>
+  <instances>
+    <configurations>
+      <configuration name="Config">
+        <resource name="Res">
+          <globalVars>
+            <variable name="Temp_PV"><type><REAL/></type><initialValue><simpleValue value="20.0"/></initialValue></variable>
+            <variable name="Enable"><type><BOOL/></type><initialValue><simpleValue value="TRUE"/></initialValue></variable>
+            <variable name="Retained" retain="true"><type><LREAL/></type></variable>
+          </globalVars>
+        </resource>
+      </configuration>
+    </configurations>
+  </instances>
+</project>
