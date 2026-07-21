@@ -129,6 +129,17 @@ CIP_SYMBOL_OBJECT_CLASS = 0x6B
 CIP_SYMBOL_ATTR_NAME = 1
 CIP_SYMBOL_ATTR_TYPE = 2
 
+# Get Attribute List (0x03) on the Identity Object (class 0x01) — the service
+# Ignition's Allen-Bradley Logix driver uses to read controller info. pycomm3's
+# LogixDriver reads Identity with Get Attributes All (0x01) instead, so this
+# 0x03 path is otherwise UNPROVEN against a real client; this step is the check.
+CIP_SERVICE_GET_ATTRIBUTE_LIST = 0x03
+CIP_IDENTITY_OBJECT_CLASS = 0x01
+# Fixture identity — mirrors mobile/lib/protocols/enip/cip_identity.dart.
+IDENTITY_VENDOR_ID = 0
+IDENTITY_DEVICE_TYPE = 0x000E
+IDENTITY_PRODUCT_NAME = "Soft PLC Simulator"
+
 # How long any single socket operation may block, in seconds. Every request
 # this probe issues is a single round trip against a loopback fixture host,
 # so a stall means a hang, not slowness -- bounding it here is what keeps the
@@ -316,6 +327,78 @@ def symbol_browse(driver: CIPDriver) -> dict[str, int]:
             break
         start = last + 1
     return tags
+
+
+def read_identity_via_attribute_list(driver: CIPDriver) -> dict[int, tuple[int, bytes]]:
+    """Reads the Identity Object via Get Attribute List (0x03) — the service
+    Ignition's AB Logix driver uses (and that our host answers as of the 0x03
+    work), which no other probe step exercises. Sends a chosen attribute-id
+    subset and parses the reply as `count(u16) + [id(u16) status(u16) data]*`,
+    the CIP Get Attribute List response layout pycomm3's own StructTemplateAttributes
+    parser expects. Asserts our reply parses and carries the honest, non-
+    impersonating identity values, so a format bug in `_getAttributeList`
+    surfaces HERE rather than only in Ignition. Returns {attr_id: (status, data)}.
+    """
+    ids = [1, 2, 3, 4, 5, 6, 7]  # Vendor, DeviceType, ProductCode, Rev, Status, Serial, Name
+    request_data = UINT.encode(len(ids)) + b"".join(UINT.encode(i) for i in ids)
+    request = GenericConnectedRequestPacket(
+        sequence=driver._sequence,
+        service=CIP_SERVICE_GET_ATTRIBUTE_LIST,
+        class_code=CIP_IDENTITY_OBJECT_CLASS,
+        instance=1,
+        request_data=request_data,
+        data_type=None,
+    )
+    response = driver.send(request)
+    check(
+        response.service_status == CIP_SUCCESS,
+        f"STEP 9 (Identity via 0x03): Get Attribute List returned CIP general "
+        f"status 0x{response.service_status:02X}, expected 0x00",
+    )
+    raw = response.value or b""
+    check(len(raw) >= 2, "STEP 9 (Identity via 0x03): reply too short for the count field")
+    off = 0
+    count = int.from_bytes(raw[off:off + 2], "little")
+    off += 2
+    attrs: dict[int, tuple[int, bytes]] = {}
+    for _ in range(count):
+        check(off + 4 <= len(raw), "STEP 9 (Identity via 0x03): reply truncated in an attribute header")
+        aid = int.from_bytes(raw[off:off + 2], "little")
+        off += 2
+        status = int.from_bytes(raw[off:off + 2], "little")
+        off += 2
+        if aid in (1, 2, 3, 4, 5):
+            width = 2
+        elif aid == 6:
+            width = 4
+        elif aid == 7:
+            check(off < len(raw), "STEP 9 (Identity via 0x03): reply truncated at the product-name length")
+            width = 1 + raw[off]
+        else:
+            width = 0
+        data = raw[off:off + width]
+        off += width
+        attrs[aid] = (status, data)
+    # The honest, non-impersonating values must come through verbatim.
+    check(
+        attrs.get(1, (None, b""))[1] == UINT.encode(IDENTITY_VENDOR_ID),
+        f"STEP 9 (Identity via 0x03): Vendor ID != {IDENTITY_VENDOR_ID}",
+    )
+    check(
+        int.from_bytes(attrs.get(2, (None, b"\xff\xff"))[1], "little") == IDENTITY_DEVICE_TYPE,
+        "STEP 9 (Identity via 0x03): Device Type mismatch",
+    )
+    name_field = attrs.get(7, (None, b""))[1]
+    name = name_field[1:1 + name_field[0]].decode("ascii") if name_field else ""
+    check(
+        name == IDENTITY_PRODUCT_NAME,
+        f"STEP 9 (Identity via 0x03): Product Name {name!r} != {IDENTITY_PRODUCT_NAME!r}",
+    )
+    print(
+        f"[probe] step 9 OK: Identity via Get Attribute List (0x03) parsed - "
+        f"vendor={IDENTITY_VENDOR_ID}, name={name!r} (the Ignition read path)"
+    )
+    return attrs
 
 
 def logix_browse(host: str, port: int) -> None:
@@ -508,24 +591,29 @@ def run(host: str, port: int) -> None:
         )
         print(f"[probe] step 8 OK: Symbol Object browse returned {len(symbols)} tags")
 
-        # --- Step 9: Forward Close ----------------------------------------
+        # --- Step 9: Identity via Get Attribute List (0x03) ---------------
+        # The service Ignition's AB Logix driver uses to read controller info;
+        # proves our 0x03 reply parses in a real CIP client (no other step does).
+        read_identity_via_attribute_list(driver)
+
+        # --- Step 10: Forward Close ---------------------------------------
         check(
             driver._forward_close(),
-            "STEP 9 (Forward Close): the host did not accept the Forward Close",
+            "STEP 10 (Forward Close): the host did not accept the Forward Close",
         )
-        print("[probe] step 9 OK: forward close accepted")
+        print("[probe] step 10 OK: forward close accepted")
 
-        # --- Step 10: UnRegisterSession ------------------------------------
+        # --- Step 11: UnRegisterSession ------------------------------------
         # Encapsulation command 0x66 defines no reply (fire-and-forget), so
         # the assertion is that sending it does not raise and the driver
         # clears its own session handle -- not a reply status.
         driver._un_register_session()
         check(
             driver._session is None,
-            "STEP 10 (UnRegisterSession): the driver still holds a session "
+            "STEP 11 (UnRegisterSession): the driver still holds a session "
             "handle after UnRegisterSession",
         )
-        print("[probe] step 10 OK: session unregistered")
+        print("[probe] step 11 OK: session unregistered")
     finally:
         try:
             driver.close()
