@@ -204,6 +204,7 @@ def run(host: str, port: int) -> None:
         _step6_read_real(connection)
         _step7_write_32bit_and_read_back(connection)
         _step8_bool_bit_round_trip(connection)
+        _step8b_bit_area_access(connection, memory_areas)
         _step9_cio_second_area(connection)
         _step10_readonly_refused(connection)
     finally:
@@ -556,6 +557,89 @@ def _step8_bool_bit_round_trip(connection: UDPFinsConnection) -> None:
         f"is not set. The bit write did not land.",
     )
     print(f"[probe] step 8 OK: BOOL bit at DM{FLAG_ADDRESS}.{FLAG_BIT} written and read back set")
+
+
+# --- Step 8b: BIT-area access (the Ignition Boolean shape) -------------------
+
+
+def _step8b_bit_area_access(
+    connection: UDPFinsConnection, memory_areas: FinsPLCMemoryAreas
+) -> None:
+    """Exercises the DM BIT area code (0x02): the same memory as step 8's word
+    access, addressed one BIT at a time with ONE byte per bit on the wire.
+
+    This is exactly how Ignition's Omron FINS driver writes a Boolean (a
+    19-byte Memory Area Write: 6-byte item spec with the DM BIT area code +
+    one data byte) -- the word-only host dropped it as "not a served FINS
+    command" (2026-07-21). Step 8 just left the Flag bit SET via a word
+    write, so this step: (1) bit-reads it as 0x01, (2) bit-writes 0x00 and
+    cross-checks via a WORD read that the bit really cleared (bit and word
+    views must be the same memory), (3) bit-writes 0x01 -- the Ignition
+    shape, byte-for-byte -- and word-reads the bit back set.
+    """
+    # (1) Bit-area read of the flag step 8 left set.
+    response = connection.memory_area_read(
+        memory_areas.DATA_MEMORY_BIT, _beginning_address(FLAG_ADDRESS, FLAG_BIT), 1
+    )
+    end_code = response[12:14]
+    check(
+        end_code == b"\x00\x00",
+        f"STEP 8b (bit-area read end code): end code {hexs(end_code)}, expected "
+        f"00 00. The host rejected a DM BIT-area (0x02) read it should serve.",
+    )
+    bits = response[14:]
+    check(
+        bits == b"\x01",
+        f"STEP 8b (bit-area read): DM{FLAG_ADDRESS}.{FLAG_BIT} bit-area read "
+        f"returned {hexs(bits)}, expected 01 (ONE byte per bit, set by step 8). "
+        f"A 2-byte result means the bit area was served with the WORD layout.",
+    )
+
+    # (2) Bit-area write CLEAR, then cross-check through the WORD view.
+    response = connection.memory_area_write(
+        memory_areas.DATA_MEMORY_BIT,
+        _beginning_address(FLAG_ADDRESS, FLAG_BIT),
+        b"\x00",
+        1,
+    )
+    end_code = response[12:14]
+    check(
+        end_code == b"\x00\x00",
+        f"STEP 8b (bit-area write clear): end code {hexs(end_code)}, expected 00 00.",
+    )
+    word = connection.read("d", FLAG_ADDRESS, data_type="ui")
+    check(
+        (word >> FLAG_BIT) & 1 == 0,
+        f"STEP 8b (bit->word consistency): after a bit-area write of 0x00 to "
+        f"DM{FLAG_ADDRESS}.{FLAG_BIT}, a WORD read returned 0x{word:04X} with the "
+        f"bit still set -- the bit and word views are not the same memory.",
+    )
+
+    # (3) The Ignition Boolean write, byte-for-byte: DM BIT area, one item,
+    # one 0x01 data byte. Read back through the word view.
+    response = connection.memory_area_write(
+        memory_areas.DATA_MEMORY_BIT,
+        _beginning_address(FLAG_ADDRESS, FLAG_BIT),
+        b"\x01",
+        1,
+    )
+    end_code = response[12:14]
+    check(
+        end_code == b"\x00\x00",
+        f"STEP 8b (bit-area write set): end code {hexs(end_code)}, expected 00 00.",
+    )
+    word = connection.read("d", FLAG_ADDRESS, data_type="ui")
+    check(
+        (word >> FLAG_BIT) & 1 == 1,
+        f"STEP 8b (bit-area write read-back): after the Ignition-shaped bit write "
+        f"of 0x01 to DM{FLAG_ADDRESS}.{FLAG_BIT}, a WORD read returned 0x{word:04X} "
+        f"with the bit clear -- the bit-area write did not land.",
+    )
+    print(
+        f"[probe] step 8b OK: DM BIT area (0x02) read/write at "
+        f"DM{FLAG_ADDRESS}.{FLAG_BIT} -- 1 byte per bit, cleared and re-set, "
+        f"consistent with the word view (the Ignition Boolean write shape)"
+    )
 
 
 # --- Step 9 -----------------------------------------------------------------

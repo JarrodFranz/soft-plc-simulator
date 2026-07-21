@@ -19,13 +19,17 @@
 // same 6-byte item spec followed by `number of items` big-endian words (2
 // bytes each) to write.
 //
-// *** AREA CODES (v1 — word areas only) ***
-// DM = 0x82, CIO = 0xB0, WR = 0xB1, HR = 0xB2. These are the word-area codes
-// a driver polling word data sends. A `BOOL` tag mapped to a single bit would
-// need a bit-area variant (e.g. a CIO "bit" area code distinct from the CIO
-// word area code above) — the exact value is intentionally NOT invented
-// here (see the note above the area-code constants below). Pin it against
-// the real `fins` Python client in a later task, which is the authority.
+// *** AREA CODES ***
+// WORD areas: DM = 0x82, CIO = 0xB0, WR = 0xB1, HR = 0xB2 — what a driver
+// polling word data sends; each item is one 16-bit word (2 bytes on the wire).
+// BIT areas: DM = 0x02, CIO = 0x30, WR = 0x31, HR = 0x32 — the same memory
+// addressed one BIT at a time; each item is ONE byte on the wire (0x00/0x01),
+// and the item spec's `bit` field (0..15) picks the starting bit within the
+// starting word. These bit-area codes were deliberately deferred in v1 and
+// pinned by a real client: Ignition's Omron FINS driver writes a Boolean as a
+// 19-byte Memory Area Write (6-byte item spec + ONE data byte) with the DM
+// BIT area code — the word-only build dropped it as "not a served FINS
+// command" (2026-07-21 in-app log).
 //
 // Safety contract: the parse functions in this file return `null` — and
 // never throw — on malformed, truncated, or otherwise hostile input, since
@@ -43,7 +47,7 @@ const int kFinsCmdMemAreaRead = 0x0101;
 /// Memory Area Write command code.
 const int kFinsCmdMemAreaWrite = 0x0102;
 
-// --- Word-area codes (v1) -----------------------------------------------------
+// --- Word-area codes ----------------------------------------------------------
 
 /// DM (Data Memory) word area code.
 const int kFinsAreaDM = 0x82;
@@ -57,16 +61,49 @@ const int kFinsAreaWR = 0xB1;
 /// HR (Holding) word area code.
 const int kFinsAreaHR = 0xB2;
 
-// NOTE (intentional placeholder — no constant here): bit-area codes (e.g. a
-// CIO "bit" area distinct from [kFinsAreaCIO]) are deliberately NOT defined
-// yet. A `BOOL` tag mapped to a single bit would need one, but this task's
-// brief leaves the exact code open pending confirmation against the real
-// `fins` Python client (a later task's E2E is the authority) — inventing a
-// value now under this project's YAGNI discipline would risk silently
-// committing to the wrong wire byte. Add the bit-area constant(s) here, with
-// the same doc-comment style as the word-area codes above, once that
-// confirmation lands (Task 4/5) — do not build the tag-map/area-image logic
-// itself in this file.
+// --- Bit-area codes -----------------------------------------------------------
+// The same memory addressed one BIT at a time (1 byte per item on the wire).
+// Deferred in v1 per the YAGNI note that used to sit here; pinned 2026-07-21
+// by a real client — Ignition's Omron FINS driver writes Booleans this way
+// (see the AREA CODES section of the file header).
+
+/// DM (Data Memory) BIT area code.
+const int kFinsAreaDMBit = 0x02;
+
+/// CIO (Core I/O) BIT area code.
+const int kFinsAreaCIOBit = 0x30;
+
+/// WR (Work) BIT area code.
+const int kFinsAreaWRBit = 0x31;
+
+/// HR (Holding) BIT area code.
+const int kFinsAreaHRBit = 0x32;
+
+/// True when [areaCode] is one of the BIT area codes above — the item spec
+/// then addresses bits (ONE byte each on the wire, 0x00/0x01), not words.
+bool isFinsBitArea(int areaCode) =>
+    areaCode == kFinsAreaDMBit ||
+    areaCode == kFinsAreaCIOBit ||
+    areaCode == kFinsAreaWRBit ||
+    areaCode == kFinsAreaHRBit;
+
+/// Maps a BIT area code to the WORD area code of the same memory (e.g.
+/// [kFinsAreaDMBit] -> [kFinsAreaDM]), or `null` for a non-bit-area code. A
+/// `null` result must become a per-request error end code, never an exception.
+int? finsWordAreaForBitArea(int areaCode) {
+  switch (areaCode) {
+    case kFinsAreaDMBit:
+      return kFinsAreaDM;
+    case kFinsAreaCIOBit:
+      return kFinsAreaCIO;
+    case kFinsAreaWRBit:
+      return kFinsAreaWR;
+    case kFinsAreaHRBit:
+      return kFinsAreaHR;
+    default:
+      return null;
+  }
+}
 
 // --- Item spec length ----------------------------------------------------------
 
@@ -137,6 +174,29 @@ FinsMemItem? parseMemAreaReadItem(Uint8List text) {
   }
 
   final writeData = Uint8List.fromList(text.sublist(kFinsMemItemLen, kFinsMemItemLen + expectedWriteBytes));
+  return (item: item, writeData: writeData);
+}
+
+/// Parses a BIT-area Memory Area Write command's [text]: the 6-byte item spec
+/// (identical layout to [parseMemAreaReadItem]) followed by `count` bit-value
+/// bytes — ONE byte per bit (0x00 = clear, anything else = set), unlike the
+/// word-area write's 2 bytes per item.
+///
+/// Returns `null` — and NEVER throws — if [text] is shorter than
+/// [kFinsMemItemLen], or if the declared `count` (bits) does not match the
+/// number of trailing bytes actually present (`count` bytes).
+({FinsMemItem item, Uint8List writeData})? parseMemAreaWriteBitItem(Uint8List text) {
+  final item = parseMemAreaReadItem(text);
+  if (item == null) {
+    return null;
+  }
+
+  final actualWriteBytes = text.length - kFinsMemItemLen;
+  if (actualWriteBytes != item.count) {
+    return null;
+  }
+
+  final writeData = Uint8List.fromList(text.sublist(kFinsMemItemLen));
   return (item: item, writeData: writeData);
 }
 

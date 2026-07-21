@@ -110,6 +110,84 @@ void main() {
     });
   });
 
+  group('bit-area codes + parseMemAreaWriteBitItem', () {
+    test('bit-area constants carry their documented literal values', () {
+      expect(kFinsAreaDMBit, 0x02);
+      expect(kFinsAreaCIOBit, 0x30);
+      expect(kFinsAreaWRBit, 0x31);
+      expect(kFinsAreaHRBit, 0x32);
+    });
+
+    test('isFinsBitArea separates bit codes from word codes', () {
+      for (final code in [kFinsAreaDMBit, kFinsAreaCIOBit, kFinsAreaWRBit, kFinsAreaHRBit]) {
+        expect(isFinsBitArea(code), isTrue, reason: 'bit code 0x${code.toRadixString(16)}');
+      }
+      for (final code in [kFinsAreaDM, kFinsAreaCIO, kFinsAreaWR, kFinsAreaHR, 0x00, 0xFF]) {
+        expect(isFinsBitArea(code), isFalse, reason: 'non-bit code 0x${code.toRadixString(16)}');
+      }
+    });
+
+    test('finsWordAreaForBitArea maps every bit code to its word code, null otherwise', () {
+      expect(finsWordAreaForBitArea(kFinsAreaDMBit), kFinsAreaDM);
+      expect(finsWordAreaForBitArea(kFinsAreaCIOBit), kFinsAreaCIO);
+      expect(finsWordAreaForBitArea(kFinsAreaWRBit), kFinsAreaWR);
+      expect(finsWordAreaForBitArea(kFinsAreaHRBit), kFinsAreaHR);
+      expect(finsWordAreaForBitArea(kFinsAreaDM), isNull);
+      expect(finsWordAreaForBitArea(0x00), isNull);
+    });
+
+    // The exact 13-byte `text` of the 19-byte datagram Ignition's Omron FINS
+    // driver sends for a single-Boolean write (observed 2026-07-21): 6-byte
+    // item spec (DM BIT area, word 0, bit 0, count 1) + ONE data byte.
+    test('decodes the Ignition single-bit DM write (1 byte per bit)', () {
+      final text = Uint8List.fromList([0x02, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01]);
+      final result = parseMemAreaWriteBitItem(text);
+      expect(result, isNotNull);
+      expect(result!.item.areaCode, kFinsAreaDMBit);
+      expect(result.item.wordAddress, 0);
+      expect(result.item.bitOffset, 0);
+      expect(result.item.count, 1);
+      expect(result.writeData, equals(Uint8List.fromList([0x01])));
+    });
+
+    test('decodes a multi-bit write starting mid-word', () {
+      // CIO bit area, word 0x0064, bit 5, count 3, bits [1, 0, 1].
+      final text = Uint8List.fromList([0x30, 0x00, 0x64, 0x05, 0x00, 0x03, 0x01, 0x00, 0x01]);
+      final result = parseMemAreaWriteBitItem(text);
+      expect(result, isNotNull);
+      expect(result!.item.areaCode, kFinsAreaCIOBit);
+      expect(result.item.wordAddress, 0x64);
+      expect(result.item.bitOffset, 5);
+      expect(result.item.count, 3);
+      expect(result.writeData, equals(Uint8List.fromList([0x01, 0x00, 0x01])));
+    });
+
+    test('returns null when the declared bit count does not match the trailing bytes', () {
+      // Count says 2 bits but only 1 data byte follows — and vice versa.
+      final tooFew = Uint8List.fromList([0x02, 0x00, 0x00, 0x00, 0x00, 0x02, 0x01]);
+      expect(parseMemAreaWriteBitItem(tooFew), isNull);
+      final tooMany = Uint8List.fromList([0x02, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00]);
+      expect(parseMemAreaWriteBitItem(tooMany), isNull);
+    });
+
+    test('returns null for a text shorter than the 6-byte item spec, no throw', () {
+      final tooShort = Uint8List.fromList([0x02, 0x00, 0x00, 0x00, 0x00]);
+      expect(() => parseMemAreaWriteBitItem(tooShort), returnsNormally);
+      expect(parseMemAreaWriteBitItem(tooShort), isNull);
+    });
+
+    // A word-area write of 1 word (2 data bytes) must NOT parse as a bit
+    // write (count 1 would demand exactly 1 data byte) — and the Ignition
+    // bit write must NOT parse as a word write (count 1 demands 2 bytes).
+    // The dispatcher relies on this disjointness when it routes by area code.
+    test('bit and word write layouts are mutually exclusive for the same count', () {
+      final wordWrite = Uint8List.fromList([0x82, 0x00, 0x00, 0x00, 0x00, 0x01, 0xAB, 0xCD]);
+      expect(parseMemAreaWriteBitItem(wordWrite), isNull);
+      final bitWrite = Uint8List.fromList([0x02, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01]);
+      expect(parseMemAreaWriteItem(bitWrite), isNull);
+    });
+  });
+
   group('buildMemReadResponseData', () {
     test('round-trips a known big-endian word array against literal bytes', () {
       final words = Uint8List.fromList([0x00, 0x64, 0xAB, 0xCD]); // words: 100, 0xABCD

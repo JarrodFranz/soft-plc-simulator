@@ -267,6 +267,49 @@ Uint8List readAreaImage(
   return image;
 }
 
+/// Reads [count] consecutive BITS of [area] starting at bit [startBit]
+/// (0..15) of word [startWord], returning ONE byte per bit (0x01 set / 0x00
+/// clear) — the FINS bit-area read wire format. Bits run low-to-high within a
+/// word and roll into the next word after bit 15.
+///
+/// Implemented on top of [readAreaImage] so a bit read is, by construction,
+/// bit-for-bit consistent with what a word read of the same range serves:
+/// a BOOL entry's bit reads its tag value, a bit inside a non-BOOL entry's
+/// word reads that bit of the encoded value, and gap bits read 0.
+///
+/// Returns an EMPTY list — and never throws — for a non-positive [count], a
+/// negative [startWord], a [startBit] outside 0..15, or a range whose last
+/// word would exceed [kFinsMaxAreaImageWords].
+Uint8List readAreaBits(
+  PlcProject project,
+  FinsMap map,
+  String area,
+  int startWord,
+  int startBit,
+  int count,
+) {
+  if (count <= 0 || startWord < 0 || startBit < 0 || startBit > 15) {
+    return Uint8List(0);
+  }
+  final lastBitPos = startBit + count - 1;
+  final wordCount = (lastBitPos >> 4) + 1;
+  if (startWord + wordCount > kFinsMaxAreaImageWords) {
+    return Uint8List(0);
+  }
+  final image = readAreaImage(project, map, area, startWord, wordCount);
+  if (image.length != wordCount * 2) {
+    return Uint8List(0);
+  }
+  final out = Uint8List(count);
+  for (var i = 0; i < count; i++) {
+    final pos = startBit + i;
+    final relWord = pos >> 4;
+    final bit = pos & 15;
+    out[i] = _readDataBit(image, relWord, bit) ? 0x01 : 0x00;
+  }
+  return out;
+}
+
 /// What happened to one tag touched by an [applyAreaWrite] call. Mirrors
 /// `S7WriteStatus`.
 enum FinsWriteStatus {
@@ -399,6 +442,97 @@ List<FinsWriteResult> applyAreaWrite(
       }
     }
     results.add(FinsWriteResult(entry.tag, FinsWriteStatus.written));
+  }
+  return results;
+}
+
+/// Applies [bits] (ONE byte per bit, 0x00 = clear / anything else = set — the
+/// FINS bit-area write wire format) to [count] consecutive bits of [area]
+/// starting at bit [startBit] (0..15) of word [startWord], writing each bit
+/// onto the BOOL map entry addressed at exactly that (word, bit) position.
+///
+/// Per-bit semantics, mirroring [applyAreaWrite]'s word philosophy:
+///  - A bit addressing a BOOL entry is written through the same gate chain
+///    as a word write (`ReadOnly` -> refused, shared write-gate backstop ->
+///    refused, FORCED root tag -> refused).
+///  - A bit landing inside a NON-BOOL entry's word span is NOT written
+///    (flipping one bit of an encoded INT/REAL would corrupt the value) and
+///    is reported [FinsWriteStatus.partiallyCovered].
+///  - A bit landing in a gap (no entry) is DISCARDED silently, like a write
+///    to a gap word.
+///
+/// Each bit is handled independently; one refused bit never affects another.
+/// Returns an EMPTY list — and never throws — for empty [bits], a negative
+/// [startWord], or a [startBit] outside 0..15.
+List<FinsWriteResult> applyAreaBitWrite(
+  PlcProject project,
+  FinsMap map,
+  String area,
+  int startWord,
+  int startBit,
+  Uint8List bits,
+) {
+  final results = <FinsWriteResult>[];
+  if (bits.isEmpty || startWord < 0 || startBit < 0 || startBit > 15) {
+    return results;
+  }
+
+  for (var i = 0; i < bits.length; i++) {
+    final pos = startBit + i;
+    final word = startWord + (pos >> 4);
+    final bit = pos & 15;
+
+    for (final entry in map.entries) {
+      if (entry.area != area) {
+        continue;
+      }
+      if (entry.wordAddress < 0 || entry.bitOffset < 0 || entry.bitOffset > 15) {
+        continue;
+      }
+      final dataType = dataTypeOfPath(project, entry.tag);
+      final width = dataType == null ? null : FinsMap.widthWordsForType(dataType);
+
+      if (dataType == 'BOOL') {
+        if (entry.wordAddress != word || entry.bitOffset != bit) {
+          continue;
+        }
+      } else {
+        // A non-BOOL entry occupies whole words; does this bit fall inside?
+        final tagStart = entry.wordAddress;
+        final tagEnd = entry.wordAddress + (width ?? 1); // exclusive
+        if (word < tagStart || word >= tagEnd) {
+          continue;
+        }
+        if (dataType == null || width == null) {
+          results.add(FinsWriteResult(entry.tag, FinsWriteStatus.unsupported));
+          continue;
+        }
+        // One bit of an encoded INT/REAL: refusing beats corrupting.
+        results.add(FinsWriteResult(entry.tag, FinsWriteStatus.partiallyCovered));
+        continue;
+      }
+
+      if (entry.access == 'ReadOnly') {
+        results.add(FinsWriteResult(entry.tag, FinsWriteStatus.refusedReadOnly));
+        continue;
+      }
+
+      // Write-time hard backstop — same rationale as [applyAreaWrite].
+      if (!isExternallyWritable(project, entry.tag)) {
+        results.add(FinsWriteResult(entry.tag, FinsWriteStatus.refusedNotExternallyWritable));
+        continue;
+      }
+
+      // Force-aware write — same rationale as [applyAreaWrite].
+      final root = rootTagOf(project, entry.tag);
+      if (root != null && root.isForced) {
+        results.add(FinsWriteResult(entry.tag, FinsWriteStatus.refusedForced));
+        continue;
+      }
+
+      writePath(project, entry.tag, bits[i] != 0x00);
+      results.add(FinsWriteResult(entry.tag, FinsWriteStatus.written));
+    }
   }
   return results;
 }

@@ -92,6 +92,18 @@ abstract class FinsMemoryImage {
   /// throw: an unsupported area, an out-of-range address, or a refused write is
   /// reported as an error [FinsWriteOutcome], not an exception.
   FinsWriteOutcome writeWords(int areaCode, int wordAddress, Uint8List data);
+
+  /// Reads [count] consecutive BITS starting at bit [bitOffset] (0..15) of
+  /// word [wordAddress] from the memory identified by the wire BIT [areaCode]
+  /// (e.g. [kFinsAreaDMBit]). On success the outcome's data is ONE byte per
+  /// bit (0x01/0x00) — the FINS bit-area wire format. Must NEVER throw.
+  FinsReadOutcome readBits(int areaCode, int wordAddress, int bitOffset, int count);
+
+  /// Writes [bits] (ONE byte per bit, 0x00 = clear / anything else = set) to
+  /// consecutive bits starting at bit [bitOffset] (0..15) of word
+  /// [wordAddress] of the memory identified by the wire BIT [areaCode]. Must
+  /// NEVER throw.
+  FinsWriteOutcome writeBits(int areaCode, int wordAddress, int bitOffset, Uint8List bits);
 }
 
 /// A simple, pure, zero-filled per-area word image: a fixed-size word bank per
@@ -144,6 +156,54 @@ class FinsWordImage implements FinsMemoryImage {
     }
     return FinsWriteOutcome.ok();
   }
+
+  @override
+  FinsReadOutcome readBits(int areaCode, int wordAddress, int bitOffset, int count) {
+    final wordCode = finsWordAreaForBitArea(areaCode);
+    final bank = wordCode == null ? null : _areas[wordCode];
+    if (bank == null) {
+      return FinsReadOutcome.error(kFinsEndNoArea);
+    }
+    if (wordAddress < 0 || bitOffset < 0 || bitOffset > 15 || count < 0) {
+      return FinsReadOutcome.error(kFinsEndAddressRange);
+    }
+    final startBit = wordAddress * 16 + bitOffset;
+    if (startBit + count > bank.length * 16) {
+      return FinsReadOutcome.error(kFinsEndAddressRange);
+    }
+    final out = Uint8List(count);
+    for (var i = 0; i < count; i++) {
+      final pos = startBit + i;
+      out[i] = (bank[pos >> 4] >> (pos & 15)) & 1;
+    }
+    return FinsReadOutcome.ok(out);
+  }
+
+  @override
+  FinsWriteOutcome writeBits(int areaCode, int wordAddress, int bitOffset, Uint8List bits) {
+    final wordCode = finsWordAreaForBitArea(areaCode);
+    final bank = wordCode == null ? null : _areas[wordCode];
+    if (bank == null) {
+      return FinsWriteOutcome.error(kFinsEndNoArea);
+    }
+    if (wordAddress < 0 || bitOffset < 0 || bitOffset > 15) {
+      return FinsWriteOutcome.error(kFinsEndAddressRange);
+    }
+    final startBit = wordAddress * 16 + bitOffset;
+    if (startBit + bits.length > bank.length * 16) {
+      return FinsWriteOutcome.error(kFinsEndAddressRange);
+    }
+    for (var i = 0; i < bits.length; i++) {
+      final pos = startBit + i;
+      final mask = 1 << (pos & 15);
+      if (bits[i] != 0x00) {
+        bank[pos >> 4] |= mask;
+      } else {
+        bank[pos >> 4] &= ~mask & 0xFFFF;
+      }
+    }
+    return FinsWriteOutcome.ok();
+  }
 }
 
 /// A [FinsMemoryImage] backed by the project's tags via a [FinsMap] and the
@@ -193,6 +253,53 @@ class FinsTagImage implements FinsMemoryImage {
       return FinsWriteOutcome.error(kFinsEndAddressRange);
     }
     final results = applyAreaWrite(project, map, area, wordAddress, data);
+    return FinsWriteOutcome(finsWriteEndCode(results));
+  }
+
+  @override
+  FinsReadOutcome readBits(int areaCode, int wordAddress, int bitOffset, int count) {
+    final wordCode = finsWordAreaForBitArea(areaCode);
+    final area = wordCode == null ? null : finsAreaNameForCode(wordCode);
+    if (area == null) {
+      return FinsReadOutcome.error(kFinsEndNoArea);
+    }
+    if (wordAddress < 0 || bitOffset < 0 || bitOffset > 15 || count < 0) {
+      return FinsReadOutcome.error(kFinsEndAddressRange);
+    }
+    if (count == 0) {
+      return FinsReadOutcome.ok(Uint8List(0));
+    }
+    final lastWord = wordAddress + ((bitOffset + count - 1) >> 4);
+    if (lastWord >= kFinsMaxAreaImageWords) {
+      return FinsReadOutcome.error(kFinsEndAddressRange);
+    }
+    final bits = readAreaBits(project, map, area, wordAddress, bitOffset, count);
+    if (bits.length != count) {
+      // readAreaBits only returns short for arguments this method already
+      // rejected; treat any residual mismatch as an address-range error.
+      return FinsReadOutcome.error(kFinsEndAddressRange);
+    }
+    return FinsReadOutcome.ok(bits);
+  }
+
+  @override
+  FinsWriteOutcome writeBits(int areaCode, int wordAddress, int bitOffset, Uint8List bits) {
+    final wordCode = finsWordAreaForBitArea(areaCode);
+    final area = wordCode == null ? null : finsAreaNameForCode(wordCode);
+    if (area == null) {
+      return FinsWriteOutcome.error(kFinsEndNoArea);
+    }
+    if (wordAddress < 0 || bitOffset < 0 || bitOffset > 15) {
+      return FinsWriteOutcome.error(kFinsEndAddressRange);
+    }
+    if (bits.isEmpty) {
+      return FinsWriteOutcome.ok();
+    }
+    final lastWord = wordAddress + ((bitOffset + bits.length - 1) >> 4);
+    if (lastWord >= kFinsMaxAreaImageWords) {
+      return FinsWriteOutcome.error(kFinsEndAddressRange);
+    }
+    final results = applyAreaBitWrite(project, map, area, wordAddress, bitOffset, bits);
     return FinsWriteOutcome(finsWriteEndCode(results));
   }
 }
@@ -254,7 +361,11 @@ Uint8List? dispatchFinsDatagram(Uint8List datagram, FinsMemoryImage image) {
       if (item == null) {
         return null;
       }
-      final outcome = image.readWords(item.areaCode, item.wordAddress, item.count);
+      // A BIT-area read addresses bits (1 byte each in the response); a
+      // word-area read addresses words (2 bytes each). Same 6-byte item spec.
+      final outcome = isFinsBitArea(item.areaCode)
+          ? image.readBits(item.areaCode, item.wordAddress, item.bitOffset, item.count)
+          : image.readWords(item.areaCode, item.wordAddress, item.count);
       return buildFinsResponse(
         requestHeader: frame.header,
         commandCode: frame.commandCode,
@@ -262,6 +373,32 @@ Uint8List? dispatchFinsDatagram(Uint8List datagram, FinsMemoryImage image) {
         data: buildMemReadResponseData(outcome.words),
       );
     case kFinsCmdMemAreaWrite:
+      // Peek the 6-byte item spec first: a BIT-area write carries ONE byte
+      // per item after the spec, a word-area write TWO — the two layouts
+      // must be parsed differently (Ignition's Omron FINS driver writes
+      // Booleans via the bit layout; see fins_memory.dart's AREA CODES note).
+      final spec = parseMemAreaReadItem(frame.text);
+      if (spec == null) {
+        return null;
+      }
+      if (isFinsBitArea(spec.areaCode)) {
+        final parsed = parseMemAreaWriteBitItem(frame.text);
+        if (parsed == null) {
+          return null;
+        }
+        final outcome = image.writeBits(
+          parsed.item.areaCode,
+          parsed.item.wordAddress,
+          parsed.item.bitOffset,
+          parsed.writeData,
+        );
+        // A Memory Area Write response carries only the end code (no data).
+        return buildFinsResponse(
+          requestHeader: frame.header,
+          commandCode: frame.commandCode,
+          endCode: outcome.endCode,
+        );
+      }
       final parsed = parseMemAreaWriteItem(frame.text);
       if (parsed == null) {
         return null;

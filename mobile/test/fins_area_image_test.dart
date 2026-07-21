@@ -423,6 +423,121 @@ void main() {
       });
     });
   });
+
+  // Bit-mode access (the FINS BIT area codes): the same memory addressed one
+  // bit at a time — ONE byte per bit on the wire. Pinned by a real client:
+  // Ignition's Omron FINS driver writes Booleans this way (2026-07-21).
+  group('readAreaBits', () {
+    test('reads BOOL entries and gap bits at their exact positions', () {
+      final p = buildProject();
+      writePath(p, 'Flag3', true);
+      writePath(p, 'Flag5', true);
+      // Word 0 bits 0..7: only bits 3 and 5 are mapped (and true).
+      final bits = readAreaBits(p, buildMap(), 'DM', 0, 0, 8);
+      expect(bits, equals(toBytes([0, 0, 0, 1, 0, 1, 0, 0])));
+    });
+
+    test('a false BOOL reads 0 even though its bit is mapped', () {
+      final p = buildProject();
+      writePath(p, 'Flag3', false);
+      final bits = readAreaBits(p, buildMap(), 'DM', 0, 3, 1);
+      expect(bits, equals(toBytes([0])));
+    });
+
+    test('bits of a non-BOOL word read that bit of the encoded value', () {
+      final p = buildProject();
+      writePath(p, 'Word1', 0x0005); // binary 0101 -> bits 0 and 2 set.
+      final bits = readAreaBits(p, buildMap(), 'DM', 2, 0, 4);
+      expect(bits, equals(toBytes([1, 0, 1, 0])),
+          reason: 'a bit read must be consistent with the word image');
+    });
+
+    test('a read crossing a word boundary rolls into the next word', () {
+      final p = buildProject();
+      writePath(p, 'Flag3', true); // DM0.3
+      writePath(p, 'Word1', 0x0001); // DM2.0
+      // 33 bits from DM0.14: covers DM0 bits 14-15, all of DM1 (gap), DM2.0.
+      final bits = readAreaBits(p, buildMap(), 'DM', 0, 14, 19);
+      expect(bits.length, 19);
+      expect(bits.sublist(0, 18), equals(Uint8List(18)),
+          reason: 'DM0 bits 14-15 and gap word DM1 all read 0');
+      expect(bits[18], 1, reason: 'the 19th bit is DM2.0 = Word1 bit 0');
+    });
+
+    test('returns empty — never throws — on invalid arguments', () {
+      final p = buildProject();
+      expect(readAreaBits(p, buildMap(), 'DM', -1, 0, 1), isEmpty);
+      expect(readAreaBits(p, buildMap(), 'DM', 0, 16, 1), isEmpty);
+      expect(readAreaBits(p, buildMap(), 'DM', 0, 0, 0), isEmpty);
+    });
+  });
+
+  group('applyAreaBitWrite', () {
+    test('writes a single mapped BOOL bit — the Ignition Boolean write shape', () {
+      final p = buildProject();
+      expect(readPath(p, 'Flag3'), false);
+      final results = applyAreaBitWrite(p, buildMap(), 'DM', 0, 3, toBytes([0x01]));
+      expect(readPath(p, 'Flag3'), true);
+      expect(results.single.tag, 'Flag3');
+      expect(results.single.status, FinsWriteStatus.written);
+    });
+
+    test('clears a bit with 0x00 and does not touch the neighbouring bit', () {
+      final p = buildProject();
+      writePath(p, 'Flag3', true);
+      writePath(p, 'Flag5', true);
+      final results = applyAreaBitWrite(p, buildMap(), 'DM', 0, 3, toBytes([0x00]));
+      expect(readPath(p, 'Flag3'), false);
+      expect(readPath(p, 'Flag5'), true, reason: 'only the addressed bit changes');
+      expect(results.single.status, FinsWriteStatus.written);
+    });
+
+    test('a multi-bit write covering mapped and gap bits writes the mapped, discards the gaps', () {
+      final p = buildProject();
+      // Bits 2..6 of word 0: bit 3 (Flag3) and bit 5 (Flag5) are mapped.
+      final results = applyAreaBitWrite(p, buildMap(), 'DM', 0, 2, toBytes([0x01, 0x01, 0x01, 0x01, 0x01]));
+      expect(readPath(p, 'Flag3'), true);
+      expect(readPath(p, 'Flag5'), true);
+      expect(results.length, 2, reason: 'gap bits are discarded without a report');
+      expect(results.every((r) => r.status == FinsWriteStatus.written), isTrue);
+    });
+
+    test('a bit landing inside a non-BOOL word is refused as partiallyCovered', () {
+      final p = buildProject();
+      writePath(p, 'Word1', 0x1234);
+      final results = applyAreaBitWrite(p, buildMap(), 'DM', 2, 0, toBytes([0x01]));
+      expect(readPath(p, 'Word1'), 0x1234, reason: 'the INT16 must not be corrupted');
+      expect(results.single.tag, 'Word1');
+      expect(results.single.status, FinsWriteStatus.partiallyCovered);
+    });
+
+    test('a ReadOnly map entry refuses the bit write', () {
+      final p = buildProject();
+      final map = FinsMap(entries: [
+        FinsMapEntry(tag: 'Flag3', area: 'DM', wordAddress: 0, bitOffset: 3, access: 'ReadOnly'),
+      ]);
+      final results = applyAreaBitWrite(p, map, 'DM', 0, 3, toBytes([0x01]));
+      expect(readPath(p, 'Flag3'), false);
+      expect(results.single.status, FinsWriteStatus.refusedReadOnly);
+    });
+
+    test('a forced root tag refuses the bit write, tag unchanged', () {
+      final p = buildProject();
+      final forced = p.tags.firstWhere((t) => t.name == 'Flag3');
+      forced.isForced = true;
+      forced.forcedValue = true;
+      final results = applyAreaBitWrite(p, buildMap(), 'DM', 0, 3, toBytes([0x01]));
+      expect(forced.value, false, reason: 'the underlying tag value must be untouched');
+      expect(results.single.status, FinsWriteStatus.refusedForced);
+    });
+
+    test('returns empty — never throws — on invalid arguments', () {
+      final p = buildProject();
+      expect(applyAreaBitWrite(p, buildMap(), 'DM', 0, 3, Uint8List(0)), isEmpty);
+      expect(applyAreaBitWrite(p, buildMap(), 'DM', -1, 3, toBytes([1])), isEmpty);
+      expect(applyAreaBitWrite(p, buildMap(), 'DM', 0, 16, toBytes([1])), isEmpty);
+    });
+  });
 }
 
 /// Shorthand for a literal byte buffer.

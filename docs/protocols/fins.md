@@ -73,16 +73,27 @@ onto the tags it overlaps. FINS addresses a **word** (2 bytes), not a byte.
 
 ### Supported areas
 
-| Area | Name in the map | Word wire code |
-| --- | --- | --- |
-| Data Memory | `DM` | `0x82` |
-| Core I/O | `CIO` | `0xB0` |
-| Work | `WR` | `0xB1` |
-| Holding | `HR` | `0xB2` |
+| Area | Name in the map | Word wire code | Bit wire code |
+| --- | --- | --- | --- |
+| Data Memory | `DM` | `0x82` | `0x02` |
+| Core I/O | `CIO` | `0xB0` | `0x30` |
+| Work | `WR` | `0xB1` | `0x31` |
+| Holding | `HR` | `0xB2` | `0x32` |
 
-Only these four **word** areas are served. A request naming any other area code
-(including the bit-access variants) gets a per-request error end code
-(`0x1101`, area not found), never a dropped datagram.
+Each area is served in both addressing modes. A **word**-area item is one
+16-bit word (2 bytes on the wire); a **bit**-area item is ONE bit (1 byte on
+the wire, `0x00`/`0x01`), with the item spec's `bit` field (0..15) picking
+the starting bit and consecutive bits rolling into the next word after bit
+15. Bit-mode was deferred in v1 and pinned by a real client: **Ignition's
+Omron FINS driver writes a Boolean as a bit-area Memory Area Write** (6-byte
+item spec + one data byte) — the word-only build dropped it as "not a served
+FINS command" (2026-07-21 in-app log). Bit reads are served off the same
+word image as word reads (bit-for-bit consistent); bit writes land only on
+`BOOL` map entries at exactly that (word, bit) — a bit inside a non-`BOOL`
+entry's word is refused (`0x1103`) rather than corrupting the encoded value,
+and gap bits are discarded, mirroring the word-write semantics. A request
+naming any other area code gets a per-request error end code (`0x1101`, area
+not found), never a dropped datagram.
 
 ### Supported types
 
@@ -258,6 +269,11 @@ bytes the app puts on the wire.
 6. A seeded `REAL` (`FLOAT64`→float32), riding the same two-word order.
 7. A `DINT` **write → independent read-back** of the exact value.
 8. A `BOOL` bit round trip (read the word, write the bit set, read it back).
+   Then (8b) the **DM BIT area** (`0x02`): a bit-area read of the same flag
+   (ONE byte per bit), a bit-area write clearing it, and the byte-for-byte
+   **Ignition Boolean write shape** (bit-area write of one `0x01` item) —
+   each cross-checked through the WORD view to prove both modes address the
+   same memory.
 9. A `CIO` second-area read / write / read-back.
 10. A `ReadOnly`-entry write refused with a not-writable end code, value
     unchanged.
