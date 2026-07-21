@@ -1204,31 +1204,86 @@ void _getAttributeListTests() {
           kCipStatusAttributeNotSupported);
     });
 
-    test('the proprietary Rockwell class 0xAC returns a stable placeholder (best-effort change detection), NOT 0x08', () {
-      // Ignition probes class 0xAC via Get Attribute List for change detection
-      // and gates its tag browse on a SUCCESSFUL read. We answer a stable
-      // placeholder (4-byte zero per attr): honest for a static tag directory,
-      // no vendor impersonation. This is a best-effort for a proprietary object.
+    test('class 0xAC change-detection returns the DOCUMENTED attribute widths (INT/INT/DINT/DINT/DINT)', () {
+      // Per Rockwell 1756-PM020: attrs 1,2 are INT (2B); attrs 3,4,10 are DINT
+      // (4B). A Logix SCADA driver (Ignition) reads {1,2,3,4,10}; a wrong width
+      // walks its parser off the end. Request the 5 documented attrs.
       final req = CipRequest(
         service: kCipServiceGetAttributeList,
         path: [CipPathSegment.classId(0xAC), CipPathSegment.instanceId(1)],
-        data: Uint8List.fromList([0x02, 0x00, 0x01, 0x00, 0x02, 0x00]),
+        data: Uint8List.fromList([0x05, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x0A, 0x00]),
       );
-      final resp = dispatchCipService(proj(), emptyMap(), req);
-      // Not a blanket Service Not Supported; a well-formed success list.
-      expect(resp.generalStatus, isNot(kCipStatusServiceNotSupported));
+      // A project + map with 3 listable tags so the symbol count is a known 3.
+      final project = PlcProject(
+        id: 'p', name: 'p', controllerName: 'PLC',
+        tags: [
+          PlcTag(name: 'A', path: 'Internal.A', dataType: 'BOOL', value: false, ioType: 'Internal'),
+          PlcTag(name: 'B', path: 'Internal.B', dataType: 'INT32', value: 0, ioType: 'Internal'),
+          PlcTag(name: 'C', path: 'Internal.C', dataType: 'FLOAT64', value: 0.0, ioType: 'Internal'),
+        ],
+        structDefs: [], programs: [], tasks: [], hmis: [],
+      );
+      final map = CipMap(entries: [
+        CipMapEntry(tagName: 'A'), CipMapEntry(tagName: 'B'), CipMapEntry(tagName: 'C'),
+      ]);
+      final resp = dispatchCipService(project, map, req);
       expect(resp.generalStatus, kCipStatusSuccess);
-      // Layout: count(2) + [id(2) status(2) data(4)] per attr.
       final d = resp.data;
-      expect(ByteData.sublistView(d, 0, 2).getUint16(0, Endian.little), 2);
-      // attr 1: id 1, status 0 (success), 4-byte zero data.
-      expect(ByteData.sublistView(d, 2, 4).getUint16(0, Endian.little), 1);
-      expect(ByteData.sublistView(d, 4, 6).getUint16(0, Endian.little), kCipStatusSuccess);
-      expect(ByteData.sublistView(d, 6, 10).getUint32(0, Endian.little), 0);
-      // attr 2 begins at offset 10: id 2, status 0, 4-byte zero data.
-      expect(ByteData.sublistView(d, 10, 12).getUint16(0, Endian.little), 2);
-      expect(ByteData.sublistView(d, 12, 14).getUint16(0, Endian.little), kCipStatusSuccess);
-      expect(d.length, 18);
+      // count == 5 (one tuple per requested attribute).
+      expect(ByteData.sublistView(d, 0, 2).getUint16(0, Endian.little), 5);
+      // attr 1 (INT, 2B) = symbol count 3, status success.
+      var off = 2;
+      expect(ByteData.sublistView(d, off, off + 2).getUint16(0, Endian.little), 1);
+      expect(ByteData.sublistView(d, off + 2, off + 4).getUint16(0, Endian.little), kCipStatusSuccess);
+      expect(ByteData.sublistView(d, off + 4, off + 6).getUint16(0, Endian.little), 3);
+      off += 6; // 2(id)+2(status)+2(INT value)
+      // attr 2 (INT, 2B) = template count 0.
+      expect(ByteData.sublistView(d, off, off + 2).getUint16(0, Endian.little), 2);
+      expect(ByteData.sublistView(d, off + 4, off + 6).getUint16(0, Endian.little), 0);
+      off += 6;
+      // attr 3 (DINT, 4B): a nonzero directory hash.
+      expect(ByteData.sublistView(d, off, off + 2).getUint16(0, Endian.little), 3);
+      final hash3 = ByteData.sublistView(d, off + 4, off + 8).getUint32(0, Endian.little);
+      expect(hash3, isNot(0));
+      off += 8; // 2+2+4(DINT)
+      // attr 4 (DINT, 4B) == attr 3's hash.
+      expect(ByteData.sublistView(d, off, off + 2).getUint16(0, Endian.little), 4);
+      expect(ByteData.sublistView(d, off + 4, off + 8).getUint32(0, Endian.little), hash3);
+      off += 8;
+      // attr 10 (DINT, 4B): the distinct second hash.
+      expect(ByteData.sublistView(d, off, off + 2).getUint16(0, Endian.little), 10);
+      expect(ByteData.sublistView(d, off + 4, off + 8).getUint32(0, Endian.little), hash3 ^ 0xFFFFFFFF);
+      off += 8;
+      // Total length: count(2) + INT tuple(6)*2 + DINT tuple(8)*3 = 2+12+24 = 38.
+      expect(d.length, 38);
+      expect(off, 38);
+    });
+
+    test('class 0xAC change-detection hash is STABLE for an unchanged directory but CHANGES when a tag changes', () {
+      CipRequest req() => CipRequest(
+            service: kCipServiceGetAttributeList,
+            path: [CipPathSegment.classId(0xAC), CipPathSegment.instanceId(1)],
+            data: Uint8List.fromList([0x01, 0x00, 0x03, 0x00]), // attr 3 (the DINT hash)
+          );
+      PlcProject projectWith(String secondTagType) => PlcProject(
+            id: 'p', name: 'p', controllerName: 'PLC',
+            tags: [
+              PlcTag(name: 'A', path: 'Internal.A', dataType: 'INT32', value: 0, ioType: 'Internal'),
+              PlcTag(name: 'B', path: 'Internal.B', dataType: secondTagType, value: 0, ioType: 'Internal'),
+            ],
+            structDefs: [], programs: [], tasks: [], hmis: [],
+          );
+      final map = CipMap(entries: [CipMapEntry(tagName: 'A'), CipMapEntry(tagName: 'B')]);
+      int hashOf(PlcProject p) {
+        final d = dispatchCipService(p, map, req()).data;
+        return ByteData.sublistView(d, 6, 10).getUint32(0, Endian.little);
+      }
+
+      final h1 = hashOf(projectWith('INT32'));
+      final h1again = hashOf(projectWith('INT32'));
+      final h2 = hashOf(projectWith('FLOAT64')); // B re-typed
+      expect(h1, h1again, reason: 'same directory -> identical hash (no false change)');
+      expect(h1, isNot(h2), reason: 're-typing a tag must change the hash so the client re-browses');
     });
 
     test('a malformed request (count claims more ids than present) returns an error, never throws', () {
