@@ -102,6 +102,12 @@ const int kCipStatusPrivilegeViolation = 0x0F;
 const int kCipStatusReplyDataTooLarge = 0x11;
 
 const int kCipStatusNotEnoughData = 0x13;
+
+/// "Attribute Not Supported" — a Get Attribute List (0x03) per-attribute status
+/// for an attribute this object does not implement (e.g. any attribute of the
+/// proprietary Rockwell class 0xAC). Reported per-attribute inside a
+/// well-formed reply, never as a blanket service failure.
+const int kCipStatusAttributeNotSupported = 0x14;
 const int kCipStatusEmbeddedServiceError = 0x1E;
 
 // --- CIP service codes (continued) --------------------------------------
@@ -128,6 +134,13 @@ const int kCipServiceMultipleServicePacket = 0x0A;
 /// packed structure. Served here for the Identity Object and the Program
 /// Name Object (both read at connect by a Logix-style client).
 const int kCipServiceGetAttributesAll = 0x01;
+
+/// Get Attribute List — returns a client-chosen SUBSET of an object instance's
+/// attributes, each tagged with its own per-attribute status. A Logix-style
+/// SCADA driver (e.g. Ignition's Allen-Bradley Logix driver) uses this to read
+/// the Identity object and to probe the proprietary Rockwell class 0xAC for
+/// symbol/template change detection at connect/browse time.
+const int kCipServiceGetAttributeList = 0x03;
 
 /// Unconnected Send — a Connection Manager (class 0x06) service that wraps
 /// (encapsulates) another CIP request plus a route path, so an UNCONNECTED
