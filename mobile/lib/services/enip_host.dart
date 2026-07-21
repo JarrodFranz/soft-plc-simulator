@@ -332,7 +332,7 @@ class _Connection {
     logger?.logLazy(
       kLogSourceEnip,
       LogLevel.debug,
-      () => 'Unconnected CIP service ${_hex(req.service)}, '
+      () => 'Unconnected CIP ${describeCipRequest(req)}, '
           '${cipBytes!.length} request bytes.',
     );
 
@@ -350,8 +350,9 @@ class _Connection {
     // gated). Partial Transfer (0x06) is normal browse pagination, not an error.
     if (resp.generalStatus != kCipStatusSuccess && resp.generalStatus != kCipStatusPartialTransfer) {
       _logDrop('enip-cip-status-${_hex(resp.service)}-${_hex(resp.generalStatus)}',
-          () => 'CIP service ${_hex(req.service)} answered with general status '
-              '${_hex(resp.generalStatus)} (non-success).');
+          () => 'CIP ${describeCipRequest(req)} answered with general status '
+              '${_hex(resp.generalStatus)} (non-success; reply service '
+              '${_hex(resp.service)}).');
     }
 
     final replyCpfBytes = buildCpf([
@@ -459,8 +460,9 @@ class _Connection {
         resp.generalStatus != kCipStatusSuccess &&
         resp.generalStatus != kCipStatusPartialTransfer) {
       _logDrop('enip-cip-status-${_hex(resp.service)}-${_hex(resp.generalStatus)}',
-          () => 'CIP service ${_hex(req.service)} answered with general status '
-              '${_hex(resp.generalStatus)} (non-success).');
+          () => 'CIP ${describeCipRequest(req)} answered with general status '
+              '${_hex(resp.generalStatus)} (non-success; reply service '
+              '${_hex(resp.service)}).');
     }
 
     final respBytes = buildCipResponse(resp);

@@ -105,6 +105,8 @@ CipMap _browseMap() => CipMap(entries: [
     ]);
 
 void main() {
+  _diagnosticsTests();
+
   PlcProject buildProject() => PlcProject(
         id: 'cip_tags_proj',
         name: 'CIP Tags Project',
@@ -1112,6 +1114,45 @@ void main() {
         returnsNormally,
       );
       expect(resp.generalStatus, isNot(kCipStatusSuccess));
+    });
+  });
+}
+
+void _diagnosticsTests() {
+  group('describeCipRequest (Logs diagnostics)', () {
+    test('a plain service names the target class', () {
+      final req = CipRequest(
+        service: kCipServiceGetAttributesAll,
+        path: [CipPathSegment.classId(kCipIdentityObjectClassId), CipPathSegment.instanceId(1)],
+        data: Uint8List(0),
+      );
+      expect(describeCipRequest(req), 'service 0x01 to class 0x01');
+    });
+
+    test('an Unconnected Send decodes the EMBEDDED service + class it wraps', () {
+      // Embedded: Get Attributes All (0x01) to Identity (class 0x01), instance 1.
+      final embedded = <int>[0x01, 0x02, 0x20, 0x01, 0x24, 0x01];
+      final wrapper = <int>[
+        0x0A, 0x05, // priority/tick, timeout_ticks
+        embedded.length, 0x00, // embedded message size (u16 LE)
+        ...embedded,
+        0x01, 0x00, 0x01, 0x00, // route path size(1 word) + reserved + path
+      ];
+      final req = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: [CipPathSegment.classId(kCipConnectionManagerClassId), CipPathSegment.instanceId(1)],
+        data: Uint8List.fromList(wrapper),
+      );
+      expect(describeCipRequest(req), 'Unconnected Send (0x52) wrapping service 0x01 to class 0x01');
+    });
+
+    test('an Unconnected Send with an unparseable embedded request says so, never throws', () {
+      final req = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: [CipPathSegment.classId(kCipConnectionManagerClassId)],
+        data: Uint8List.fromList([0x0A, 0x05, 0x40, 0x00]), // size 0x40 but no embedded bytes
+      );
+      expect(describeCipRequest(req), 'Unconnected Send (0x52) wrapping an unparseable embedded request');
     });
   });
 }
