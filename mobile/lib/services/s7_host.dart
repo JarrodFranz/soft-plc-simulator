@@ -270,9 +270,16 @@ class _Connection {
   void _handleS7(Uint8List s7Bytes, PlcProject Function() projectProvider) {
     final msg = parseS7(s7Bytes);
     if (msg == null) {
+      final first = s7Bytes.isEmpty ? -1 : s7Bytes[0];
       _logDrop('s7-unparseable',
-          () => 'Dropped a message: it is not a parseable S7 PDU '
-              '(${s7Bytes.length} bytes).');
+          () => 'Dropped a message: not a parseable classic S7comm PDU '
+              '(${s7Bytes.length} bytes; S7 layer starts with '
+              '${first < 0 ? 'nothing' : _hex(first)}).'
+              '${first == kS7PlusProtocolId ? ' That is S7CommPlus (protocol '
+                  '0x72) — used by S7-1500 / optimized-block SYMBOLIC drivers '
+                  '(e.g. Ignition\'s Enhanced Siemens driver). This device '
+                  'serves classic S7comm (0x32) only; use ABSOLUTE addressing / '
+                  'a classic S7comm driver, or OPC UA.' : ''}');
       return;
     }
     if (msg.header.rosctr != kS7RosctrJob) {
