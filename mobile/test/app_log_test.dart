@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/app_log.dart';
 
@@ -190,6 +192,33 @@ void main() {
       final entries = [_entry(t: 1, message: 'hello')];
       final result = filterLogEntries(entries, textFilter: 'zzz-no-match');
       expect(result, isEmpty);
+    });
+  });
+
+  group('kAllLogSources completeness', () {
+    // RULE (see the kAllLogSources doc comment in app_log.dart): every
+    // `kLogSource*` constant must appear in `kAllLogSources`, because the
+    // Logs screen builds its source filter and per-source verbosity toggles
+    // from that list alone. This test parses the declarations straight out
+    // of app_log.dart's source text — there is no reflection in Flutter, and
+    // a hand-maintained second list here would just be the same drift bug
+    // this test exists to prevent (FINS and SLMP shipped with no Logs-screen
+    // toggle because the screen kept its own copy of the list).
+    test('kAllLogSources covers every kLogSource constant', () {
+      final source = File('lib/models/app_log.dart').readAsStringSync();
+      final declared = RegExp(r"const String kLogSource\w+ = '([^']+)';")
+          .allMatches(source)
+          .map((m) => m.group(1)!)
+          .toList();
+      expect(declared, isNotEmpty,
+          reason: 'regex no longer matches the kLogSource* declarations — '
+              'update this test alongside app_log.dart');
+      expect(kAllLogSources.toSet(), declared.toSet(),
+          reason: 'every kLogSource* constant must be listed in '
+              'kAllLogSources (and nothing else), or the Logs screen will '
+              'silently miss its filter + verbosity toggle');
+      expect(kAllLogSources.length, kAllLogSources.toSet().length,
+          reason: 'kAllLogSources contains a duplicate');
     });
   });
 }

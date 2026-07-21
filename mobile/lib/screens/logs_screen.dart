@@ -45,23 +45,13 @@ import '../models/app_log.dart';
 import '../services/app_logger.dart';
 import '../widgets/live_tick.dart';
 
-/// Every source constant the app currently logs under (`app_log.dart`) —
-/// used to populate the source multi-select and the per-source verbosity
-/// panel, so an operator can dial up DEBUG/TRACE for a source that hasn't
-/// logged anything yet (e.g. because it's the one silently failing).
-const List<String> _kAllLogSources = [
-  kLogSourceOpcUa,
-  kLogSourceModbus,
-  kLogSourceMqtt,
-  kLogSourceDnp3,
-  kLogSourceEnip,
-  kLogSourceS7,
-  kLogSourceScan,
-  kLogSourceProject,
-  kLogSourceSim,
-  kLogSourceHistorian,
-  kLogSourceScheduler,
-];
+// The source multi-select and the per-source verbosity panel are populated
+// from `kAllLogSources` (app_log.dart) — the canonical list kept next to the
+// source constants themselves, so a newly added protocol's toggle cannot be
+// forgotten here (this file used to keep its own copy, and FINS/SLMP were
+// invisible until an operator noticed). An operator can dial up DEBUG/TRACE
+// for a source that hasn't logged anything yet (e.g. because it's the one
+// silently failing).
 
 const Map<LogLevel, Color> _kLevelColors = {
   LogLevel.trace: Colors.grey,
@@ -291,7 +281,7 @@ class _LogsScreenState extends State<LogsScreen> {
               spacing: 8,
               runSpacing: 8,
               children: [
-                for (final source in _kAllLogSources)
+                for (final source in kAllLogSources)
                   FilterChip(
                     key: Key('logs_source_chip_$source'),
                     label: Text(source, style: const TextStyle(fontSize: 11)),
@@ -337,7 +327,7 @@ class _LogsScreenState extends State<LogsScreen> {
               spacing: 12,
               runSpacing: 4,
               children: [
-                for (final source in _kAllLogSources)
+                for (final source in kAllLogSources)
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [

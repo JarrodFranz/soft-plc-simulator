@@ -34,6 +34,31 @@ const String kLogSourceScheduler = 'Scheduler';
 const String kLogSourceFins = 'FINS';
 const String kLogSourceSlmp = 'SLMP';
 
+/// Every source constant above, in Logs-screen display order.
+///
+/// RULE: any new protocol host (or subsystem) MUST (a) log its TRACE/DEBUG
+/// detail under a `kLogSource*` constant declared above and (b) appear in
+/// this list — the Logs screen builds its source filter AND its per-source
+/// verbosity toggles from this list alone, so a source missing here is
+/// invisible to the operator even though it is logging.
+/// `test/app_log_test.dart` ('kAllLogSources covers every kLogSource
+/// constant') fails the build if a constant is declared but not listed.
+const List<String> kAllLogSources = [
+  kLogSourceOpcUa,
+  kLogSourceModbus,
+  kLogSourceMqtt,
+  kLogSourceDnp3,
+  kLogSourceEnip,
+  kLogSourceS7,
+  kLogSourceFins,
+  kLogSourceSlmp,
+  kLogSourceScan,
+  kLogSourceProject,
+  kLogSourceSim,
+  kLogSourceHistorian,
+  kLogSourceScheduler,
+];
+
 /// One log record. `seq` is assigned by the [LogRingBuffer] that stores it
 /// (0 until added); `tMs` is always supplied by the caller, never read from
 /// a clock in this file.
