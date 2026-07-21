@@ -254,6 +254,61 @@ CipResponse _unconnectedSend(PlcProject project, CipMap map, CipRequest req, int
   return dispatchCipService(project, map, embeddedReq, depth: depth + 1);
 }
 
+// --- Diagnostics ----------------------------------------------------------
+
+String _hexByte(int v) => '0x${(v & 0xFF).toRadixString(16).padLeft(2, '0').toUpperCase()}';
+
+/// The target class id of a CIP request's path (its first logical Class
+/// segment), or `null` if the path leads with something else (e.g. a symbolic
+/// tag name). Diagnostics only; never throws.
+int? _targetClassId(List<CipPathSegment> path) {
+  if (path.isNotEmpty && path[0].kind == CipPathSegmentKind.classId) {
+    return path[0].id;
+  }
+  return null;
+}
+
+/// The embedded CIP request carried by an Unconnected Send (0x52), or `null`
+/// if [req] is not a well-formed Unconnected Send. Diagnostics/introspection
+/// only — the dispatch path parses its own copy. Never throws.
+CipRequest? unconnectedSendEmbeddedRequest(CipRequest req) {
+  if (req.service != kCipServiceUnconnectedSend) {
+    return null;
+  }
+  final data = req.data;
+  if (data.length < 4) {
+    return null;
+  }
+  final msgLen = _readU16(data, 2);
+  const embeddedStart = 4;
+  final embeddedEnd = embeddedStart + msgLen;
+  if (embeddedEnd > data.length) {
+    return null;
+  }
+  return parseCipRequest(Uint8List.sublistView(data, embeddedStart, embeddedEnd));
+}
+
+/// A short, human-readable description of what a CIP request targets, for the
+/// in-app Logs: its service code and target class, and — for an Unconnected
+/// Send (0x52) — the EMBEDDED service and class it wraps (what a routing client
+/// like a SCADA Logix driver is actually asking for, which the bare 0x52 code
+/// hides). Never throws.
+String describeCipRequest(CipRequest req) {
+  String withClass(int service, List<CipPathSegment> path) {
+    final cls = _targetClassId(path);
+    return cls == null ? 'service ${_hexByte(service)}' : 'service ${_hexByte(service)} to class ${_hexByte(cls)}';
+  }
+
+  if (req.service != kCipServiceUnconnectedSend) {
+    return withClass(req.service, req.path);
+  }
+  final embedded = unconnectedSendEmbeddedRequest(req);
+  if (embedded == null) {
+    return 'Unconnected Send (0x52) wrapping an unparseable embedded request';
+  }
+  return 'Unconnected Send (0x52) wrapping ${withClass(embedded.service, embedded.path)}';
+}
+
 /// Joins a path's ANSI Extended Symbol segments into a dotted resolver path
 /// (e.g. `Tank.Level`). Returns `null` if [path] is empty or contains any
 /// non-symbol segment — Read/Write Tag only ever address tags this way.
