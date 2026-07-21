@@ -262,6 +262,17 @@ CipResponse _getAttributeList(CipRequest req) {
   if (isIdentityObjectPath(req.path)) {
     return _buildGetAttributeListResponse(req.service, ids, identityAttributeBytes);
   }
+  if (_targetClassId(req.path) == kCipRockwellChangeDetectClassId) {
+    // Best-effort for the proprietary Rockwell change-detection class (0xAC): a
+    // Logix SCADA driver (Ignition) gates its tag browse on a SUCCESSFUL read
+    // here. Its real attribute format is undocumented, but this host's tag
+    // directory is STATIC, so a stable placeholder (a 4-byte zero per requested
+    // attribute) honestly signals "nothing has changed" and may let the client
+    // advance to the Symbol Object browse. No vendor is impersonated (Vendor ID
+    // stays 0). If the client needs the genuine proprietary format, this will
+    // not satisfy it — see docs/protocols/ethernet-ip.md.
+    return _buildGetAttributeListResponse(req.service, ids, (_) => Uint8List(4));
+  }
   return _buildGetAttributeListResponse(req.service, ids, (_) => null);
 }
 
@@ -365,19 +376,28 @@ CipRequest? unconnectedSendEmbeddedRequest(CipRequest req) {
 /// like a SCADA Logix driver is actually asking for, which the bare 0x52 code
 /// hides). Never throws.
 String describeCipRequest(CipRequest req) {
-  String withClass(int service, List<CipPathSegment> path) {
+  String describe(int service, List<CipPathSegment> path, Uint8List data) {
     final cls = _targetClassId(path);
-    return cls == null ? 'service ${_hexByte(service)}' : 'service ${_hexByte(service)} to class ${_hexByte(cls)}';
+    var s = cls == null
+        ? 'service ${_hexByte(service)}'
+        : 'service ${_hexByte(service)} to class ${_hexByte(cls)}';
+    if (service == kCipServiceGetAttributeList) {
+      final ids = _parseGetAttributeListRequest(data);
+      if (ids != null) {
+        s += ' requesting attrs [${ids.map(_hexByte).join(', ')}]';
+      }
+    }
+    return s;
   }
 
   if (req.service != kCipServiceUnconnectedSend) {
-    return withClass(req.service, req.path);
+    return describe(req.service, req.path, req.data);
   }
   final embedded = unconnectedSendEmbeddedRequest(req);
   if (embedded == null) {
     return 'Unconnected Send (0x52) wrapping an unparseable embedded request';
   }
-  return 'Unconnected Send (0x52) wrapping ${withClass(embedded.service, embedded.path)}';
+  return 'Unconnected Send (0x52) wrapping ${describe(embedded.service, embedded.path, embedded.data)}';
 }
 
 /// Joins a path's ANSI Extended Symbol segments into a dotted resolver path

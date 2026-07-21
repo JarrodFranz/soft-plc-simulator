@@ -167,6 +167,15 @@ const int kCipIdentityObjectClassId = 0x01;
 /// Unconnected Send request's path must address it.
 const int kCipConnectionManagerClassId = 0x06;
 
+/// A proprietary, undocumented Rockwell object a Logix SCADA driver (e.g.
+/// Ignition's Allen-Bradley Logix driver) probes via Get Attribute List (0x03)
+/// for symbol/template CHANGE DETECTION at connect/browse time. Its real
+/// semantics are not publicly specified; this host answers a best-effort STABLE
+/// placeholder (its tag directory is static, so "nothing changed" is honest) so
+/// such a client may proceed to the Symbol Object browse. No vendor is
+/// impersonated. See `cip_tags.dart`'s `_getAttributeList`.
+const int kCipRockwellChangeDetectClassId = 0xAC;
+
 /// Program Name Object — a Logix-style client reads the controller/program
 /// name from this class (Get Attributes All → a Logix STRING) at connect
 /// (pycomm3's `get_plc_name`), after the Identity read and before the tag
