@@ -489,9 +489,19 @@ def logix_browse(host: str, port: int) -> None:
             result and result.value is not None,
             "STEP 11 (LogixDriver browse): LogixDriver read of a browsed tag failed",
         )
+        # MULTI-tag read: LogixDriver batches these into ONE Multiple Service
+        # Packet (0x0A) of Read Tags — the path Ignition uses and the one our
+        # own MSP tests can't validate (they encode+decode with the same offset
+        # base, so a wrong base cancels). A real client here is the authority on
+        # the MSP offset convention (offsets from the start of the reply data).
+        multi = drv.read("Speed", "Running", "Level")
+        check(
+            isinstance(multi, list) and len(multi) == 3 and all(t and t.value is not None for t in multi),
+            f"STEP 11 (LogixDriver multi-read via MSP): expected 3 good values, got {multi!r}",
+        )
     print(
-        f"[probe] step 11 OK: LogixDriver browsed {len(names)} tags and read one "
-        f"back (Speed={result.value})"
+        f"[probe] step 11 OK: LogixDriver browsed {len(names)} tags, read one back "
+        f"(Speed={result.value}), and multi-read 3 via MSP ({[t.value for t in multi]})"
     )
 
 

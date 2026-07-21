@@ -39,16 +39,15 @@ Uint8List _embeddedRequest(int service, List<CipPathSegment> path, Uint8List dat
 }
 
 /// Builds a Multiple Service Packet request payload from [embedded] requests:
-/// count (u16), the offset list (u16 each, relative to the offset-list start),
-/// then the embedded requests. Mirrors the wire layout in `cip_tags.dart`'s
-/// header.
+/// count (u16), the offset list (u16 each), then the embedded requests. Offsets
+/// are measured from the START OF THE REQUEST DATA (byte 0 = the count field),
+/// per CIP Vol 1 / Rockwell 1756-PM020 — so the first embedded request's offset
+/// is `2 + count*2` (past the count field and the offset list).
 Uint8List _buildMsp(List<Uint8List> embedded) {
   final count = embedded.length;
   final out = BytesBuilder();
   out.add(_u16le(count));
-  // Offsets are relative to the offset-list start; the embedded requests begin
-  // right after the (count * 2)-byte offset list itself.
-  var running = count * 2;
+  var running = 2 + count * 2;
   for (final e in embedded) {
     out.add(_u16le(running));
     running += e.length;
@@ -575,10 +574,10 @@ void main() {
 
       final req0 = _embeddedRequest(kCipServiceReadTag, [CipPathSegment.symbol('Bool_Tag')], _readData());
       final req1 = _embeddedRequest(kCipServiceReadTag, [CipPathSegment.symbol('Int32_Tag')], _readData());
-      const offsetListStart = 2;
-      // Offsets are relative to offsetListStart; the embedded requests begin
-      // right after the (2-entry, 4-byte) offset list itself.
-      final offsets = [4, 4 + req0.length];
+      // Offsets are from the START OF THE REQUEST DATA (byte 0 = count field),
+      // per CIP Vol 1 / Rockwell 1756-PM020: first embedded req at 2 (count) +
+      // 4 (offset list) = 6.
+      final offsets = [6, 6 + req0.length];
       final data = Uint8List.fromList([
         ..._u16le(2),
         ..._u16le(offsets[0]),
@@ -598,8 +597,10 @@ void main() {
       expect(count, 2);
       final off0 = _readU16(resp.data, 2);
       final off1 = _readU16(resp.data, 4);
-      final body0 = resp.data.sublist(offsetListStart + off0, offsetListStart + off1);
-      final body1 = resp.data.sublist(offsetListStart + off1);
+      // Reply offsets are also from byte 0: first reply body at 2 + count*2 = 6.
+      expect(off0, 6);
+      final body0 = resp.data.sublist(off0, off1);
+      final body1 = resp.data.sublist(off1);
 
       expect(body0[0], kCipServiceReadTag | 0x80);
       expect(body0[2], kCipStatusSuccess);
@@ -611,15 +612,9 @@ void main() {
       expect(_readU16(body1, 4), kCipTypeDint);
       expect(decodeCipValue(kCipTypeDint, body1.sublist(6)), 98765); // Int32_Tag's fixture value
 
-      // Fix 2 regression: exact reply length. header(2) + offset list
-      // (count * 2 = 4) + body0 (4-byte CIP response header + 2-byte type +
-      // 1-byte BOOL = 7) + body1 (4-byte header + 2-byte type + 4-byte DINT
-      // = 10) = 23. The pre-fix allocation counted the 4-byte offset list
-      // TWICE (`2 + count * 2 + cursor` where `cursor` already included
-      // `count * 2`), producing a 27-byte reply — 4 trailing junk bytes
-      // appended after body1, which `body1`'s own bounded slice above can't
-      // catch because `resp.data.sublist(offsetListStart + off1)` runs to
-      // whatever `resp.data.length` happens to be.
+      // Exact reply length: count(2) + offset list (count*2 = 4) + body0
+      // (4-byte CIP header + 2-byte type + 1-byte BOOL = 7) + body1 (4-byte
+      // header + 2-byte type + 4-byte DINT = 10) = 23. No trailing junk.
       expect(resp.data.length, 23);
     });
 
@@ -630,9 +625,9 @@ void main() {
       // First: a good read. Second: an unexposed/unknown tag -> 0x05.
       final goodReq = _embeddedRequest(kCipServiceReadTag, [CipPathSegment.symbol('Bool_Tag')], _readData());
       final badReq = _embeddedRequest(kCipServiceReadTag, [CipPathSegment.symbol('Ghost_Tag')], _readData());
-      // Offsets are relative to the offset-list start; the embedded requests
-      // begin right after the (2-entry, 4-byte) offset list itself.
-      final offsets = [4, 4 + goodReq.length];
+      // Offsets are from the start of the request data (byte 0 = count field):
+      // first embedded req at 2 (count) + 4 (offset list) = 6.
+      final offsets = [6, 6 + goodReq.length];
       final data = Uint8List.fromList([
         ..._u16le(2),
         ..._u16le(offsets[0]),
@@ -653,8 +648,8 @@ void main() {
       expect(count, 2);
       final off0 = _readU16(resp.data, 2);
       final off1 = _readU16(resp.data, 4);
-      final body0 = resp.data.sublist(2 + off0, 2 + off1);
-      final body1 = resp.data.sublist(2 + off1);
+      final body0 = resp.data.sublist(off0, off1);
+      final body1 = resp.data.sublist(off1);
 
       expect(body0[2], kCipStatusSuccess);
       expect(_readU16(body0, 4), kCipTypeBool);
@@ -722,7 +717,7 @@ void main() {
       expect(buildCipResponse(unbounded).length, greaterThan(500));
       expect(_readU16(unbounded.data, 0), 50);
       final uOffLast = _readU16(unbounded.data, 2 + (50 - 1) * 2);
-      expect(unbounded.data.sublist(2 + uOffLast)[2], kCipStatusSuccess);
+      expect(unbounded.data.sublist(uOffLast)[2], kCipStatusSuccess);
 
       // Connected over a 500-byte connection: the emitted CIP response must fit
       // the negotiated connection size.
@@ -735,9 +730,9 @@ void main() {
       expect(_readU16(bounded.data, 0), 50);
       // The first item still succeeds; the last (over-budget) item is 0x11.
       final off0 = _readU16(bounded.data, 2);
-      expect(bounded.data.sublist(2 + off0)[2], kCipStatusSuccess);
+      expect(bounded.data.sublist(off0)[2], kCipStatusSuccess);
       final offLast = _readU16(bounded.data, 2 + (50 - 1) * 2);
-      expect(bounded.data.sublist(2 + offLast)[2], kCipStatusReplyDataTooLarge);
+      expect(bounded.data.sublist(offLast)[2], kCipStatusReplyDataTooLarge);
     });
 
     test('a connected batch that fits the budget is byte-identical to the unbudgeted reply', () {
@@ -1051,8 +1046,8 @@ void main() {
       expect(_readU16(resp.data, 0), 2);
       final off0 = _readU16(resp.data, 2);
       final off1 = _readU16(resp.data, 4);
-      final body0 = resp.data.sublist(2 + off0, 2 + off1);
-      final body1 = resp.data.sublist(2 + off1);
+      final body0 = resp.data.sublist(off0, off1);
+      final body1 = resp.data.sublist(off1);
       expect(body0[2], kCipStatusSuccess);
       expect(body1[2], kCipStatusSuccess);
     });

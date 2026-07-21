@@ -24,13 +24,14 @@
 //
 // Multiple Service Packet (0x0A) wire layout: the request path must be the
 // Message Router object (class 0x02, instance 0x01); the data is a service
-// count (u16), then that many u16 offsets — each relative to the START of
-// the offset list (the byte right after the count field), NOT to the start
-// of the whole data buffer — followed by the embedded CIP requests
-// themselves. The reply mirrors that shape: count (u16), offsets (u16,
-// same relative-to-offset-list-start convention) into the reply's own data,
-// then the embedded CIP *responses* (each built exactly like a normal CIP
-// response, via `buildCipResponse` — the same 4-byte header + data shape).
+// count (u16), then that many u16 offsets — each measured from the START OF
+// THE REQUEST DATA (byte 0 = the count field itself), per CIP Vol 1 / Rockwell
+// 1756-PM020, so the first embedded request's offset is `2 + count*2` (past the
+// count field and the offset list) — followed by the embedded CIP requests
+// themselves. The reply mirrors that shape: count (u16), offsets (u16, same
+// from-the-start-of-the-reply-data convention) into the reply's own data, then
+// the embedded CIP *responses* (each built exactly like a normal CIP response,
+// via `buildCipResponse` — the same 4-byte header + data shape).
 // Critically, one embedded request failing (an unexposed tag, a malformed
 // embedded request, whatever) only sets THAT embedded response's own
 // status — it never fails the whole batch. The outer 0x0A response's own
@@ -630,9 +631,13 @@ CipResponse _multipleServicePacket(PlcProject project, CipMap map, CipRequest re
 
   final responses = <CipResponse>[];
   for (var i = 0; i < count; i++) {
-    final start = offsetListStart + offsets[i];
-    final end = i + 1 < count ? offsetListStart + offsets[i + 1] : data.length;
-    if (start < offsetListStart || start > data.length || end < start || end > data.length) {
+    // Offsets are from the START OF THE REQUEST DATA (byte 0 = the Number of
+    // Services field), per CIP Vol 1 / Rockwell 1756-PM020 — NOT from the byte
+    // after the count. A valid embedded request therefore begins at or after
+    // `offsetsEnd` (past the count field + the offset list).
+    final start = offsets[i];
+    final end = i + 1 < count ? offsets[i + 1] : data.length;
+    if (start < offsetsEnd || start > data.length || end < start || end > data.length) {
       // Malformed embedded offset: this item alone fails; the batch does
       // not. Service byte 0x00 is a placeholder — the request could never
       // be parsed well enough to know its real service code.
@@ -693,43 +698,33 @@ CipResponse _multipleServicePacket(PlcProject project, CipMap map, CipRequest re
       bodies.add(body);
     }
   }
+  // Reply offsets are from the START OF THE REPLY DATA (byte 0 = the Number of
+  // Service Replies field), per CIP Vol 1 / Rockwell 1756-PM020. The embedded
+  // bodies begin right after the count field (2) + the offset list (count * 2),
+  // so the first body's offset is `2 + count * 2`, NOT `count * 2`.
+  final bodyStart = 2 + count * 2;
   final replyOffsets = <int>[];
-  // Offsets are relative to the START of the offset list (offsetListStart),
-  // and the embedded response bodies begin right after that list itself —
-  // so the first body's offset is the offset list's own size (count * 2),
-  // not 0. `cursor` therefore already INCLUDES the offset list's own size
-  // by the time the loop below finishes — it ends up equal to
-  // `count * 2 + sum(body.length)`, i.e. the total size of the offset list
-  // plus all embedded bodies. The reply buffer is `2` (count field) plus
-  // that, NOT `2 + count * 2 + cursor` (which would double-count the
-  // offset list's `count * 2` bytes and over-allocate by that many bytes).
-  var cursor = count * 2;
+  var pos = bodyStart;
   for (final body in bodies) {
-    replyOffsets.add(cursor);
-    cursor += body.length;
+    replyOffsets.add(pos);
+    pos += body.length;
   }
 
-  // Guard: offsets are serialized through `_writeU16`, which masks to 16
-  // bits. If the reply (or any individual offset) would exceed 0xFFFF, a
-  // wrapped offset would silently corrupt the reply framing — fail the
-  // whole batch with a non-zero status instead of emitting it.
-  //
-  // `cursor` is the count-and-bodies span; the CIP response this method
-  // actually emits is `cursor + 6` bytes (2-byte count field + the 4-byte
-  // outer `buildCipResponse` header). The bound is therefore `0xFFFF - 6`,
-  // not `0xFFFF`: admitting a `cursor` in `(0xFFFF - 6, 0xFFFF]` builds a
-  // frame whose own length runs past 0xFFFF, a self-inconsistency the outer
-  // `buildEnipFrame` length recomputation does not catch.
-  if (cursor > 0xFFFF - 6 || replyOffsets.any((o) => o > 0xFFFF)) {
+  // Guard: offsets are serialized through `_writeU16` (masks to 16 bits). If the
+  // reply — or any offset — would exceed 0xFFFF, a wrapped offset silently
+  // corrupts the framing; fail the whole batch instead. `pos` is the reply-data
+  // size; the emitted CIP response wraps it in `buildCipResponse`'s 4-byte
+  // header, so bound the full frame (`pos + 4`).
+  if (pos + 4 > 0xFFFF || replyOffsets.any((o) => o > 0xFFFF)) {
     return _errorResponse(req.service, kCipStatusEmbeddedListError);
   }
 
-  final replyData = Uint8List(2 + cursor);
+  final replyData = Uint8List(pos);
   replyData.setRange(0, 2, _writeU16(count));
   for (var i = 0; i < count; i++) {
     replyData.setRange(2 + i * 2, 2 + i * 2 + 2, _writeU16(replyOffsets[i]));
   }
-  var writeCursor = 2 + count * 2;
+  var writeCursor = bodyStart;
   for (final body in bodies) {
     replyData.setRange(writeCursor, writeCursor + body.length, body);
     writeCursor += body.length;
