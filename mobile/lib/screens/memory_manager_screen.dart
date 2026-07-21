@@ -6,6 +6,7 @@ import '../models/test_tag_set.dart';
 import '../services/tag_historian.dart';
 import '../ui/responsive.dart';
 import '../widgets/live_tick.dart';
+import '../widgets/scalar_value_field.dart';
 import '../widgets/tag_autocomplete_field.dart';
 import '../widgets/trend_chart.dart';
 
@@ -401,6 +402,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
         String ioType = 'SimulatedInput';
         final arrayLenCtrl = TextEditingController(text: '0');
         String? errorText;
+        dynamic defaultVal = defaultValueFor(widget.currentProject, dataType, 0);
 
         final availableTypes = ['BOOL', 'INT16', 'INT32', 'INT64', 'FLOAT64', 'STRING',
             ...builtinCompositeNames(), ...widget.currentProject.structDefs.map((s) => s.name)];
@@ -421,7 +423,11 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                   initialValue: dataType,
                   decoration: const InputDecoration(labelText: 'Data Type'),
                   items: availableTypes.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
-                  onChanged: (val) => setDlgState(() => dataType = val!),
+                  onChanged: (val) => setDlgState(() {
+                    dataType = val!;
+                    defaultVal = defaultValueFor(
+                        widget.currentProject, dataType, int.tryParse(arrayLenCtrl.text) ?? 0);
+                  }),
                 ),
                 TextField(
                   controller: arrayLenCtrl,
@@ -435,6 +441,23 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                   items: ['SimulatedInput', 'SimulatedOutput', 'Internal'].map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
                   onChanged: (val) => setDlgState(() => ioType = val!),
                 ),
+                Builder(builder: (_) {
+                  final arrLen = int.tryParse(arrayLenCtrl.text) ?? 0;
+                  final isScalar = arrLen == 0 &&
+                      lookupComposite(widget.currentProject, dataType) == null;
+                  if (!isScalar) {
+                    return const SizedBox.shrink();
+                  }
+                  return Padding(
+                    key: const Key('add_tag_default_field'),
+                    padding: const EdgeInsets.only(top: 12),
+                    child: ScalarValueField(
+                      dataType: dataType,
+                      value: defaultVal,
+                      onChanged: (v) => defaultVal = v,
+                    ),
+                  );
+                }),
               ],
             ),
             actions: [
@@ -448,12 +471,18 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                     return;
                   }
                   final arrLen = int.tryParse(arrayLenCtrl.text) ?? 0;
+                  final isScalar = arrLen == 0 &&
+                      lookupComposite(widget.currentProject, dataType) == null;
+                  final initial = isScalar
+                      ? defaultVal
+                      : defaultValueFor(widget.currentProject, dataType, arrLen);
                   final tag = PlcTag(
                     name: nameCtrl.text,
                     path: pathCtrl.text,
                     dataType: dataType,
                     arrayLength: arrLen,
-                    value: defaultValueFor(widget.currentProject, dataType, arrLen),
+                    value: initial,
+                    defaultValue: isScalar ? defaultVal : null,
                     ioType: ioType,
                   );
                   setState(() {
@@ -463,6 +492,111 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                   Navigator.pop(ctx);
                 },
                 child: const Text('Add Tag'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showEditTagDialog(PlcTag tag) {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        String dataType = tag.dataType;
+        dynamic defaultVal = tag.effectiveDefault(widget.currentProject);
+        String access = tag.access;
+        final descCtrl = TextEditingController(text: tag.description);
+        final unitsCtrl = TextEditingController(text: tag.engineeringUnits);
+        final availableTypes = ['BOOL', 'INT16', 'INT32', 'INT64', 'FLOAT64', 'STRING',
+            ...builtinCompositeNames(), ...widget.currentProject.structDefs.map((s) => s.name)];
+
+        return StatefulBuilder(
+          key: const Key('edit_tag_dialog'),
+          builder: (context, setDlgState) => AlertDialog(
+            title: Text('Edit Tag — ${tag.name}'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Name: ${tag.name}', style: const TextStyle(color: Colors.white70)),
+                  Text('Path: ${tag.path}', style: const TextStyle(color: Colors.white70)),
+                  const Text('(rename not supported yet)',
+                      style: TextStyle(color: Colors.white38, fontSize: 11)),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    key: const Key('edit_tag_type_dropdown'),
+                    initialValue: dataType,
+                    decoration: const InputDecoration(labelText: 'Data Type'),
+                    items: availableTypes.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
+                    onChanged: (val) => setDlgState(() {
+                      dataType = val!;
+                      defaultVal = coerceValueToType(
+                          widget.currentProject, defaultVal, dataType, tag.arrayLength);
+                    }),
+                  ),
+                  const SizedBox(height: 12),
+                  if (tag.arrayLength == 0 &&
+                      lookupComposite(widget.currentProject, dataType) == null)
+                    ScalarValueField(
+                      dataType: dataType,
+                      value: defaultVal,
+                      onChanged: (v) => defaultVal = v,
+                    ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: access,
+                    decoration: const InputDecoration(labelText: 'Access'),
+                    items: const ['ReadWrite', 'ReadOnly']
+                        .map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
+                    onChanged: (val) => setDlgState(() => access = val!),
+                  ),
+                  TextField(controller: descCtrl, decoration: const InputDecoration(labelText: 'Description')),
+                  TextField(controller: unitsCtrl, decoration: const InputDecoration(labelText: 'Engineering Units')),
+                  const SizedBox(height: 8),
+                  TextButton(
+                    key: const Key('edit_tag_reset_button'),
+                    onPressed: () {
+                      setState(() {
+                        tag.value = tag.effectiveDefault(widget.currentProject);
+                        tag.isForced = false;
+                      });
+                      widget.onProjectUpdated();
+                    },
+                    child: const Text('Reset live value → default'),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              ElevatedButton(
+                key: const Key('edit_tag_save_button'),
+                onPressed: () {
+                  setState(() {
+                    final typeChanged = tag.dataType != dataType;
+                    tag.dataType = dataType;
+                    tag.access = access;
+                    tag.description = descCtrl.text;
+                    tag.engineeringUnits = unitsCtrl.text;
+                    final isScalar = tag.arrayLength == 0 &&
+                        lookupComposite(widget.currentProject, dataType) == null;
+                    tag.defaultValue = isScalar ? defaultVal : null;
+                    if (typeChanged) {
+                      tag.value = coerceValueToType(
+                          widget.currentProject, tag.value, dataType, tag.arrayLength);
+                      if (tag.forcedValue != null) {
+                        tag.forcedValue = coerceValueToType(
+                            widget.currentProject, tag.forcedValue, dataType, tag.arrayLength);
+                      }
+                    }
+                  });
+                  widget.onProjectUpdated();
+                  Navigator.pop(ctx);
+                },
+                child: const Text('Save'),
               ),
             ],
           ),
@@ -694,6 +828,14 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                         style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace', fontSize: 14),
                         overflow: TextOverflow.ellipsis),
                   ),
+                  if (row.isDeletable && row.depth == 0 && row.name != kSystemTagName)
+                    touchable(
+                      Icon(Icons.edit, color: Colors.cyanAccent, size: 18, key: Key('edit_tag_${row.name}')),
+                      onTap: () {
+                        final tag = widget.currentProject.tags.firstWhere((t) => t.name == row.name);
+                        _showEditTagDialog(tag);
+                      },
+                    ),
                   if (row.isDeletable)
                     touchable(
                       const Icon(Icons.delete, color: Colors.redAccent, size: 18),
@@ -959,12 +1101,22 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
         DataCell(_valueCellForTable(row)),
         DataCell(Text(row.quality, style: TextStyle(color: row.depth == 0 ? Colors.green : Colors.greenAccent, fontSize: row.depth == 0 ? 11 : 10))),
         DataCell(Text(row.ioClass, style: TextStyle(color: Colors.grey, fontSize: row.depth == 0 ? 11 : 10))),
-        DataCell(row.isDeletable
-            ? IconButton(
-                icon: const Icon(Icons.delete, color: Colors.redAccent, size: 16),
-                onPressed: () => _deleteTag(row.name),
-              )
-            : const SizedBox()),
+        DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
+          if (row.isDeletable && row.depth == 0 && row.name != kSystemTagName)
+            IconButton(
+              key: Key('edit_tag_${row.name}'),
+              icon: const Icon(Icons.edit, color: Colors.cyanAccent, size: 16),
+              onPressed: () {
+                final tag = widget.currentProject.tags.firstWhere((t) => t.name == row.name);
+                _showEditTagDialog(tag);
+              },
+            ),
+          if (row.isDeletable)
+            IconButton(
+              icon: const Icon(Icons.delete, color: Colors.redAccent, size: 16),
+              onPressed: () => _deleteTag(row.name),
+            ),
+        ])),
       ]);
     }).toList();
   }
