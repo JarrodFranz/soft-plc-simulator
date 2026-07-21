@@ -17,6 +17,7 @@ import 'package:soft_plc_mobile/models/mqtt_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/screens/gateway_screen.dart';
+import 'package:soft_plc_mobile/services/bacnet_host.dart';
 import 'package:soft_plc_mobile/services/dnp3_host.dart';
 import 'package:soft_plc_mobile/services/enip_host.dart';
 import 'package:soft_plc_mobile/services/fins_host.dart';
@@ -83,6 +84,7 @@ Widget _app(PlcProject project, MqttHost mqttHost) {
       s7Host: S7Host(),
       finsHost: FinsHost(),
       slmpHost: SlmpHost(),
+      bacnetHost: BacnetHost(),
       onProjectUpdated: () {},
     ),
   );

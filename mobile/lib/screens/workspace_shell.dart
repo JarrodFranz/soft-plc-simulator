@@ -16,6 +16,7 @@ import '../data/default_projects.dart';
 import '../data/project_repository.dart';
 import '../data/project_transfer.dart';
 import '../services/app_logger.dart';
+import '../services/bacnet_host.dart';
 import '../services/dnp3_host.dart';
 import '../services/enip_host.dart';
 import '../services/fins_host.dart';
@@ -133,6 +134,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   late final S7Host _s7Host = S7Host(logger: _logger);
   late final FinsHost _finsHost = FinsHost(logger: _logger);
   late final SlmpHost _slmpHost = SlmpHost(logger: _logger);
+  late final BacnetHost _bacnetHost = BacnetHost(logger: _logger);
 
   // Repaint-pulse infrastructure (see live_tick.dart). `_executeScan` no
   // longer setStates the whole shell each tick — it writes the model
@@ -230,6 +232,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     _s7Host.dispose();
     _finsHost.dispose();
     _slmpHost.dispose();
+    _bacnetHost.dispose();
     _repaintThrottle.dispose();
     _liveTick.dispose();
     super.dispose();
@@ -798,6 +801,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     unawaited(_s7Host.stop());
     unawaited(_finsHost.stop());
     unawaited(_slmpHost.stop());
+    unawaited(_bacnetHost.stop());
     ensureSystemTag(proj);
     setState(() {
       _activeProject = proj;
@@ -1072,6 +1076,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _s7Host.stop();
     await _finsHost.stop();
     await _slmpHost.stop();
+    await _bacnetHost.stop();
 
     final blank = PlcProject(
       id: 'proj_new_${DateTime.now().millisecondsSinceEpoch}',
@@ -1115,6 +1120,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _s7Host.stop();
     await _finsHost.stop();
     await _slmpHost.stop();
+    await _bacnetHost.stop();
     final newId = await repo.duplicateProject(_activeProject.id, newName: '${_activeProject.name} Copy');
     final copy = await repo.loadProject(newId);
     if (copy == null) return;
@@ -1180,6 +1186,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _s7Host.stop();
     await _finsHost.stop();
     await _slmpHost.stop();
+    await _bacnetHost.stop();
     final deletedId = _activeProject.id;
     final deletedName = _activeProject.name;
     await repo.deleteProject(deletedId);
@@ -1240,6 +1247,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _s7Host.stop();
     await _finsHost.stop();
     await _slmpHost.stop();
+    await _bacnetHost.stop();
     await repo.resetToDefaults();
     final catalog = await repo.listProjects();
     var loaded = <PlcProject>[];
@@ -1394,6 +1402,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _s7Host.stop();
     await _finsHost.stop();
     await _slmpHost.stop();
+    await _bacnetHost.stop();
     final repo = _repo;
     if (repo != null) {
       await repo.saveProject(imported);
@@ -2974,6 +2983,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         s7Host: _s7Host,
         finsHost: _finsHost,
         slmpHost: _slmpHost,
+        bacnetHost: _bacnetHost,
         onProjectUpdated: _markDirtyAndAutosave,
       );
     } else if (_activeViewId == 'LOGS') {

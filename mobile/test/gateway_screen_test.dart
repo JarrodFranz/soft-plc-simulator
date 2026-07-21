@@ -6,6 +6,7 @@ import 'package:soft_plc_mobile/models/mqtt_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/screens/gateway_screen.dart';
+import 'package:soft_plc_mobile/services/bacnet_host.dart';
 import 'package:soft_plc_mobile/services/dnp3_host.dart';
 import 'package:soft_plc_mobile/services/enip_host.dart';
 import 'package:soft_plc_mobile/services/fins_host.dart';
@@ -291,6 +292,7 @@ Widget _app(
       s7Host: S7Host(),
       finsHost: FinsHost(),
       slmpHost: SlmpHost(),
+      bacnetHost: BacnetHost(),
       onProjectUpdated: () {},
       hostingSupported: hostingSupported,
     ),
@@ -313,6 +315,7 @@ const Key enipTabKey = Key('protocol_tab_enip');
 const Key s7TabKey = Key('protocol_tab_s7');
 const Key finsTabKey = Key('protocol_tab_fins');
 const Key slmpTabKey = Key('protocol_tab_slmp');
+const Key bacnetTabKey = Key('protocol_tab_bacnet');
 
 Future<void> _selectTab(WidgetTester tester, Key tabKey) async {
   // The TabBar is `isScrollable: true` (mobile-first — see the design spec),
@@ -2192,7 +2195,7 @@ void main() {
           modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost, enipHost: enipHost));
       await tester.pumpAndSettle();
 
-      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey, s7TabKey, finsTabKey, slmpTabKey]) {
+      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey, s7TabKey, finsTabKey, slmpTabKey, bacnetTabKey]) {
         await _selectTab(tester, tabKey);
         expect(tester.takeException(), isNull);
       }
@@ -2216,7 +2219,7 @@ void main() {
           modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost, enipHost: enipHost));
       await tester.pumpAndSettle();
 
-      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey, s7TabKey, finsTabKey, slmpTabKey]) {
+      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey, s7TabKey, finsTabKey, slmpTabKey, bacnetTabKey]) {
         await _selectTab(tester, tabKey);
         expect(tester.takeException(), isNull);
       }
@@ -2240,7 +2243,7 @@ void main() {
           modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost, enipHost: enipHost));
       await tester.pumpAndSettle();
 
-      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey, s7TabKey, finsTabKey, slmpTabKey]) {
+      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey, s7TabKey, finsTabKey, slmpTabKey, bacnetTabKey]) {
         await _selectTab(tester, tabKey);
         expect(tester.takeException(), isNull);
       }
@@ -2379,6 +2382,7 @@ void main() {
           s7Host: S7Host(),
           finsHost: FinsHost(),
           slmpHost: SlmpHost(),
+          bacnetHost: BacnetHost(),
           onProjectUpdated: () => updates++,
         ),
       ));
@@ -2505,6 +2509,7 @@ void main() {
           s7Host: s7Host,
           finsHost: FinsHost(),
           slmpHost: SlmpHost(),
+          bacnetHost: BacnetHost(),
           onProjectUpdated: () {},
         ),
       ));
@@ -2546,6 +2551,7 @@ void main() {
           s7Host: S7Host(),
           finsHost: FinsHost(),
           slmpHost: SlmpHost(),
+          bacnetHost: BacnetHost(),
           onProjectUpdated: () => updates++,
         ),
       ));
@@ -2689,6 +2695,7 @@ void main() {
           s7Host: S7Host(),
           finsHost: FinsHost(),
           slmpHost: SlmpHost(),
+          bacnetHost: BacnetHost(),
           onProjectUpdated: () => updates++,
         ),
       ));
@@ -2829,6 +2836,7 @@ void main() {
           s7Host: S7Host(),
           finsHost: FinsHost(),
           slmpHost: SlmpHost(),
+          bacnetHost: BacnetHost(),
           onProjectUpdated: () => updates++,
         ),
       ));
@@ -2895,6 +2903,176 @@ void main() {
       await tester.pumpAndSettle();
       await _selectTab(tester, slmpTabKey);
       await tester.tap(find.byKey(const Key('slmp_enable_switch')));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('BACnet/IP card', () {
+    testWidgets(
+        'renders its enable toggle, and the port/device-instance fields default to 47808/3056',
+        (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, bacnetTabKey);
+
+      expect(find.byKey(const Key('bacnet_enable_switch')), findsOneWidget);
+      final sw = tester.widget<Switch>(find.byKey(const Key('bacnet_enable_switch')));
+      expect(sw.value, isFalse, reason: 'BACnet/IP hosting is opt-in and starts disabled');
+      // The port/device-instance fields only exist once the card is enabled.
+      expect(find.byKey(const Key('bacnet_port_field')), findsNothing);
+      expect(find.byKey(const Key('bacnet_device_instance_field')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('bacnet_enable_switch')));
+      await tester.pumpAndSettle();
+
+      expect(project.protocols!.bacnet!.enabled, isTrue);
+      expect(project.protocols!.bacnet!.port, 47808);
+      expect(project.protocols!.bacnet!.deviceInstance, 3056);
+      final portField = tester.widget<TextField>(find.byKey(const Key('bacnet_port_field')));
+      expect(portField.controller!.text, '47808');
+      expect(find.text('Default: 47808'), findsOneWidget);
+      final deviceInstanceField =
+          tester.widget<TextField>(find.byKey(const Key('bacnet_device_instance_field')));
+      expect(deviceInstanceField.controller!.text, '3056');
+      expect(find.text('Default: 3056'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('port 47808 shows NO privileged-port note (it is above 1023)', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, bacnetTabKey);
+      await tester.tap(find.byKey(const Key('bacnet_enable_switch')));
+      await tester.pumpAndSettle();
+
+      // Like FINS's 9600 and SLMP's 5007, BACnet/IP's 47808 needs no
+      // elevation — the card carries no privileged-port key at all.
+      expect(find.byKey(const Key('s7_privileged_port_note')), findsNothing);
+
+      await tester.enterText(find.byKey(const Key('bacnet_port_field')), '47810');
+      await tester.pumpAndSettle();
+      expect(project.protocols!.bacnet!.port, 47810);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('device instance is clamped to 0..4194302', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, bacnetTabKey);
+      await tester.tap(find.byKey(const Key('bacnet_enable_switch')));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('bacnet_device_instance_field')), '9999999');
+      await tester.pumpAndSettle();
+      expect(project.protocols!.bacnet!.deviceInstance, 4194302);
+
+      await tester.enterText(find.byKey(const Key('bacnet_device_instance_field')), '-5');
+      await tester.pumpAndSettle();
+      expect(project.protocols!.bacnet!.deviceInstance, 0);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Add entry / Regenerate / delete route through onProjectUpdated', (tester) async {
+      final project = _project();
+      project.protocols = ProtocolSettings.defaults(project);
+      project.protocols!.bacnet!.enabled = true;
+      project.protocols!.bacnet!.map.entries.clear();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      var updates = 0;
+
+      await tester.pumpWidget(MaterialApp(
+        home: GatewayScreen(
+          currentProject: project,
+          host: host,
+          modbusHost: _CountingModbusHost(),
+          mqttHost: MqttHost(),
+          dnpHost: _CountingDnpHost(),
+          enipHost: _CountingEnipHost(),
+          s7Host: S7Host(),
+          finsHost: FinsHost(),
+          slmpHost: SlmpHost(),
+          bacnetHost: BacnetHost(),
+          onProjectUpdated: () => updates++,
+        ),
+      ));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, bacnetTabKey);
+
+      expect(find.textContaining('No entries yet'), findsOneWidget);
+
+      await tester.tap(find.text('Add entry'));
+      await tester.pump();
+      expect(project.protocols!.bacnet!.map.entries.length, 1);
+      expect(updates, greaterThan(0));
+
+      await tester.tap(find.text('Regenerate'));
+      await tester.pump();
+      expect(project.protocols!.bacnet!.map.entries, isNotEmpty);
+
+      final beforeDelete = project.protocols!.bacnet!.map.entries.length;
+      await tester.ensureVisible(find.byIcon(Icons.delete_outline).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.delete_outline).first);
+      await tester.pump();
+      expect(project.protocols!.bacnet!.map.entries.length, beforeDelete - 1);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 320 width with the BACnet/IP card expanded', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      await setSurface(tester, smallPhoneSize);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, bacnetTabKey);
+      await tester.tap(find.byKey(const Key('bacnet_enable_switch')));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 360 width with the BACnet/IP card expanded', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      await setSurface(tester, phoneSize);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, bacnetTabKey);
+      await tester.tap(find.byKey(const Key('bacnet_enable_switch')));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no overflow at 1400 width with the BACnet/IP card expanded', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      await setSurface(tester, desktopSize);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+      await _selectTab(tester, bacnetTabKey);
+      await tester.tap(find.byKey(const Key('bacnet_enable_switch')));
       await tester.pumpAndSettle();
 
       expect(tester.takeException(), isNull);

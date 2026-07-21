@@ -48,3 +48,20 @@ fins==1.0.5
 # that settled the 3E length-field convention and confirmed the D/M/W/R device
 # codes and the big-endian subheader at Task 3.
 pymcprotocol==0.3.0
+
+# bacpypes3 -- a real, third-party BACnet/IP client, asyncio-native. Used by
+# `tool/py/bacnet_probe.py` (driven by `tool/bacnet_e2e.sh`) to verify this
+# project's in-app BACnet/IP host against a client written entirely
+# independently of us.
+#
+# SUBSTITUTED from the originally planned `BAC0==22.9.21` + `bacpypes==0.18.6`
+# pin: `bacpypes` 0.18.6's `bacpypes/core.py` does `import asyncore`, a
+# standard-library module Python 3.12 REMOVED (deprecated since 3.6) -- pip
+# install succeeds, but every `import bacpypes` then raises
+# `ModuleNotFoundError: No module named 'asyncore'` on this venv's Python.
+# `bacpypes3` is an independent, actively-maintained asyncio-native
+# reimplementation of the BACnet/IP stack (its own APDU/tag codec, not a shim
+# over the old `bacpypes`), so it is still a genuine independent conformance
+# check -- only the API shape (async, not BAC0's sync wrapper) differs. See
+# `tool/py/bacnet_probe.py`'s header for the full substitution note.
+bacpypes3==0.0.106

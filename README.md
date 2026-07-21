@@ -8,11 +8,11 @@
 
 ## 🚀 Overview
 
-The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators, students, and system developers to execute IEC 61131-3 style control logic on portable mobile devices (Android/iOS) and desktop platforms. It provides a real-time scan cycle engine that **executes ladder logic for real**, a structured tag database (DUT-typed struct tags, arrays, bit-addressable members), a rule-driven simulated I/O engine, custom HMI dashboard builders, and industrial protocol adapters to expose virtual PLCs to SCADA systems like Ignition, Kepware, UAExpert, MQTT brokers, Modbus clients, DNP3 masters, EtherNet/IP + CIP clients, S7comm drivers, Omron FINS drivers, and Mitsubishi SLMP (MELSEC) drivers.
+The **Mobile Soft PLC Simulator** allows automation engineers, SCADA integrators, students, and system developers to execute IEC 61131-3 style control logic on portable mobile devices (Android/iOS) and desktop platforms. It provides a real-time scan cycle engine that **executes ladder logic for real**, a structured tag database (DUT-typed struct tags, arrays, bit-addressable members), a rule-driven simulated I/O engine, custom HMI dashboard builders, and industrial protocol adapters to expose virtual PLCs to SCADA systems like Ignition, Kepware, UAExpert, MQTT brokers, Modbus clients, DNP3 masters, EtherNet/IP + CIP clients, S7comm drivers, Omron FINS drivers, Mitsubishi SLMP (MELSEC) drivers, and BACnet/IP clients.
 
 ---
 
-## ✨ Features & Progress (Full Protocol Suite Shipped — OPC UA, Modbus TCP, MQTT+Sparkplug B, DNP3, EtherNet/IP + CIP, S7comm, Omron FINS, Mitsubishi SLMP)
+## ✨ Features & Progress (Full Protocol Suite Shipped — OPC UA, Modbus TCP, MQTT+Sparkplug B, DNP3, EtherNet/IP + CIP, S7comm, Omron FINS, Mitsubishi SLMP, BACnet/IP)
 
 - **ALL IEC 61131-3 Programming Languages Supported**:
   - **Structured Text (ST)**: Textual IDE with live autocomplete suggestions (`IF`, `WHILE`, `FOR`, `TON`), code templates, AST compilation, and real-time AST interpreter.
@@ -251,7 +251,8 @@ flutter analyze
 | **Phase 14** | Protocol Expansion Program — **EtherNet/IP + CIP** explicit messaging (v1) shipped in-app, now with Symbol Object tag browsing (Get Instance Attribute List, 0x55, paginated) so a real `pycomm3` `LogixDriver` can upload the tag directory and read a browsed tag, plus the shared Python probe lane | ✅ Complete |
 | **Phase 15** | Protocol Expansion Program — **S7comm** (v1) shipped in-app (areas DB/M/I/Q, byte-offset addressing) and E2E-proven against the real `python-snap7` client through read → write → independent read-back | ✅ Complete |
 | **Phase 16** | Protocol Expansion Program — **Omron FINS** (v1) shipped in-app (UDP, area+word addressing) and E2E-proven against a real FINS client through read → write → independent read-back | ✅ Complete |
-| **Phase 17** | Protocol Expansion Program — **Mitsubishi SLMP / MELSEC** (v1, 3E binary over TCP, D/M/W/R device+address addressing) shipped in-app and E2E-proven against the real `pymcprotocol` client through read → write → independent read-back; **BACnet/IP** remains | ✅ Complete |
+| **Phase 17** | Protocol Expansion Program — **Mitsubishi SLMP / MELSEC** (v1, 3E binary over TCP, D/M/W/R device+address addressing) shipped in-app and E2E-proven against the real `pymcprotocol` client through read → write → independent read-back | ✅ Complete |
+| **Phase 18** | Protocol Expansion Program — **BACnet/IP** (v1, Annex J over UDP 47808, Device + Analog Value/Binary Value objects) shipped in-app and E2E-proven against the real `bacpypes3` client through Who-Is/I-Am → Object_List browse → ReadPropertyMultiple (embedded per-property errors) → write + independent read-back → a priority-bearing write → ReadOnly/unknown-property refusals. **Protocol-expansion program complete (6/6).** | ✅ Complete |
 
 ---
 

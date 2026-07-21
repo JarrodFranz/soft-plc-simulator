@@ -33,6 +33,7 @@ const String kLogSourceHistorian = 'Historian';
 const String kLogSourceScheduler = 'Scheduler';
 const String kLogSourceFins = 'FINS';
 const String kLogSourceSlmp = 'SLMP';
+const String kLogSourceBacnet = 'BACnet';
 
 /// Every source constant above, in Logs-screen display order.
 ///
@@ -52,6 +53,7 @@ const List<String> kAllLogSources = [
   kLogSourceS7,
   kLogSourceFins,
   kLogSourceSlmp,
+  kLogSourceBacnet,
   kLogSourceScan,
   kLogSourceProject,
   kLogSourceSim,

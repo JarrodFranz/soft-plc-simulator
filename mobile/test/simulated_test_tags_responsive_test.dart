@@ -12,6 +12,7 @@ import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/models/signal_gen.dart';
 import 'package:soft_plc_mobile/screens/gateway_screen.dart';
 import 'package:soft_plc_mobile/screens/memory_manager_screen.dart';
+import 'package:soft_plc_mobile/services/bacnet_host.dart';
 import 'package:soft_plc_mobile/services/dnp3_host.dart';
 import 'package:soft_plc_mobile/services/enip_host.dart';
 import 'package:soft_plc_mobile/services/fins_host.dart';
@@ -94,6 +95,7 @@ Widget _gatewayApp(PlcProject project) {
       s7Host: S7Host(),
       finsHost: FinsHost(),
       slmpHost: SlmpHost(),
+      bacnetHost: BacnetHost(),
       onProjectUpdated: () {},
     ),
   );

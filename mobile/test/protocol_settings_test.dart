@@ -8,6 +8,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:soft_plc_mobile/models/bacnet_map.dart';
 import 'package:soft_plc_mobile/models/cip_map.dart';
 import 'package:soft_plc_mobile/models/dnp3_map.dart';
 import 'package:soft_plc_mobile/models/fins_map.dart';
@@ -1239,6 +1240,157 @@ void main() {
       expect(settings.slmp!.enabled, isFalse);
       expect(settings.slmp!.port, 5007);
       expect(settings.slmp!.map.entries, isNotEmpty);
+    });
+  });
+
+  group('BacnetProtocolConfig / ProtocolSettings.bacnet (BACnet/IP)', () {
+    /// A bare project the effective-config assertions can be materialized
+    /// against.
+    PlcProject bareProject(String id) => PlcProject(
+          id: id,
+          name: 'BACnet Test Project',
+          controllerName: 'PLC_BACNET',
+          tags: [
+            PlcTag(
+              name: 'Level',
+              path: 'Internal.Level',
+              dataType: 'INT16',
+              value: 0,
+              ioType: 'Internal',
+            ),
+          ],
+          structDefs: const [],
+          programs: const [],
+          tasks: const [],
+          hmis: const [],
+        );
+
+    test('BacnetProtocolConfig defaults to disabled on port 47808, deviceInstance 3056', () {
+      final cfg = BacnetProtocolConfig(map: BacnetMap(entries: []));
+      expect(cfg.enabled, isFalse);
+      expect(cfg.port, 47808);
+      expect(cfg.deviceInstance, 3056);
+    });
+
+    test('BacnetProtocolConfig round-trips through toJson/fromJson', () {
+      final cfg = BacnetProtocolConfig(
+        enabled: true,
+        port: 47810,
+        deviceInstance: 9999,
+        map: BacnetMap(entries: [
+          BacnetMapEntry(
+            tag: 'Level',
+            objectType: kBacnetMapTypeAv,
+            instance: 2,
+            access: 'ReadOnly',
+          ),
+        ]),
+      );
+      final rt = BacnetProtocolConfig.fromJson(cfg.toJson());
+      expect(rt.enabled, isTrue);
+      expect(rt.port, 47810);
+      expect(rt.deviceInstance, 9999);
+      expect(rt.map.entries, hasLength(1));
+      expect(rt.map.entries.first.tag, 'Level');
+      expect(rt.map.entries.first.objectType, kBacnetMapTypeAv);
+      expect(rt.map.entries.first.instance, 2);
+      expect(rt.map.entries.first.access, 'ReadOnly');
+    });
+
+    test('a project JSON without bacnet loads with the feature DISABLED, port 47808, deviceInstance 3056 '
+        '(additive/back-compat)', () {
+      final settings = ProtocolSettings.fromJson({'gateway_url': kDefaultGatewayUrl});
+      expect(settings.bacnet, isNull);
+
+      // Prove the title's claim rather than just the null check: materialize
+      // the effective config exactly the way the app does for a project that
+      // has no BACnet config yet (mirrors `_ensureBacnet` in
+      // gateway_screen.dart: `protocols!.bacnet ??=
+      // BacnetProtocolConfig.defaults(project)`), and assert all three.
+      final effective = settings.bacnet ?? BacnetProtocolConfig.defaults(bareProject('bacnet_backcompat_proj'));
+      expect(effective.enabled, isFalse, reason: 'an unconfigured project must not host BACnet/IP');
+      expect(effective.port, 47808, reason: 'the BACnet/IP default UDP port is 47808');
+      expect(effective.deviceInstance, 3056, reason: 'the additive default Device_Object_Instance is 3056');
+    });
+
+    test('a project JSON whose bacnet block is present round-trips through PlcProject', () {
+      final project = bareProject('bacnet_rt_proj');
+      project.protocols = ProtocolSettings(
+        bacnet: BacnetProtocolConfig(
+          enabled: true,
+          port: 47811,
+          deviceInstance: 1234,
+          map: BacnetMap(entries: [
+            BacnetMapEntry(tag: 'Level', objectType: kBacnetMapTypeAv, instance: 0),
+          ]),
+        ),
+      );
+      final rt = PlcProject.fromJson(jsonDecode(jsonEncode(project.toJson())) as Map<String, dynamic>);
+      expect(rt.protocols!.bacnet, isNotNull);
+      expect(rt.protocols!.bacnet!.enabled, isTrue);
+      expect(rt.protocols!.bacnet!.port, 47811);
+      expect(rt.protocols!.bacnet!.deviceInstance, 1234);
+      expect(rt.protocols!.bacnet!.map.entries.single.instance, 0);
+    });
+
+    test('BacnetProtocolConfig.fromJson tolerates a missing map key', () {
+      final cfg = BacnetProtocolConfig.fromJson({'enabled': true});
+      expect(cfg.enabled, isTrue);
+      expect(cfg.map.entries, isEmpty);
+    });
+
+    test('BacnetProtocolConfig.fromJson on a record with no "port"/"device_instance" keys back-fills '
+        '47808/3056', () {
+      final cfg = BacnetProtocolConfig.fromJson({'enabled': true, 'map': {'entries': []}});
+      expect(cfg.port, 47808);
+      expect(cfg.deviceInstance, 3056);
+    });
+
+    test('ProtocolSettings with bacnet == null omits the bacnet key entirely', () {
+      final settings = ProtocolSettings(opcua: OpcUaProtocolConfig.defaults(bareProject('bacnet_omit_proj')));
+      expect(settings.bacnet, isNull);
+      expect(settings.toJson().containsKey('bacnet'), isFalse);
+    });
+
+    test('SIBLING protocol keys are untouched when bacnet is present', () {
+      final project = bareProject('bacnet_siblings_proj');
+      final settings = ProtocolSettings(
+        opcua: OpcUaProtocolConfig.defaults(project),
+        slmp: SlmpProtocolConfig(map: SlmpMap(entries: [])),
+        bacnet: BacnetProtocolConfig(map: BacnetMap(entries: [])),
+      );
+
+      final json = settings.toJson();
+      expect(json.containsKey('opcua'), isTrue);
+      expect(json.containsKey('modbus'), isFalse);
+      expect(json.containsKey('mqtt'), isFalse);
+      expect(json.containsKey('dnp3'), isFalse);
+      expect(json.containsKey('ethernet_ip'), isFalse);
+      expect(json.containsKey('s7comm'), isFalse);
+      expect(json.containsKey('fins'), isFalse);
+      expect(json.containsKey('slmp'), isTrue);
+      expect(json.containsKey('bacnet'), isTrue);
+
+      final rt = ProtocolSettings.fromJson(json);
+      expect(rt.opcua, isNotNull);
+      expect(rt.modbus, isNull);
+      expect(rt.mqtt, isNull);
+      expect(rt.dnp3, isNull);
+      expect(rt.ethernetIp, isNull);
+      expect(rt.s7, isNull);
+      expect(rt.fins, isNull);
+      expect(rt.slmp, isNotNull);
+      expect(rt.bacnet, isNotNull);
+    });
+
+    test('ProtocolSettings.defaults builds a disabled bacnet config with port 47808, deviceInstance 3056, '
+        'and a populated map', () {
+      final settings = ProtocolSettings.defaults(bareProject('bacnet_def_proj'));
+      expect(settings.bacnet, isNotNull);
+      expect(settings.bacnet!.enabled, isFalse);
+      expect(settings.bacnet!.port, 47808);
+      expect(settings.bacnet!.deviceInstance, 3056);
+      expect(settings.bacnet!.map.entries, isNotEmpty);
     });
   });
 }
