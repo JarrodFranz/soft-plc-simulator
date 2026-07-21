@@ -47,24 +47,33 @@ ImportResult mapImportedProject(ImportedProject ir,
   final dutNames = ir.types.map((t) => t.name).toSet();
 
   // Structs (dependency order: a struct referencing another comes after it).
-  // A throwaway project only used to resolve type defaults during mapping.
-  final scratch = PlcProject(id: 'scratch', name: 'scratch', controllerName: 'PLC',
-      programs: [], tasks: [], hmis: [], structDefs: [], tags: []);
-  final structs = _orderTypes(ir.types).map((t) => PlcStructDef(
-        name: t.name,
-        fields: t.fields.map((f) {
-          final appType = normalizeType(f.baseType, knownDutNames: dutNames);
-          return StructFieldDef(
-            name: f.name,
-            dataType: appType,
-            arrayLength: f.arrayLength,
-            defaultValue: coerceInitialValue(scratch, appType, f.arrayLength,
-                f.initialValue == null ? null : '${f.initialValue}', warnings),
-          );
-        }).toList(),
-      )).toList();
+  // Built incrementally: each type's field defaults are resolved against a
+  // throwaway project whose structDefs is every struct built so far. Because
+  // _orderTypes emits a DUT after its dependencies, a field typed as an
+  // already-built DUT (struct-in-struct, or array-of-DUT) resolves to its
+  // real nested Map/List default instead of silently falling back to a
+  // scalar 0 that would short-circuit defaultValueFor's recursion.
+  final structs = <PlcStructDef>[];
+  for (final t in _orderTypes(ir.types)) {
+    final scratch = PlcProject(id: 'scratch', name: 'scratch', controllerName: 'PLC',
+        programs: [], tasks: [], hmis: [], structDefs: structs, tags: []);
+    structs.add(PlcStructDef(
+      name: t.name,
+      fields: t.fields.map((f) {
+        final appType = normalizeType(f.baseType, knownDutNames: dutNames);
+        return StructFieldDef(
+          name: f.name,
+          dataType: appType,
+          arrayLength: f.arrayLength,
+          defaultValue: coerceInitialValue(scratch, appType, f.arrayLength,
+              f.initialValue == null ? null : '${f.initialValue}', warnings),
+        );
+      }).toList(),
+    ));
+  }
 
-  // Now scratch2 knows the structs, so composite-typed vars resolve.
+  // scratch2 knows every struct (including nested ones), so composite-typed
+  // vars resolve fully.
   final scratch2 = PlcProject(id: 'scratch', name: 'scratch', controllerName: 'PLC',
       programs: [], tasks: [], hmis: [], structDefs: structs, tags: []);
 
@@ -99,7 +108,7 @@ ImportResult mapImportedProject(ImportedProject ir,
       dataType: appType,
       arrayLength: v.arrayLength,
       value: def,
-      defaultValue: (v.arrayLength == 0 && !isComposite) ? def : null,
+      defaultValue: (v.arrayLength <= 0 && !isComposite) ? def : null,
       ioType: switch (v.scope) {
         VarScope.input => 'SimulatedInput',
         VarScope.output => 'SimulatedOutput',

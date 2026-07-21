@@ -48,7 +48,85 @@ ImportedProject _buildIr() {
   );
 }
 
+/// Builds an IR proving nested-DUT default resolution: `Outer` (declared
+/// BEFORE its dependency `Inner` in `ir.types`, forcing `_orderTypes` to
+/// reorder) has a struct-typed field `Sub: Inner` and `ArrOuter` has an
+/// array-of-DUT field `Items: Inner[2]`. A global var typed `Outer` exercises
+/// the var->tag path too.
+ImportedProject _buildNestedIr() {
+  final inner = ImportedType(name: 'Inner', fields: [
+    ImportedField(name: 'Flag', baseType: 'BOOL'),
+    ImportedField(name: 'Speed', baseType: 'INT', initialValue: '1500'),
+  ]);
+  final outer = ImportedType(name: 'Outer', fields: [
+    ImportedField(name: 'Sub', baseType: 'Inner'),
+    ImportedField(name: 'Count', baseType: 'INT'),
+  ]);
+  final arrOuter = ImportedType(name: 'ArrOuter', fields: [
+    ImportedField(name: 'Items', baseType: 'Inner', arrayLength: 2),
+  ]);
+  final outerVar =
+      ImportedVar(name: 'OuterVar', baseType: 'Outer', scope: VarScope.global);
+
+  return ImportedProject(
+    name: 'Imported',
+    types: [outer, inner, arrOuter], // Outer BEFORE Inner: forces reordering.
+    globalVars: [outerVar],
+    pous: const [],
+    warnings: const [],
+  );
+}
+
 void main() {
+  group('mapImportedProject: nested DUT defaults (incremental struct build)', () {
+    test('struct-in-struct field defaults to a nested Map, not scalar 0', () {
+      final result = mapImportedProject(_buildNestedIr(), projectName: 'P', projectId: 'p1');
+      final outer = result.project.structDefs.singleWhere((s) => s.name == 'Outer');
+      final sub = outer.fields.singleWhere((f) => f.name == 'Sub');
+      expect(sub.dataType, 'Inner');
+      expect(sub.defaultValue, {'Flag': false, 'Speed': 1500});
+    });
+
+    test('array-of-DUT field defaults to a List of proper nested Maps', () {
+      final result = mapImportedProject(_buildNestedIr(), projectName: 'P', projectId: 'p1');
+      final arrOuter = result.project.structDefs.singleWhere((s) => s.name == 'ArrOuter');
+      final items = arrOuter.fields.singleWhere((f) => f.name == 'Items');
+      expect(items.defaultValue, isA<List>());
+      final list = items.defaultValue as List;
+      expect(list.length, 2);
+      for (final el in list) {
+        expect(el, {'Flag': false, 'Speed': 1500});
+      }
+    });
+
+    test('a global var typed as a nested-containing struct gets the correct nested value', () {
+      final result = mapImportedProject(_buildNestedIr(), projectName: 'P', projectId: 'p1');
+      final tag = result.project.tags.singleWhere((t) => t.name == 'OuterVar');
+      expect(tag.value, isA<Map>());
+      final value = tag.value as Map;
+      expect(value['Sub'], isA<Map>());
+      expect((value['Sub'] as Map)['Speed'], 1500);
+      expect((value['Sub'] as Map)['Flag'], false);
+      expect(value['Count'], 0);
+    });
+  });
+
+  group('mapImportedProject: negative arrayLength scalar guard', () {
+    test('a malformed negative arrayLength on a scalar var still gets a defaultValue', () {
+      final v = ImportedVar(
+          name: 'Weird', baseType: 'BOOL', arrayLength: -1,
+          initialValue: 'TRUE', scope: VarScope.global);
+      final ir = ImportedProject(
+        name: 'Imported', types: const [], globalVars: [v], pous: const [],
+        warnings: const [],
+      );
+      final result = mapImportedProject(ir, projectName: 'P', projectId: 'p1');
+      final tag = result.project.tags.singleWhere((t) => t.name == 'Weird');
+      expect(tag.value, true);
+      expect(tag.defaultValue, true);
+    });
+  });
+
   group('mapImportedProject', () {
     late ImportedProject ir;
     setUp(() {
