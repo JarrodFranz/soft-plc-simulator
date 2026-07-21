@@ -245,6 +245,88 @@ void main() {
       final result = image.readProperty(kBacnetObjectDevice, _kDeviceInstance, 9999, null);
       expect(result.error, (kBacnetErrorClassProperty, kBacnetErrorCodeUnknownProperty));
     });
+
+    // The five Device metadata properties added so Ignition's driver shows
+    // good quality on the Device folder (they read as unknown-property before,
+    // marking each row Bad). Literal-byte assertions, not round-trips.
+    test('APDU_Timeout reads app-Unsigned 3000', () {
+      final image = _buildImage();
+      final result = image.readProperty(kBacnetObjectDevice, _kDeviceInstance, kBacnetPropApduTimeout, null);
+      expect(result.error, isNull);
+      expect(result.valueTags, encodeAppUnsigned(3000));
+    });
+
+    test('Number_Of_APDU_Retries reads app-Unsigned 3', () {
+      final image = _buildImage();
+      final result = image.readProperty(kBacnetObjectDevice, _kDeviceInstance, kBacnetPropNumberOfApduRetries, null);
+      expect(result.error, isNull);
+      expect(result.valueTags, encodeAppUnsigned(3));
+    });
+
+    test('Database_Revision reads app-Unsigned 1', () {
+      final image = _buildImage();
+      final result = image.readProperty(kBacnetObjectDevice, _kDeviceInstance, kBacnetPropDatabaseRevision, null);
+      expect(result.error, isNull);
+      expect(result.valueTags, encodeAppUnsigned(1));
+    });
+
+    test('Serial_Number reads the fixed app-CharacterString', () {
+      final image = _buildImage();
+      final result = image.readProperty(kBacnetObjectDevice, _kDeviceInstance, kBacnetPropSerialNumber, null);
+      expect(result.error, isNull);
+      expect(result.valueTags, encodeAppCharString(kBacnetSerialNumber));
+    });
+
+    test('Property_List whole array is every kBacnetDevicePropertyList id as app-Enumerated', () {
+      final image = _buildImage();
+      final result = image.readProperty(kBacnetObjectDevice, _kDeviceInstance, kBacnetPropPropertyList, null);
+      expect(result.error, isNull);
+      final expected = <int>[
+        for (final id in kBacnetDevicePropertyList) ...encodeAppEnumerated(id),
+      ];
+      expect(result.valueTags, Uint8List.fromList(expected));
+    });
+
+    test('Property_List index 0 is the element COUNT (app-Unsigned)', () {
+      final image = _buildImage();
+      final result = image.readProperty(kBacnetObjectDevice, _kDeviceInstance, kBacnetPropPropertyList, 0);
+      expect(result.valueTags, encodeAppUnsigned(kBacnetDevicePropertyList.length));
+    });
+
+    test('Property_List index N (1-based) is the Nth property id', () {
+      final image = _buildImage();
+      final first = image.readProperty(kBacnetObjectDevice, _kDeviceInstance, kBacnetPropPropertyList, 1);
+      expect(first.valueTags, encodeAppEnumerated(kBacnetDevicePropertyList[0]));
+      final last = image.readProperty(
+          kBacnetObjectDevice, _kDeviceInstance, kBacnetPropPropertyList, kBacnetDevicePropertyList.length);
+      expect(last.valueTags, encodeAppEnumerated(kBacnetDevicePropertyList.last));
+    });
+
+    test('Property_List index out of range is invalid-array-index (2,42)', () {
+      final image = _buildImage();
+      final tooLow = image.readProperty(kBacnetObjectDevice, _kDeviceInstance, kBacnetPropPropertyList, -1);
+      expect(tooLow.error, (kBacnetErrorClassProperty, kBacnetErrorCodeInvalidArrayIndex));
+      final tooHigh = image.readProperty(kBacnetObjectDevice, _kDeviceInstance, kBacnetPropPropertyList,
+          kBacnetDevicePropertyList.length + 1);
+      expect(tooHigh.error, (kBacnetErrorClassProperty, kBacnetErrorCodeInvalidArrayIndex));
+    });
+
+    // Property_List must, per the BACnet standard, contain exactly the served
+    // properties MINUS Object_Identifier, Object_Name, Object_Type, and
+    // Property_List itself. This guards the hand-maintained
+    // kBacnetDevicePropertyList against drift from kBacnetDeviceServedProperties.
+    test('kBacnetDevicePropertyList == served properties minus the four standard exclusions', () {
+      final excluded = {
+        kBacnetPropObjectIdentifier,
+        kBacnetPropObjectName,
+        kBacnetPropObjectType,
+        kBacnetPropPropertyList,
+      };
+      final expected = kBacnetDeviceServedProperties.toSet().difference(excluded);
+      expect(kBacnetDevicePropertyList.toSet(), expected);
+      // Guard against accidental duplicates in the hand-maintained list.
+      expect(kBacnetDevicePropertyList.length, kBacnetDevicePropertyList.toSet().length);
+    });
   });
 
   group('BacnetTagImage.readProperty — Analog Value', () {
@@ -639,12 +721,12 @@ void main() {
   // list is caught here, not discovered by an RPM ALL/REQUIRED client in the
   // field getting a truncated (or falsely-errored) property set.
   group('kBacnet*ServedProperties are the EXACT set the image serves (reverse sync)', () {
-    // 0..140 comfortably covers every BACnet standard property id this device
-    // could plausibly serve or collide with (the highest id referenced
-    // anywhere in this file, kBacnetPropRelinquishDefault, is in the 100s);
-    // scanning past the declared lists' own ids proves there is nothing ELSE
-    // being served that the list fails to name.
-    const probeRange = 140;
+    // 0..400 covers every BACnet standard property id this device serves or
+    // could collide with, INCLUDING the high-numbered Device properties
+    // Serial_Number (372) and Property_List (371); scanning past the declared
+    // lists' own ids proves there is nothing ELSE being served that the list
+    // fails to name.
+    const probeRange = 400;
 
     void checkExactMatch(int objectType, int instance, List<int> served) {
       final image = _buildImage();

@@ -227,6 +227,67 @@ async def run(host: str, port: int) -> None:
         )
         print(f"[probe] step 3 OK: device {FIXTURE_DEVICE_INSTANCE} objectName = {name!r}")
 
+        # --- Step 3b: the five Device metadata properties -----------------
+        # These read as unknown-property in v1 (Ignition showed them Bad); the
+        # v1.1 Device object now serves them. Read each through the client's
+        # own parser and assert the exact values the Dart host encodes.
+        apdu_timeout = await timed(
+            app.read_property(target, f"device,{FIXTURE_DEVICE_INSTANCE}", "apduTimeout"),
+            "STEP 3b (read apduTimeout)",
+        )
+        check(
+            int(apdu_timeout) == 3000,
+            f"STEP 3b (apduTimeout): read {apdu_timeout!r}, expected 3000.",
+        )
+        retries = await timed(
+            app.read_property(target, f"device,{FIXTURE_DEVICE_INSTANCE}", "numberOfApduRetries"),
+            "STEP 3b (read numberOfApduRetries)",
+        )
+        check(
+            int(retries) == 3,
+            f"STEP 3b (numberOfApduRetries): read {retries!r}, expected 3.",
+        )
+        db_rev = await timed(
+            app.read_property(target, f"device,{FIXTURE_DEVICE_INSTANCE}", "databaseRevision"),
+            "STEP 3b (read databaseRevision)",
+        )
+        check(
+            int(db_rev) == 1,
+            f"STEP 3b (databaseRevision): read {db_rev!r}, expected 1.",
+        )
+        serial = await timed(
+            app.read_property(target, f"device,{FIXTURE_DEVICE_INSTANCE}", "serialNumber"),
+            "STEP 3b (read serialNumber)",
+        )
+        check(
+            str(serial) == "SoftPLC-0000000001",
+            f"STEP 3b (serialNumber): read {serial!r}, expected 'SoftPLC-0000000001'.",
+        )
+        prop_list = await timed(
+            app.read_property(target, f"device,{FIXTURE_DEVICE_INSTANCE}", "propertyList"),
+            "STEP 3b (read propertyList)",
+        )
+        # Property_List must NOT contain Object_Identifier / Object_Name /
+        # Object_Type / Property_List itself (the standard exclusions) — 17
+        # entries for this Device object.
+        check(
+            len(prop_list) == 17,
+            f"STEP 3b (propertyList): expected 17 property ids (served minus the "
+            f"4 standard exclusions), got {len(prop_list)}: {prop_list!r}.",
+        )
+        prop_names = {str(p) for p in prop_list}
+        for excluded in ("objectIdentifier", "objectName", "objectType", "propertyList"):
+            check(
+                excluded not in prop_names,
+                f"STEP 3b (propertyList): {excluded!r} must be EXCLUDED from "
+                f"Property_List per the BACnet standard, but it is present: {prop_list!r}.",
+            )
+        print(
+            f"[probe] step 3b OK: Device metadata -- apduTimeout={int(apdu_timeout)}, "
+            f"numberOfApduRetries={int(retries)}, databaseRevision={int(db_rev)}, "
+            f"serialNumber={str(serial)!r}, propertyList has {len(prop_list)} ids"
+        )
+
         # --- Step 4: Object_List -- whole, index 0 (count), index 1 -------
         object_list = await timed(
             app.read_property(target, f"device,{FIXTURE_DEVICE_INSTANCE}", "objectList"),

@@ -76,9 +76,11 @@ const int kBacnetServiceWhoIs = 8;
 
 // --- Property identifiers ------------------------------------------------------
 
+const int kBacnetPropApduTimeout = 11;
 const int kBacnetPropApplicationSoftwareVersion = 12;
 const int kBacnetPropEventState = 36;
 const int kBacnetPropFirmwareRevision = 44;
+const int kBacnetPropNumberOfApduRetries = 73;
 
 /// Max_APDU_Length_Accepted — a DEVICE property (NOT
 /// [kBacnetIAmMaxApduLength], the actual value it carries).
@@ -102,6 +104,9 @@ const int kBacnetPropUnits = 117;
 const int kBacnetPropVendorIdentifier = 120;
 const int kBacnetPropVendorName = 121;
 const int kBacnetPropProtocolRevision = 139;
+const int kBacnetPropDatabaseRevision = 155;
+const int kBacnetPropPropertyList = 371;
+const int kBacnetPropSerialNumber = 372;
 
 /// ReadPropertyMultiple special "property identifier" meaning "all
 /// properties of the object".
