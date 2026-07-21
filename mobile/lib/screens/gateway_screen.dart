@@ -241,21 +241,24 @@ class _GatewayScreenState extends State<GatewayScreen> {
           selection: TextSelection.collapsed(offset: newPort.length),
         );
       }
-      final newModbusPort = widget.currentProject.protocols!.modbus!.port.toString();
+      final newModbusPort =
+          widget.currentProject.protocols!.modbus!.port.toString();
       if (_modbusPortController.text != newModbusPort) {
         _modbusPortController.value = TextEditingValue(
           text: newModbusPort,
           selection: TextSelection.collapsed(offset: newModbusPort.length),
         );
       }
-      final newModbusUnitId = widget.currentProject.protocols!.modbus!.unitId.toString();
+      final newModbusUnitId =
+          widget.currentProject.protocols!.modbus!.unitId.toString();
       if (_modbusUnitIdController.text != newModbusUnitId) {
         _modbusUnitIdController.value = TextEditingValue(
           text: newModbusUnitId,
           selection: TextSelection.collapsed(offset: newModbusUnitId.length),
         );
       }
-      final newMqttPort = widget.currentProject.protocols!.mqtt!.port.toString();
+      final newMqttPort =
+          widget.currentProject.protocols!.mqtt!.port.toString();
       if (_mqttPortController.text != newMqttPort) {
         _mqttPortController.value = TextEditingValue(
           text: newMqttPort,
@@ -269,21 +272,26 @@ class _GatewayScreenState extends State<GatewayScreen> {
           selection: TextSelection.collapsed(offset: newDnpPort.length),
         );
       }
-      final newDnpOutstationAddress = widget.currentProject.protocols!.dnp3!.outstationAddress.toString();
+      final newDnpOutstationAddress =
+          widget.currentProject.protocols!.dnp3!.outstationAddress.toString();
       if (_dnpOutstationAddressController.text != newDnpOutstationAddress) {
         _dnpOutstationAddressController.value = TextEditingValue(
           text: newDnpOutstationAddress,
-          selection: TextSelection.collapsed(offset: newDnpOutstationAddress.length),
+          selection:
+              TextSelection.collapsed(offset: newDnpOutstationAddress.length),
         );
       }
-      final newDnpMasterAddress = widget.currentProject.protocols!.dnp3!.masterAddress.toString();
+      final newDnpMasterAddress =
+          widget.currentProject.protocols!.dnp3!.masterAddress.toString();
       if (_dnpMasterAddressController.text != newDnpMasterAddress) {
         _dnpMasterAddressController.value = TextEditingValue(
           text: newDnpMasterAddress,
-          selection: TextSelection.collapsed(offset: newDnpMasterAddress.length),
+          selection:
+              TextSelection.collapsed(offset: newDnpMasterAddress.length),
         );
       }
-      final newEnipPort = widget.currentProject.protocols!.ethernetIp!.port.toString();
+      final newEnipPort =
+          widget.currentProject.protocols!.ethernetIp!.port.toString();
       if (_enipPortController.text != newEnipPort) {
         _enipPortController.value = TextEditingValue(
           text: newEnipPort,
@@ -297,32 +305,37 @@ class _GatewayScreenState extends State<GatewayScreen> {
           selection: TextSelection.collapsed(offset: newS7Port.length),
         );
       }
-      final newFinsPort = widget.currentProject.protocols!.fins!.port.toString();
+      final newFinsPort =
+          widget.currentProject.protocols!.fins!.port.toString();
       if (_finsPortController.text != newFinsPort) {
         _finsPortController.value = TextEditingValue(
           text: newFinsPort,
           selection: TextSelection.collapsed(offset: newFinsPort.length),
         );
       }
-      final newSlmpPort = widget.currentProject.protocols!.slmp!.port.toString();
+      final newSlmpPort =
+          widget.currentProject.protocols!.slmp!.port.toString();
       if (_slmpPortController.text != newSlmpPort) {
         _slmpPortController.value = TextEditingValue(
           text: newSlmpPort,
           selection: TextSelection.collapsed(offset: newSlmpPort.length),
         );
       }
-      final newBacnetPort = widget.currentProject.protocols!.bacnet!.port.toString();
+      final newBacnetPort =
+          widget.currentProject.protocols!.bacnet!.port.toString();
       if (_bacnetPortController.text != newBacnetPort) {
         _bacnetPortController.value = TextEditingValue(
           text: newBacnetPort,
           selection: TextSelection.collapsed(offset: newBacnetPort.length),
         );
       }
-      final newBacnetDeviceInstance = widget.currentProject.protocols!.bacnet!.deviceInstance.toString();
+      final newBacnetDeviceInstance =
+          widget.currentProject.protocols!.bacnet!.deviceInstance.toString();
       if (_bacnetDeviceInstanceController.text != newBacnetDeviceInstance) {
         _bacnetDeviceInstanceController.value = TextEditingValue(
           text: newBacnetDeviceInstance,
-          selection: TextSelection.collapsed(offset: newBacnetDeviceInstance.length),
+          selection:
+              TextSelection.collapsed(offset: newBacnetDeviceInstance.length),
         );
       }
       _mqttPassword = '';
@@ -616,7 +629,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
     // them before starting so the values typed into the card are the ones
     // bound/advertised.
     widget.bacnetHost.port = widget.currentProject.protocols!.bacnet!.port;
-    widget.bacnetHost.deviceInstance = widget.currentProject.protocols!.bacnet!.deviceInstance;
+    widget.bacnetHost.deviceInstance =
+        widget.currentProject.protocols!.bacnet!.deviceInstance;
     await widget.bacnetHost.start(() => widget.currentProject);
   }
 
@@ -625,7 +639,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
   }
 
   Future<void> _connectMqtt() async {
-    await widget.mqttHost.connect(() => widget.currentProject, password: _mqttPassword);
+    await widget.mqttHost
+        .connect(() => widget.currentProject, password: _mqttPassword);
   }
 
   Future<void> _disconnectMqtt() async {
@@ -643,7 +658,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
   void _autoGenerateMap() {
     setState(() {
       _ensureProtocols();
-      widget.currentProject.protocols!.opcua!.map = OpcuaMap.autoGenerate(widget.currentProject);
+      widget.currentProject.protocols!.opcua!.map =
+          OpcuaMap.autoGenerate(widget.currentProject);
     });
     widget.onProjectUpdated();
   }
@@ -651,7 +667,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
   void _autoGenerateModbusMap() {
     setState(() {
       _ensureModbus();
-      widget.currentProject.protocols!.modbus!.map = ModbusMap.autoGenerate(widget.currentProject);
+      widget.currentProject.protocols!.modbus!.map =
+          ModbusMap.autoGenerate(widget.currentProject);
     });
     widget.onProjectUpdated();
   }
@@ -682,7 +699,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
   void _autoGenerateDnpMap() {
     setState(() {
       _ensureDnp();
-      widget.currentProject.protocols!.dnp3!.map = DnpMap.autoGenerate(widget.currentProject);
+      widget.currentProject.protocols!.dnp3!.map =
+          DnpMap.autoGenerate(widget.currentProject);
     });
     widget.onProjectUpdated();
   }
@@ -711,7 +729,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
   void _autoGenerateMqttMap() {
     setState(() {
       _ensureMqtt();
-      widget.currentProject.protocols!.mqtt!.map = MqttMap.autoGenerate(widget.currentProject);
+      widget.currentProject.protocols!.mqtt!.map =
+          MqttMap.autoGenerate(widget.currentProject);
     });
     widget.onProjectUpdated();
   }
@@ -740,7 +759,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
   void _autoGenerateEnipMap() {
     setState(() {
       _ensureEnip();
-      widget.currentProject.protocols!.ethernetIp!.map = CipMap.autoPopulate(widget.currentProject);
+      widget.currentProject.protocols!.ethernetIp!.map =
+          CipMap.autoPopulate(widget.currentProject);
     });
     widget.onProjectUpdated();
   }
@@ -768,7 +788,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
   void _autoGenerateS7Map() {
     setState(() {
       _ensureS7();
-      widget.currentProject.protocols!.s7!.map = S7Map.autoGenerate(widget.currentProject);
+      widget.currentProject.protocols!.s7!.map =
+          S7Map.autoGenerate(widget.currentProject);
     });
     widget.onProjectUpdated();
   }
@@ -800,7 +821,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
   void _autoGenerateFinsMap() {
     setState(() {
       _ensureFins();
-      widget.currentProject.protocols!.fins!.map = FinsMap.autoGenerate(widget.currentProject);
+      widget.currentProject.protocols!.fins!.map =
+          FinsMap.autoGenerate(widget.currentProject);
     });
     widget.onProjectUpdated();
   }
@@ -830,7 +852,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
   void _autoGenerateSlmpMap() {
     setState(() {
       _ensureSlmp();
-      widget.currentProject.protocols!.slmp!.map = SlmpMap.autoGenerate(widget.currentProject);
+      widget.currentProject.protocols!.slmp!.map =
+          SlmpMap.autoGenerate(widget.currentProject);
     });
     widget.onProjectUpdated();
   }
@@ -861,7 +884,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
   void _autoGenerateBacnetMap() {
     setState(() {
       _ensureBacnet();
-      widget.currentProject.protocols!.bacnet!.map = BacnetMap.autoGenerate(widget.currentProject);
+      widget.currentProject.protocols!.bacnet!.map =
+          BacnetMap.autoGenerate(widget.currentProject);
     });
     widget.onProjectUpdated();
   }
@@ -895,8 +919,10 @@ class _GatewayScreenState extends State<GatewayScreen> {
   /// project stays serialization-clean until the user actually changes
   /// something.
   void _ensureProtocols() {
-    widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
-    widget.currentProject.protocols!.opcua ??= OpcUaProtocolConfig.defaults(widget.currentProject);
+    widget.currentProject.protocols ??=
+        ProtocolSettings.defaults(widget.currentProject);
+    widget.currentProject.protocols!.opcua ??=
+        OpcUaProtocolConfig.defaults(widget.currentProject);
     _ensureModbus();
     _ensureMqtt();
     _ensureDnp();
@@ -912,8 +938,10 @@ class _GatewayScreenState extends State<GatewayScreen> {
   /// `onProjectUpdated` call here, so a project that has merely been LOOKED
   /// at stays serialization-clean.
   void _ensureS7() {
-    widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
-    widget.currentProject.protocols!.s7 ??= S7ProtocolConfig.defaults(widget.currentProject);
+    widget.currentProject.protocols ??=
+        ProtocolSettings.defaults(widget.currentProject);
+    widget.currentProject.protocols!.s7 ??=
+        S7ProtocolConfig.defaults(widget.currentProject);
   }
 
   /// Creates a default `FinsProtocolConfig` in place when the project has none
@@ -921,8 +949,10 @@ class _GatewayScreenState extends State<GatewayScreen> {
   /// call here, so a project that has merely been LOOKED at stays
   /// serialization-clean (additive persistence).
   void _ensureFins() {
-    widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
-    widget.currentProject.protocols!.fins ??= FinsProtocolConfig.defaults(widget.currentProject);
+    widget.currentProject.protocols ??=
+        ProtocolSettings.defaults(widget.currentProject);
+    widget.currentProject.protocols!.fins ??=
+        FinsProtocolConfig.defaults(widget.currentProject);
   }
 
   /// Creates a default `SlmpProtocolConfig` in place when the project has none
@@ -930,8 +960,10 @@ class _GatewayScreenState extends State<GatewayScreen> {
   /// call here, so a project that has merely been LOOKED at stays
   /// serialization-clean (additive persistence).
   void _ensureSlmp() {
-    widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
-    widget.currentProject.protocols!.slmp ??= SlmpProtocolConfig.defaults(widget.currentProject);
+    widget.currentProject.protocols ??=
+        ProtocolSettings.defaults(widget.currentProject);
+    widget.currentProject.protocols!.slmp ??=
+        SlmpProtocolConfig.defaults(widget.currentProject);
   }
 
   /// Creates a default `BacnetProtocolConfig` in place when the project has
@@ -939,40 +971,50 @@ class _GatewayScreenState extends State<GatewayScreen> {
   /// `onProjectUpdated` call here, so a project that has merely been LOOKED
   /// at stays serialization-clean (additive persistence).
   void _ensureBacnet() {
-    widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
-    widget.currentProject.protocols!.bacnet ??= BacnetProtocolConfig.defaults(widget.currentProject);
+    widget.currentProject.protocols ??=
+        ProtocolSettings.defaults(widget.currentProject);
+    widget.currentProject.protocols!.bacnet ??=
+        BacnetProtocolConfig.defaults(widget.currentProject);
   }
 
   /// Creates a default `CipProtocolConfig` in place when the project has
   /// none yet — mirrors `_ensureModbus`: mutate in memory only, no
   /// `onProjectUpdated` call here.
   void _ensureEnip() {
-    widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
-    widget.currentProject.protocols!.ethernetIp ??= CipProtocolConfig.defaults(widget.currentProject);
+    widget.currentProject.protocols ??=
+        ProtocolSettings.defaults(widget.currentProject);
+    widget.currentProject.protocols!.ethernetIp ??=
+        CipProtocolConfig.defaults(widget.currentProject);
   }
 
   /// Creates a default `DnpProtocolConfig` in place when the project has
   /// none yet — mirrors `_ensureModbus`: mutate in memory only, no
   /// `onProjectUpdated` call here.
   void _ensureDnp() {
-    widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
-    widget.currentProject.protocols!.dnp3 ??= DnpProtocolConfig.defaults(widget.currentProject);
+    widget.currentProject.protocols ??=
+        ProtocolSettings.defaults(widget.currentProject);
+    widget.currentProject.protocols!.dnp3 ??=
+        DnpProtocolConfig.defaults(widget.currentProject);
   }
 
   /// Creates a default `ModbusProtocolConfig` in place when the project has
   /// none yet — mirrors `_ensureProtocols`: mutate in memory only, no
   /// `onProjectUpdated` call here.
   void _ensureModbus() {
-    widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
-    widget.currentProject.protocols!.modbus ??= ModbusProtocolConfig.defaults(widget.currentProject);
+    widget.currentProject.protocols ??=
+        ProtocolSettings.defaults(widget.currentProject);
+    widget.currentProject.protocols!.modbus ??=
+        ModbusProtocolConfig.defaults(widget.currentProject);
   }
 
   /// Creates a default `MqttProtocolConfig` in place when the project has
   /// none yet — mirrors `_ensureModbus`: mutate in memory only, no
   /// `onProjectUpdated` call here.
   void _ensureMqtt() {
-    widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
-    widget.currentProject.protocols!.mqtt ??= MqttProtocolConfig.defaults(widget.currentProject);
+    widget.currentProject.protocols ??=
+        ProtocolSettings.defaults(widget.currentProject);
+    widget.currentProject.protocols!.mqtt ??=
+        MqttProtocolConfig.defaults(widget.currentProject);
   }
 
   void _setOpcuaEnabled(bool enabled) {
@@ -1189,7 +1231,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
   /// opcua_session.dart). `'None'` is always enabled and non-removable; the
   /// two Basic256Sha256 modes are user-toggleable additions.
   static const String _kSecuritySign = 'Basic256Sha256/Sign';
-  static const String _kSecuritySignAndEncrypt = 'Basic256Sha256/SignAndEncrypt';
+  static const String _kSecuritySignAndEncrypt =
+      'Basic256Sha256/SignAndEncrypt';
 
   void _toggleOpcuaSecurityMode(String mode, bool enabled) {
     setState(() {
@@ -1227,12 +1270,14 @@ class _GatewayScreenState extends State<GatewayScreen> {
     widget.onProjectUpdated();
   }
 
-  void _setOpcuaCredentialUsername(OpcUaUserCredential credential, String value) {
+  void _setOpcuaCredentialUsername(
+      OpcUaUserCredential credential, String value) {
     credential.username = value;
     widget.onProjectUpdated();
   }
 
-  void _setOpcuaCredentialPassword(OpcUaUserCredential credential, String value) {
+  void _setOpcuaCredentialPassword(
+      OpcUaUserCredential credential, String value) {
     // In-memory only: `OpcUaUserCredential.toJson` intentionally omits the
     // password (see that class's doc comment), so persisting the project
     // after this edit never writes it to disk.
@@ -1402,13 +1447,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
     return opcua.map.nodes.length;
   }
 
-  /// Per-protocol tabs (mobile-first — see the design spec referenced at the
-  /// top of this file): a scrollable `TabBar` (so four short labels always
-  /// fit, even at 320px) plus a `TabBarView` showing the selected protocol's
-  /// existing card. Each card builder is reused UNCHANGED — only its
-  /// placement moved, from one long vertical list to its own tab — so every
-  /// field/toggle/host-wiring/native-only note below is identical to before
-  /// this restructuring.
+  /// Per-protocol tabs: a WRAPPING selector ([_ProtocolTabSelector]) plus a
+  /// `TabBarView` showing the selected protocol's existing card. The selector
+  /// replaced an `isScrollable: true` `TabBar` — a scrollable TabBar has no
+  /// scroll affordance on desktop (mouse-wheel is vertical, there are no
+  /// arrows), so once the protocol count outgrew the strip width the
+  /// off-screen protocols were unreachable. A `Wrap` of chips lays every
+  /// protocol out and flows onto as many rows as the width needs, so all are
+  /// always visible and tappable at any size. Each card builder is reused
+  /// UNCHANGED — only the selector chrome changed.
   static const List<Tab> _protocolTabs = [
     Tab(key: Key('protocol_tab_opcua'), text: 'OPC UA'),
     Tab(key: Key('protocol_tab_modbus'), text: 'Modbus'),
@@ -1433,10 +1480,6 @@ class _GatewayScreenState extends State<GatewayScreen> {
         appBar: AppBar(
           title: const Text('Outbound Protocols'),
           backgroundColor: const Color(0xFF1E293B),
-          bottom: const TabBar(
-            isScrollable: true,
-            tabs: _protocolTabs,
-          ),
         ),
         // No body-wide host listener here (deliberately — see WS-perf task
         // 1): the old `ListenableBuilder(listenable: Listenable.merge([...
@@ -1448,60 +1491,72 @@ class _GatewayScreenState extends State<GatewayScreen> {
         // see `_buildOpcUaCard`/`_buildModbusCard`/`_buildMqttCard`/
         // `_buildDnpCard` — so the map rows are never touched by a host
         // notify.
-        body: TabBarView(
+        //
+        // The wrapping protocol selector sits ABOVE the `TabBarView` (not in
+        // the AppBar's `bottom`, which needs a fixed height a wrapping strip
+        // cannot promise); both drive the one enclosing `DefaultTabController`.
+        body: Column(
           children: [
-            _KeepAliveTabBody(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(12),
-                child: _buildOpcUaCard(context, tagOptions),
-              ),
-            ),
-            _KeepAliveTabBody(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(12),
-                child: _buildModbusCard(context, tagOptions),
-              ),
-            ),
-            _KeepAliveTabBody(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(12),
-                child: _buildMqttCard(context, tagOptions),
-              ),
-            ),
-            _KeepAliveTabBody(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(12),
-                child: _buildDnpCard(context, tagOptions),
-              ),
-            ),
-            _KeepAliveTabBody(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(12),
-                child: _buildEnipCard(context, tagOptions),
-              ),
-            ),
-            _KeepAliveTabBody(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(12),
-                child: _buildS7Card(context, tagOptions),
-              ),
-            ),
-            _KeepAliveTabBody(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(12),
-                child: _buildFinsCard(context, tagOptions),
-              ),
-            ),
-            _KeepAliveTabBody(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(12),
-                child: _buildSlmpCard(context, tagOptions),
-              ),
-            ),
-            _KeepAliveTabBody(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(12),
-                child: _buildBacnetCard(context, tagOptions),
+            const _ProtocolTabSelector(tabs: _protocolTabs),
+            const Divider(height: 1, color: Colors.white12),
+            Expanded(
+              child: TabBarView(
+                children: [
+                  _KeepAliveTabBody(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(12),
+                      child: _buildOpcUaCard(context, tagOptions),
+                    ),
+                  ),
+                  _KeepAliveTabBody(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(12),
+                      child: _buildModbusCard(context, tagOptions),
+                    ),
+                  ),
+                  _KeepAliveTabBody(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(12),
+                      child: _buildMqttCard(context, tagOptions),
+                    ),
+                  ),
+                  _KeepAliveTabBody(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(12),
+                      child: _buildDnpCard(context, tagOptions),
+                    ),
+                  ),
+                  _KeepAliveTabBody(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(12),
+                      child: _buildEnipCard(context, tagOptions),
+                    ),
+                  ),
+                  _KeepAliveTabBody(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(12),
+                      child: _buildS7Card(context, tagOptions),
+                    ),
+                  ),
+                  _KeepAliveTabBody(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(12),
+                      child: _buildFinsCard(context, tagOptions),
+                    ),
+                  ),
+                  _KeepAliveTabBody(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(12),
+                      child: _buildSlmpCard(context, tagOptions),
+                    ),
+                  ),
+                  _KeepAliveTabBody(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(12),
+                      child: _buildBacnetCard(context, tagOptions),
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -1530,7 +1585,10 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 const Expanded(
                   child: Text(
                     'OPC UA',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14),
                   ),
                 ),
                 Switch(
@@ -1577,30 +1635,36 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               Container(
                                 width: 10,
                                 height: 10,
-                                decoration:
-                                    BoxDecoration(color: _statusColor(status), shape: BoxShape.circle),
+                                decoration: BoxDecoration(
+                                    color: _statusColor(status),
+                                    shape: BoxShape.circle),
                               ),
                               const SizedBox(width: 8),
                               Text(
                                 _statusLabel(status),
                                 style: const TextStyle(
-                                    color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13),
                               ),
                             ],
                           ),
                           Text(
                             'Exposed tags: $_displayedExposedCount',
-                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            style: const TextStyle(
+                                color: Colors.grey, fontSize: 12),
                           ),
                           if (widget.host.clientCount > 0)
                             Text(
                               'Clients: ${widget.host.clientCount}',
-                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                              style: const TextStyle(
+                                  color: Colors.grey, fontSize: 12),
                             ),
                           if (running)
                             Text(
                               'Subscriptions: ${widget.host.subscriptionCount} · Monitored items: ${widget.host.monitoredItemCount}',
-                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                              style: const TextStyle(
+                                  color: Colors.grey, fontSize: 12),
                             ),
                         ],
                       ),
@@ -1609,7 +1673,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         controller: _portController,
                         enabled: !running,
                         keyboardType: TextInputType.number,
-                        style: const TextStyle(fontSize: 12, color: Colors.white),
+                        style:
+                            const TextStyle(fontSize: 12, color: Colors.white),
                         decoration: const InputDecoration(
                           isDense: true,
                           labelText: 'Port',
@@ -1628,11 +1693,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: ElevatedButton(
-                              onPressed: (running || !widget.hostingSupported) ? null : _startHosting,
+                              onPressed: (running || !widget.hostingSupported)
+                                  ? null
+                                  : _startHosting,
                               child: const Text('Start hosting'),
                             ),
                           ),
-                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                              width: isCompact ? 0 : 12,
+                              height: isCompact ? 8 : 0),
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: OutlinedButton(
@@ -1649,21 +1718,24 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           'which web browsers do not allow. Run the desktop '
                           '(Windows/macOS/Linux) or mobile (Android/iOS) app to host — '
                           'you can still design the tag map here.',
-                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.amber.shade200),
                         ),
                       ],
                       if (running && widget.host.endpointUrl != null) ...[
                         const SizedBox(height: 8),
                         SelectableText(
                           widget.host.endpointUrl!,
-                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                          style: const TextStyle(
+                              color: Colors.cyanAccent, fontSize: 12),
                         ),
                       ],
                       if (widget.host.lastError != null) ...[
                         const SizedBox(height: 8),
                         Text(
                           'Last error: ${widget.host.lastError}',
-                          style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                          style: const TextStyle(
+                              color: Colors.redAccent, fontSize: 11),
                         ),
                       ],
                     ],
@@ -1715,7 +1787,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
         children: [
           const Text(
             'Security policy',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+            style: TextStyle(
+                color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
           ),
           const SizedBox(height: 4),
           _opcuaSwitchRow(
@@ -1735,13 +1808,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
             switchKey: const Key('opcua_security_sign_encrypt_switch'),
             title: 'Basic256Sha256 — Sign & Encrypt',
             value: opcua.securityModes.contains(_kSecuritySignAndEncrypt),
-            onChanged: (v) => _toggleOpcuaSecurityMode(_kSecuritySignAndEncrypt, v),
+            onChanged: (v) =>
+                _toggleOpcuaSecurityMode(_kSecuritySignAndEncrypt, v),
           ),
           const SizedBox(height: 4),
           _opcuaSwitchRow(
             switchKey: const Key('opcua_allow_anonymous_switch'),
             title: 'Allow anonymous',
-            subtitle: 'When off, clients must authenticate with a username/password below',
+            subtitle:
+                'When off, clients must authenticate with a username/password below',
             value: opcua.allowAnonymous,
             onChanged: _setOpcuaAllowAnonymous,
           ),
@@ -1771,7 +1846,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: const TextStyle(color: Colors.white, fontSize: 12)),
+                Text(title,
+                    style: const TextStyle(color: Colors.white, fontSize: 12)),
                 if (subtitle != null)
                   Text(
                     subtitle,
@@ -1807,12 +1883,16 @@ class _GatewayScreenState extends State<GatewayScreen> {
             children: [
               const Text(
                 'Credentials',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13),
               ),
               TextButton.icon(
                 key: const Key('opcua_add_credential_button'),
                 icon: const Icon(Icons.add, size: 16, color: Colors.cyanAccent),
-                label: const Text('Add credential', style: TextStyle(color: Colors.cyanAccent)),
+                label: const Text('Add credential',
+                    style: TextStyle(color: Colors.cyanAccent)),
                 onPressed: _addOpcuaCredential,
               ),
             ],
@@ -1830,7 +1910,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
               itemCount: opcua.credentials.length,
-              itemBuilder: (context, i) => _opcuaCredentialRow(opcua.credentials[i], i),
+              itemBuilder: (context, i) =>
+                  _opcuaCredentialRow(opcua.credentials[i], i),
             ),
         ],
       ),
@@ -1847,7 +1928,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
             key: Key('opcua_credential_username_$index'),
             initialValue: credential.username,
             style: const TextStyle(fontSize: 12, color: Colors.white),
-            decoration: const InputDecoration(isDense: true, labelText: 'Username'),
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Username'),
             onChanged: (v) => _setOpcuaCredentialUsername(credential, v),
           );
           final passwordField = TextFormField(
@@ -1855,12 +1937,14 @@ class _GatewayScreenState extends State<GatewayScreen> {
             initialValue: credential.password,
             obscureText: true,
             style: const TextStyle(fontSize: 12, color: Colors.white),
-            decoration: const InputDecoration(isDense: true, labelText: 'Password'),
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Password'),
             onChanged: (v) => _setOpcuaCredentialPassword(credential, v),
           );
           final deleteButton = IconButton(
             key: Key('opcua_credential_delete_$index'),
-            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+            icon: const Icon(Icons.delete_outline,
+                size: 18, color: Colors.redAccent),
             tooltip: 'Delete credential',
             onPressed: () => _deleteOpcuaCredential(credential),
           );
@@ -1906,12 +1990,14 @@ class _GatewayScreenState extends State<GatewayScreen> {
         children: [
           const Text(
             'Application certificate',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+            style: TextStyle(
+                color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
           ),
           const SizedBox(height: 8),
           SelectableText(
             key: const Key('opcua_cert_thumbprint_text'),
-            thumbprint ?? 'Not yet generated — start hosting to generate the app certificate.',
+            thumbprint ??
+                'Not yet generated — start hosting to generate the app certificate.',
             style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
           ),
           const SizedBox(height: 8),
@@ -1926,8 +2012,11 @@ class _GatewayScreenState extends State<GatewayScreen> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.autorenew, size: 16),
-              label: Text(_regeneratingOpcuaCert ? 'Regenerating…' : 'Regenerate certificate'),
-              onPressed: _regeneratingOpcuaCert ? null : _regenerateOpcuaCertificate,
+              label: Text(_regeneratingOpcuaCert
+                  ? 'Regenerating…'
+                  : 'Regenerate certificate'),
+              onPressed:
+                  _regeneratingOpcuaCert ? null : _regenerateOpcuaCertificate,
             ),
           ),
         ],
@@ -1953,7 +2042,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
     Widget Function(T) rowBuilder, {
     Key? listKey,
   }) {
-    final grouped = groupEntriesByFolder<T>(entries, tagOf, widget.currentProject);
+    final grouped =
+        groupEntriesByFolder<T>(entries, tagOf, widget.currentProject);
     final items = <_MapListItem<T>>[];
     grouped.forEach((folder, bucket) {
       if (folder.isNotEmpty) {
@@ -1992,18 +2082,23 @@ class _GatewayScreenState extends State<GatewayScreen> {
           Expanded(
             child: Text(
               folder,
-              style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                  color: Colors.grey,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold),
               overflow: TextOverflow.ellipsis,
             ),
           ),
           const SizedBox(width: 4),
-          Text('($count)', style: const TextStyle(color: Colors.grey, fontSize: 11)),
+          Text('($count)',
+              style: const TextStyle(color: Colors.grey, fontSize: 11)),
         ],
       ),
     );
   }
 
-  Widget _mapEditorCard(BuildContext context, OpcuaMap map, List<String> tagOptions) {
+  Widget _mapEditorCard(
+      BuildContext context, OpcuaMap map, List<String> tagOptions) {
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF0F172A),
@@ -2018,12 +2113,17 @@ class _GatewayScreenState extends State<GatewayScreen> {
               const Expanded(
                 child: Text(
                   'OPC UA Node Map',
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13),
                 ),
               ),
               TextButton.icon(
-                icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
-                label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
+                icon: const Icon(Icons.autorenew,
+                    size: 16, color: Colors.cyanAccent),
+                label: const Text('Regenerate',
+                    style: TextStyle(color: Colors.cyanAccent)),
                 onPressed: _autoGenerateMap,
               ),
             ],
@@ -2075,7 +2175,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
           );
           final accessDropdown = DropdownButtonFormField<String>(
             initialValue: node.access,
-            decoration: const InputDecoration(isDense: true, labelText: 'Access'),
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Access'),
             style: const TextStyle(fontSize: 12, color: Colors.white),
             dropdownColor: const Color(0xFF1E293B),
             items: const [
@@ -2135,7 +2236,10 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 const Expanded(
                   child: Text(
                     'Modbus TCP',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14),
                   ),
                 ),
                 Switch(
@@ -2182,24 +2286,29 @@ class _GatewayScreenState extends State<GatewayScreen> {
                                 width: 10,
                                 height: 10,
                                 decoration: BoxDecoration(
-                                    color: _modbusStatusColor(status), shape: BoxShape.circle),
+                                    color: _modbusStatusColor(status),
+                                    shape: BoxShape.circle),
                               ),
                               const SizedBox(width: 8),
                               Text(
                                 _modbusStatusLabel(status),
                                 style: const TextStyle(
-                                    color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13),
                               ),
                             ],
                           ),
                           Text(
                             'Mapped tags: ${modbus.map.entries.length}',
-                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            style: const TextStyle(
+                                color: Colors.grey, fontSize: 12),
                           ),
                           if (widget.modbusHost.clientCount > 0)
                             Text(
                               'Clients: ${widget.modbusHost.clientCount}',
-                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                              style: const TextStyle(
+                                  color: Colors.grey, fontSize: 12),
                             ),
                         ],
                       ),
@@ -2214,7 +2323,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               controller: _modbusPortController,
                               enabled: !running,
                               keyboardType: TextInputType.number,
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.white),
                               decoration: const InputDecoration(
                                 isDense: true,
                                 labelText: 'Port',
@@ -2226,7 +2336,9 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               onChanged: _setModbusPort,
                             ),
                           ),
-                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                              width: isCompact ? 0 : 12,
+                              height: isCompact ? 8 : 0),
                           _mqttFlexField(
                             isCompact: isCompact,
                             child: TextField(
@@ -2234,7 +2346,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               controller: _modbusUnitIdController,
                               enabled: !running,
                               keyboardType: TextInputType.number,
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.white),
                               decoration: const InputDecoration(
                                 isDense: true,
                                 labelText: 'Unit ID',
@@ -2254,7 +2367,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           const Expanded(
                             child: Text(
                               'Reverse word order (word swap) for INT32/FLOAT64 registers',
-                              style: TextStyle(color: Colors.white70, fontSize: 12),
+                              style: TextStyle(
+                                  color: Colors.white70, fontSize: 12),
                             ),
                           ),
                           Switch(
@@ -2270,7 +2384,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           const Expanded(
                             child: Text(
                               'Reverse byte order (byte swap) within registers',
-                              style: TextStyle(color: Colors.white70, fontSize: 12),
+                              style: TextStyle(
+                                  color: Colors.white70, fontSize: 12),
                             ),
                           ),
                           Switch(
@@ -2289,13 +2404,19 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         // be silently coerced to "Modbus TCP" — an unknown
                         // string (future value, corrupted JSON) falls back to
                         // 'tcp' instead of crashing the dropdown.
-                        initialValue: modbus.framing == 'rtuOverTcp' ? modbus.framing : 'tcp',
-                        decoration: const InputDecoration(isDense: true, labelText: 'Framing'),
-                        style: const TextStyle(fontSize: 12, color: Colors.white),
+                        initialValue: modbus.framing == 'rtuOverTcp'
+                            ? modbus.framing
+                            : 'tcp',
+                        decoration: const InputDecoration(
+                            isDense: true, labelText: 'Framing'),
+                        style:
+                            const TextStyle(fontSize: 12, color: Colors.white),
                         dropdownColor: const Color(0xFF1E293B),
                         items: const [
-                          DropdownMenuItem(value: 'tcp', child: Text('Modbus TCP')),
-                          DropdownMenuItem(value: 'rtuOverTcp', child: Text('RTU over TCP')),
+                          DropdownMenuItem(
+                              value: 'tcp', child: Text('Modbus TCP')),
+                          DropdownMenuItem(
+                              value: 'rtuOverTcp', child: Text('RTU over TCP')),
                         ],
                         onChanged: running
                             ? null
@@ -2321,12 +2442,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: ElevatedButton(
-                              onPressed:
-                                  (running || !widget.hostingSupported) ? null : _startModbusHosting,
+                              onPressed: (running || !widget.hostingSupported)
+                                  ? null
+                                  : _startModbusHosting,
                               child: const Text('Start hosting'),
                             ),
                           ),
-                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                              width: isCompact ? 0 : 12,
+                              height: isCompact ? 8 : 0),
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: OutlinedButton(
@@ -2343,21 +2467,24 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           'socket, which web browsers do not allow. Run the desktop '
                           '(Windows/macOS/Linux) or mobile (Android/iOS) app to host — '
                           'you can still design the register map here.',
-                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.amber.shade200),
                         ),
                       ],
                       if (running && widget.modbusHost.endpointUrl != null) ...[
                         const SizedBox(height: 8),
                         SelectableText(
                           widget.modbusHost.endpointUrl!,
-                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                          style: const TextStyle(
+                              color: Colors.cyanAccent, fontSize: 12),
                         ),
                       ],
                       if (widget.modbusHost.lastError != null) ...[
                         const SizedBox(height: 8),
                         Text(
                           'Last error: ${widget.modbusHost.lastError}',
-                          style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                          style: const TextStyle(
+                              color: Colors.redAccent, fontSize: 11),
                         ),
                       ],
                     ],
@@ -2373,7 +2500,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
   }
 
-  Widget _modbusMapEditorCard(BuildContext context, ModbusMap map, List<String> tagOptions) {
+  Widget _modbusMapEditorCard(
+      BuildContext context, ModbusMap map, List<String> tagOptions) {
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF0F172A),
@@ -2390,19 +2518,26 @@ class _GatewayScreenState extends State<GatewayScreen> {
             children: [
               const Text(
                 'Modbus Register Map',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13),
               ),
               Wrap(
                 spacing: 4,
                 children: [
                   TextButton.icon(
-                    icon: const Icon(Icons.add, size: 16, color: Colors.cyanAccent),
-                    label: const Text('Add entry', style: TextStyle(color: Colors.cyanAccent)),
+                    icon: const Icon(Icons.add,
+                        size: 16, color: Colors.cyanAccent),
+                    label: const Text('Add entry',
+                        style: TextStyle(color: Colors.cyanAccent)),
                     onPressed: () => _addModbusEntry(tagOptions),
                   ),
                   TextButton.icon(
-                    icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
-                    label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
+                    icon: const Icon(Icons.autorenew,
+                        size: 16, color: Colors.cyanAccent),
+                    label: const Text('Regenerate',
+                        style: TextStyle(color: Colors.cyanAccent)),
                     onPressed: _autoGenerateModbusMap,
                   ),
                 ],
@@ -2447,7 +2582,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
           );
           final tableDropdown = DropdownButtonFormField<String>(
             initialValue: entry.table,
-            decoration: const InputDecoration(isDense: true, labelText: 'Table'),
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Table'),
             style: const TextStyle(fontSize: 12, color: Colors.white),
             dropdownColor: const Color(0xFF1E293B),
             items: const [
@@ -2466,7 +2602,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
             initialValue: entry.address.toString(),
             keyboardType: TextInputType.number,
             style: const TextStyle(fontSize: 12, color: Colors.white),
-            decoration: const InputDecoration(isDense: true, labelText: 'Address'),
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Address'),
             onChanged: (v) {
               final parsed = int.tryParse(v.trim());
               if (parsed == null || parsed < 0) return;
@@ -2476,7 +2613,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
           );
           final accessDropdown = DropdownButtonFormField<String>(
             initialValue: entry.access,
-            decoration: const InputDecoration(isDense: true, labelText: 'Access'),
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Access'),
             style: const TextStyle(fontSize: 12, color: Colors.white),
             dropdownColor: const Color(0xFF1E293B),
             items: const [
@@ -2490,7 +2628,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
             },
           );
           final deleteButton = IconButton(
-            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+            icon: const Icon(Icons.delete_outline,
+                size: 18, color: Colors.redAccent),
             tooltip: 'Delete entry',
             onPressed: () => _deleteModbusEntry(entry),
           );
@@ -2548,7 +2687,10 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 const Expanded(
                   child: Text(
                     'DNP3',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14),
                   ),
                 ),
                 Switch(
@@ -2594,25 +2736,30 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               Container(
                                 width: 10,
                                 height: 10,
-                                decoration:
-                                    BoxDecoration(color: _dnpStatusColor(status), shape: BoxShape.circle),
+                                decoration: BoxDecoration(
+                                    color: _dnpStatusColor(status),
+                                    shape: BoxShape.circle),
                               ),
                               const SizedBox(width: 8),
                               Text(
                                 _dnpStatusLabel(status),
                                 style: const TextStyle(
-                                    color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13),
                               ),
                             ],
                           ),
                           Text(
                             'Mapped tags: ${dnp3.map.entries.length}',
-                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            style: const TextStyle(
+                                color: Colors.grey, fontSize: 12),
                           ),
                           if (widget.dnpHost.clientCount > 0)
                             Text(
                               'Clients: ${widget.dnpHost.clientCount}',
-                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                              style: const TextStyle(
+                                  color: Colors.grey, fontSize: 12),
                             ),
                           Text(
                             // Which classes are enabled for unsolicited reporting is
@@ -2620,8 +2767,13 @@ class _GatewayScreenState extends State<GatewayScreen> {
                             // living inside the shared outstation, not project config —
                             // a static "master-controlled" label avoids wiring a live
                             // per-class readout through the host just for display.
-                            running ? 'Unsolicited: master-controlled' : 'Unsolicited: off',
-                            style: TextStyle(color: Colors.cyanAccent.withValues(alpha: 0.85), fontSize: 12),
+                            running
+                                ? 'Unsolicited: master-controlled'
+                                : 'Unsolicited: off',
+                            style: TextStyle(
+                                color:
+                                    Colors.cyanAccent.withValues(alpha: 0.85),
+                                fontSize: 12),
                           ),
                         ],
                       ),
@@ -2636,7 +2788,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               controller: _dnpPortController,
                               enabled: !running,
                               keyboardType: TextInputType.number,
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.white),
                               decoration: const InputDecoration(
                                 isDense: true,
                                 labelText: 'Port',
@@ -2648,14 +2801,17 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               onChanged: _setDnpPort,
                             ),
                           ),
-                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                              width: isCompact ? 0 : 12,
+                              height: isCompact ? 8 : 0),
                           _mqttFlexField(
                             isCompact: isCompact,
                             child: TextField(
                               controller: _dnpOutstationAddressController,
                               enabled: !running,
                               keyboardType: TextInputType.number,
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.white),
                               decoration: const InputDecoration(
                                 isDense: true,
                                 labelText: 'Outstation address',
@@ -2667,14 +2823,17 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               onChanged: _setDnpOutstationAddress,
                             ),
                           ),
-                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                              width: isCompact ? 0 : 12,
+                              height: isCompact ? 8 : 0),
                           _mqttFlexField(
                             isCompact: isCompact,
                             child: TextField(
                               controller: _dnpMasterAddressController,
                               enabled: !running,
                               keyboardType: TextInputType.number,
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.white),
                               decoration: const InputDecoration(
                                 isDense: true,
                                 labelText: 'Master address',
@@ -2696,11 +2855,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: ElevatedButton(
-                              onPressed: (running || !widget.hostingSupported) ? null : _startDnpHosting,
+                              onPressed: (running || !widget.hostingSupported)
+                                  ? null
+                                  : _startDnpHosting,
                               child: const Text('Start hosting'),
                             ),
                           ),
-                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                              width: isCompact ? 0 : 12,
+                              height: isCompact ? 8 : 0),
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: OutlinedButton(
@@ -2717,21 +2880,24 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           'socket, which web browsers do not allow. Run the desktop '
                           '(Windows/macOS/Linux) or mobile (Android/iOS) app to host — '
                           'you can still design the point map here.',
-                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.amber.shade200),
                         ),
                       ],
                       if (running && widget.dnpHost.endpointUrl != null) ...[
                         const SizedBox(height: 8),
                         SelectableText(
                           widget.dnpHost.endpointUrl!,
-                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                          style: const TextStyle(
+                              color: Colors.cyanAccent, fontSize: 12),
                         ),
                       ],
                       if (widget.dnpHost.lastError != null) ...[
                         const SizedBox(height: 8),
                         Text(
                           'Last error: ${widget.dnpHost.lastError}',
-                          style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                          style: const TextStyle(
+                              color: Colors.redAccent, fontSize: 11),
                         ),
                       ],
                     ],
@@ -2747,7 +2913,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
   }
 
-  Widget _dnpMapEditorCard(BuildContext context, DnpMap map, List<String> tagOptions) {
+  Widget _dnpMapEditorCard(
+      BuildContext context, DnpMap map, List<String> tagOptions) {
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF0F172A),
@@ -2764,19 +2931,26 @@ class _GatewayScreenState extends State<GatewayScreen> {
             children: [
               const Text(
                 'DNP3 Point Map',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13),
               ),
               Wrap(
                 spacing: 4,
                 children: [
                   TextButton.icon(
-                    icon: const Icon(Icons.add, size: 16, color: Colors.cyanAccent),
-                    label: const Text('Add entry', style: TextStyle(color: Colors.cyanAccent)),
+                    icon: const Icon(Icons.add,
+                        size: 16, color: Colors.cyanAccent),
+                    label: const Text('Add entry',
+                        style: TextStyle(color: Colors.cyanAccent)),
                     onPressed: () => _addDnpEntry(tagOptions),
                   ),
                   TextButton.icon(
-                    icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
-                    label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
+                    icon: const Icon(Icons.autorenew,
+                        size: 16, color: Colors.cyanAccent),
+                    label: const Text('Regenerate',
+                        style: TextStyle(color: Colors.cyanAccent)),
                     onPressed: _autoGenerateDnpMap,
                   ),
                 ],
@@ -2821,14 +2995,19 @@ class _GatewayScreenState extends State<GatewayScreen> {
           );
           final pointTypeDropdown = DropdownButtonFormField<String>(
             initialValue: entry.pointType,
-            decoration: const InputDecoration(isDense: true, labelText: 'Point type'),
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Point type'),
             style: const TextStyle(fontSize: 12, color: Colors.white),
             dropdownColor: const Color(0xFF1E293B),
             items: const [
-              DropdownMenuItem(value: 'binaryInput', child: Text('binaryInput')),
-              DropdownMenuItem(value: 'binaryOutput', child: Text('binaryOutput')),
-              DropdownMenuItem(value: 'analogInput', child: Text('analogInput')),
-              DropdownMenuItem(value: 'analogOutput', child: Text('analogOutput')),
+              DropdownMenuItem(
+                  value: 'binaryInput', child: Text('binaryInput')),
+              DropdownMenuItem(
+                  value: 'binaryOutput', child: Text('binaryOutput')),
+              DropdownMenuItem(
+                  value: 'analogInput', child: Text('analogInput')),
+              DropdownMenuItem(
+                  value: 'analogOutput', child: Text('analogOutput')),
             ],
             onChanged: (v) {
               if (v == null) return;
@@ -2840,7 +3019,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
             initialValue: entry.index.toString(),
             keyboardType: TextInputType.number,
             style: const TextStyle(fontSize: 12, color: Colors.white),
-            decoration: const InputDecoration(isDense: true, labelText: 'Index'),
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Index'),
             onChanged: (v) {
               final parsed = int.tryParse(v.trim());
               if (parsed == null || parsed < 0) return;
@@ -2861,7 +3041,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
               ? DropdownButtonFormField<int>(
                   key: const Key('dnp_event_class_dropdown'),
                   initialValue: entry.eventClass,
-                  decoration: const InputDecoration(isDense: true, labelText: 'Event class'),
+                  decoration: const InputDecoration(
+                      isDense: true, labelText: 'Event class'),
                   style: const TextStyle(fontSize: 12, color: Colors.white),
                   dropdownColor: const Color(0xFF1E293B),
                   items: const [
@@ -2876,9 +3057,12 @@ class _GatewayScreenState extends State<GatewayScreen> {
                     widget.onProjectUpdated();
                   },
                 )
-              : const Center(child: Text('—', style: TextStyle(color: Colors.grey, fontSize: 12)));
+              : const Center(
+                  child: Text('—',
+                      style: TextStyle(color: Colors.grey, fontSize: 12)));
           final deleteButton = IconButton(
-            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+            icon: const Icon(Icons.delete_outline,
+                size: 18, color: Colors.redAccent),
             tooltip: 'Delete entry',
             onPressed: () => _deleteDnpEntry(entry),
           );
@@ -2947,7 +3131,10 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 const Expanded(
                   child: Text(
                     'EtherNet/IP',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14),
                   ),
                 ),
                 Switch(
@@ -2998,25 +3185,30 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               Container(
                                 width: 10,
                                 height: 10,
-                                decoration:
-                                    BoxDecoration(color: _enipStatusColor(status), shape: BoxShape.circle),
+                                decoration: BoxDecoration(
+                                    color: _enipStatusColor(status),
+                                    shape: BoxShape.circle),
                               ),
                               const SizedBox(width: 8),
                               Text(
                                 _enipStatusLabel(status),
                                 style: const TextStyle(
-                                    color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13),
                               ),
                             ],
                           ),
                           Text(
                             'Mapped tags: ${enip.map.entries.length}',
-                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            style: const TextStyle(
+                                color: Colors.grey, fontSize: 12),
                           ),
                           if (widget.enipHost.clientCount > 0)
                             Text(
                               'Clients: ${widget.enipHost.clientCount}',
-                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                              style: const TextStyle(
+                                  color: Colors.grey, fontSize: 12),
                             ),
                         ],
                       ),
@@ -3025,7 +3217,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         controller: _enipPortController,
                         enabled: !running,
                         keyboardType: TextInputType.number,
-                        style: const TextStyle(fontSize: 12, color: Colors.white),
+                        style:
+                            const TextStyle(fontSize: 12, color: Colors.white),
                         decoration: const InputDecoration(
                           isDense: true,
                           labelText: 'Port',
@@ -3044,12 +3237,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: ElevatedButton(
-                              onPressed:
-                                  (running || !widget.hostingSupported) ? null : _startEnipHosting,
+                              onPressed: (running || !widget.hostingSupported)
+                                  ? null
+                                  : _startEnipHosting,
                               child: const Text('Start hosting'),
                             ),
                           ),
-                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                              width: isCompact ? 0 : 12,
+                              height: isCompact ? 8 : 0),
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: OutlinedButton(
@@ -3066,21 +3262,24 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           'socket, which web browsers do not allow. Run the desktop '
                           '(Windows/macOS/Linux) or mobile (Android/iOS) app to host — '
                           'you can still design the tag map here.',
-                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.amber.shade200),
                         ),
                       ],
                       if (running && widget.enipHost.endpointUrl != null) ...[
                         const SizedBox(height: 8),
                         SelectableText(
                           widget.enipHost.endpointUrl!,
-                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                          style: const TextStyle(
+                              color: Colors.cyanAccent, fontSize: 12),
                         ),
                       ],
                       if (widget.enipHost.lastError != null) ...[
                         const SizedBox(height: 8),
                         Text(
                           'Last error: ${widget.enipHost.lastError}',
-                          style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                          style: const TextStyle(
+                              color: Colors.redAccent, fontSize: 11),
                         ),
                       ],
                     ],
@@ -3122,7 +3321,10 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 const Expanded(
                   child: Text(
                     'S7comm',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14),
                   ),
                 ),
                 Switch(
@@ -3173,25 +3375,30 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               Container(
                                 width: 10,
                                 height: 10,
-                                decoration:
-                                    BoxDecoration(color: _s7StatusColor(status), shape: BoxShape.circle),
+                                decoration: BoxDecoration(
+                                    color: _s7StatusColor(status),
+                                    shape: BoxShape.circle),
                               ),
                               const SizedBox(width: 8),
                               Text(
                                 _s7StatusLabel(status),
                                 style: const TextStyle(
-                                    color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13),
                               ),
                             ],
                           ),
                           Text(
                             'Mapped tags: ${s7.map.entries.length}',
-                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            style: const TextStyle(
+                                color: Colors.grey, fontSize: 12),
                           ),
                           if (widget.s7Host.clientCount > 0)
                             Text(
                               'Clients: ${widget.s7Host.clientCount}',
-                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                              style: const TextStyle(
+                                  color: Colors.grey, fontSize: 12),
                             ),
                         ],
                       ),
@@ -3201,7 +3408,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         controller: _s7PortController,
                         enabled: !running,
                         keyboardType: TextInputType.number,
-                        style: const TextStyle(fontSize: 12, color: Colors.white),
+                        style:
+                            const TextStyle(fontSize: 12, color: Colors.white),
                         decoration: const InputDecoration(
                           isDense: true,
                           labelText: 'Port',
@@ -3225,7 +3433,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           'Any port above 1023 works without elevation; the client must be '
                           'pointed at the same port.',
                           key: const Key('s7_privileged_port_note'),
-                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.amber.shade200),
                         ),
                       ],
                       const SizedBox(height: 12),
@@ -3236,11 +3445,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: ElevatedButton(
-                              onPressed: (running || !widget.hostingSupported) ? null : _startS7Hosting,
+                              onPressed: (running || !widget.hostingSupported)
+                                  ? null
+                                  : _startS7Hosting,
                               child: const Text('Start hosting'),
                             ),
                           ),
-                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                              width: isCompact ? 0 : 12,
+                              height: isCompact ? 8 : 0),
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: OutlinedButton(
@@ -3257,20 +3470,23 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           'which web browsers do not allow. Run the desktop '
                           '(Windows/macOS/Linux) or mobile (Android/iOS) app to host — you '
                           'can still design the area map here.',
-                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.amber.shade200),
                         ),
                       ],
                       if (running && widget.s7Host.endpointUrl != null) ...[
                         const SizedBox(height: 8),
                         SelectableText(
                           widget.s7Host.endpointUrl!,
-                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                          style: const TextStyle(
+                              color: Colors.cyanAccent, fontSize: 12),
                         ),
                       ],
                       // A failed bind must never look like a card that simply
                       // has not turned green yet: it gets its own bordered,
                       // labelled block naming the failure.
-                      if (status == S7HostStatus.error && widget.s7Host.lastError != null) ...[
+                      if (status == S7HostStatus.error &&
+                          widget.s7Host.lastError != null) ...[
                         const SizedBox(height: 8),
                         Container(
                           key: const Key('s7_error_banner'),
@@ -3278,7 +3494,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           padding: const EdgeInsets.all(8),
                           decoration: BoxDecoration(
                             color: Colors.redAccent.withValues(alpha: 0.12),
-                            border: Border.all(color: Colors.redAccent.withValues(alpha: 0.6)),
+                            border: Border.all(
+                                color: Colors.redAccent.withValues(alpha: 0.6)),
                             borderRadius: BorderRadius.circular(4),
                           ),
                           child: Column(
@@ -3287,12 +3504,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               const Text(
                                 'Not hosting — the server did not start.',
                                 style: TextStyle(
-                                    color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 12),
+                                    color: Colors.redAccent,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12),
                               ),
                               const SizedBox(height: 4),
                               SelectableText(
                                 widget.s7Host.lastError!,
-                                style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                                style: const TextStyle(
+                                    color: Colors.redAccent, fontSize: 11),
                               ),
                             ],
                           ),
@@ -3301,7 +3521,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         const SizedBox(height: 8),
                         Text(
                           'Last error: ${widget.s7Host.lastError}',
-                          style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                          style: const TextStyle(
+                              color: Colors.redAccent, fontSize: 11),
                         ),
                       ],
                     ],
@@ -3338,7 +3559,10 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 const Expanded(
                   child: Text(
                     'FINS',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14),
                   ),
                 ),
                 Switch(
@@ -3390,25 +3614,30 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               Container(
                                 width: 10,
                                 height: 10,
-                                decoration:
-                                    BoxDecoration(color: _finsStatusColor(status), shape: BoxShape.circle),
+                                decoration: BoxDecoration(
+                                    color: _finsStatusColor(status),
+                                    shape: BoxShape.circle),
                               ),
                               const SizedBox(width: 8),
                               Text(
                                 _finsStatusLabel(status),
                                 style: const TextStyle(
-                                    color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13),
                               ),
                             ],
                           ),
                           Text(
                             'Mapped tags: ${fins.map.entries.length}',
-                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            style: const TextStyle(
+                                color: Colors.grey, fontSize: 12),
                           ),
                           if (widget.finsHost.recentPeerCount > 0)
                             Text(
                               'Recent sources: ${widget.finsHost.recentPeerCount}',
-                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                              style: const TextStyle(
+                                  color: Colors.grey, fontSize: 12),
                             ),
                         ],
                       ),
@@ -3418,7 +3647,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         controller: _finsPortController,
                         enabled: !running,
                         keyboardType: TextInputType.number,
-                        style: const TextStyle(fontSize: 12, color: Colors.white),
+                        style:
+                            const TextStyle(fontSize: 12, color: Colors.white),
                         decoration: const InputDecoration(
                           isDense: true,
                           labelText: 'Port',
@@ -3439,11 +3669,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: ElevatedButton(
-                              onPressed: (running || !widget.hostingSupported) ? null : _startFinsHosting,
+                              onPressed: (running || !widget.hostingSupported)
+                                  ? null
+                                  : _startFinsHosting,
                               child: const Text('Start hosting'),
                             ),
                           ),
-                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                              width: isCompact ? 0 : 12,
+                              height: isCompact ? 8 : 0),
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: OutlinedButton(
@@ -3461,20 +3695,23 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           'UDP port). Run the desktop (Windows/macOS/Linux) or mobile '
                           '(Android/iOS) app to host — you can still design the area map '
                           'here.',
-                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.amber.shade200),
                         ),
                       ],
                       if (running && widget.finsHost.endpointUrl != null) ...[
                         const SizedBox(height: 8),
                         SelectableText(
                           widget.finsHost.endpointUrl!,
-                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                          style: const TextStyle(
+                              color: Colors.cyanAccent, fontSize: 12),
                         ),
                       ],
                       // A failed bind must never look like a card that simply
                       // has not turned green yet: it gets its own bordered,
                       // labelled block naming the failure.
-                      if (status == FinsHostStatus.error && widget.finsHost.lastError != null) ...[
+                      if (status == FinsHostStatus.error &&
+                          widget.finsHost.lastError != null) ...[
                         const SizedBox(height: 8),
                         Container(
                           key: const Key('fins_error_banner'),
@@ -3482,7 +3719,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           padding: const EdgeInsets.all(8),
                           decoration: BoxDecoration(
                             color: Colors.redAccent.withValues(alpha: 0.12),
-                            border: Border.all(color: Colors.redAccent.withValues(alpha: 0.6)),
+                            border: Border.all(
+                                color: Colors.redAccent.withValues(alpha: 0.6)),
                             borderRadius: BorderRadius.circular(4),
                           ),
                           child: Column(
@@ -3491,12 +3729,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               const Text(
                                 'Not hosting — the server did not start.',
                                 style: TextStyle(
-                                    color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 12),
+                                    color: Colors.redAccent,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12),
                               ),
                               const SizedBox(height: 4),
                               SelectableText(
                                 widget.finsHost.lastError!,
-                                style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                                style: const TextStyle(
+                                    color: Colors.redAccent, fontSize: 11),
                               ),
                             ],
                           ),
@@ -3505,7 +3746,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         const SizedBox(height: 8),
                         Text(
                           'Last error: ${widget.finsHost.lastError}',
-                          style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                          style: const TextStyle(
+                              color: Colors.redAccent, fontSize: 11),
                         ),
                       ],
                     ],
@@ -3537,7 +3779,10 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 const Expanded(
                   child: Text(
                     'SLMP',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14),
                   ),
                 ),
                 Switch(
@@ -3590,25 +3835,30 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               Container(
                                 width: 10,
                                 height: 10,
-                                decoration:
-                                    BoxDecoration(color: _slmpStatusColor(status), shape: BoxShape.circle),
+                                decoration: BoxDecoration(
+                                    color: _slmpStatusColor(status),
+                                    shape: BoxShape.circle),
                               ),
                               const SizedBox(width: 8),
                               Text(
                                 _slmpStatusLabel(status),
                                 style: const TextStyle(
-                                    color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13),
                               ),
                             ],
                           ),
                           Text(
                             'Mapped tags: ${slmp.map.entries.length}',
-                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            style: const TextStyle(
+                                color: Colors.grey, fontSize: 12),
                           ),
                           if (widget.slmpHost.clientCount > 0)
                             Text(
                               'Clients: ${widget.slmpHost.clientCount}',
-                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                              style: const TextStyle(
+                                  color: Colors.grey, fontSize: 12),
                             ),
                         ],
                       ),
@@ -3618,7 +3868,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         controller: _slmpPortController,
                         enabled: !running,
                         keyboardType: TextInputType.number,
-                        style: const TextStyle(fontSize: 12, color: Colors.white),
+                        style:
+                            const TextStyle(fontSize: 12, color: Colors.white),
                         decoration: const InputDecoration(
                           isDense: true,
                           labelText: 'Port',
@@ -3639,11 +3890,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: ElevatedButton(
-                              onPressed: (running || !widget.hostingSupported) ? null : _startSlmpHosting,
+                              onPressed: (running || !widget.hostingSupported)
+                                  ? null
+                                  : _startSlmpHosting,
                               child: const Text('Start hosting'),
                             ),
                           ),
-                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                              width: isCompact ? 0 : 12,
+                              height: isCompact ? 8 : 0),
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: OutlinedButton(
@@ -3661,20 +3916,23 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           'TCP port). Run the desktop (Windows/macOS/Linux) or mobile '
                           '(Android/iOS) app to host — you can still design the device map '
                           'here.',
-                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.amber.shade200),
                         ),
                       ],
                       if (running && widget.slmpHost.endpointUrl != null) ...[
                         const SizedBox(height: 8),
                         SelectableText(
                           widget.slmpHost.endpointUrl!,
-                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                          style: const TextStyle(
+                              color: Colors.cyanAccent, fontSize: 12),
                         ),
                       ],
                       // A failed bind must never look like a card that simply
                       // has not turned green yet: it gets its own bordered,
                       // labelled block naming the failure.
-                      if (status == SlmpHostStatus.error && widget.slmpHost.lastError != null) ...[
+                      if (status == SlmpHostStatus.error &&
+                          widget.slmpHost.lastError != null) ...[
                         const SizedBox(height: 8),
                         Container(
                           key: const Key('slmp_error_banner'),
@@ -3682,7 +3940,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           padding: const EdgeInsets.all(8),
                           decoration: BoxDecoration(
                             color: Colors.redAccent.withValues(alpha: 0.12),
-                            border: Border.all(color: Colors.redAccent.withValues(alpha: 0.6)),
+                            border: Border.all(
+                                color: Colors.redAccent.withValues(alpha: 0.6)),
                             borderRadius: BorderRadius.circular(4),
                           ),
                           child: Column(
@@ -3691,12 +3950,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               const Text(
                                 'Not hosting — the server did not start.',
                                 style: TextStyle(
-                                    color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 12),
+                                    color: Colors.redAccent,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12),
                               ),
                               const SizedBox(height: 4),
                               SelectableText(
                                 widget.slmpHost.lastError!,
-                                style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                                style: const TextStyle(
+                                    color: Colors.redAccent, fontSize: 11),
                               ),
                             ],
                           ),
@@ -3705,7 +3967,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         const SizedBox(height: 8),
                         Text(
                           'Last error: ${widget.slmpHost.lastError}',
-                          style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                          style: const TextStyle(
+                              color: Colors.redAccent, fontSize: 11),
                         ),
                       ],
                     ],
@@ -3721,7 +3984,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
   }
 
-  Widget _slmpMapEditorCard(BuildContext context, SlmpMap map, List<String> tagOptions) {
+  Widget _slmpMapEditorCard(
+      BuildContext context, SlmpMap map, List<String> tagOptions) {
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF0F172A),
@@ -3738,19 +4002,26 @@ class _GatewayScreenState extends State<GatewayScreen> {
             children: [
               const Text(
                 'SLMP Device Map',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13),
               ),
               Wrap(
                 spacing: 4,
                 children: [
                   TextButton.icon(
-                    icon: const Icon(Icons.add, size: 16, color: Colors.cyanAccent),
-                    label: const Text('Add entry', style: TextStyle(color: Colors.cyanAccent)),
+                    icon: const Icon(Icons.add,
+                        size: 16, color: Colors.cyanAccent),
+                    label: const Text('Add entry',
+                        style: TextStyle(color: Colors.cyanAccent)),
                     onPressed: () => _addSlmpEntry(tagOptions),
                   ),
                   TextButton.icon(
-                    icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
-                    label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
+                    icon: const Icon(Icons.autorenew,
+                        size: 16, color: Colors.cyanAccent),
+                    label: const Text('Regenerate',
+                        style: TextStyle(color: Colors.cyanAccent)),
                     onPressed: _autoGenerateSlmpMap,
                   ),
                 ],
@@ -3801,8 +4072,11 @@ class _GatewayScreenState extends State<GatewayScreen> {
             },
           );
           final deviceDropdown = DropdownButtonFormField<String>(
-            initialValue: kSlmpDeviceNames.contains(entry.device) ? entry.device : kSlmpDeviceNameD,
-            decoration: const InputDecoration(isDense: true, labelText: 'Device'),
+            initialValue: kSlmpDeviceNames.contains(entry.device)
+                ? entry.device
+                : kSlmpDeviceNameD,
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Device'),
             style: const TextStyle(fontSize: 12, color: Colors.white),
             dropdownColor: const Color(0xFF1E293B),
             items: kSlmpDeviceNames
@@ -3820,7 +4094,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
             initialValue: entry.address.toString(),
             keyboardType: TextInputType.number,
             style: const TextStyle(fontSize: 12, color: Colors.white),
-            decoration: const InputDecoration(isDense: true, labelText: 'Address'),
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Address'),
             onChanged: (v) {
               final parsed = int.tryParse(v.trim());
               if (parsed == null || parsed < 0) {
@@ -3847,7 +4122,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
           );
           final accessDropdown = DropdownButtonFormField<String>(
             initialValue: entry.access,
-            decoration: const InputDecoration(isDense: true, labelText: 'Access'),
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Access'),
             style: const TextStyle(fontSize: 12, color: Colors.white),
             dropdownColor: const Color(0xFF1E293B),
             items: const [
@@ -3863,7 +4139,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
             },
           );
           final deleteButton = IconButton(
-            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+            icon: const Icon(Icons.delete_outline,
+                size: 18, color: Colors.redAccent),
             tooltip: 'Delete entry',
             onPressed: () => _deleteSlmpEntry(entry),
           );
@@ -3925,7 +4202,10 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 const Expanded(
                   child: Text(
                     'BACnet/IP',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14),
                   ),
                 ),
                 Switch(
@@ -3980,24 +4260,29 @@ class _GatewayScreenState extends State<GatewayScreen> {
                                 width: 10,
                                 height: 10,
                                 decoration: BoxDecoration(
-                                    color: _bacnetStatusColor(status), shape: BoxShape.circle),
+                                    color: _bacnetStatusColor(status),
+                                    shape: BoxShape.circle),
                               ),
                               const SizedBox(width: 8),
                               Text(
                                 _bacnetStatusLabel(status),
                                 style: const TextStyle(
-                                    color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13),
                               ),
                             ],
                           ),
                           Text(
                             'Mapped tags: ${bacnet.map.entries.length}',
-                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            style: const TextStyle(
+                                color: Colors.grey, fontSize: 12),
                           ),
                           if (widget.bacnetHost.recentPeerCount > 0)
                             Text(
                               'Recent sources: ${widget.bacnetHost.recentPeerCount}',
-                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                              style: const TextStyle(
+                                  color: Colors.grey, fontSize: 12),
                             ),
                         ],
                       ),
@@ -4013,7 +4298,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               controller: _bacnetPortController,
                               enabled: !running,
                               keyboardType: TextInputType.number,
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.white),
                               decoration: const InputDecoration(
                                 isDense: true,
                                 labelText: 'Port',
@@ -4025,7 +4311,9 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               onChanged: _setBacnetPort,
                             ),
                           ),
-                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                              width: isCompact ? 0 : 12,
+                              height: isCompact ? 8 : 0),
                           _mqttFlexField(
                             isCompact: isCompact,
                             child: TextField(
@@ -4033,7 +4321,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               controller: _bacnetDeviceInstanceController,
                               enabled: !running,
                               keyboardType: TextInputType.number,
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.white),
                               decoration: const InputDecoration(
                                 isDense: true,
                                 labelText: 'Device instance',
@@ -4058,12 +4347,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: ElevatedButton(
-                              onPressed:
-                                  (running || !widget.hostingSupported) ? null : _startBacnetHosting,
+                              onPressed: (running || !widget.hostingSupported)
+                                  ? null
+                                  : _startBacnetHosting,
                               child: const Text('Start hosting'),
                             ),
                           ),
-                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                              width: isCompact ? 0 : 12,
+                              height: isCompact ? 8 : 0),
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: OutlinedButton(
@@ -4081,20 +4373,23 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           'UDP port). Run the desktop (Windows/macOS/Linux) or mobile '
                           '(Android/iOS) app to host — you can still design the object map '
                           'here.',
-                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.amber.shade200),
                         ),
                       ],
                       if (running && widget.bacnetHost.endpointUrl != null) ...[
                         const SizedBox(height: 8),
                         SelectableText(
                           widget.bacnetHost.endpointUrl!,
-                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                          style: const TextStyle(
+                              color: Colors.cyanAccent, fontSize: 12),
                         ),
                       ],
                       // A failed bind must never look like a card that simply
                       // has not turned green yet: it gets its own bordered,
                       // labelled block naming the failure.
-                      if (status == BacnetHostStatus.error && widget.bacnetHost.lastError != null) ...[
+                      if (status == BacnetHostStatus.error &&
+                          widget.bacnetHost.lastError != null) ...[
                         const SizedBox(height: 8),
                         Container(
                           key: const Key('bacnet_error_banner'),
@@ -4102,7 +4397,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           padding: const EdgeInsets.all(8),
                           decoration: BoxDecoration(
                             color: Colors.redAccent.withValues(alpha: 0.12),
-                            border: Border.all(color: Colors.redAccent.withValues(alpha: 0.6)),
+                            border: Border.all(
+                                color: Colors.redAccent.withValues(alpha: 0.6)),
                             borderRadius: BorderRadius.circular(4),
                           ),
                           child: Column(
@@ -4111,12 +4407,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               const Text(
                                 'Not hosting — the server did not start.',
                                 style: TextStyle(
-                                    color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 12),
+                                    color: Colors.redAccent,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12),
                               ),
                               const SizedBox(height: 4),
                               SelectableText(
                                 widget.bacnetHost.lastError!,
-                                style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                                style: const TextStyle(
+                                    color: Colors.redAccent, fontSize: 11),
                               ),
                             ],
                           ),
@@ -4125,7 +4424,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         const SizedBox(height: 8),
                         Text(
                           'Last error: ${widget.bacnetHost.lastError}',
-                          style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                          style: const TextStyle(
+                              color: Colors.redAccent, fontSize: 11),
                         ),
                       ],
                     ],
@@ -4141,7 +4441,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
   }
 
-  Widget _bacnetMapEditorCard(BuildContext context, BacnetMap map, List<String> tagOptions) {
+  Widget _bacnetMapEditorCard(
+      BuildContext context, BacnetMap map, List<String> tagOptions) {
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF0F172A),
@@ -4158,19 +4459,26 @@ class _GatewayScreenState extends State<GatewayScreen> {
             children: [
               const Text(
                 'BACnet Object Map',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13),
               ),
               Wrap(
                 spacing: 4,
                 children: [
                   TextButton.icon(
-                    icon: const Icon(Icons.add, size: 16, color: Colors.cyanAccent),
-                    label: const Text('Add entry', style: TextStyle(color: Colors.cyanAccent)),
+                    icon: const Icon(Icons.add,
+                        size: 16, color: Colors.cyanAccent),
+                    label: const Text('Add entry',
+                        style: TextStyle(color: Colors.cyanAccent)),
                     onPressed: () => _addBacnetEntry(tagOptions),
                   ),
                   TextButton.icon(
-                    icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
-                    label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
+                    icon: const Icon(Icons.autorenew,
+                        size: 16, color: Colors.cyanAccent),
+                    label: const Text('Regenerate',
+                        style: TextStyle(color: Colors.cyanAccent)),
                     onPressed: _autoGenerateBacnetMap,
                   ),
                 ],
@@ -4222,11 +4530,12 @@ class _GatewayScreenState extends State<GatewayScreen> {
             },
           );
           final objectTypeDropdown = DropdownButtonFormField<String>(
-            initialValue:
-                (entry.objectType == kBacnetMapTypeAv || entry.objectType == kBacnetMapTypeBv)
-                    ? entry.objectType
-                    : kBacnetMapTypeAv,
-            decoration: const InputDecoration(isDense: true, labelText: 'Object type'),
+            initialValue: (entry.objectType == kBacnetMapTypeAv ||
+                    entry.objectType == kBacnetMapTypeBv)
+                ? entry.objectType
+                : kBacnetMapTypeAv,
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Object type'),
             style: const TextStyle(fontSize: 12, color: Colors.white),
             dropdownColor: const Color(0xFF1E293B),
             items: const [
@@ -4245,7 +4554,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
             initialValue: entry.instance.toString(),
             keyboardType: TextInputType.number,
             style: const TextStyle(fontSize: 12, color: Colors.white),
-            decoration: const InputDecoration(isDense: true, labelText: 'Instance'),
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Instance'),
             onChanged: (v) {
               final parsed = int.tryParse(v.trim());
               if (parsed == null || parsed < 0) {
@@ -4257,7 +4567,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
           );
           final accessDropdown = DropdownButtonFormField<String>(
             initialValue: entry.access,
-            decoration: const InputDecoration(isDense: true, labelText: 'Access'),
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Access'),
             style: const TextStyle(fontSize: 12, color: Colors.white),
             dropdownColor: const Color(0xFF1E293B),
             items: const [
@@ -4273,7 +4584,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
             },
           );
           final deleteButton = IconButton(
-            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+            icon: const Icon(Icons.delete_outline,
+                size: 18, color: Colors.redAccent),
             tooltip: 'Delete entry',
             onPressed: () => _deleteBacnetEntry(entry),
           );
@@ -4311,7 +4623,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
   }
 
-  Widget _s7MapEditorCard(BuildContext context, S7Map map, List<String> tagOptions) {
+  Widget _s7MapEditorCard(
+      BuildContext context, S7Map map, List<String> tagOptions) {
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF0F172A),
@@ -4328,19 +4641,26 @@ class _GatewayScreenState extends State<GatewayScreen> {
             children: [
               const Text(
                 'S7 Area Map',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13),
               ),
               Wrap(
                 spacing: 4,
                 children: [
                   TextButton.icon(
-                    icon: const Icon(Icons.add, size: 16, color: Colors.cyanAccent),
-                    label: const Text('Add entry', style: TextStyle(color: Colors.cyanAccent)),
+                    icon: const Icon(Icons.add,
+                        size: 16, color: Colors.cyanAccent),
+                    label: const Text('Add entry',
+                        style: TextStyle(color: Colors.cyanAccent)),
                     onPressed: () => _addS7Entry(tagOptions),
                   ),
                   TextButton.icon(
-                    icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
-                    label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
+                    icon: const Icon(Icons.autorenew,
+                        size: 16, color: Colors.cyanAccent),
+                    label: const Text('Regenerate',
+                        style: TextStyle(color: Colors.cyanAccent)),
                     onPressed: _autoGenerateS7Map,
                   ),
                 ],
@@ -4390,7 +4710,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
             },
           );
           final areaDropdown = DropdownButtonFormField<String>(
-            initialValue: kS7AreaNames.contains(entry.area) ? entry.area : kS7AreaNameDb,
+            initialValue:
+                kS7AreaNames.contains(entry.area) ? entry.area : kS7AreaNameDb,
             decoration: const InputDecoration(isDense: true, labelText: 'Area'),
             style: const TextStyle(fontSize: 12, color: Colors.white),
             dropdownColor: const Color(0xFF1E293B),
@@ -4453,7 +4774,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
           );
           final accessDropdown = DropdownButtonFormField<String>(
             initialValue: entry.access,
-            decoration: const InputDecoration(isDense: true, labelText: 'Access'),
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Access'),
             style: const TextStyle(fontSize: 12, color: Colors.white),
             dropdownColor: const Color(0xFF1E293B),
             items: const [
@@ -4469,7 +4791,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
             },
           );
           final deleteButton = IconButton(
-            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+            icon: const Icon(Icons.delete_outline,
+                size: 18, color: Colors.redAccent),
             tooltip: 'Delete entry',
             onPressed: () => _deleteS7Entry(entry),
           );
@@ -4519,7 +4842,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
   }
 
-  Widget _finsMapEditorCard(BuildContext context, FinsMap map, List<String> tagOptions) {
+  Widget _finsMapEditorCard(
+      BuildContext context, FinsMap map, List<String> tagOptions) {
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF0F172A),
@@ -4536,19 +4860,26 @@ class _GatewayScreenState extends State<GatewayScreen> {
             children: [
               const Text(
                 'FINS Area Map',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13),
               ),
               Wrap(
                 spacing: 4,
                 children: [
                   TextButton.icon(
-                    icon: const Icon(Icons.add, size: 16, color: Colors.cyanAccent),
-                    label: const Text('Add entry', style: TextStyle(color: Colors.cyanAccent)),
+                    icon: const Icon(Icons.add,
+                        size: 16, color: Colors.cyanAccent),
+                    label: const Text('Add entry',
+                        style: TextStyle(color: Colors.cyanAccent)),
                     onPressed: () => _addFinsEntry(tagOptions),
                   ),
                   TextButton.icon(
-                    icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
-                    label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
+                    icon: const Icon(Icons.autorenew,
+                        size: 16, color: Colors.cyanAccent),
+                    label: const Text('Regenerate',
+                        style: TextStyle(color: Colors.cyanAccent)),
                     onPressed: _autoGenerateFinsMap,
                   ),
                 ],
@@ -4599,7 +4930,9 @@ class _GatewayScreenState extends State<GatewayScreen> {
             },
           );
           final areaDropdown = DropdownButtonFormField<String>(
-            initialValue: kFinsAreaNames.contains(entry.area) ? entry.area : kFinsAreaNameDM,
+            initialValue: kFinsAreaNames.contains(entry.area)
+                ? entry.area
+                : kFinsAreaNameDM,
             decoration: const InputDecoration(isDense: true, labelText: 'Area'),
             style: const TextStyle(fontSize: 12, color: Colors.white),
             dropdownColor: const Color(0xFF1E293B),
@@ -4645,7 +4978,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
           );
           final accessDropdown = DropdownButtonFormField<String>(
             initialValue: entry.access,
-            decoration: const InputDecoration(isDense: true, labelText: 'Access'),
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Access'),
             style: const TextStyle(fontSize: 12, color: Colors.white),
             dropdownColor: const Color(0xFF1E293B),
             items: const [
@@ -4661,7 +4995,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
             },
           );
           final deleteButton = IconButton(
-            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+            icon: const Icon(Icons.delete_outline,
+                size: 18, color: Colors.redAccent),
             tooltip: 'Delete entry',
             onPressed: () => _deleteFinsEntry(entry),
           );
@@ -4707,7 +5042,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
   }
 
-  Widget _enipMapEditorCard(BuildContext context, CipMap map, List<String> tagOptions) {
+  Widget _enipMapEditorCard(
+      BuildContext context, CipMap map, List<String> tagOptions) {
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF0F172A),
@@ -4724,19 +5060,26 @@ class _GatewayScreenState extends State<GatewayScreen> {
             children: [
               const Text(
                 'EtherNet/IP Tag Map',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13),
               ),
               Wrap(
                 spacing: 4,
                 children: [
                   TextButton.icon(
-                    icon: const Icon(Icons.add, size: 16, color: Colors.cyanAccent),
-                    label: const Text('Add entry', style: TextStyle(color: Colors.cyanAccent)),
+                    icon: const Icon(Icons.add,
+                        size: 16, color: Colors.cyanAccent),
+                    label: const Text('Add entry',
+                        style: TextStyle(color: Colors.cyanAccent)),
                     onPressed: () => _addEnipEntry(tagOptions),
                   ),
                   TextButton.icon(
-                    icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
-                    label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
+                    icon: const Icon(Icons.autorenew,
+                        size: 16, color: Colors.cyanAccent),
+                    label: const Text('Regenerate',
+                        style: TextStyle(color: Colors.cyanAccent)),
                     onPressed: _autoGenerateEnipMap,
                   ),
                 ],
@@ -4781,7 +5124,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
           );
           final accessDropdown = DropdownButtonFormField<String>(
             initialValue: entry.access,
-            decoration: const InputDecoration(isDense: true, labelText: 'Access'),
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Access'),
             style: const TextStyle(fontSize: 12, color: Colors.white),
             dropdownColor: const Color(0xFF1E293B),
             items: const [
@@ -4795,7 +5139,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
             },
           );
           final deleteButton = IconButton(
-            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+            icon: const Icon(Icons.delete_outline,
+                size: 18, color: Colors.redAccent),
             tooltip: 'Delete entry',
             onPressed: () => _deleteEnipEntry(entry),
           );
@@ -4848,7 +5193,10 @@ class _GatewayScreenState extends State<GatewayScreen> {
                 const Expanded(
                   child: Text(
                     'MQTT / Sparkplug B',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14),
                   ),
                 ),
                 Switch(
@@ -4897,25 +5245,30 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               Container(
                                 width: 10,
                                 height: 10,
-                                decoration:
-                                    BoxDecoration(color: _mqttStatusColor(status), shape: BoxShape.circle),
+                                decoration: BoxDecoration(
+                                    color: _mqttStatusColor(status),
+                                    shape: BoxShape.circle),
                               ),
                               const SizedBox(width: 8),
                               Text(
                                 _mqttStatusLabel(status),
                                 style: const TextStyle(
-                                    color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13),
                               ),
                             ],
                           ),
                           Text(
                             'Mapped tags: ${mqtt.map.entries.length}',
-                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            style: const TextStyle(
+                                color: Colors.grey, fontSize: 12),
                           ),
                           if (widget.mqttHost.publishCount > 0)
                             Text(
                               'Published: ${widget.mqttHost.publishCount}',
-                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                              style: const TextStyle(
+                                  color: Colors.grey, fontSize: 12),
                             ),
                         ],
                       ),
@@ -4934,7 +5287,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                             child: TextFormField(
                               initialValue: mqtt.host,
                               enabled: !connected && !connecting,
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.white),
                               decoration: const InputDecoration(
                                 isDense: true,
                                 labelText: 'Broker host',
@@ -4945,14 +5299,17 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               onChanged: _setMqttHost,
                             ),
                           ),
-                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                              width: isCompact ? 0 : 12,
+                              height: isCompact ? 8 : 0),
                           SizedBox(
                             width: isCompact ? double.infinity : 120,
                             child: TextField(
                               controller: _mqttPortController,
                               enabled: !connected && !connecting,
                               keyboardType: TextInputType.number,
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.white),
                               decoration: const InputDecoration(
                                 isDense: true,
                                 labelText: 'Port',
@@ -4969,23 +5326,31 @@ class _GatewayScreenState extends State<GatewayScreen> {
                       const SizedBox(height: 12),
                       Row(
                         children: [
-                          const Text('TLS', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                          const Text('TLS',
+                              style: TextStyle(
+                                  color: Colors.white70, fontSize: 12)),
                           Switch(
                             key: const Key('mqtt_tls_switch'),
                             value: mqtt.tls,
-                            onChanged: (connected || connecting) ? null : _setMqttTls,
+                            onChanged:
+                                (connected || connecting) ? null : _setMqttTls,
                           ),
                           const SizedBox(width: 16),
                           Expanded(
                             child: DropdownButtonFormField<String>(
                               key: const Key('mqtt_format_dropdown'),
                               initialValue: mqtt.format,
-                              decoration: const InputDecoration(isDense: true, labelText: 'Payload format'),
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              decoration: const InputDecoration(
+                                  isDense: true, labelText: 'Payload format'),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.white),
                               dropdownColor: const Color(0xFF1E293B),
                               items: const [
-                                DropdownMenuItem(value: 'json', child: Text('json')),
-                                DropdownMenuItem(value: 'sparkplug', child: Text('sparkplug')),
+                                DropdownMenuItem(
+                                    value: 'json', child: Text('json')),
+                                DropdownMenuItem(
+                                    value: 'sparkplug',
+                                    child: Text('sparkplug')),
                               ],
                               onChanged: (connected || connecting)
                                   ? null
@@ -5002,7 +5367,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         TextFormField(
                           initialValue: mqtt.baseTopic,
                           enabled: !connected && !connecting,
-                          style: const TextStyle(fontSize: 12, color: Colors.white),
+                          style: const TextStyle(
+                              fontSize: 12, color: Colors.white),
                           decoration: const InputDecoration(
                             isDense: true,
                             labelText: 'Base topic',
@@ -5014,7 +5380,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         )
                       else
                         Flex(
-                          direction: isCompact ? Axis.vertical : Axis.horizontal,
+                          direction:
+                              isCompact ? Axis.vertical : Axis.horizontal,
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             _mqttFlexField(
@@ -5022,7 +5389,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               child: TextFormField(
                                 initialValue: mqtt.groupId,
                                 enabled: !connected && !connecting,
-                                style: const TextStyle(fontSize: 12, color: Colors.white),
+                                style: const TextStyle(
+                                    fontSize: 12, color: Colors.white),
                                 decoration: const InputDecoration(
                                   isDense: true,
                                   labelText: 'Group ID',
@@ -5033,13 +5401,16 @@ class _GatewayScreenState extends State<GatewayScreen> {
                                 onChanged: _setMqttGroupId,
                               ),
                             ),
-                            SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                            SizedBox(
+                                width: isCompact ? 0 : 12,
+                                height: isCompact ? 8 : 0),
                             _mqttFlexField(
                               isCompact: isCompact,
                               child: TextFormField(
                                 initialValue: mqtt.edgeNodeId,
                                 enabled: !connected && !connecting,
-                                style: const TextStyle(fontSize: 12, color: Colors.white),
+                                style: const TextStyle(
+                                    fontSize: 12, color: Colors.white),
                                 decoration: const InputDecoration(
                                   isDense: true,
                                   labelText: 'Edge node ID',
@@ -5063,8 +5434,10 @@ class _GatewayScreenState extends State<GatewayScreen> {
                             child: DropdownButtonFormField<int>(
                               key: const Key('mqtt_qos_dropdown'),
                               initialValue: mqtt.qos,
-                              decoration: const InputDecoration(isDense: true, labelText: 'QoS'),
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              decoration: const InputDecoration(
+                                  isDense: true, labelText: 'QoS'),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.white),
                               dropdownColor: const Color(0xFF1E293B),
                               items: const [
                                 DropdownMenuItem(value: 0, child: Text('0')),
@@ -5079,15 +5452,19 @@ class _GatewayScreenState extends State<GatewayScreen> {
                                     },
                             ),
                           ),
-                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                              width: isCompact ? 0 : 12,
+                              height: isCompact ? 8 : 0),
                           SizedBox(
                             width: isCompact ? double.infinity : 160,
                             child: TextFormField(
                               initialValue: mqtt.heartbeatSeconds.toString(),
                               enabled: !connected && !connecting,
                               keyboardType: TextInputType.number,
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
-                              decoration: const InputDecoration(isDense: true, labelText: 'Heartbeat (s)'),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.white),
+                              decoration: const InputDecoration(
+                                  isDense: true, labelText: 'Heartbeat (s)'),
                               onChanged: _setMqttHeartbeat,
                             ),
                           ),
@@ -5105,21 +5482,30 @@ class _GatewayScreenState extends State<GatewayScreen> {
                               initialValue: mqtt.publishIntervalMs.toString(),
                               enabled: !connected && !connecting,
                               keyboardType: TextInputType.number,
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
-                              decoration:
-                                  const InputDecoration(isDense: true, labelText: 'Publish interval (ms)'),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.white),
+                              decoration: const InputDecoration(
+                                  isDense: true,
+                                  labelText: 'Publish interval (ms)'),
                               onChanged: _setMqttPublishInterval,
                             ),
                           ),
-                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                              width: isCompact ? 0 : 12,
+                              height: isCompact ? 8 : 0),
                           SizedBox(
                             width: isCompact ? double.infinity : 160,
                             child: TextFormField(
                               key: const Key('mqtt_deadband_field'),
                               initialValue: mqtt.deadband.toString(),
-                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
-                              decoration: const InputDecoration(isDense: true, labelText: 'Deadband (analog)'),
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                      decimal: true),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.white),
+                              decoration: const InputDecoration(
+                                  isDense: true,
+                                  labelText: 'Deadband (analog)'),
                               onChanged: _setMqttDeadband,
                             ),
                           ),
@@ -5130,7 +5516,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                         children: [
                           const Expanded(
                             child: Text('Allow remote writes',
-                                style: TextStyle(color: Colors.white70, fontSize: 12)),
+                                style: TextStyle(
+                                    color: Colors.white70, fontSize: 12)),
                           ),
                           Switch(
                             // Safe to toggle live (unlike format/topic/group/node,
@@ -5147,7 +5534,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                       const SizedBox(height: 12),
                       TextFormField(
                         initialValue: mqtt.username,
-                        style: const TextStyle(fontSize: 12, color: Colors.white),
+                        style:
+                            const TextStyle(fontSize: 12, color: Colors.white),
                         decoration: const InputDecoration(
                           isDense: true,
                           labelText: 'Username (optional)',
@@ -5161,7 +5549,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
                       TextField(
                         key: const Key('mqtt_password_field'),
                         obscureText: true,
-                        style: const TextStyle(fontSize: 12, color: Colors.white),
+                        style:
+                            const TextStyle(fontSize: 12, color: Colors.white),
                         decoration: const InputDecoration(
                           isDense: true,
                           labelText: 'Password (session only — never saved)',
@@ -5179,21 +5568,29 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: ElevatedButton(
-                              onPressed: (connected || connecting || !widget.hostingSupported)
+                              onPressed: (connected ||
+                                      connecting ||
+                                      !widget.hostingSupported)
                                   ? null
                                   : _connectMqtt,
                               child: const Text('Connect'),
                             ),
                           ),
-                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                              width: isCompact ? 0 : 12,
+                              height: isCompact ? 8 : 0),
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: OutlinedButton(
-                              onPressed: (connected || connecting) ? _disconnectMqtt : null,
+                              onPressed: (connected || connecting)
+                                  ? _disconnectMqtt
+                                  : null,
                               child: const Text('Disconnect'),
                             ),
                           ),
-                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                              width: isCompact ? 0 : 12,
+                              height: isCompact ? 8 : 0),
                           SizedBox(
                             width: isCompact ? double.infinity : null,
                             child: Tooltip(
@@ -5204,9 +5601,12 @@ class _GatewayScreenState extends State<GatewayScreen> {
                                   : 'Connect with Sparkplug B to re-publish births.',
                               child: OutlinedButton.icon(
                                 key: const Key('mqtt_rebirth_button'),
-                                icon: const Icon(Icons.campaign_outlined, size: 16),
+                                icon: const Icon(Icons.campaign_outlined,
+                                    size: 16),
                                 label: const Text('Rebirth'),
-                                onPressed: (connected && !isJson) ? _rebirthMqtt : null,
+                                onPressed: (connected && !isJson)
+                                    ? _rebirthMqtt
+                                    : null,
                               ),
                             ),
                           ),
@@ -5219,21 +5619,25 @@ class _GatewayScreenState extends State<GatewayScreen> {
                           'browsers do not allow. Run the desktop (Windows/macOS/Linux) '
                           'or mobile (Android/iOS) app to publish — you can still '
                           'design the tag map here.',
-                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.amber.shade200),
                         ),
                       ],
-                      if ((connected || connecting) && widget.mqttHost.endpointUrl != null) ...[
+                      if ((connected || connecting) &&
+                          widget.mqttHost.endpointUrl != null) ...[
                         const SizedBox(height: 8),
                         SelectableText(
                           widget.mqttHost.endpointUrl!,
-                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                          style: const TextStyle(
+                              color: Colors.cyanAccent, fontSize: 12),
                         ),
                       ],
                       if (widget.mqttHost.lastError != null) ...[
                         const SizedBox(height: 8),
                         Text(
                           'Last error: ${widget.mqttHost.lastError}',
-                          style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                          style: const TextStyle(
+                              color: Colors.redAccent, fontSize: 11),
                         ),
                       ],
                     ],
@@ -5282,19 +5686,26 @@ class _GatewayScreenState extends State<GatewayScreen> {
             children: [
               const Text(
                 'MQTT Tag Map',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13),
               ),
               Wrap(
                 spacing: 4,
                 children: [
                   TextButton.icon(
-                    icon: const Icon(Icons.add, size: 16, color: Colors.cyanAccent),
-                    label: const Text('Add entry', style: TextStyle(color: Colors.cyanAccent)),
+                    icon: const Icon(Icons.add,
+                        size: 16, color: Colors.cyanAccent),
+                    label: const Text('Add entry',
+                        style: TextStyle(color: Colors.cyanAccent)),
                     onPressed: () => _addMqttEntry(tagOptions),
                   ),
                   TextButton.icon(
-                    icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
-                    label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
+                    icon: const Icon(Icons.autorenew,
+                        size: 16, color: Colors.cyanAccent),
+                    label: const Text('Regenerate',
+                        style: TextStyle(color: Colors.cyanAccent)),
                     onPressed: _autoGenerateMqttMap,
                   ),
                 ],
@@ -5304,7 +5715,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
           ListenableBuilder(
             listenable: widget.mqttHost,
             builder: (context, _) {
-              final connected = widget.mqttHost.status == MqttHostStatus.running;
+              final connected =
+                  widget.mqttHost.status == MqttHostStatus.running;
               if (!(connected && !isJson)) {
                 return const SizedBox.shrink();
               }
@@ -5357,7 +5769,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
           final metricField = TextFormField(
             initialValue: entry.metric,
             style: const TextStyle(fontSize: 12, color: Colors.white),
-            decoration: const InputDecoration(isDense: true, labelText: 'Metric'),
+            decoration:
+                const InputDecoration(isDense: true, labelText: 'Metric'),
             onChanged: (v) {
               entry.metric = v;
               widget.onProjectUpdated();
@@ -5366,7 +5779,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
           final writableToggle = Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('Writable', style: TextStyle(color: Colors.white70, fontSize: 11)),
+              const Text('Writable',
+                  style: TextStyle(color: Colors.white70, fontSize: 11)),
               Switch(
                 value: entry.writable,
                 onChanged: (v) {
@@ -5377,7 +5791,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
             ],
           );
           final deleteButton = IconButton(
-            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+            icon: const Icon(Icons.delete_outline,
+                size: 18, color: Colors.redAccent),
             tooltip: 'Delete entry',
             onPressed: () => _deleteMqttEntry(entry),
           );
@@ -5409,6 +5824,93 @@ class _GatewayScreenState extends State<GatewayScreen> {
             ],
           );
         },
+      ),
+    );
+  }
+}
+
+/// The WRAPPING protocol selector that replaces the AppBar's old
+/// `isScrollable: true` `TabBar` (see `_protocolTabs`'s doc). It drives the
+/// enclosing `DefaultTabController` — which the sibling `TabBarView` also
+/// reads — so tab state stays single-sourced. A `Wrap` of `ChoiceChip`s
+/// flows onto as many rows as the width needs, so every protocol is always
+/// laid out, visible, and tappable at any window size (a scrollable TabBar
+/// had no scroll affordance on desktop). Each chip carries its protocol's
+/// original `Key('protocol_tab_*')`, so callers/tests select a protocol by
+/// the same key as before.
+class _ProtocolTabSelector extends StatefulWidget {
+  const _ProtocolTabSelector({required this.tabs});
+
+  final List<Tab> tabs;
+
+  @override
+  State<_ProtocolTabSelector> createState() => _ProtocolTabSelectorState();
+}
+
+class _ProtocolTabSelectorState extends State<_ProtocolTabSelector> {
+  TabController? _controller;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // The controller is provided by the enclosing DefaultTabController; grab
+    // it here (a dependency) and (re)subscribe so a tab change — from a chip
+    // tap OR a swipe on the TabBarView — repaints the selected chip.
+    final controller = DefaultTabController.of(context);
+    if (controller != _controller) {
+      _controller?.removeListener(_onTabChanged);
+      _controller = controller;
+      _controller?.addListener(_onTabChanged);
+    }
+  }
+
+  void _onTabChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller?.removeListener(_onTabChanged);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = _controller;
+    if (controller == null) {
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 4,
+        children: [
+          for (var i = 0; i < widget.tabs.length; i++)
+            ChoiceChip(
+              key: widget.tabs[i].key,
+              label: Text(
+                widget.tabs[i].text ?? '',
+                style: const TextStyle(fontSize: 12, color: Colors.white),
+              ),
+              selected: controller.index == i,
+              showCheckmark: false,
+              // Compact so the wrapping strip stays close to the old TabBar's
+              // height (it lives in the body now, not the AppBar bottom).
+              visualDensity: VisualDensity.compact,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              labelPadding: const EdgeInsets.symmetric(horizontal: 6),
+              backgroundColor: const Color(0xFF1E293B),
+              selectedColor: Colors.cyan.withValues(alpha: 0.3),
+              side: BorderSide(
+                color:
+                    controller.index == i ? Colors.cyanAccent : Colors.white24,
+              ),
+              onSelected: (_) => controller.animateTo(i),
+            ),
+        ],
       ),
     );
   }

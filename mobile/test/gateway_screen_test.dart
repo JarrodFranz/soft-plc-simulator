@@ -707,6 +707,10 @@ void main() {
       await tester.tap(find.byKey(const Key('opcua_enable_switch')));
       await tester.pump();
 
+      // The security switch sits below the fold on the 800x600 test surface
+      // (the card is scrollable) — bring it into view before tapping.
+      await tester.ensureVisible(find.byKey(const Key('opcua_security_sign_encrypt_switch')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('opcua_security_sign_encrypt_switch')));
       await tester.pump();
       expect(
@@ -2106,6 +2110,38 @@ void main() {
   });
 
   group('Outbound Protocols tab structure (WS-tabs)', () {
+    // Regression: the protocol selector must WRAP, not sit in a horizontally
+    // scrollable strip. At 320px all nine protocol chips must be laid out and
+    // present WITHOUT any scrolling (the old scrollable TabBar left the
+    // later protocols off-screen and unreachable on desktop, where there is
+    // no horizontal-scroll affordance). No TabBar is used anymore.
+    testWidgets('all nine protocol chips are present at 320px without scrolling', (tester) async {
+      final project = _project();
+      final host = _CountingOpcUaHost();
+      addTearDown(host.dispose);
+      await setSurface(tester, smallPhoneSize);
+
+      await tester.pumpWidget(_app(project, host));
+      await tester.pumpAndSettle();
+
+      for (final tabKey in const [
+        opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey,
+        s7TabKey, finsTabKey, slmpTabKey, bacnetTabKey,
+      ]) {
+        expect(find.byKey(tabKey), findsOneWidget,
+            reason: 'protocol chip $tabKey must be laid out (wrapped) at 320px');
+      }
+      expect(find.byType(TabBar), findsNothing,
+          reason: 'the scrollable TabBar was replaced by a wrapping selector');
+      // The last protocol (BACnet/IP) sits on a later wrapped row at 320px;
+      // tapping it directly (no scroll) must select it — the exact reach the
+      // old scrollable TabBar failed at.
+      await tester.tap(find.byKey(bacnetTabKey));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('bacnet_enable_switch')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('renders all five protocol tabs', (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
@@ -2120,10 +2156,11 @@ void main() {
       expect(find.byKey(dnpTabKey), findsOneWidget);
       expect(find.byKey(enipTabKey), findsOneWidget);
       // OPC UA is the default (index 0) selected tab, so its card (with the
-      // same title text, 'OPC UA') is simultaneously on-screen — scope to
-      // the TabBar itself to check the tab label specifically. The other
-      // four tabs' cards aren't built yet, so their labels are unambiguous.
-      expect(find.descendant(of: find.byType(TabBar), matching: find.text('OPC UA')), findsOneWidget);
+      // same title text, 'OPC UA') is simultaneously on-screen — scope to the
+      // OPC UA selector chip (keyed opcuaTabKey) to check the tab label
+      // specifically. The other four tabs' cards aren't built yet, so their
+      // labels are unambiguous.
+      expect(find.descendant(of: find.byKey(opcuaTabKey), matching: find.text('OPC UA')), findsOneWidget);
       expect(find.text('Modbus'), findsOneWidget);
       expect(find.text('MQTT'), findsOneWidget);
       expect(find.text('DNP3'), findsOneWidget);
