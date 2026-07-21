@@ -41,9 +41,17 @@ import 'dart:typed_data';
 
 // --- S7 header constants ----------------------------------------------------
 
-/// The fixed S7comm protocol-ID byte. Every valid S7 message starts with
-/// this byte; anything else is not an S7 message.
+/// The fixed classic-S7comm protocol-ID byte. Every valid classic S7 message
+/// starts with this byte; anything else is not a classic S7 message.
 const int kS7ProtocolId = 0x32;
+
+/// The S7CommPlus protocol-ID byte. S7-1500 (and S7-1200 optimized-block)
+/// SYMBOLIC access uses S7CommPlus, a separate proprietary Siemens protocol
+/// that runs over the same TPKT/COTP transport but with this protocol id —
+/// this device serves classic S7comm ([kS7ProtocolId]) only, so an S7CommPlus
+/// PDU is not parseable here. Recognized purely so the host can name it in the
+/// diagnostic logs (see `s7_host.dart`), not served.
+const int kS7PlusProtocolId = 0x72;
 
 /// Length, in bytes, of the common header fields present on every ROSCTR:
 /// `protocolId`(1) + `rosctr`(1) + `redundancyId`(2) + `pduReference`(2) +
