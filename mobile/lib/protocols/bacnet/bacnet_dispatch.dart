@@ -381,6 +381,11 @@ const List<int> kBacnetDeviceServedProperties = [
   kBacnetPropMaxApduLengthAccepted,
   kBacnetPropSegmentationSupported,
   kBacnetPropObjectList,
+  kBacnetPropApduTimeout,
+  kBacnetPropNumberOfApduRetries,
+  kBacnetPropDatabaseRevision,
+  kBacnetPropSerialNumber,
+  kBacnetPropPropertyList,
 ];
 
 /// The Analog Value object's full served property list — see

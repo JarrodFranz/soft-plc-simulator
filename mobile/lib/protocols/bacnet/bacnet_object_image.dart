@@ -59,6 +59,50 @@ const String kBacnetModelName = 'Soft PLC Simulator';
 /// Firmware_Revision / Application_Software_Version this device advertises.
 const String kBacnetFirmwareRevision = '1.1';
 
+/// Serial_Number the Device object reports — a fixed, honest, deterministic
+/// string (matches the Identity/ListIdentity serial theme; no real-vendor
+/// impersonation). BACnet serial numbers are `CharacterString`, not numeric.
+const String kBacnetSerialNumber = 'SoftPLC-0000000001';
+
+/// APDU_Timeout the Device object reports, in milliseconds — a conventional
+/// fixed value (this device never itself originates confirmed requests, so
+/// the number is informational for a browsing client, not operative).
+const int kBacnetDeviceApduTimeout = 3000;
+
+/// Number_Of_APDU_Retries the Device object reports — conventional fixed
+/// value, informational only (see [kBacnetDeviceApduTimeout]).
+const int kBacnetDeviceApduRetries = 3;
+
+/// Database_Revision the Device object reports. The object database is static
+/// for a running project, so this is a fixed `1` rather than a live counter.
+const int kBacnetDeviceDatabaseRevision = 1;
+
+/// The value of the Device object's `Property_List` — every property the
+/// Device object serves EXCEPT the four the BACnet standard requires be
+/// omitted from `Property_List` (Object_Identifier, Object_Name, Object_Type,
+/// and Property_List itself). Hand-maintained beside the Device switch below;
+/// `bacnet_object_image_test.dart` asserts it equals
+/// `kBacnetDeviceServedProperties` minus those four, so it cannot drift.
+const List<int> kBacnetDevicePropertyList = [
+  kBacnetPropSystemStatus,
+  kBacnetPropVendorName,
+  kBacnetPropVendorIdentifier,
+  kBacnetPropModelName,
+  kBacnetPropFirmwareRevision,
+  kBacnetPropApplicationSoftwareVersion,
+  kBacnetPropProtocolVersion,
+  kBacnetPropProtocolRevision,
+  kBacnetPropProtocolServicesSupported,
+  kBacnetPropProtocolObjectTypesSupported,
+  kBacnetPropMaxApduLengthAccepted,
+  kBacnetPropSegmentationSupported,
+  kBacnetPropObjectList,
+  kBacnetPropApduTimeout,
+  kBacnetPropNumberOfApduRetries,
+  kBacnetPropDatabaseRevision,
+  kBacnetPropSerialNumber,
+];
+
 /// Number of BACnet BitString bits in Protocol_Services_Supported /
 /// Protocol_Object_Types_Supported (see the plan's Wire facts).
 const int _kSupportedBitStringLength = 40;
@@ -177,9 +221,43 @@ class BacnetTagImage implements BacnetObjectImage {
         return BacnetReadResult.ok(encodeAppEnumerated(kBacnetSegmentationNoSegmentation));
       case kBacnetPropObjectList:
         return _readObjectList(arrayIndex);
+      case kBacnetPropApduTimeout:
+        return BacnetReadResult.ok(encodeAppUnsigned(kBacnetDeviceApduTimeout));
+      case kBacnetPropNumberOfApduRetries:
+        return BacnetReadResult.ok(encodeAppUnsigned(kBacnetDeviceApduRetries));
+      case kBacnetPropDatabaseRevision:
+        return BacnetReadResult.ok(encodeAppUnsigned(kBacnetDeviceDatabaseRevision));
+      case kBacnetPropSerialNumber:
+        return BacnetReadResult.ok(encodeAppCharString(kBacnetSerialNumber));
+      case kBacnetPropPropertyList:
+        return _readPropertyList(arrayIndex);
       default:
         return BacnetReadResult.error(kBacnetErrorClassProperty, kBacnetErrorCodeUnknownProperty);
     }
+  }
+
+  /// Property_List: the whole array (no [arrayIndex]) is every element of
+  /// [kBacnetDevicePropertyList] as app-tagged Enumerated (a
+  /// BACnetPropertyIdentifier is an enumeration on the wire); index 0 is the
+  /// element COUNT (app Unsigned); index N (1-based) is the Nth element; any
+  /// other index is invalid-array-index — same array shape as
+  /// [_readObjectList].
+  BacnetReadResult _readPropertyList(int? arrayIndex) {
+    const list = kBacnetDevicePropertyList;
+    if (arrayIndex == null) {
+      final out = <int>[];
+      for (final propId in list) {
+        out.addAll(encodeAppEnumerated(propId));
+      }
+      return BacnetReadResult.ok(Uint8List.fromList(out));
+    }
+    if (arrayIndex == 0) {
+      return BacnetReadResult.ok(encodeAppUnsigned(list.length));
+    }
+    if (arrayIndex < 1 || arrayIndex > list.length) {
+      return BacnetReadResult.error(kBacnetErrorClassProperty, kBacnetErrorCodeInvalidArrayIndex);
+    }
+    return BacnetReadResult.ok(encodeAppEnumerated(list[arrayIndex - 1]));
   }
 
   /// Object_List: the whole array (no [arrayIndex]) is every element of

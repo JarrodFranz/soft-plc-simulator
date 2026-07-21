@@ -72,6 +72,25 @@ sequences are independent). The Device object itself is always object
 `(device, deviceInstance)`, always readable, and exposes `Object_List` as
 both the whole array and by array index (index 0 = element count).
 
+### Device object properties
+
+The Device object serves `Object_Identifier`, `Object_Name`, `Object_Type`,
+`System_Status`, `Vendor_Name`, `Vendor_Identifier` (**0** — honest, no
+impersonation), `Model_Name`, `Firmware_Revision`,
+`Application_Software_Version`, `Protocol_Version` (1), `Protocol_Revision`
+(14), `Protocol_Services_Supported`, `Protocol_Object_Types_Supported`,
+`Max_APDU_Length_Accepted` (1476), `Segmentation_Supported`
+(no-segmentation), `Object_List`, plus the housekeeping metadata a browsing
+driver reads: `APDU_Timeout` (3000 ms), `Number_Of_APDU_Retries` (3),
+`Database_Revision` (1, static), `Serial_Number` (a fixed honest string),
+and `Property_List`. `Property_List` is served as both the whole array and by
+array index, and — per the BACnet standard — omits `Object_Identifier`,
+`Object_Name`, `Object_Type`, and `Property_List` itself. These metadata
+properties were added in v1.1 after Ignition's driver read them and marked
+each row Bad; they carry no live data (`Database_Revision`/`APDU_Timeout`
+etc. are fixed informational constants), they just complete the Device
+folder's quality in a browsing client.
+
 ### Present_Value is always a NARROWING conversion
 
 The app stores floating-point tags as 64-bit doubles and integers up to
