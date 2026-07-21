@@ -28,13 +28,14 @@ Widget _app(AppLogger logger, LiveTick tick) {
   );
 }
 
-/// The live scroll offset of the entry list. Read through the `ListView`'s own
-/// controller (the screen's `_scrollController`), so it reports the offset of
-/// whatever `ScrollPosition` is attached RIGHT NOW — which is exactly what a
-/// position dispose/recreate would reset.
+/// The live scroll offset of the screen's unified scroll view. Read through
+/// the `CustomScrollView`'s own controller (the screen's `_scrollController`),
+/// so it reports the offset of whatever `ScrollPosition` is attached RIGHT
+/// NOW — which is exactly what a position dispose/recreate would reset.
 double _listOffset(WidgetTester tester) {
-  final list = tester.widget<ListView>(find.byKey(const Key('logs_list_view')));
-  return list.controller!.offset;
+  final view =
+      tester.widget<CustomScrollView>(find.byKey(const Key('logs_list_view')));
+  return view.controller!.offset;
 }
 
 void main() {
@@ -176,18 +177,17 @@ void main() {
   });
 
   // *** THE PRIMARY INTERACTION ***
-  // An operator pinned at the tail watching drops scroll past flips live-tail
-  // OFF precisely so they can read the one that just went by. If that toggle
-  // resets the list to offset 0 they land on the OLDEST entry of a 2000-entry
-  // buffer, which destroys the only reason the control exists.
+  // An operator watching the newest-first feed scrolls DOWN the page to read
+  // an entry that just moved past, then flips live-tail OFF precisely so they
+  // can keep reading it. If that toggle resets the view to offset 0 they are
+  // thrown back to the top of the page, which destroys the only reason the
+  // control exists.
   //
   // The mechanism this guards: `Widget.canUpdate` compares `runtimeType`, so
-  // returning a `ListenableBuilder` in one branch and a bare list in the other
-  // at the SAME slot deactivates the subtree, disposes the `Scrollable`, and
-  // takes the `ScrollPosition` with it. A `ScrollController` does NOT carry an
-  // offset across a position dispose/recreate — only `oldPosition` absorption
-  // or `PageStorage` (which needs a `PageStorageKey` on the path) does. So the
-  // fix is to keep element identity stable across the toggle.
+  // returning a `ListenableBuilder` in one branch and a bare sliver in the
+  // other at the SAME slot deactivates the subtree — were that to take the
+  // `Scrollable`'s `ScrollPosition` with it, the offset would reset. So the
+  // widget TYPE must stay constant across the toggle.
   testWidgets('toggling live-tail OFF preserves the scroll position', (tester) async {
     final logger = AppLogger();
     for (var i = 0; i < 300; i++) {
@@ -197,9 +197,10 @@ void main() {
     await tester.pumpWidget(_app(logger, LiveTick()));
     await tester.pumpAndSettle();
 
-    // Live-tail ON follows the tail, so start there, then scroll back up to a
-    // known non-zero offset — the "reading something that just went by" state.
-    await tester.drag(find.byKey(const Key('logs_list_view')), const Offset(0, 400));
+    // Live-tail ON follows the head (top = newest), so start there, then
+    // scroll DOWN to a known non-zero offset — the "reading something that
+    // just went by" state.
+    await tester.drag(find.byKey(const Key('logs_list_view')), const Offset(0, -400));
     await tester.pumpAndSettle();
 
     final before = _listOffset(tester);
@@ -211,7 +212,74 @@ void main() {
 
     expect(_listOffset(tester), closeTo(before, 1.0),
         reason: 'turning live-tail OFF must leave the operator where they were '
-            'reading, not jump to the oldest entry in the buffer');
+            'reading, not throw them back to the top of the page');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('entries display newest first', (tester) async {
+    final logger = AppLogger();
+    logger.log(kLogSourceModbus, LogLevel.info, 'Older entry', tMs: 1000);
+    logger.log(kLogSourceS7, LogLevel.info, 'Newer entry', tMs: 2000);
+
+    await tester.pumpWidget(_app(logger, LiveTick()));
+    await tester.pumpAndSettle();
+
+    final newerY = tester.getTopLeft(find.text('Newer entry')).dy;
+    final olderY = tester.getTopLeft(find.text('Older entry')).dy;
+    expect(newerY, lessThan(olderY),
+        reason: 'the newest entry must render ABOVE older ones');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'pagination: page label, page-size dropdown, and prev/next slice '
+      'the newest-first list', (tester) async {
+    final logger = AppLogger();
+    for (var i = 0; i < 60; i++) {
+      logger.log(kLogSourceModbus, LogLevel.info, 'Entry $i', tMs: 1000 + i);
+    }
+
+    await tester.pumpWidget(_app(logger, LiveTick()));
+    await tester.pumpAndSettle();
+
+    // 60 entries at the default 50/page → 2 pages, pinned to page 1 (newest).
+    expect(find.text('Page 1 of 2'), findsOneWidget);
+    expect(find.text('Entry 59'), findsOneWidget,
+        reason: 'page 1 starts at the newest entry');
+
+    // While live-tail is ON, paging is pinned — next/prev are disabled.
+    expect(
+        tester
+            .widget<IconButton>(find.byKey(const Key('logs_page_next')))
+            .onPressed,
+        isNull,
+        reason: 'paging must be disabled while live-tail is ON');
+
+    // Shrink the page size to 25 → 3 pages (dropdown re-slices immediately).
+    await tester.tap(find.byKey(const Key('logs_page_size_dropdown')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('25').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Page 1 of 3'), findsOneWidget);
+
+    // Turn live-tail OFF to unlock paging, then page back through history:
+    // newest-first, so page 2 of 3 (25/page over 60) is entries 34..10.
+    await tester.tap(find.byKey(const Key('logs_live_tail_switch')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('logs_page_next')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Page 2 of 3'), findsOneWidget);
+    expect(find.text('Entry 34'), findsOneWidget,
+        reason: 'page 2 must start where page 1 left off (Entry 34, older)');
+    expect(find.text('Entry 59'), findsNothing,
+        reason: 'page 1 rows must no longer be present');
+
+    // And back to the newest page.
+    await tester.tap(find.byKey(const Key('logs_page_prev')));
+    await tester.pumpAndSettle();
+    expect(find.text('Page 1 of 3'), findsOneWidget);
+    expect(find.text('Entry 59'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -321,6 +389,12 @@ void main() {
     await tester.tap(find.byKey(const Key('logs_source_chip_$kLogSourceModbus')));
     await tester.pump();
 
+    // Scroll back to the top before typing in the filter field: after
+    // expanding both panels at a narrow width the field sits far above the
+    // viewport, and slivers beyond the cache extent are unmounted — there
+    // would be no EditableText for enterText to find.
+    await tester.drag(find.byKey(const Key('logs_list_view')), const Offset(0, 5000));
+    await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('logs_text_filter')), 'a');
     await tester.pump();
   }
