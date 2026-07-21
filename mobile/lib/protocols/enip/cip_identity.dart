@@ -89,6 +89,38 @@ Uint8List _identityStruct() {
 CipResponse buildIdentityGetAttributesAllResponse(int requestService) =>
     CipResponse(service: requestService, generalStatus: kCipStatusSuccess, data: _identityStruct());
 
+/// The little-endian wire bytes of a single standard Identity Object attribute
+/// ([attrId] 1..7), or `null` if this simulator does not serve that attribute
+/// id. Used by Get Attribute List (0x03) to answer a client-chosen subset. The
+/// values are the same honest, non-impersonating identity as
+/// [buildIdentityGetAttributesAllResponse]. Never throws.
+///   1 Vendor ID (UINT) · 2 Device Type (UINT) · 3 Product Code (UINT) ·
+///   4 Revision (USINT major + USINT minor) · 5 Status (WORD) ·
+///   6 Serial Number (UDINT) · 7 Product Name (SHORT_STRING).
+Uint8List? identityAttributeBytes(int attrId) {
+  switch (attrId) {
+    case 1:
+      return (ByteData(2)..setUint16(0, kIdentityVendorId, Endian.little)).buffer.asUint8List();
+    case 2:
+      return (ByteData(2)..setUint16(0, kIdentityDeviceType, Endian.little)).buffer.asUint8List();
+    case 3:
+      return (ByteData(2)..setUint16(0, kIdentityProductCode, Endian.little)).buffer.asUint8List();
+    case 4:
+      return Uint8List.fromList([kIdentityRevisionMajor & 0xFF, kIdentityRevisionMinor & 0xFF]);
+    case 5:
+      return (ByteData(2)..setUint16(0, kIdentityStatus, Endian.little)).buffer.asUint8List();
+    case 6:
+      return (ByteData(4)..setUint32(0, kIdentitySerialNumber, Endian.little)).buffer.asUint8List();
+    case 7:
+      final nameBytes = Uint8List.fromList(
+        [for (final u in kIdentityProductName.codeUnits) u <= 0x7F ? u : 0x3F],
+      );
+      return (BytesBuilder()..addByte(nameBytes.length)..add(nameBytes)).toBytes();
+    default:
+      return null;
+  }
+}
+
 /// The ListIdentity CPF item body (encapsulation command 0x63). Layout:
 /// item type u16 (0x000C), item length u16, encap protocol version u16 (1),
 /// socket address (16 bytes, zeroed — the client already knows the socket it

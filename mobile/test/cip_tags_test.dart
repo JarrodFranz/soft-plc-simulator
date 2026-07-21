@@ -106,6 +106,7 @@ CipMap _browseMap() => CipMap(entries: [
 
 void main() {
   _diagnosticsTests();
+  _getAttributeListTests();
 
   PlcProject buildProject() => PlcProject(
         id: 'cip_tags_proj',
@@ -1153,6 +1154,105 @@ void _diagnosticsTests() {
         data: Uint8List.fromList([0x0A, 0x05, 0x40, 0x00]), // size 0x40 but no embedded bytes
       );
       expect(describeCipRequest(req), 'Unconnected Send (0x52) wrapping an unparseable embedded request');
+    });
+  });
+}
+
+void _getAttributeListTests() {
+  // A minimal project — Get Attribute List for Identity/0xAC ignores the tag DB.
+  PlcProject proj() => PlcProject(
+        id: 'gal', name: 'gal', controllerName: 'PLC',
+        tags: [], structDefs: [], programs: [], tasks: [], hmis: [],
+      );
+  CipMap emptyMap() => CipMap(entries: []);
+
+  group('Get Attribute List (0x03)', () {
+    test('Identity (class 0x01) returns the requested attributes with honest values', () {
+      // Request attrs 1 (Vendor ID) and 4 (Revision).
+      final req = CipRequest(
+        service: kCipServiceGetAttributeList,
+        path: [CipPathSegment.classId(kCipIdentityObjectClassId), CipPathSegment.instanceId(1)],
+        data: Uint8List.fromList([0x02, 0x00, 0x01, 0x00, 0x04, 0x00]),
+      );
+      final resp = dispatchCipService(proj(), emptyMap(), req);
+      expect(resp.generalStatus, kCipStatusSuccess);
+      final d = resp.data;
+      // count == 2
+      expect(ByteData.sublistView(d, 0, 2).getUint16(0, Endian.little), 2);
+      // attr 1: id, status 0, Vendor ID u16 == 0 (honest, non-impersonating).
+      expect(ByteData.sublistView(d, 2, 4).getUint16(0, Endian.little), 1);
+      expect(ByteData.sublistView(d, 4, 6).getUint16(0, Endian.little), kCipStatusSuccess);
+      expect(ByteData.sublistView(d, 6, 8).getUint16(0, Endian.little), 0);
+      // attr 4: id, status 0, Revision major.minor == 1.1 (2 bytes).
+      expect(ByteData.sublistView(d, 8, 10).getUint16(0, Endian.little), 4);
+      expect(ByteData.sublistView(d, 10, 12).getUint16(0, Endian.little), kCipStatusSuccess);
+      expect(d[12], 1);
+      expect(d[13], 1);
+    });
+
+    test('Identity: an unknown attribute id is reported per-attribute as 0x14, not a blanket failure', () {
+      final req = CipRequest(
+        service: kCipServiceGetAttributeList,
+        path: [CipPathSegment.classId(kCipIdentityObjectClassId), CipPathSegment.instanceId(1)],
+        data: Uint8List.fromList([0x01, 0x00, 0x63, 0x00]), // attr 0x63 (unknown)
+      );
+      final resp = dispatchCipService(proj(), emptyMap(), req);
+      expect(resp.generalStatus, kCipStatusSuccess);
+      expect(ByteData.sublistView(resp.data, 0, 2).getUint16(0, Endian.little), 1);
+      expect(ByteData.sublistView(resp.data, 2, 4).getUint16(0, Endian.little), 0x63);
+      expect(ByteData.sublistView(resp.data, 4, 6).getUint16(0, Endian.little),
+          kCipStatusAttributeNotSupported);
+    });
+
+    test('the proprietary Rockwell class 0xAC is HANDLED (well-formed 0x14 list), NOT a blanket 0x08', () {
+      // Ignition probes class 0xAC via Get Attribute List for change detection.
+      final req = CipRequest(
+        service: kCipServiceGetAttributeList,
+        path: [CipPathSegment.classId(0xAC), CipPathSegment.instanceId(1)],
+        data: Uint8List.fromList([0x02, 0x00, 0x01, 0x00, 0x02, 0x00]),
+      );
+      final resp = dispatchCipService(proj(), emptyMap(), req);
+      // The whole service does NOT fail with Service Not Supported.
+      expect(resp.generalStatus, isNot(kCipStatusServiceNotSupported));
+      expect(resp.generalStatus, kCipStatusSuccess);
+      // Each requested attribute is reported Not-Supported, in a valid list.
+      // Layout (no per-attr data, since none supported): count(2) +
+      // [id1(2) status1(2)] + [id2(2) status2(2)] -> statuses at 4 and 8.
+      expect(ByteData.sublistView(resp.data, 0, 2).getUint16(0, Endian.little), 2);
+      expect(ByteData.sublistView(resp.data, 4, 6).getUint16(0, Endian.little),
+          kCipStatusAttributeNotSupported);
+      expect(ByteData.sublistView(resp.data, 8, 10).getUint16(0, Endian.little),
+          kCipStatusAttributeNotSupported);
+    });
+
+    test('a malformed request (count claims more ids than present) returns an error, never throws', () {
+      final req = CipRequest(
+        service: kCipServiceGetAttributeList,
+        path: [CipPathSegment.classId(kCipIdentityObjectClassId)],
+        data: Uint8List.fromList([0x04, 0x00, 0x01, 0x00]), // count 4 but 1 id
+      );
+      late CipResponse resp;
+      expect(() => resp = dispatchCipService(proj(), emptyMap(), req), returnsNormally);
+      expect(resp.generalStatus, isNot(kCipStatusSuccess));
+    });
+
+    test('Ignition path: Get Attribute List wrapped in Unconnected Send is unwrapped and answered', () {
+      // Embedded: 0x03 to Identity (class 0x01, instance 1), attrs [1].
+      // service, pathWords=2 (class+instance = 4 bytes), path, then count+id.
+      final embedded = <int>[0x03, 0x02, 0x20, 0x01, 0x24, 0x01, 0x01, 0x00, 0x01, 0x00];
+      final wrapper = <int>[
+        0x0A, 0x05, embedded.length, 0x00, ...embedded, 0x01, 0x00, 0x01, 0x00,
+      ];
+      final req = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: [CipPathSegment.classId(kCipConnectionManagerClassId), CipPathSegment.instanceId(1)],
+        data: Uint8List.fromList(wrapper),
+      );
+      final resp = dispatchCipService(proj(), emptyMap(), req);
+      // Transparent unwrap: the embedded 0x03 reply comes back (service 0x03).
+      expect(resp.service, kCipServiceGetAttributeList);
+      expect(resp.generalStatus, kCipStatusSuccess);
+      expect(ByteData.sublistView(resp.data, 0, 2).getUint16(0, Endian.little), 1); // count
     });
   });
 }

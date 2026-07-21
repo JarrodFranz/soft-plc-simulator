@@ -153,6 +153,8 @@ CipResponse dispatchCipService(PlcProject project, CipMap map, CipRequest req, {
           return buildProgramNameGetAttributesAllResponse(req.service, project.controllerName);
         }
         return _errorResponse(req.service, kCipStatusServiceNotSupported);
+      case kCipServiceGetAttributeList:
+        return _getAttributeList(req);
       case kCipServiceUnconnectedSend:
         if (depth >= kMaxEmbeddedDispatchDepth) {
           return _errorResponse(req.service, kCipStatusServiceNotSupported);
@@ -192,6 +194,75 @@ CipResponse _symbolBrowse(PlcProject project, CipMap map, CipRequest req, int? r
   }
   final budget = responseBudget ?? kCipUcmmBrowseReplyCap;
   return buildSymbolInstanceListResponse(project, map, parsed, replyBudget: budget);
+}
+
+// --- Get Attribute List (0x03) --------------------------------------------
+
+/// Parses a Get Attribute List (0x03) request's chosen attribute ids: count
+/// (u16) then that many attribute ids (u16 each). Returns `null` if malformed.
+/// Never throws.
+List<int>? _parseGetAttributeListRequest(Uint8List data) {
+  if (data.length < 2) {
+    return null;
+  }
+  final count = _readU16(data, 0);
+  final end = 2 + count * 2;
+  if (end > data.length) {
+    return null;
+  }
+  final ids = <int>[];
+  for (var i = 0; i < count; i++) {
+    ids.add(_readU16(data, 2 + i * 2));
+  }
+  return ids;
+}
+
+/// Builds a Get Attribute List (0x03) reply: count (u16), then for each
+/// requested attribute id, `attribute_id` (u16) + per-attribute `status` (u16)
+/// + the attribute's data bytes iff its status is success. [attributeBytes]
+/// returns an attribute's wire bytes, or `null` if this object does not
+/// implement it — reported per-attribute as 0x14 (Attribute Not Supported), not
+/// as a blanket service failure. The overall service status is 0x00 (a
+/// well-formed list reply always parses); individual attribute failures live in
+/// the body, per CIP Get Attribute List semantics.
+CipResponse _buildGetAttributeListResponse(
+  int service,
+  List<int> attributeIds,
+  Uint8List? Function(int attrId) attributeBytes,
+) {
+  final out = BytesBuilder();
+  out.add((ByteData(2)..setUint16(0, attributeIds.length, Endian.little)).buffer.asUint8List());
+  for (final id in attributeIds) {
+    out.add((ByteData(2)..setUint16(0, id, Endian.little)).buffer.asUint8List());
+    final bytes = attributeBytes(id);
+    final status = bytes == null ? kCipStatusAttributeNotSupported : kCipStatusSuccess;
+    out.add((ByteData(2)..setUint16(0, status, Endian.little)).buffer.asUint8List());
+    if (bytes != null) {
+      out.add(bytes);
+    }
+  }
+  return CipResponse(service: service, generalStatus: kCipStatusSuccess, data: out.toBytes());
+}
+
+/// Answers a Get Attribute List (0x03). For the Identity Object (class 0x01) it
+/// returns the requested standard attributes' honest values. For ANY other
+/// class — including the proprietary, undocumented Rockwell class 0xAC a
+/// Logix-style SCADA driver probes for symbol/template change-detection — it
+/// returns a WELL-FORMED reply that marks every requested attribute
+/// Not-Supported (0x14), rather than a blanket 0x08 Service Not Supported. The
+/// simulator honestly implements none of those proprietary attributes and does
+/// not impersonate a real vendor; a client that tolerates the graceful
+/// per-attribute failure can still proceed to browse via the Symbol Object.
+/// Never throws.
+CipResponse _getAttributeList(CipRequest req) {
+  final ids = _parseGetAttributeListRequest(req.data);
+  if (ids == null) {
+    return _errorResponse(req.service, kCipStatusNotEnoughData);
+  }
+  if (isIdentityObjectPath(req.path)) {
+    return _buildGetAttributeListResponse(req.service, ids, identityAttributeBytes);
+  }
+  return _buildGetAttributeListResponse(req.service, ids, (_) => null);
 }
 
 // --- Unconnected Send (0x52) ----------------------------------------------
