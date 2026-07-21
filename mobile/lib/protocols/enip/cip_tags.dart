@@ -154,7 +154,7 @@ CipResponse dispatchCipService(PlcProject project, CipMap map, CipRequest req, {
         }
         return _errorResponse(req.service, kCipStatusServiceNotSupported);
       case kCipServiceGetAttributeList:
-        return _getAttributeList(req);
+        return _getAttributeList(project, map, req);
       case kCipServiceUnconnectedSend:
         if (depth >= kMaxEmbeddedDispatchDepth) {
           return _errorResponse(req.service, kCipStatusServiceNotSupported);
@@ -244,17 +244,71 @@ CipResponse _buildGetAttributeListResponse(
   return CipResponse(service: service, generalStatus: kCipStatusSuccess, data: out.toBytes());
 }
 
-/// Answers a Get Attribute List (0x03). For the Identity Object (class 0x01) it
-/// returns the requested standard attributes' honest values. For ANY other
-/// class — including the proprietary, undocumented Rockwell class 0xAC a
-/// Logix-style SCADA driver probes for symbol/template change-detection — it
-/// returns a WELL-FORMED reply that marks every requested attribute
-/// Not-Supported (0x14), rather than a blanket 0x08 Service Not Supported. The
-/// simulator honestly implements none of those proprietary attributes and does
-/// not impersonate a real vendor; a client that tolerates the graceful
-/// per-attribute failure can still proceed to browse via the Symbol Object.
-/// Never throws.
-CipResponse _getAttributeList(CipRequest req) {
+/// A deterministic 32-bit fingerprint of the exposed tag directory (the same
+/// listable symbols the Symbol Object browse enumerates) plus the count of
+/// them. FNV-1a over each listable entry's `name:typeCode;` — stable while the
+/// directory is unchanged, and it changes iff a browsed tag is added, removed,
+/// renamed, or re-typed. Deterministic (no clock/random). Never throws.
+({int count, int hash}) _symbolDirectoryFingerprint(PlcProject project, CipMap map) {
+  var count = 0;
+  var hash = 0x811C9DC5; // FNV-1a 32-bit offset basis.
+  void mix(int byte) {
+    hash = (hash ^ (byte & 0xFF)) & 0xFFFFFFFF;
+    hash = (hash * 0x01000193) & 0xFFFFFFFF;
+  }
+
+  for (final entry in map.entries) {
+    final dataType = dataTypeOfPath(project, entry.tagName);
+    final typeCode = dataType == null ? null : cipTypeForTagType(dataType);
+    if (typeCode == null) {
+      continue; // not listable (STRING / unresolved) — mirrors the Symbol browse.
+    }
+    count++;
+    for (final u in entry.tagName.codeUnits) {
+      mix(u);
+    }
+    mix(0x3A); // ':'
+    mix(typeCode);
+    mix(0x3B); // ';'
+  }
+  return (count: count, hash: hash);
+}
+
+/// The wire bytes of a class-0xAC change-detection attribute, at the widths
+/// Rockwell's Logix Data Access manual (1756-PM020, class 0xAC) documents:
+///   attr 1 (INT, 2B) symbol count · attr 2 (INT, 2B) template count (none
+///   here) · attr 3/4 (DINT, 4B) directory hash · attr 10 (DINT, 4B) a second
+///   hash. A Logix SCADA driver reads {1,2,3,4,10} and re-browses iff any
+///   changes. These carry this host's OWN stable, deterministic values — not a
+///   real controller's data — so a static directory reads identically every
+///   time. `null` for any other attribute id (→ per-attribute Not Supported).
+Uint8List? _changeDetectAttributeBytes(int attrId, int hash, int count) {
+  Uint8List u16(int v) => (ByteData(2)..setUint16(0, v & 0xFFFF, Endian.little)).buffer.asUint8List();
+  Uint8List u32(int v) => (ByteData(4)..setUint32(0, v & 0xFFFFFFFF, Endian.little)).buffer.asUint8List();
+  switch (attrId) {
+    case 1:
+      return u16(count); // number of symbols (INT).
+    case 2:
+      return u16(0); // number of templates/structures — this host exposes none.
+    case 3:
+    case 4:
+      return u32(hash); // directory change hash (DINT).
+    case 10:
+      return u32(hash ^ 0xFFFFFFFF); // a distinct-but-stable second hash (DINT).
+    default:
+      return null;
+  }
+}
+
+/// Answers a Get Attribute List (0x03). Identity Object (class 0x01) → the
+/// requested standard attributes' honest values. Rockwell change-detection
+/// class 0xAC → the documented attributes {1,2,3,4,10} at their real widths,
+/// carrying this host's OWN stable directory fingerprint so a Logix SCADA
+/// driver (e.g. Ignition) can complete its change-detection check and proceed
+/// to the Symbol Object browse. No vendor is impersonated (Vendor ID stays 0).
+/// Any other class → a well-formed reply marking each requested attribute
+/// Not-Supported (0x14), never a blanket 0x08. Never throws.
+CipResponse _getAttributeList(PlcProject project, CipMap map, CipRequest req) {
   final ids = _parseGetAttributeListRequest(req.data);
   if (ids == null) {
     return _errorResponse(req.service, kCipStatusNotEnoughData);
@@ -263,15 +317,9 @@ CipResponse _getAttributeList(CipRequest req) {
     return _buildGetAttributeListResponse(req.service, ids, identityAttributeBytes);
   }
   if (_targetClassId(req.path) == kCipRockwellChangeDetectClassId) {
-    // Best-effort for the proprietary Rockwell change-detection class (0xAC): a
-    // Logix SCADA driver (Ignition) gates its tag browse on a SUCCESSFUL read
-    // here. Its real attribute format is undocumented, but this host's tag
-    // directory is STATIC, so a stable placeholder (a 4-byte zero per requested
-    // attribute) honestly signals "nothing has changed" and may let the client
-    // advance to the Symbol Object browse. No vendor is impersonated (Vendor ID
-    // stays 0). If the client needs the genuine proprietary format, this will
-    // not satisfy it — see docs/protocols/ethernet-ip.md.
-    return _buildGetAttributeListResponse(req.service, ids, (_) => Uint8List(4));
+    final dir = _symbolDirectoryFingerprint(project, map);
+    return _buildGetAttributeListResponse(
+        req.service, ids, (id) => _changeDetectAttributeBytes(id, dir.hash, dir.count));
   }
   return _buildGetAttributeListResponse(req.service, ids, (_) => null);
 }

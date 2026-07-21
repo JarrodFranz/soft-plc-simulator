@@ -401,6 +401,51 @@ def read_identity_via_attribute_list(driver: CIPDriver) -> dict[int, tuple[int, 
     return attrs
 
 
+def read_change_detect_0xac(driver: CIPDriver) -> None:
+    """Reads the Rockwell change-detection class 0xAC via Get Attribute List
+    (0x03), attrs {1,2,3,4,10} — the read Ignition's Logix driver does to decide
+    whether to re-browse. Parses the reply at the DOCUMENTED widths (1756-PM020:
+    attrs 1,2 INT/2B; attrs 3,4,10 DINT/4B). Proves a real CIP client walks our
+    reply without running off the end — the exact failure (readShort on empty)
+    the wrong widths caused before. Values are this host's own stable directory
+    fingerprint, not a real controller's data.
+    """
+    ids = [1, 2, 3, 4, 10]
+    request_data = UINT.encode(len(ids)) + b"".join(UINT.encode(i) for i in ids)
+    request = GenericConnectedRequestPacket(
+        sequence=driver._sequence,
+        service=CIP_SERVICE_GET_ATTRIBUTE_LIST,
+        class_code=0xAC,
+        instance=1,
+        request_data=request_data,
+        data_type=None,
+    )
+    response = driver.send(request)
+    check(
+        response.service_status == CIP_SUCCESS,
+        f"STEP 9b (0xAC change detect): status 0x{response.service_status:02X}, expected 0x00",
+    )
+    raw = response.value or b""
+    check(len(raw) >= 2, "STEP 9b (0xAC change detect): reply too short for the count")
+    off = 0
+    count = int.from_bytes(raw[off:off + 2], "little")
+    off += 2
+    check(count == len(ids), f"STEP 9b (0xAC change detect): count {count} != {len(ids)}")
+    widths = {1: 2, 2: 2, 3: 4, 4: 4, 10: 4}  # documented per-attribute widths.
+    for _ in range(count):
+        check(off + 4 <= len(raw), "STEP 9b (0xAC change detect): truncated attribute header")
+        aid = int.from_bytes(raw[off:off + 2], "little")
+        off += 2
+        status = int.from_bytes(raw[off:off + 2], "little")
+        off += 2
+        check(status == CIP_SUCCESS, f"STEP 9b (0xAC change detect): attr {aid} status 0x{status:02X}")
+        width = widths.get(aid, 0)
+        check(off + width <= len(raw), f"STEP 9b (0xAC change detect): truncated attr {aid} value")
+        off += width
+    check(off == len(raw), f"STEP 9b (0xAC change detect): {len(raw) - off} trailing bytes — width mismatch")
+    print("[probe] step 9b OK: class 0xAC change-detection parsed at documented widths (the Ignition browse gate)")
+
+
 def logix_browse(host: str, port: int) -> None:
     """The decisive gate: the REAL `LogixDriver` browse path.
 
@@ -595,6 +640,9 @@ def run(host: str, port: int) -> None:
         # The service Ignition's AB Logix driver uses to read controller info;
         # proves our 0x03 reply parses in a real CIP client (no other step does).
         read_identity_via_attribute_list(driver)
+        # The 0xAC change-detection read Ignition gates its browse on — proves
+        # our reply parses at the documented widths (INT/INT/DINT/DINT/DINT).
+        read_change_detect_0xac(driver)
 
         # --- Step 10: Forward Close ---------------------------------------
         check(
