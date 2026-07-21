@@ -23,7 +23,21 @@ with a message naming the step):
   7. Refusal semantics: ReadOnly-mapped write and forced-tag write are both
      refused with CIP general status 0x0F (Privilege Violation) and leave the
      value unchanged; an unmapped tag name returns 0x05.
-  8. Forward Close (0x4E), then UnRegisterSession (0x66)
+  8. Symbol Object browse (generic messaging): Get Instance Attribute List
+     (0x55) walked over the Symbol Object (class 0x6B), asserting every
+     fixture tag's name + CIP type code. This is the deterministic codec
+     proof -- the same wire path LogixDriver walks -- driven WITHOUT
+     LogixDriver.open(), over pycomm3's lower-level CIPDriver.
+  9. Forward Close (0x4E)
+  10. UnRegisterSession (0x66)
+  11. LogixDriver browse + read: a SEPARATE session (LogixDriver.open() does
+      its own RegisterSession + Forward Open) proving the real-goal path --
+      Identity/Program-Name discovery, then get_tag_list() over the Symbol
+      Object, then a read of a browsed tag through LogixDriver's own read
+      path. Run after step 1-10's session has cleanly closed (rather than
+      interleaved with it) because LogixDriver.open() always negotiates its
+      own session/connection; the two proofs are independent client
+      lifecycles talking to the same host, not one continuous session.
 
 USING pycomm3's LOWER-LEVEL GENERIC CIP MESSAGING (NOT `LogixDriver`)
 ---------------------------------------------------------------------
@@ -59,7 +73,7 @@ from __future__ import annotations
 import sys
 import traceback
 
-from pycomm3 import BOOL, DINT, INT, LINT, REAL, UINT, CIPDriver, Services
+from pycomm3 import BOOL, DINT, INT, LINT, REAL, UINT, CIPDriver, LogixDriver, Services
 from pycomm3.cip_driver import with_forward_open
 from pycomm3.packets import (
     GenericConnectedRequestPacket,
@@ -85,8 +99,35 @@ FORCED_SPEED_FORCED = 777
 
 # CIP general status codes asserted by this probe.
 CIP_SUCCESS = 0x00
+CIP_PARTIAL_TRANSFER = 0x06  # more Symbol instances remain; re-request from last_id + 1
 CIP_PATH_DESTINATION_UNKNOWN = 0x05
 CIP_PRIVILEGE_VIOLATION = 0x0F
+
+# The Symbol Object (class 0x6B) directory the fixture host exposes: every
+# mapped tag as a flat atomic symbol, {name: CIP type code}. Mirrors the
+# CipMap in `mobile/tool/enip_host_probe.dart`; the `.code` values come from
+# pycomm3's OWN elementary-type classes, so this cross-checks our type codes
+# against a third party's, not against ourselves.
+EXPECTED_SYMBOLS = {
+    "Running": BOOL.code,   # 0xC1
+    "Count16": INT.code,    # 0xC3
+    "Speed": DINT.code,     # 0xC4
+    "Total64": LINT.code,   # 0xC5
+    "Level": REAL.code,     # 0xCA
+    "Temp": REAL.code,      # 0xCA (ReadOnly-mapped, but still browsable)
+    "Forced_Speed": DINT.code,  # 0xC4
+    # A DOTTED struct-member symbol: proves the dotted name survives the browse
+    # (and, at step 11, LogixDriver.get_tag_list()) intact, not split or dropped.
+    "Tank.Level": DINT.code,  # 0xC4
+}
+
+# CIP service code for Get Instance Attribute List, the Symbol Object browse.
+CIP_SERVICE_GET_INSTANCE_ATTRIBUTE_LIST = 0x55
+# The Symbol Object class id, and its two attributes the browse requests:
+# attr 1 (symbol name) and attr 2 (symbol type).
+CIP_SYMBOL_OBJECT_CLASS = 0x6B
+CIP_SYMBOL_ATTR_NAME = 1
+CIP_SYMBOL_ATTR_TYPE = 2
 
 # How long any single socket operation may block, in seconds. Every request
 # this probe issues is a single round trip against a loopback fixture host,
@@ -205,6 +246,127 @@ def expect_read(driver: CIPDriver, tag: str, decoder, expected, label: str,
     return value
 
 
+def symbol_browse(driver: CIPDriver) -> dict[str, int]:
+    """Browses the Symbol Object (class 0x6B) via Get Instance Attribute List
+    (service 0x55) over CONNECTED messaging, returning ``{name: type_code}``.
+
+    Unlike the Read/Write Tag steps, the Symbol browse addresses a LOGICAL
+    object path (class 0x6B + instance) rather than a symbolic tag name, so it
+    needs no `tag_request_path` override -- pycomm3's stock
+    `GenericConnectedRequestPacket` encodes exactly that logical path. We build
+    and `driver.send()` the packet directly (rather than `generic_message`,
+    which returns a `Tag` with no `service_status`) so we can read both the CIP
+    general status and the raw reply bytes off pycomm3's own response packet.
+
+    `data_type=None` makes pycomm3 hand back the raw CIP reply data verbatim in
+    `response.value`; this probe -- not our codec -- parses it as the repeated
+    `instance(u32) + name_len(u16) + name(ascii) + type(u16)` layout, so a
+    wrong string layout in `cip_symbol.dart` surfaces here as garbage names.
+    Status 0x06 (Partial Transfer) means more instances remain: re-request from
+    `last_id + 1` until 0x00, accumulating instances across pages.
+    """
+    request_data = (
+        UINT.encode(2)  # attribute count
+        + UINT.encode(CIP_SYMBOL_ATTR_NAME)
+        + UINT.encode(CIP_SYMBOL_ATTR_TYPE)
+    )
+    tags: dict[str, int] = {}
+    start = 0
+    for _ in range(64):  # bounded: fixture has < 64 tags; guards against a loop
+        request = GenericConnectedRequestPacket(
+            sequence=driver._sequence,
+            service=CIP_SERVICE_GET_INSTANCE_ATTRIBUTE_LIST,
+            class_code=CIP_SYMBOL_OBJECT_CLASS,
+            instance=start,
+            request_data=request_data,
+            data_type=None,
+        )
+        response = driver.send(request)
+        status = response.service_status
+        check(
+            status in (CIP_SUCCESS, CIP_PARTIAL_TRANSFER),
+            f"STEP 8 (Symbol browse): Get Instance Attribute List from instance "
+            f"{start} returned CIP general status 0x{status:02X}, expected 0x00 "
+            f"(success) or 0x06 (partial transfer)",
+        )
+        raw = response.value or b""
+        off = 0
+        last = start
+        while off + 4 <= len(raw):
+            inst = int.from_bytes(raw[off:off + 4], "little")
+            off += 4
+            check(
+                off + 2 <= len(raw),
+                "STEP 8 (Symbol browse): reply truncated in the name-length field",
+            )
+            nlen = int.from_bytes(raw[off:off + 2], "little")
+            off += 2
+            check(
+                off + nlen + 2 <= len(raw),
+                f"STEP 8 (Symbol browse): reply truncated in the {nlen}-byte name "
+                f"or the type code that follows it",
+            )
+            name = raw[off:off + nlen].decode("ascii")
+            off += nlen
+            tcode = int.from_bytes(raw[off:off + 2], "little")
+            off += 2
+            tags[name] = tcode
+            last = inst
+        if status != CIP_PARTIAL_TRANSFER:
+            break
+        start = last + 1
+    return tags
+
+
+def logix_browse(host: str, port: int) -> None:
+    """The decisive gate: the REAL `LogixDriver` browse path.
+
+    Unlike every step above (which drives pycomm3's lower-level CIPDriver /
+    generic-messaging classes), this opens a full `LogixDriver`. Its `open()`
+    performs the connect-time controller-info handshake a Logix client always
+    does -- ListIdentity (encapsulation 0x63), then, wrapped in a CIP
+    Unconnected Send (0x52) to the Connection Manager, Get Attributes All on the
+    Identity Object (class 0x01) and on the Program Name Object (class 0x64) --
+    then uploads the controller tag directory via the Symbol Object (class
+    0x6B), which pycomm3 requests with attributes {1,2,3,5,6,8}. This is the
+    path Ignition's AB Logix driver walks too, so it -- not our own codec -- is
+    the authority that our Identity + Program-Name + Symbol bytes are what a
+    Logix client actually accepts.
+    """
+    drv = LogixDriver(host)
+    drv._cfg["port"] = port
+    with drv:  # open(): identity + program name (via 0x52), then tag upload
+        tags = drv.get_tag_list()
+        names = {t["tag_name"] for t in tags}
+        for expected in ("Speed", "Running", "Level"):
+            check(
+                expected in names,
+                f"STEP 11 (LogixDriver browse): {expected!r} not in tag list "
+                f"{sorted(names)}",
+            )
+        # The dotted struct-member symbol must survive get_tag_list() intact --
+        # a Logix client's STRING parse + user-tag isolation must keep the dot,
+        # not split 'Tank.Level' into a 'Tank' struct upload (which would need
+        # the Template Object we deliberately do not serve).
+        check(
+            "Tank.Level" in names,
+            f"STEP 11 (LogixDriver browse): dotted name 'Tank.Level' did not "
+            f"survive get_tag_list(); got {sorted(names)}",
+        )
+        # Read one browsed tag back through LogixDriver's OWN read path (which
+        # builds the request from the uploaded tag definition, not from bytes
+        # we hand it) -- proof the browsed directory is actually usable.
+        result = drv.read("Speed")
+        check(
+            result and result.value is not None,
+            "STEP 11 (LogixDriver browse): LogixDriver read of a browsed tag failed",
+        )
+    print(
+        f"[probe] step 11 OK: LogixDriver browsed {len(names)} tags and read one "
+        f"back (Speed={result.value})"
+    )
+
+
 def run(host: str, port: int) -> None:
     driver = CIPDriver(f"{host}")
     driver._cfg["port"] = port
@@ -318,17 +480,60 @@ def run(host: str, port: int) -> None:
             "write refused 0x0F, unmapped tag 0x05"
         )
 
-        # --- Step 8: Forward Close ----------------------------------------
+        # --- Step 8: Symbol Object browse ---------------------------------
+        # Uploads the controller tag directory the way a Logix client does --
+        # Get Instance Attribute List (0x55) walked over the Symbol Object
+        # (class 0x6B) -- and asserts every fixture tag comes back with the
+        # right CIP type code. This is the FIRST time a third-party client
+        # reads our Symbol codec's bytes; it is where the attr-1 name string
+        # layout is confirmed against pycomm3's own byte reading, WITHOUT
+        # needing LogixDriver.open() (that is a later task).
+        symbols = symbol_browse(driver)
+        for name, code in EXPECTED_SYMBOLS.items():
+            check(
+                name in symbols,
+                f"STEP 8 (Symbol browse): expected tag {name!r} was absent from the "
+                f"browsed symbol list {sorted(symbols)}",
+            )
+            check(
+                symbols[name] == code,
+                f"STEP 8 (Symbol browse): tag {name!r} browsed as CIP type code "
+                f"0x{symbols[name]:02X}, expected 0x{code:02X}",
+            )
+        check(
+            len(symbols) == len(EXPECTED_SYMBOLS),
+            f"STEP 8 (Symbol browse): browsed {len(symbols)} tags "
+            f"({sorted(symbols)}), expected exactly {len(EXPECTED_SYMBOLS)} "
+            f"({sorted(EXPECTED_SYMBOLS)})",
+        )
+        print(f"[probe] step 8 OK: Symbol Object browse returned {len(symbols)} tags")
+
+        # --- Step 9: Forward Close ----------------------------------------
         check(
             driver._forward_close(),
-            "STEP 8 (Forward Close): the host did not accept the Forward Close",
+            "STEP 9 (Forward Close): the host did not accept the Forward Close",
         )
-        print("[probe] step 8 OK: forward close accepted")
+        print("[probe] step 9 OK: forward close accepted")
+
+        # --- Step 10: UnRegisterSession ------------------------------------
+        # Encapsulation command 0x66 defines no reply (fire-and-forget), so
+        # the assertion is that sending it does not raise and the driver
+        # clears its own session handle -- not a reply status.
+        driver._un_register_session()
+        check(
+            driver._session is None,
+            "STEP 10 (UnRegisterSession): the driver still holds a session "
+            "handle after UnRegisterSession",
+        )
+        print("[probe] step 10 OK: session unregistered")
     finally:
         try:
             driver.close()
         except Exception:  # noqa: BLE001 - teardown must not mask a real failure
             pass
+
+    # --- Step 11: the full LogixDriver browse gate (own session) ---------
+    logix_browse(host, port)
 
     print("ENIP PROBE PASS")
 

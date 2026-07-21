@@ -14,10 +14,12 @@ Implemented from public EtherNet/IP and CIP specification material.
 
 | Layer | What is implemented | File |
 | --- | --- | --- |
-| Encapsulation | 24-byte header, CPF item lists, `NOP`, `RegisterSession` (0x65), `UnRegisterSession` (0x66), `SendRRData` (0x6F), `SendUnitData` (0x70) | `mobile/lib/protocols/enip/enip_encap.dart` |
+| Encapsulation | 24-byte header, CPF item lists, `NOP`, `RegisterSession` (0x65), `UnRegisterSession` (0x66), `SendRRData` (0x6F), `SendUnitData` (0x70), `ListIdentity` (0x63) | `mobile/lib/protocols/enip/enip_encap.dart` |
 | CIP messaging | Request/response envelope, EPATH parse/build (ANSI Extended Symbol + logical Class/Instance/Attribute), elementary type codec | `mobile/lib/protocols/enip/cip.dart` |
-| Connection manager | Forward Open (0x54), Forward Close (0x4E) | `mobile/lib/protocols/enip/cip_connection.dart` |
+| Connection manager | Forward Open (0x54), Forward Close (0x4E), Unconnected Send (0x52) transparent unwrap | `mobile/lib/protocols/enip/cip_connection.dart`, `cip_tags.dart` |
 | Tag services | Read Tag (0x4C), Write Tag (0x4D), Multiple Service Packet (0x0A) | `mobile/lib/protocols/enip/cip_tags.dart` |
+| Symbol Object browse | Get Instance Attribute List (0x55) over class 0x6B, paginated | `mobile/lib/protocols/enip/cip_symbol.dart` |
+| Controller identity | Identity Object (0x01) + Program Name Object (0x64) Get Attributes All, `ListIdentity` | `mobile/lib/protocols/enip/cip_identity.dart` |
 | Exposure model | `CipMap` / `CipMapEntry`, auto-population, per-entry access | `mobile/lib/models/cip_map.dart` |
 | Socket host | `ServerSocket`, frame reassembly, session + connection state | `mobile/lib/services/enip_host.dart` |
 
@@ -82,6 +84,9 @@ falls back to the regular Forward Open — a path the E2E exercises deliberately
 | Multiple Service Packet | 0x0A | Batches embedded Read/Write Tag requests. The request path must address the Message Router (class 0x02, instance 0x01). One embedded request failing only sets that embedded response's status — it never fails the batch. Over a connected send, the reply is bounded by the negotiated connection size (see *Response-size budget*). |
 | Forward Open | 0x54 | Regular form only. The T→O and O→T Network Connection Parameters words are parsed and the connection sizes stored on the connection (see *Response-size budget*). |
 | Forward Close | 0x4E | Matched by (connection serial, vendor id, originator serial), never by connection id — a Forward Close request does not carry one. |
+| Get Instance Attribute List | 0x55 | Served only over the Symbol Object (class 0x6B) — the tag-directory browse. See *Symbol Object browse (tag directory upload)* below. |
+| Get Attributes All | 0x01 | Served over the Identity Object (class 0x01) and the Program Name Object (class 0x64) — the connect-time controller-info reads. See *Controller identity* below. |
+| Unconnected Send | 0x52 | A Connection Manager (class 0x06) service that wraps another CIP request plus a route path. This host is always the end device, so it treats 0x52 as a **transparent wrapper**: unwrap the embedded request, dispatch it through the same `dispatchCipService`, and return the embedded reply verbatim. Embedded re-dispatch is bounded by a small fixed depth cap so a crafted nested frame cannot recurse without limit — see *Controller identity* below. |
 
 Any other service code returns `Service Not Supported` (0x08).
 
@@ -148,6 +153,108 @@ length does not catch — and is refused with `0x0A` (Embedded List Error).
 
 `STRING` has **no** CIP type in v1 — see *Deferred to v2*.
 
+### Symbol Object browse (tag directory upload)
+
+A Logix-style client — `pycomm3`'s `LogixDriver`, Ignition's AB Logix driver —
+uploads the controller's tag directory at connect time by walking the **Symbol
+Object** (class `0x6B`) with **Get Instance Attribute List** (`0x55`). v1
+serves this browse — the real-client E2E's decisive gate is a full
+`LogixDriver.open()` → `get_tag_list()` → `read()` round trip against this
+host, not just a hand-built request (see *End-to-end proof* below).
+
+- **Flat, atomic browse.** Every exposed tag is a scalar leaf (see the
+  `CipMap` model below), so each `CipMap` entry becomes exactly **one** Symbol
+  instance — there is no Template Object (class `0x6C`, deferred to v2) behind
+  it, and never can be for an atomic scalar. Instance ids are a **dense
+  1-based sequence over the LISTABLE entries**: an entry with no CIP wire type
+  (currently only a stale/unresolvable `STRING` entry) is skipped and **burns
+  no instance id**, so numbering stays contiguous for a real client walking
+  the directory.
+- **Dotted names survive verbatim.** A composite/array leaf's dotted or
+  indexed resolver path (`Tank.Level`, `Arr[0]`) is listed as one flat symbol
+  under that exact string — confirmed not just by the unit codec but by
+  `LogixDriver.get_tag_list()` itself in the real-client gate, which must keep
+  the dot rather than upload `Tank` as a struct (that would need the Template
+  Object).
+- **Served attributes.** The codec (`cip_symbol.dart`) can emit any of attrs
+  `{1, 2, 3, 5, 6, 8}`, and emits only the ones the request actually asked
+  for, in ascending attribute-id order (the order a Logix client both
+  requests and parses them):
+  - attr 1 — symbol name: `u16` byte-length + that many ASCII bytes.
+  - attr 2 — symbol type: `u16` elementary CIP type code with bit 15 clear
+    (ATOMIC, never a struct/template reference).
+  - attr 3 — symbol address (`UDINT`): always 0 — a soft simulator has no
+    physical memory address.
+  - attr 5 — symbol object address (`UDINT`): always 0.
+  - attr 6 — software control (`UDINT`): the `BASE_TAG_BIT` (`1 << 26`) set,
+    so the client marks the symbol a BASE tag, never an alias.
+  - attr 8 — array dimensions: three `UDINT`s, always 0 (every symbol is a
+    scalar leaf, so there are no array dimensions).
+
+  The generic-messaging E2E step requests `{1, 2}`; `pycomm3`'s
+  `LogixDriver.get_tag_list()` requests `{1, 2, 3, 5, 6, 8}`. Both are served
+  byte-exact from the same codec, so the two proofs stay in sync.
+- **Pagination (0x06).** Instances are emitted, in ascending id order from the
+  request's start instance, until the next instance's full encoded block
+  would exceed the reply budget; the response then carries status `0x06`
+  (Partial Transfer) and the client re-requests from `lastReturnedId + 1`
+  until a page returns `0x00`. On a **connected** send the budget is the
+  negotiated Forward Open T→O connection size (the same budget the Multiple
+  Service Packet reply honors); on an **unconnected (UCMM)** send, which
+  negotiates no size, a fixed cap (`kCipUcmmBrowseReplyCap`, 480 bytes) is
+  used so the browse still paginates rather than emitting an oversized frame.
+  Verified by a dedicated multi-page unit test that drives the SAME attribute
+  set and per-instance byte cost the real browse uses, asserting the union of
+  every page's instances equals every listable entry exactly once.
+
+### Controller identity (Identity Object, Program Name, Unconnected Send)
+
+Before uploading the tag directory, a Logix-style client reads two objects to
+identify the controller it's talking to — both served honestly, as what this
+app actually is, impersonating no real vendor or product:
+
+- **Identity Object (class `0x01`), Get Attributes All.** Vendor ID **0**
+  (the reserved "no vendor" value — claims no real vendor), Device Type
+  `0x000E` (Programmable Logic Controller), product name **"Soft PLC
+  Simulator"**, and a fixed serial number, so runs stay deterministic. The
+  same struct backs **`ListIdentity`** (encapsulation `0x63`), the
+  pre-session discovery reply a client can request without a registered
+  session.
+- **Program Name Object (class `0x64`), Get Attributes All.** Returns the
+  project's own `controllerName` as a Logix `STRING` (`u16` length + ASCII) —
+  exactly what `pycomm3`'s `get_plc_name` decodes. No invented name.
+- **Unconnected Send (`0x52`) transparent unwrap.** `LogixDriver.open()`
+  sends both of the reads above wrapped in an Unconnected Send targeting the
+  Connection Manager (class `0x06`); this host, always the end device, treats
+  `0x52` as a transparent wrapper — unwrap the embedded request, dispatch it
+  through the same `dispatchCipService` every other service goes through, and
+  return the embedded reply verbatim (Unconnected Send adds no framing of its
+  own). Embedded re-dispatch is **hard-bounded by a small fixed depth cap (a
+  depth counter, cap 8)**: two services re-dispatch — Unconnected Send (`0x52`)
+  and Multiple Service Packet (`0x0A`) — and each can carry the other, so the
+  `0x52` ↔ `0x0A` cycle could otherwise recurse once per nesting level (bounded
+  only by the ~64 KB frame cap, i.e. thousands of levels, each copying its
+  embedded slice). A counter threaded through both re-dispatch sites refuses any
+  request that reaches the cap with `Service Not Supported` (0x08) instead of
+  recursing, so a crafted nested frame cannot use the host's own re-dispatch as
+  a resource-exhaustion vector regardless of frame size. Legit client nesting is
+  at most ~2 levels, far below the cap. A direct `0x52`-inside-`0x52` is also
+  refused immediately (the cap subsumes it).
+
+Together, these settle what the earlier *Deferred to v2* note left open: a
+real `LogixDriver.open()` succeeds against this host, and the dotted-name
+representation the Symbol browse serves is exactly what `get_tag_list()`
+parses back.
+
+### Non-success statuses in the app Logs
+
+Any CIP request that completes with a general status other than `0x00`
+(success) or `0x06` (Partial Transfer — a normal browse page) is surfaced as a
+first-occurrence log entry in the app's in-app Logs (`enip_host.dart`), naming
+the service and status byte. This is diagnostic visibility for the person
+running the simulator, not a wire-level change — the CIP reply itself is
+unaffected.
+
 ### The `CipMap` exposure model
 
 Nothing is reachable over EtherNet/IP unless it is in the project's `CipMap`.
@@ -197,27 +304,20 @@ crashing. All of this is covered by `mobile/test/enip_*_test.dart` and
 These are **deliberate scope boundaries**, documented at the source, not
 oversights.
 
-- **Symbol Object / Template Object browse.** A client that uploads a
-  controller tag list (which is what `pycomm3`'s `LogixDriver` does at connect
-  time) reads the Symbol Object for names and instance ids, then the Template
-  Object for the memory layout of every structured type. That is a substantial
-  object model in its own right, and it is only needed for *discovery* —
-  symbolic addressing works without it, provided the client knows the tag
-  names, which for this app's use case it does (they are shown in the map
-  editor). v1 therefore ships symbolic read/write and defers browse.
+- **Template Object (class `0x6C`) / UDT structure browse.** The Symbol Object
+  browse (now served — see *Symbol Object browse* above) is **flat and atomic
+  only**: every browsed symbol is a scalar leaf, never a struct/UDT reference.
+  Describing a structured type's memory layout to a client requires the
+  Template Object, a substantial object model in its own right that a v1
+  scalar-leaf exposure model has no honest use for — there is no structured
+  instance to describe. Deferred to v2.
 - **`STRING` as a struct.** A symbolic CIP string is not a scalar wire value:
   it is a structured type (a length field plus a character array) whose layout
   a client cannot decode without the Template Object describing it. Since the
   Template Object is deferred, `STRING` has no honest v1 representation, so
-  `CipMap.autoPopulate` **skips `STRING` leaves** and `cipTypeForTagType`
-  returns `null` for them. Exposing a string as raw bytes with no template
-  would produce something no real client could read.
-- **Identity Object / ListIdentity.** `ListIdentity` (0x63) is how a client
-  discovers a device on the network and reads its vendor/product/serial
-  identity. It is a discovery convenience, not a prerequisite for explicit
-  messaging, and it invites inventing vendor and product-code values that do
-  not describe a real device. Deferred pending a decision on what identity this
-  simulator should honestly report.
+  `CipMap.autoPopulate` **skips `STRING` leaves**, `cipTypeForTagType` returns
+  `null` for them, and the Symbol browse skips a `STRING`-typed map entry
+  entirely (burning no instance id — see *Symbol Object browse* above).
 - **Large Forward Open (0x5B)** and **implicit (Class 1 I/O) messaging.**
   Implicit messaging is a UDP cyclic-data plane, an entirely separate transport
   from the explicit-messaging TCP path this version implements.
@@ -254,7 +354,19 @@ probe `tool/py/enip_probe.py` against it, kills the host unconditionally via a
 7. A `ReadOnly`-mapped write and a forced-tag write are each refused with 0x0F
    and leave the value unchanged; a forced tag reads its forced value; an
    unmapped name returns 0x05.
-8. `Forward Close` is accepted, then `UnRegisterSession`.
+8. **Symbol Object browse (generic messaging):** Get Instance Attribute List
+   (0x55) walked over the Symbol Object (class 0x6B), asserting every fixture
+   tag's name and CIP type code — the deterministic codec proof, driven
+   without `LogixDriver.open()`.
+9. `Forward Close` is accepted.
+10. `UnRegisterSession` is sent and the driver clears its own session handle.
+11. **The decisive gate:** a full `LogixDriver.open()` (its own session) —
+    Identity + Program Name reads via Unconnected Send, then
+    `get_tag_list()` over the Symbol Object requesting attrs
+    `{1, 2, 3, 5, 6, 8}` — followed by `LogixDriver.read()` of a browsed tag
+    through the driver's own read path (built from the uploaded tag
+    definition, not from bytes the probe hands it), and a dotted symbol
+    (`Tank.Level`) confirmed present in the uploaded directory intact.
 
 The fixture host does **not** import `services/enip_host.dart`: `EnipHost`
 extends `ChangeNotifier`, which pulls in `dart:ui`, unavailable under a plain
@@ -303,9 +415,16 @@ exact function `LogixDriver` itself calls to address a tag by name — inside a
 two-line subclass of pycomm3's own request packet classes, submitted through
 `CIPDriver.send()`. The encapsulation header, session handling, CPF framing,
 connection sequence counts, response parsing, and CIP status decoding are all
-still produced and consumed by pycomm3. `LogixDriver` itself is not usable here
-because it uploads a tag list at connect time via the Symbol and Template
-objects, which are deferred to v2.
+still produced and consumed by pycomm3.
+
+This limitation is why steps 1–10 drive the lower-level `CIPDriver` rather
+than `LogixDriver` directly: `generic_message()` cannot express a symbolic
+Read/Write Tag at all, for any target, so it cannot exercise those services.
+`LogixDriver` itself is exercised separately and fully at step 11 (its own
+session) — `open()`'s connect-time Identity/Program-Name reads,
+`get_tag_list()`'s Symbol Object upload, and a `read()` through the browsed
+directory — which needed the Symbol browse and Identity/Program-Name objects
+this task's browse work now serves, not a workaround.
 
 ---
 

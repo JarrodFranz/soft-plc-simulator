@@ -59,6 +59,51 @@ Uint8List _buildMsp(List<Uint8List> embedded) {
   return out.toBytes();
 }
 
+/// Wraps [embedded] (a raw CIP request's bytes) in a CIP Unconnected Send
+/// (0x52) request data payload, mirroring pycomm3's `wrap_unconnected_send`:
+/// priority u8, timeout u8, embedded-message size u16, the embedded bytes, one
+/// 0x00 pad byte iff the size is odd, then the route path (size u8 words +
+/// reserved u8 + [routePathWords]). Default route path is a single port
+/// segment (port 1) — the host ignores it, but a realistic wrapper carries one.
+Uint8List _wrapUnconnectedSend(Uint8List embedded, {List<int> routePathWords = const [0x01, 0x00]}) {
+  final out = BytesBuilder();
+  out.addByte(0x0a); // priority / time_tick
+  out.addByte(0x05); // timeout ticks
+  out.add(_u16le(embedded.length));
+  out.add(embedded);
+  if (embedded.length.isOdd) {
+    out.addByte(0x00); // pad so the route path starts on a word boundary
+  }
+  out.addByte(routePathWords.length ~/ 2); // route path size, in 16-bit words
+  out.addByte(0x00); // reserved
+  out.add(routePathWords);
+  return out.toBytes();
+}
+
+/// A small fixture for the Symbol Object browse routing tests, mirroring
+/// Task 1's `buildProject()` / `buildMap()` in `cip_symbol_test.dart`: three
+/// scalar leaves, each a flat atomic symbol the browse enumerates.
+PlcProject _browseProject() => PlcProject(
+      id: 'browse_proj',
+      name: 'browse',
+      controllerName: 'PLC',
+      tags: [
+        PlcTag(name: 'Running', path: 'Internal.Running', dataType: 'BOOL', value: true, ioType: 'Internal'),
+        PlcTag(name: 'Speed', path: 'Internal.Speed', dataType: 'INT32', value: 100, ioType: 'Internal'),
+        PlcTag(name: 'Level', path: 'Internal.Level', dataType: 'FLOAT64', value: 1.5, ioType: 'Internal'),
+      ],
+      structDefs: [],
+      programs: [],
+      tasks: [],
+      hmis: [],
+    );
+
+CipMap _browseMap() => CipMap(entries: [
+      CipMapEntry(tagName: 'Running', access: 'ReadWrite'),
+      CipMapEntry(tagName: 'Speed', access: 'ReadWrite'),
+      CipMapEntry(tagName: 'Level', access: 'ReadWrite'),
+    ]);
+
 void main() {
   PlcProject buildProject() => PlcProject(
         id: 'cip_tags_proj',
@@ -749,6 +794,292 @@ void main() {
         CipRequest(service: kCipServiceMultipleServicePacket, path: routerPath, data: data),
       );
       expect(resp.generalStatus, kCipStatusEmbeddedListError);
+    });
+  });
+
+  group('dispatchCipService — Symbol Object browse routing', () {
+    test('0x55 addressed to class 0x6B returns a Symbol instance list', () {
+      final req = CipRequest(
+        service: kCipServiceGetInstanceAttributeList,
+        path: [CipPathSegment.classId(kCipSymbolObjectClassId), CipPathSegment.instanceId(0)],
+        data: Uint8List.fromList([0x02, 0x00, 0x01, 0x00, 0x02, 0x00]),
+      );
+      final resp = dispatchCipService(_browseProject(), _browseMap(), req);
+      expect(resp.service, kCipServiceGetInstanceAttributeList);
+      expect(resp.generalStatus, anyOf(kCipStatusSuccess, kCipStatusPartialTransfer));
+      expect(resp.data, isNotEmpty);
+    });
+
+    test('0x55 addressed to a non-Symbol class is Service Not Supported', () {
+      final req = CipRequest(
+        service: kCipServiceGetInstanceAttributeList,
+        path: [CipPathSegment.classId(0x04), CipPathSegment.instanceId(0)],
+        data: Uint8List.fromList([0x01, 0x00, 0x01, 0x00]),
+      );
+      final resp = dispatchCipService(_browseProject(), _browseMap(), req);
+      expect(resp.generalStatus, kCipStatusServiceNotSupported);
+    });
+  });
+
+  group('dispatchCipService — Unconnected Send (0x52) transparent wrapper', () {
+    test('unwraps and dispatches the embedded request, returning its response verbatim', () {
+      final project = buildProject();
+      final map = buildMap();
+      final embedded = _embeddedRequest(
+          kCipServiceReadTag, [CipPathSegment.symbol('Int32_Tag')], _readData());
+      final wrapped = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: [CipPathSegment.classId(kCipConnectionManagerClassId), CipPathSegment.instanceId(1)],
+        data: _wrapUnconnectedSend(embedded),
+      );
+      final viaWrapper = dispatchCipService(project, map, wrapped);
+      // Transparent: byte-identical to dispatching the embedded request
+      // directly as UCMM — no wrapper is added to the reply.
+      final direct = dispatchCipService(buildProject(), buildMap(), parseCipRequest(embedded)!);
+      expect(viaWrapper.service, kCipServiceReadTag);
+      expect(viaWrapper.service, direct.service);
+      expect(viaWrapper.generalStatus, kCipStatusSuccess);
+      expect(viaWrapper.data, direct.data);
+      // The embedded Read actually round-tripped: type DINT + value 98765.
+      expect(_readU16(viaWrapper.data, 0), kCipTypeDint);
+      expect(ByteData.sublistView(viaWrapper.data, 2, 6).getInt32(0, Endian.little), 98765);
+    });
+
+    test('carries an embedded Identity Get Attributes All through unchanged', () {
+      final embedded = _embeddedRequest(
+        kCipServiceGetAttributesAll,
+        [CipPathSegment.classId(kCipIdentityObjectClassId), CipPathSegment.instanceId(1)],
+        Uint8List(0),
+      );
+      final wrapped = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: [CipPathSegment.classId(kCipConnectionManagerClassId), CipPathSegment.instanceId(1)],
+        data: _wrapUnconnectedSend(embedded),
+      );
+      final resp = dispatchCipService(buildProject(), buildMap(), wrapped);
+      expect(resp.service, kCipServiceGetAttributesAll);
+      expect(resp.generalStatus, kCipStatusSuccess);
+      expect(_readU16(resp.data, 0), 0); // Vendor ID 0 (honest, no vendor).
+      expect(_readU16(resp.data, 2), 0x000E); // Device Type: PLC.
+    });
+
+    test('an odd-length embedded message (route path preceded by a pad byte) is parsed exactly', () {
+      // 3-byte embedded data makes the embedded request odd-length, so the
+      // wrapper inserts a pad byte before the route path. The host must read
+      // exactly `size` bytes and never let the pad/route-path bleed in.
+      final embedded = _embeddedRequest(
+          kCipServiceReadTag, [CipPathSegment.symbol('Int32_Tag')], Uint8List.fromList([1, 0, 0]));
+      expect(embedded.length.isOdd, isTrue);
+      final wrapped = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: [CipPathSegment.classId(kCipConnectionManagerClassId), CipPathSegment.instanceId(1)],
+        data: _wrapUnconnectedSend(embedded),
+      );
+      final resp = dispatchCipService(buildProject(), buildMap(), wrapped);
+      expect(resp.service, kCipServiceReadTag);
+      expect(resp.generalStatus, kCipStatusSuccess);
+      expect(_readU16(resp.data, 0), kCipTypeDint);
+    });
+
+    test('a wrapper addressed to a non-Connection-Manager class is refused, never throws', () {
+      final embedded = _embeddedRequest(
+          kCipServiceReadTag, [CipPathSegment.symbol('Int32_Tag')], _readData());
+      final wrapped = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: [CipPathSegment.classId(0x02), CipPathSegment.instanceId(1)], // Message Router, not Conn Mgr
+        data: _wrapUnconnectedSend(embedded),
+      );
+      late CipResponse resp;
+      expect(() => resp = dispatchCipService(buildProject(), buildMap(), wrapped), returnsNormally);
+      expect(resp.generalStatus, isNot(kCipStatusSuccess));
+    });
+
+    test('a nested Unconnected Send (0x52 inside 0x52) is rejected, never deep-recurses or throws', () {
+      // Craft a 0x52 whose embedded request is ANOTHER 0x52. Re-dispatch routes
+      // 0x52 back into the handler, so without a guard a nested frame would
+      // recurse once per level (a resource-exhaustion DoS). The handler must
+      // reject the nested wrapper with an error status at exactly one level.
+      final innerReal = _embeddedRequest(
+          kCipServiceReadTag, [CipPathSegment.symbol('Int32_Tag')], _readData());
+      final inner52 = _embeddedRequest(
+        kCipServiceUnconnectedSend,
+        [CipPathSegment.classId(kCipConnectionManagerClassId), CipPathSegment.instanceId(1)],
+        _wrapUnconnectedSend(innerReal),
+      );
+      final wrapped = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: [CipPathSegment.classId(kCipConnectionManagerClassId), CipPathSegment.instanceId(1)],
+        data: _wrapUnconnectedSend(inner52),
+      );
+      late CipResponse resp;
+      expect(() => resp = dispatchCipService(buildProject(), buildMap(), wrapped), returnsNormally);
+      expect(resp.generalStatus, isNot(kCipStatusSuccess));
+      expect(resp.generalStatus, kCipStatusServiceNotSupported);
+    });
+
+    test('a malformed wrapper (declared embedded size exceeds the data) returns an error, never throws', () {
+      // Header claims a 200-byte embedded message but only a few bytes follow.
+      final data = Uint8List.fromList([0x0a, 0x05, 0xC8, 0x00, 0x01, 0x02]);
+      final wrapped = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: [CipPathSegment.classId(kCipConnectionManagerClassId), CipPathSegment.instanceId(1)],
+        data: data,
+      );
+      late CipResponse resp;
+      expect(() => resp = dispatchCipService(buildProject(), buildMap(), wrapped), returnsNormally);
+      expect(resp.generalStatus, isNot(kCipStatusSuccess));
+    });
+
+    test('an embedded request that itself fails only sets THAT status, still no throw', () {
+      // Embedded read of an unmapped tag → 0x05 comes back through the wrapper
+      // verbatim (the wrapper is transparent, not a batch that could fail).
+      final embedded = _embeddedRequest(
+          kCipServiceReadTag, [CipPathSegment.symbol('Unexposed_Tag')], _readData());
+      final wrapped = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: [CipPathSegment.classId(kCipConnectionManagerClassId), CipPathSegment.instanceId(1)],
+        data: _wrapUnconnectedSend(embedded),
+      );
+      final resp = dispatchCipService(buildProject(), buildMap(), wrapped);
+      expect(resp.service, kCipServiceReadTag);
+      expect(resp.generalStatus, kCipStatusPathDestinationUnknown);
+    });
+  });
+
+  group('Fix 1: embedded re-dispatch depth cap (0x52 <-> 0x0A cycle)', () {
+    final routerPath = [CipPathSegment.classId(0x02), CipPathSegment.instanceId(0x01)];
+    final connMgrPath = [
+      CipPathSegment.classId(kCipConnectionManagerClassId),
+      CipPathSegment.instanceId(1),
+    ];
+
+    /// A leaf Read Tag embedded-request byte blob.
+    Uint8List leafRead() =>
+        _embeddedRequest(kCipServiceReadTag, [CipPathSegment.symbol('Int32_Tag')], _readData());
+
+    /// Wraps [inner] request bytes in an Unconnected Send (0x52) embedded request.
+    Uint8List wrap52(Uint8List inner) =>
+        _embeddedRequest(kCipServiceUnconnectedSend, connMgrPath, _wrapUnconnectedSend(inner));
+
+    /// Wraps [inner] request bytes in a single-item Multiple Service Packet (0x0A)
+    /// embedded request.
+    Uint8List wrap0A(Uint8List inner) =>
+        _embeddedRequest(kCipServiceMultipleServicePacket, routerPath, _buildMsp([inner]));
+
+    test(
+        'a 0x52 -> 0x0A -> 0x52 -> ... interleaved frame far deeper than the cap '
+        'never throws and never deep-recurses', () {
+      // Build from the leaf outward, alternating MSP (0x0A) and Unconnected Send
+      // (0x52) so re-dispatch bounces through the 0x52 <-> 0x0A cycle the depth
+      // counter exists to bound. 40 wraps is far past cap 8; with the cap, the
+      // dispatch only ever recurses 8 levels deep no matter how deep the frame.
+      var inner = leafRead();
+      for (var level = 0; level < 40; level++) {
+        inner = level.isEven ? wrap0A(inner) : wrap52(inner);
+      }
+      // After 40 wraps (last is odd -> wrap52) the outermost blob is a 0x52.
+      final top = parseCipRequest(inner)!;
+      expect(top.service, kCipServiceUnconnectedSend);
+
+      late CipResponse resp;
+      expect(() => resp = dispatchCipService(buildProject(), buildMap(), top), returnsNormally);
+      // The outer 0x52 is a transparent wrapper around a 0x0A whose envelope
+      // parses fine, so the top-level general status is success — the depth
+      // guard fired deep inside and its error is carried in a nested embedded
+      // body (an MSP never fails its envelope for a bad item). What this proves
+      // is bounded recursion: the call RETURNS instead of overflowing the stack.
+      expect(resp.generalStatus, kCipStatusSuccess);
+    });
+
+    test('the depth guard refuses either recursive service AT the cap with an error status', () {
+      // depth is additive, so a caller can drive it directly. At depth == cap,
+      // BOTH recursive services are refused with an error general status rather
+      // than recursing.
+      final send52 = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: connMgrPath,
+        data: _wrapUnconnectedSend(leafRead()),
+      );
+      final mspReq = CipRequest(
+        service: kCipServiceMultipleServicePacket,
+        path: routerPath,
+        data: _buildMsp([leafRead()]),
+      );
+
+      late CipResponse resp52;
+      expect(
+        () => resp52 = dispatchCipService(buildProject(), buildMap(), send52, depth: kMaxEmbeddedDispatchDepth),
+        returnsNormally,
+      );
+      expect(resp52.generalStatus, kCipStatusServiceNotSupported);
+
+      late CipResponse respMsp;
+      expect(
+        () => respMsp = dispatchCipService(buildProject(), buildMap(), mspReq, depth: kMaxEmbeddedDispatchDepth),
+        returnsNormally,
+      );
+      expect(respMsp.generalStatus, kCipStatusServiceNotSupported);
+
+      // One below the cap still processes normally: the 0x52 unwraps its leaf
+      // read at depth cap-1 and the embedded read (not recursive) succeeds.
+      final resp52Ok =
+          dispatchCipService(buildProject(), buildMap(), send52, depth: kMaxEmbeddedDispatchDepth - 1);
+      expect(resp52Ok.service, kCipServiceReadTag);
+      expect(resp52Ok.generalStatus, kCipStatusSuccess);
+    });
+
+    test('a legit 0x52 wrapping a 0x0A of leaf reads still succeeds (cap must not break 2-level nesting)', () {
+      // The real LogixDriver path: Unconnected Send (depth 0) wrapping a Multiple
+      // Service Packet (depth 1) of leaf reads (depth 2) — all below cap 8. Cap 1
+      // would have broken this; cap 8 leaves it untouched.
+      final read0 = _embeddedRequest(kCipServiceReadTag, [CipPathSegment.symbol('Bool_Tag')], _readData());
+      final read1 = _embeddedRequest(kCipServiceReadTag, [CipPathSegment.symbol('Int32_Tag')], _readData());
+      final msp = _embeddedRequest(kCipServiceMultipleServicePacket, routerPath, _buildMsp([read0, read1]));
+      final top = CipRequest(
+        service: kCipServiceUnconnectedSend,
+        path: connMgrPath,
+        data: _wrapUnconnectedSend(msp),
+      );
+      final resp = dispatchCipService(buildProject(), buildMap(), top);
+      // Transparent 0x52 -> the MSP reply verbatim; envelope success, both items
+      // succeed.
+      expect(resp.service, kCipServiceMultipleServicePacket);
+      expect(resp.generalStatus, kCipStatusSuccess);
+      expect(_readU16(resp.data, 0), 2);
+      final off0 = _readU16(resp.data, 2);
+      final off1 = _readU16(resp.data, 4);
+      final body0 = resp.data.sublist(2 + off0, 2 + off1);
+      final body1 = resp.data.sublist(2 + off1);
+      expect(body0[2], kCipStatusSuccess);
+      expect(body1[2], kCipStatusSuccess);
+    });
+  });
+
+  group('dispatchCipService — Program Name Object (0x64) Get Attributes All', () {
+    test('returns the controller name as a Logix STRING (u16 len + ascii)', () {
+      final project = buildProject(); // controllerName: 'PLC_CIP_TAGS'
+      final req = CipRequest(
+        service: kCipServiceGetAttributesAll,
+        path: [CipPathSegment.classId(kCipProgramNameObjectClassId), CipPathSegment.instanceId(1)],
+        data: Uint8List(0),
+      );
+      final resp = dispatchCipService(project, buildMap(), req);
+      expect(resp.service, kCipServiceGetAttributesAll);
+      expect(resp.generalStatus, kCipStatusSuccess);
+      const expected = 'PLC_CIP_TAGS';
+      expect(_readU16(resp.data, 0), expected.length);
+      expect(String.fromCharCodes(resp.data.sublist(2, 2 + expected.length)), expected);
+      expect(resp.data.length, 2 + expected.length);
+    });
+
+    test('Get Attributes All on an unhandled class is Service Not Supported', () {
+      final req = CipRequest(
+        service: kCipServiceGetAttributesAll,
+        path: [CipPathSegment.classId(0x77), CipPathSegment.instanceId(1)],
+        data: Uint8List(0),
+      );
+      final resp = dispatchCipService(buildProject(), buildMap(), req);
+      expect(resp.generalStatus, kCipStatusServiceNotSupported);
     });
   });
 

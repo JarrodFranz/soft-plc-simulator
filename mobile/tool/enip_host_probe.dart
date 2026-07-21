@@ -37,6 +37,7 @@ import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/protocols/enip/cip.dart';
 import 'package:soft_plc_mobile/protocols/enip/cip_connection.dart';
+import 'package:soft_plc_mobile/protocols/enip/cip_identity.dart';
 import 'package:soft_plc_mobile/protocols/enip/cip_tags.dart';
 import 'package:soft_plc_mobile/protocols/enip/enip_encap.dart';
 
@@ -89,6 +90,14 @@ const double _tempInitialValue = 21.75;
 const int _forcedSpeedLive = 1;
 const int _forcedSpeedForced = 777;
 
+/// `Tank.Level` (a DOTTED struct-member symbol → INT32 → CIP DINT). The `Tank`
+/// tag is a `TankType` struct; only its member `Tank.Level` is CIP-exposed, as
+/// one flat atomic symbol whose name is the dotted string. The probe asserts
+/// this dotted name survives BOTH the generic-messaging Symbol browse and the
+/// full `LogixDriver.get_tag_list()` upload (pycomm3's STRING parse + user-tag
+/// isolation must keep `Tank.Level` intact, not split or drop it).
+const int _tankLevelValue = 4242;
+
 /// Builds the fixture project the E2E probe expects. Every mapped tag's
 /// name is a bare (non-dotted) symbol so the probe's CIP EPATH is a single
 /// ANSI Extended Symbol segment — v1's symbolic tag addressing.
@@ -113,8 +122,14 @@ PlcProject _fixtureProject() {
         isForced: true,
         forcedValue: _forcedSpeedForced,
       ),
+      // A struct tag whose member `Tank.Level` is exposed as a dotted symbol.
+      PlcTag(name: 'Tank', path: 'Internal.Tank', dataType: 'TankType', value: {'Level': _tankLevelValue}, ioType: 'Internal'),
     ],
-    structDefs: [],
+    structDefs: [
+      PlcStructDef(name: 'TankType', fields: [
+        StructFieldDef(name: 'Level', dataType: 'INT32', defaultValue: 0),
+      ]),
+    ],
     programs: [],
     tasks: [],
     hmis: [],
@@ -136,6 +151,9 @@ PlcProject _fixtureProject() {
       // Mapped ReadWrite, but the tag itself is FORCED: the refusal must
       // come from the force check, not from the map's access mode.
       CipMapEntry(tagName: 'Forced_Speed', access: 'ReadWrite'),
+      // A DOTTED struct-member symbol — the probe asserts this dotted name
+      // survives the Symbol browse and LogixDriver.get_tag_list() intact.
+      CipMapEntry(tagName: 'Tank.Level', access: 'ReadWrite'),
       // NOTE: `Unexposed` is deliberately absent from this map — the probe
       // asserts a read of a name that is not mapped returns 0x05.
     ]),
@@ -205,6 +223,13 @@ class _Connection {
     final data = Uint8List.sublistView(frame, kEnipHeaderLen);
     switch (header.command) {
       case kEnipCommandNop:
+        return;
+      case kEnipCommandListIdentity:
+        final idItem = buildListIdentityItem();
+        final listIdentityData = Uint8List(2 + idItem.length);
+        ByteData.sublistView(listIdentityData, 0, 2).setUint16(0, 1, Endian.little);
+        listIdentityData.setRange(2, listIdentityData.length, idItem);
+        socket.add(_reply(header, 0, listIdentityData));
         return;
       case kEnipCommandRegisterSession:
         _handleRegisterSession(header, data, allocateSessionHandle);

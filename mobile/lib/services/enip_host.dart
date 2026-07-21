@@ -36,6 +36,7 @@ import '../models/cip_map.dart';
 import '../models/project_model.dart';
 import '../protocols/enip/cip.dart';
 import '../protocols/enip/cip_connection.dart';
+import '../protocols/enip/cip_identity.dart';
 import '../protocols/enip/cip_tags.dart';
 import '../protocols/enip/enip_encap.dart';
 import 'app_logger.dart';
@@ -195,6 +196,16 @@ class _Connection {
         dropLog.specSilence(() => 'No reply sent for a NOP command, as the '
             'specification requires.');
         return;
+      case kEnipCommandListIdentity:
+        // ListIdentity is answered even WITHOUT a registered session — it is
+        // the pre-connect discovery command. Reply body is a CPF-style item
+        // count u16 (1) followed by the Identity item.
+        final idItem = buildListIdentityItem();
+        final listIdentityData = Uint8List(2 + idItem.length);
+        ByteData.sublistView(listIdentityData, 0, 2).setUint16(0, 1, Endian.little);
+        listIdentityData.setRange(2, listIdentityData.length, idItem);
+        socket.add(_reply(header, 0, listIdentityData));
+        return;
       case kEnipCommandRegisterSession:
         _handleRegisterSession(header, data, allocateSessionHandle);
         return;
@@ -335,6 +346,14 @@ class _Connection {
       resp = dispatchCipService(project, _currentMap(project), req);
     }
 
+    // Surface a non-success CIP outcome to the in-app Logs (first-occurrence
+    // gated). Partial Transfer (0x06) is normal browse pagination, not an error.
+    if (resp.generalStatus != kCipStatusSuccess && resp.generalStatus != kCipStatusPartialTransfer) {
+      _logDrop('enip-cip-status-${_hex(resp.service)}-${_hex(resp.generalStatus)}',
+          () => 'CIP service ${_hex(req.service)} answered with general status '
+              '${_hex(resp.generalStatus)} (non-success).');
+    }
+
     final replyCpfBytes = buildCpf([
       CpfItem(typeId: kCpfTypeNullAddress, data: Uint8List(0)),
       CpfItem(typeId: kCpfTypeUnconnectedData, data: buildCipResponse(resp)),
@@ -432,6 +451,16 @@ class _Connection {
       // MSP budget in cip_tags.dart). UCMM (SendRRData, above) passes no
       // budget and stays unbounded.
       resp = dispatchCipService(project, _currentMap(project), req, responseBudget: conn.connectionSizeTO);
+    }
+
+    // Surface a non-success CIP outcome to the in-app Logs (first-occurrence
+    // gated). Partial Transfer (0x06) is normal browse pagination, not an error.
+    if (req != null &&
+        resp.generalStatus != kCipStatusSuccess &&
+        resp.generalStatus != kCipStatusPartialTransfer) {
+      _logDrop('enip-cip-status-${_hex(resp.service)}-${_hex(resp.generalStatus)}',
+          () => 'CIP service ${_hex(req.service)} answered with general status '
+              '${_hex(resp.generalStatus)} (non-success).');
     }
 
     final respBytes = buildCipResponse(resp);

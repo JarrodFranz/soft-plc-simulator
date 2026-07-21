@@ -54,9 +54,19 @@ const int kCipServiceReadTag = 0x4C;
 /// Write Tag Service — writes a symbolic tag's value(s) by EPATH.
 const int kCipServiceWriteTag = 0x4D;
 
+/// Get Instance Attribute List — enumerates a class's instances and the
+/// requested attributes of each. Used here only against the Symbol Object
+/// (class 0x6B) to serve a Logix-style client's tag-directory upload.
+const int kCipServiceGetInstanceAttributeList = 0x55;
+
 // --- CIP general status codes -------------------------------------------
 
 const int kCipStatusSuccess = 0x00;
+
+/// "Partial Transfer" — a Get Instance Attribute List reply that could not
+/// fit every remaining instance in one reply; the client re-requests from
+/// the last returned instance id + 1 until a success (0x00) completes it.
+const int kCipStatusPartialTransfer = 0x06;
 
 /// "Connection failure" — used by the Connection Manager (`cip_connection.dart`
 /// — Forward Open/Forward Close) both for a Forward Open that cannot be
@@ -113,6 +123,42 @@ const int kCipStatusEmbeddedServiceError = 0x1E;
 /// `cip_tags.dart`, which previously defined it locally because Task 2's
 /// scope was limited to the Read/Write Tag service codes above).
 const int kCipServiceMultipleServicePacket = 0x0A;
+
+/// Get Attributes All — returns an object instance's attributes as one
+/// packed structure. Served here for the Identity Object and the Program
+/// Name Object (both read at connect by a Logix-style client).
+const int kCipServiceGetAttributesAll = 0x01;
+
+/// Unconnected Send — a Connection Manager (class 0x06) service that wraps
+/// (encapsulates) another CIP request plus a route path, so an UNCONNECTED
+/// (UCMM) originator can reach a target across a routing hop without opening a
+/// connection. pycomm3's `LogixDriver` sends `get_plc_info`/`get_plc_name`
+/// this way (`unconnected_send=True`). This host is the end device, so it
+/// treats 0x52 as a TRANSPARENT wrapper: it unwraps the embedded request,
+/// dispatches it, and returns the embedded reply verbatim (Unconnected Send
+/// adds no reply wrapper of its own). NOT the same namespace as a general
+/// status — this is a request `service` byte.
+const int kCipServiceUnconnectedSend = 0x52;
+
+// --- CIP object class ids (served objects) -------------------------------
+
+/// Symbol Object — the controller tag directory a Logix-style client uploads.
+const int kCipSymbolObjectClassId = 0x6B;
+
+/// Identity Object — vendor/product/revision/serial a Logix-style client
+/// reads at connect (via Get Attributes All) before uploading tags.
+const int kCipIdentityObjectClassId = 0x01;
+
+/// Connection Manager — the object (instance 1) that owns Forward Open/Close
+/// and the Unconnected Send ([kCipServiceUnconnectedSend]) service. An
+/// Unconnected Send request's path must address it.
+const int kCipConnectionManagerClassId = 0x06;
+
+/// Program Name Object — a Logix-style client reads the controller/program
+/// name from this class (Get Attributes All → a Logix STRING) at connect
+/// (pycomm3's `get_plc_name`), after the Identity read and before the tag
+/// upload. See `cip_identity.dart` for the honest, deterministic value.
+const int kCipProgramNameObjectClassId = 0x64;
 
 // --- CIP elementary data-type codes -------------------------------------
 

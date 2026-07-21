@@ -248,7 +248,7 @@ flutter analyze
 | **Phase 11** | Task-Type Scheduler, Per-Task Watchdog & `System` Diagnostics Tag | ✅ Completed |
 | **Phase 12** | Bulk Simulated Test-Tag Generation (folders, 7-waveform signal engine, per-protocol auto-map) | ✅ Completed |
 | **Phase 13** | Tag Historian & Trend Charts — memory-only historian, Trends section, multi-pen chart + HMI component, draggable trace cursor | ✅ Completed |
-| **Phase 14** | Protocol Expansion Program — **EtherNet/IP + CIP** explicit messaging (v1) shipped in-app and E2E-proven against the real `pycomm3` client, plus the shared Python probe lane | ✅ Complete |
+| **Phase 14** | Protocol Expansion Program — **EtherNet/IP + CIP** explicit messaging (v1) shipped in-app, now with Symbol Object tag browsing (Get Instance Attribute List, 0x55, paginated) so a real `pycomm3` `LogixDriver` can upload the tag directory and read a browsed tag, plus the shared Python probe lane | ✅ Complete |
 | **Phase 15** | Protocol Expansion Program — **S7comm** (v1) shipped in-app (areas DB/M/I/Q, byte-offset addressing) and E2E-proven against the real `python-snap7` client through read → write → independent read-back | ✅ Complete |
 | **Phase 16** | Protocol Expansion Program — **Omron FINS** (v1) shipped in-app (UDP, area+word addressing) and E2E-proven against a real FINS client through read → write → independent read-back | ✅ Complete |
 | **Phase 17** | Protocol Expansion Program — **Mitsubishi SLMP / MELSEC** (v1, 3E binary over TCP, D/M/W/R device+address addressing) shipped in-app and E2E-proven against the real `pymcprotocol` client through read → write → independent read-back; **BACnet/IP** remains | ✅ Complete |
