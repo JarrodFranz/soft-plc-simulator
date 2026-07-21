@@ -79,6 +79,10 @@ const int kBacnetServiceWhoIs = 8;
 const int kBacnetPropApplicationSoftwareVersion = 12;
 const int kBacnetPropEventState = 36;
 const int kBacnetPropFirmwareRevision = 44;
+
+/// Max_APDU_Length_Accepted — a DEVICE property (NOT
+/// [kBacnetIAmMaxApduLength], the actual value it carries).
+const int kBacnetPropMaxApduLengthAccepted = 62;
 const int kBacnetPropModelName = 70;
 const int kBacnetPropObjectList = 76;
 const int kBacnetPropObjectIdentifier = 75;
@@ -134,6 +138,10 @@ const int kBacnetErrorCodeInvalidDataType = 9;
 const int kBacnetErrorCodeUnknownObject = 31;
 const int kBacnetErrorCodeUnknownProperty = 32;
 const int kBacnetErrorCodeWriteAccessDenied = 40;
+
+/// invalid-array-index — an array property (Object_List, Priority_Array)
+/// addressed with an index outside `[0, count]`.
+const int kBacnetErrorCodeInvalidArrayIndex = 42;
 
 // --- Reject / Abort reasons -----------------------------------------------------
 

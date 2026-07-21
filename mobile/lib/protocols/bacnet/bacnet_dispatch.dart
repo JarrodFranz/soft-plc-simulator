@@ -10,16 +10,23 @@
 // validates are, by construction rather than by diff, the bytes the app puts
 // on the wire.
 //
-// *** SCOPE (this task) ***
+// *** SCOPE ***
 // Serves: unconfirmed Who-Is -> I-Am (instance-range filtered); confirmed
-// ReadProperty -> ComplexAck or Error, against the caller-supplied
-// [BacnetObjectImage] seam; confirmed ReadPropertyMultiple/WriteProperty ->
-// Reject(unrecognized-service) — deliberately, until the tag-backed image and
-// force-gated writes land (a later task) through this SAME seam; a segmented
-// confirmed request -> Abort(segmentation-not-supported); any other/unknown
-// confirmed service choice -> Reject(unrecognized-service). An unconfirmed
-// service choice this device does not serve is dropped (Reject requires an
-// invoke ID, which Unconfirmed-Request PDUs never carry).
+// ReadProperty -> ComplexAck or Error; confirmed ReadPropertyMultiple ->
+// ComplexAck with PER-PROPERTY embedded values/errors (one bad property never
+// fails the whole batch), ALL/REQUIRED expanding to the object's full served
+// property list ([_servedPropertiesFor], a PROTOCOL-level constant per object
+// type — not something the image declares, since `BacnetObjectImage` has no
+// "list my properties" member; see that function's doc), OPTIONAL expanding
+// to nothing, and a reply that would exceed [kBacnetIAmMaxApduLength] (1476)
+// bytes total datagram answered with Abort(buffer-overflow) instead; confirmed
+// WriteProperty -> SimpleAck or Error, entirely through the caller-supplied
+// [BacnetObjectImage] seam (force-gating, if any, is the IMAGE's job, not
+// this dispatch's); a segmented confirmed request -> Abort
+// (segmentation-not-supported); any other/unknown confirmed service choice ->
+// Reject(unrecognized-service). An unconfirmed service choice this device
+// does not serve is dropped (Reject requires an invoke ID, which
+// Unconfirmed-Request PDUs never carry).
 //
 // *** ALWAYS AN ANSWER, NEVER SILENCE — for what PARSES ***
 // Any confirmed request that parses far enough to yield an invoke ID gets a
@@ -193,10 +200,11 @@ class BacnetSimpleImage implements BacnetObjectImage {
 
   @override
   BacnetWriteResult writeProperty(WpRequest req) {
-    // This minimal image serves no writable property at this task; a later
-    // task's tag-backed image runs the real force-gate chain. Dispatch never
-    // reaches this at this task anyway (WriteProperty -> Reject 9), but the
-    // method must still never throw.
+    // This minimal image serves no writable property — it exists only for
+    // the E2E fixture / early host tests, which never write. Dispatch DOES
+    // reach this now that WriteProperty is served for real (see
+    // [_dispatchWriteProperty]); returning a refusal here is still correct
+    // (never throws) since nothing in this image is writable.
     return BacnetWriteResult.error(
       kBacnetErrorClassProperty,
       kBacnetErrorCodeWriteAccessDenied,
@@ -270,10 +278,9 @@ Uint8List? _dispatchUnconfirmed(BacnetApdu parsed, BacnetObjectImage image) {
   return buildBvllUnicast(iAm);
 }
 
-/// Serves the confirmed services this device recognizes at this task
-/// (ReadProperty), rejects RPM/WriteProperty (deliberately, until a later
-/// task's tag-backed image + force-gate lands), aborts a segmented request,
-/// and rejects any other/unknown service choice — always via the segmented/
+/// Serves the confirmed services this device recognizes (ReadProperty,
+/// ReadPropertyMultiple, WriteProperty), aborts a segmented request, and
+/// rejects any other/unknown service choice — always via the segmented/
 /// invoke-id-bearing PDU builders, since a confirmed request that parses this
 /// far always gets an answer.
 Uint8List? _dispatchConfirmed(BacnetApdu parsed, BacnetObjectImage image) {
@@ -294,12 +301,9 @@ Uint8List? _dispatchConfirmed(BacnetApdu parsed, BacnetObjectImage image) {
     case kBacnetServiceReadProperty:
       return _dispatchReadProperty(invokeId, parsed.serviceData, image);
     case kBacnetServiceReadPropertyMultiple:
+      return _dispatchReadPropertyMultiple(invokeId, parsed.serviceData, image);
     case kBacnetServiceWriteProperty:
-      // Deliberate, THIS TASK ONLY: RPM/WP land through this same seam once
-      // the tag-backed image (a later task) exists.
-      return buildBvllUnicast(
-        buildReject(invokeId, kBacnetRejectReasonUnrecognizedService),
-      );
+      return _dispatchWriteProperty(invokeId, parsed.serviceData, image);
     default:
       return buildBvllUnicast(
         buildReject(invokeId, kBacnetRejectReasonUnrecognizedService),
@@ -345,4 +349,177 @@ Uint8List? _dispatchReadProperty(
   return buildBvllUnicast(
     buildReadPropertyAck(invokeId: invokeId, req: req, valueTags: valueTags),
   );
+}
+
+// --- ReadPropertyMultiple -----------------------------------------------
+
+/// The Device object's full served property list — a PROTOCOL-level constant
+/// (every Device object this app ever hosts serves exactly this set),
+/// independent of which concrete [BacnetObjectImage] answers the individual
+/// `readProperty` calls. This lives HERE (not on the image) because
+/// `BacnetObjectImage` deliberately has no "list my properties" member (see
+/// the Task-3 interface) — RPM's ALL/REQUIRED expansion is dispatch-level
+/// logic that works the same way for the minimal `BacnetSimpleImage` (most of
+/// these come back as per-property unknown-property errors, which is fine —
+/// RPM never fails as a whole for one bad property) and the full tag-backed
+/// `BacnetTagImage` alike. MUST stay in sync with
+/// `BacnetTagImage._readDeviceProperty`'s switch.
+const List<int> kBacnetDeviceServedProperties = [
+  kBacnetPropObjectIdentifier,
+  kBacnetPropObjectName,
+  kBacnetPropObjectType,
+  kBacnetPropSystemStatus,
+  kBacnetPropVendorName,
+  kBacnetPropVendorIdentifier,
+  kBacnetPropModelName,
+  kBacnetPropFirmwareRevision,
+  kBacnetPropApplicationSoftwareVersion,
+  kBacnetPropProtocolVersion,
+  kBacnetPropProtocolRevision,
+  kBacnetPropProtocolServicesSupported,
+  kBacnetPropProtocolObjectTypesSupported,
+  kBacnetPropMaxApduLengthAccepted,
+  kBacnetPropSegmentationSupported,
+  kBacnetPropObjectList,
+];
+
+/// The Analog Value object's full served property list — see
+/// [kBacnetDeviceServedProperties]'s doc for why this lives here. MUST stay
+/// in sync with `BacnetTagImage._readAvProperty`'s switch.
+const List<int> kBacnetAnalogValueServedProperties = [
+  kBacnetPropObjectIdentifier,
+  kBacnetPropObjectName,
+  kBacnetPropObjectType,
+  kBacnetPropPresentValue,
+  kBacnetPropStatusFlags,
+  kBacnetPropEventState,
+  kBacnetPropOutOfService,
+  kBacnetPropUnits,
+  kBacnetPropPriorityArray,
+  kBacnetPropRelinquishDefault,
+];
+
+/// The Binary Value object's full served property list (no Units — BACnet
+/// Binary objects don't carry engineering units) — see
+/// [kBacnetDeviceServedProperties]'s doc for why this lives here. MUST stay
+/// in sync with `BacnetTagImage._readBvProperty`'s switch.
+const List<int> kBacnetBinaryValueServedProperties = [
+  kBacnetPropObjectIdentifier,
+  kBacnetPropObjectName,
+  kBacnetPropObjectType,
+  kBacnetPropPresentValue,
+  kBacnetPropStatusFlags,
+  kBacnetPropEventState,
+  kBacnetPropOutOfService,
+  kBacnetPropPriorityArray,
+  kBacnetPropRelinquishDefault,
+];
+
+/// The full served property-id list for [objectType] (Device/AnalogValue/
+/// BinaryValue) — empty for any other/unknown object type, in which case an
+/// ALL/REQUIRED request against it simply isn't expanded (see
+/// [_dispatchReadPropertyMultiple], which only expands for a KNOWN object;
+/// an unknown object's ALL/REQUIRED property id is passed straight to
+/// `readProperty`, which reports unknown-object regardless of the property
+/// id asked for).
+List<int> _servedPropertiesFor(int objectType) {
+  switch (objectType) {
+    case kBacnetObjectDevice:
+      return kBacnetDeviceServedProperties;
+    case kBacnetObjectAnalogValue:
+      return kBacnetAnalogValueServedProperties;
+    case kBacnetObjectBinaryValue:
+      return kBacnetBinaryValueServedProperties;
+    default:
+      return const [];
+  }
+}
+
+Uint8List? _dispatchReadPropertyMultiple(
+  int invokeId,
+  Uint8List serviceData,
+  BacnetObjectImage image,
+) {
+  final req = parseRpm(serviceData);
+  if (req == null) {
+    return null; // malformed RPM request body: unparseable, drop.
+  }
+
+  final knownObjects = <(int, int)>{...image.objectList};
+  final results = <RpmResult>[];
+  for (final spec in req.specs) {
+    final isKnown = knownObjects.contains((spec.objectType, spec.instance));
+
+    // Expand ALL(8)/REQUIRED(105) to the object's full served list (only
+    // when the object is actually known — see [_servedPropertiesFor]'s doc);
+    // OPTIONAL(80) always expands to nothing (there are no optional
+    // properties in this device's v1 property set); anything else is asked
+    // for literally.
+    final effective = <(int, int?)>[];
+    for (final (propertyId, arrayIndex) in spec.props) {
+      if (propertyId == kBacnetPropOptional) {
+        continue;
+      }
+      if ((propertyId == kBacnetPropAll || propertyId == kBacnetPropRequired) && isKnown) {
+        for (final servedId in _servedPropertiesFor(spec.objectType)) {
+          effective.add((servedId, null));
+        }
+      } else {
+        effective.add((propertyId, arrayIndex));
+      }
+    }
+
+    final propResults = <RpmPropResult>[];
+    for (final (propertyId, arrayIndex) in effective) {
+      final result = image.readProperty(spec.objectType, spec.instance, propertyId, arrayIndex);
+      final error = result.error;
+      final valueTags = result.valueTags;
+      if (error != null) {
+        propResults.add(RpmPropResult(propertyId: propertyId, arrayIndex: arrayIndex, error: error));
+      } else if (valueTags == null) {
+        // Same defensive fallback as [_dispatchReadProperty]: a buggy image
+        // that answers neither a value nor an error is reported as a
+        // property error, not silently dropped from the batch.
+        propResults.add(RpmPropResult(
+          propertyId: propertyId,
+          arrayIndex: arrayIndex,
+          error: (kBacnetErrorClassProperty, kBacnetErrorCodeUnknownProperty),
+        ));
+      } else {
+        propResults.add(RpmPropResult(propertyId: propertyId, arrayIndex: arrayIndex, valueTags: valueTags));
+      }
+    }
+    results.add(RpmResult(objectType: spec.objectType, instance: spec.instance, props: propResults));
+  }
+
+  final datagram = buildBvllUnicast(buildRpmAck(invokeId: invokeId, results: results));
+  // The reply must never exceed the device's own advertised
+  // Max_APDU_Length_Accepted / I-Am max length (1476, [kBacnetIAmMaxApduLength])
+  // — measured on the WHOLE reply datagram (BVLL+NPDU+APDU), not just the
+  // APDU payload.
+  if (datagram.length > kBacnetIAmMaxApduLength) {
+    return buildBvllUnicast(buildAbort(invokeId, kBacnetAbortReasonBufferOverflow));
+  }
+  return datagram;
+}
+
+// --- WriteProperty --------------------------------------------------------
+
+Uint8List? _dispatchWriteProperty(
+  int invokeId,
+  Uint8List serviceData,
+  BacnetObjectImage image,
+) {
+  final req = parseWriteProperty(serviceData);
+  if (req == null) {
+    return null; // malformed WP request body: unparseable, drop.
+  }
+  final result = image.writeProperty(req);
+  final error = result.error;
+  if (error != null) {
+    return buildBvllUnicast(
+      buildError(invokeId, kBacnetServiceWriteProperty, error.$1, error.$2),
+    );
+  }
+  return buildBvllUnicast(buildSimpleAck(invokeId, kBacnetServiceWriteProperty));
 }

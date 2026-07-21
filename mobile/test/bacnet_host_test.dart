@@ -201,22 +201,64 @@ void main() {
     );
   });
 
-  test('ReadPropertyMultiple gets Reject(unrecognized-service) at this task', () async {
+  test('ReadPropertyMultiple is served through the shared dispatch (RPM lands in a later task)',
+      () async {
     final client = await _UdpClient.bind();
     addTearDown(client.close);
 
     const invokeId = 0x22;
+    // One object spec (the Device object), two requested properties: one the
+    // minimal BacnetSimpleImage DOES serve (Object_Name) and one it does NOT
+    // (Present_Value is not a Device property at all) — proving one bad
+    // property never fails the whole RPM batch.
+    final serviceData = <int>[
+      ...encodeContextObjectId(0, kBacnetObjectDevice, 4321),
+      ...openingTag(1),
+      ...encodeContextUnsigned(0, kBacnetPropObjectName),
+      ...encodeContextUnsigned(0, kBacnetPropPresentValue),
+      ...closingTag(1),
+    ];
     final request = buildBvllUnicast(
-      _confirmedApdu(invokeId, kBacnetServiceReadPropertyMultiple, const []),
+      _confirmedApdu(invokeId, kBacnetServiceReadPropertyMultiple, serviceData),
     );
     final reply = await client.request(request, host.boundPort!);
 
     expect(reply, isNotNull, reason: 'RPM must still get an answer, not silence');
     final apdu = parseBvllToApdu(reply!);
     expect(apdu, isNotNull);
-    expect((apdu![0] >> 4) & 0x0F, kBacnetPduReject);
+    expect((apdu![0] >> 4) & 0x0F, kBacnetPduComplexAck);
     expect(apdu[1], invokeId);
-    expect(apdu[2], kBacnetRejectReasonUnrecognizedService);
+    expect(apdu[2], kBacnetServiceReadPropertyMultiple);
+
+    // ctx0 objectId echoed, ctx1-open, then per property: ctx2 propId,
+    // (ctx4-open value ctx4-close | ctx5-open errClass errCode ctx5-close).
+    final reader = BacnetTagReader(apdu, 3);
+    final objTag = reader.readTag();
+    expect(objTag!.asObjectId(), (kBacnetObjectDevice, 4321));
+    final openTag = reader.readTag();
+    expect(openTag!.isOpening, isTrue);
+
+    final firstPropId = reader.readTag();
+    expect(firstPropId!.asUnsigned(), kBacnetPropObjectName);
+    final firstBracket = reader.readTag();
+    expect(firstBracket!.isOpening, isTrue, reason: 'Object_Name is served -> a value bracket (ctx4)');
+    final firstValue = reader.readTag();
+    expect(
+      String.fromCharCodes(firstValue!.content.sublist(1)),
+      kBacnetDefaultDeviceName,
+    );
+    final firstClose = reader.readTag();
+    expect(firstClose!.isClosing, isTrue);
+
+    final secondPropId = reader.readTag();
+    expect(secondPropId!.asUnsigned(), kBacnetPropPresentValue);
+    final secondBracket = reader.readTag();
+    expect(secondBracket!.isOpening, isTrue,
+        reason: 'Present_Value is unsupported on Device -> still an answer, an error bracket (ctx5)');
+    final errClass = reader.readTag();
+    expect(errClass!.asEnumerated(), kBacnetErrorClassProperty);
+    final errCode = reader.readTag();
+    expect(errCode!.asEnumerated(), kBacnetErrorCodeUnknownProperty);
   });
 
   test('a malformed/short datagram does NOT crash the bind — a following '
