@@ -94,6 +94,39 @@ void main() {
       expect(conn.fromLocalId, 1);
     });
 
+    test(
+        'FBD <block> captures connections nested under inputVariables/variable '
+        '(not just direct-child connectionPointIn)', () {
+      final fbdXml =
+          File('test/fixtures/plcopen/fbd_block.xml').readAsStringSync();
+      final project = parsePlcOpen(fbdXml);
+      final pou = project.pous.firstWhere((p) => p.name == 'FbdBlock');
+      expect(pou.lang, PouLanguage.fbd);
+
+      final body = pou.body;
+      expect(body, isA<GraphBody>());
+      final graph = body as GraphBody;
+      expect(graph.nodes, hasLength(3));
+
+      // Direct-child case (coil localId=4 <- contact localId=1) must still work.
+      expect(
+        graph.connections.any((c) => c.toLocalId == 4 && c.fromLocalId == 1),
+        isTrue,
+        reason: 'direct-child connectionPointIn on <coil> should be captured',
+      );
+
+      // Nested case (block localId=2 <- contact localId=1, connection buried
+      // under <inputVariables><variable><connectionPointIn>) must be captured.
+      expect(
+        graph.connections.any((c) => c.toLocalId == 2 && c.fromLocalId == 1),
+        isTrue,
+        reason: 'connectionPointIn nested inside <block><inputVariables> '
+            'must not be silently dropped',
+      );
+
+      expect(graph.connections, hasLength(2));
+    });
+
     test('throws FormatException on malformed XML', () {
       final malformed =
           File('test/fixtures/plcopen/malformed.xml').readAsStringSync();

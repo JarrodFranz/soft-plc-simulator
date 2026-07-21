@@ -185,8 +185,13 @@ GraphBody _graphBody(
       y: double.tryParse(pos?.getAttribute('y') ?? '') ?? 0,
       attributes: attrs,
     ));
-    // Each <connectionPointIn><connection refLocalId=…/> is an edge into this node.
-    for (final cpi in el.findElements('connectionPointIn')) {
+    // Each <connectionPointIn><connection refLocalId=…/> is an edge into this
+    // node. connectionPointIn is a direct child for simple elements like
+    // <contact>/<coil>, but for a <block> (function-block call) it nests two
+    // levels deeper under <inputVariables><variable>. Search descendants
+    // (which also covers the direct-child case) so no connection is silently
+    // dropped, mirroring the descendant-based `_findElement` helper.
+    for (final cpi in _descendants(el, 'connectionPointIn')) {
       for (final c in cpi.findElements('connection')) {
         final from = int.tryParse(c.getAttribute('refLocalId') ?? '') ?? -1;
         conns.add(IrConnection(
@@ -230,14 +235,12 @@ String _baseTypeName(XmlElement? typeEl) {
   }
   // <array><baseType>...</baseType></array> — the element base type lives
   // inside <baseType>, not directly under <array>.
-  final arrBaseType = _findElement(typeEl, 'array') != null
-      ? _findElement(_findElement(typeEl, 'array')!, 'baseType')
-      : null;
+  final arrEl = _findElement(typeEl, 'array');
+  final arrBaseType = arrEl != null ? _findElement(arrEl, 'baseType') : null;
   final scope = arrBaseType ?? typeEl;
   for (final c in scope.childElements) {
-    if (c.name.local == 'derived') {
-      return c.getAttribute('name') ?? 'INT';
-    }
+    // Note: a <derived> here would already have been returned above by the
+    // descendant-based check at the top of this function.
     return c.name.local; // e.g. BOOL/INT/REAL/...
   }
   return 'INT';

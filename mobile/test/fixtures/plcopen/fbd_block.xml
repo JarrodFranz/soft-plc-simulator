@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="FbdBlockProject"/>
+  <types>
+    <dataTypes/>
+    <pous>
+      <pou name="FbdBlock" pouType="program">
+        <interface><localVars/></interface>
+        <body><FBD>
+          <contact localId="1"><position x="10" y="20"/><variable>Start</variable>
+            <connectionPointIn/><connectionPointOut/></contact>
+          <coil localId="4"><position x="200" y="20"/><variable>Motor</variable>
+            <connectionPointIn><connection refLocalId="1"/></connectionPointIn></coil>
+          <block localId="2" typeName="AND"><position x="60" y="20"/>
+            <inputVariables>
+              <variable formalParameter="IN1">
+                <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+              </variable>
+            </inputVariables>
+            <outputVariables>
+              <variable formalParameter="OUT">
+                <connectionPointOut/>
+              </variable>
+            </outputVariables>
+          </block>
+        </FBD></body>
+      </pou>
+    </pous>
+  </types>
+  <instances>
+    <configurations>
+      <configuration name="Config">
+        <resource name="Res">
+          <globalVars/>
+        </resource>
+      </configuration>
+    </configurations>
+  </instances>
+</project>
