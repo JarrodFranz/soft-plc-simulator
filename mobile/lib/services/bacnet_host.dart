@@ -16,14 +16,15 @@
 // the shipped host, instead of relying on two hand-written copies staying
 // byte-identical.
 //
-// *** SCOPE (this task) ***
-// The object model served is a MINIMAL, hand-rolled `BacnetSimpleImage` (see
-// `bacnet_dispatch.dart`): a Device object only, no Analog/Binary Value
-// objects, since the tag-backed map (`BacnetMap`/`BacnetTagImage`) and the
-// persisted `BacnetProtocolConfig` both land in later tasks. `deviceInstance`
-// defaults to 3056 per the plan's additive default; a later task replaces
-// [_imageForProject] with one backed by the project's tags, exactly as
-// `FinsHost._imageForProject` is backed by `FinsMap`.
+// *** SCOPE ***
+// The object model served is the tag-backed `BacnetTagImage`
+// (`protocols/bacnet/bacnet_object_image.dart`): the Device object plus one
+// Analog Value/Binary Value object per `BacnetMap` entry, exactly as
+// `FinsHost._imageForProject` is backed by `FinsMap` — see
+// [_imageForProject]. `deviceInstance` defaults to 3056 per the plan's
+// additive default and is driven from the persisted `BacnetProtocolConfig`
+// via the Outbound Protocols screen (mirrors how `port` is synced before
+// [start]).
 //
 // *** ROBUSTNESS: THE BIND MUST NEVER WEDGE ***
 // A malformed, short, or non-BACnet datagram — from any source, at any time —
@@ -41,9 +42,11 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../models/app_log.dart';
+import '../models/bacnet_map.dart';
 import '../models/project_model.dart';
 import '../protocols/bacnet/bacnet_bvll.dart';
 import '../protocols/bacnet/bacnet_dispatch.dart';
+import '../protocols/bacnet/bacnet_object_image.dart';
 import '../protocols/bacnet/bacnet_services.dart';
 import 'app_logger.dart';
 
@@ -333,14 +336,23 @@ class BacnetHost extends ChangeNotifier {
     }
   }
 
-  /// The object image this host serves. At THIS task it is a MINIMAL,
-  /// hand-rolled [BacnetSimpleImage] (Device object only, no AV/BV) — a later
-  /// task replaces this with one backed by [project]'s tags via a
-  /// `BacnetMap`, exactly as `FinsHost._imageForProject` is backed by
-  /// `FinsMap`. [project] is currently unused (the image does not yet read
-  /// project tags); the parameter stays so that wiring is a body-only change.
+  /// The object image this host serves: the project's tags via a tag-backed
+  /// [BacnetTagImage] — the Device object plus one Analog Value/Binary Value
+  /// object per [BacnetMap] entry, exactly as `FinsHost._imageForProject` is
+  /// backed by `FinsMap`. Uses the project's persisted map
+  /// (`project.protocols?.bacnet?.map`) when present, falling back to
+  /// `BacnetMap.autoGenerate` for a project that has never configured
+  /// BACnet/IP — same additive-persistence fallback every other protocol's
+  /// image uses. `deviceInstance` is THIS host's own field (read once, at
+  /// [start], from `BacnetProtocolConfig.deviceInstance` via the Outbound
+  /// Protocols screen — mirrors how `port` is synced before [start]);
+  /// `deviceName` stays the fixed honest identity, since v1 has no
+  /// configurable device name.
   BacnetObjectImage _imageForProject(PlcProject project) {
-    return BacnetSimpleImage(
+    final configured = project.protocols?.bacnet?.map;
+    return BacnetTagImage(
+      project,
+      configured ?? BacnetMap.autoGenerate(project),
       deviceInstance: deviceInstance,
       deviceName: kBacnetDefaultDeviceName,
     );

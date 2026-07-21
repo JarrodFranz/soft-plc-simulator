@@ -15,6 +15,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/material.dart';
 
+import '../models/bacnet_map.dart';
 import '../models/cip_map.dart';
 import '../models/dnp3_map.dart';
 import '../models/fins_map.dart';
@@ -26,6 +27,7 @@ import '../models/protocol_settings.dart';
 import '../models/s7_map.dart';
 import '../models/slmp_map.dart';
 import '../models/tag_resolver.dart';
+import '../services/bacnet_host.dart';
 import '../services/dnp3_host.dart';
 import '../services/enip_host.dart';
 import '../services/fins_host.dart';
@@ -118,6 +120,7 @@ class GatewayScreen extends StatefulWidget {
   final S7Host s7Host;
   final FinsHost finsHost;
   final SlmpHost slmpHost;
+  final BacnetHost bacnetHost;
   final VoidCallback onProjectUpdated;
 
   /// Whether this platform can host the in-app OPC UA/Modbus/DNP3/EtherNet-IP
@@ -140,6 +143,7 @@ class GatewayScreen extends StatefulWidget {
     required this.s7Host,
     required this.finsHost,
     required this.slmpHost,
+    required this.bacnetHost,
     required this.onProjectUpdated,
     this.hostingSupported = !kIsWeb,
   });
@@ -160,6 +164,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
   late final TextEditingController _s7PortController;
   late final TextEditingController _finsPortController;
   late final TextEditingController _slmpPortController;
+  late final TextEditingController _bacnetPortController;
+  late final TextEditingController _bacnetDeviceInstanceController;
 
   /// The MQTT broker password: held ONLY here, in ephemeral widget State —
   /// never written to `currentProject`/`MqttProtocolConfig` (see that
@@ -210,6 +216,12 @@ class _GatewayScreenState extends State<GatewayScreen> {
     );
     _slmpPortController = TextEditingController(
       text: widget.currentProject.protocols!.slmp!.port.toString(),
+    );
+    _bacnetPortController = TextEditingController(
+      text: widget.currentProject.protocols!.bacnet!.port.toString(),
+    );
+    _bacnetDeviceInstanceController = TextEditingController(
+      text: widget.currentProject.protocols!.bacnet!.deviceInstance.toString(),
     );
   }
 
@@ -299,6 +311,20 @@ class _GatewayScreenState extends State<GatewayScreen> {
           selection: TextSelection.collapsed(offset: newSlmpPort.length),
         );
       }
+      final newBacnetPort = widget.currentProject.protocols!.bacnet!.port.toString();
+      if (_bacnetPortController.text != newBacnetPort) {
+        _bacnetPortController.value = TextEditingValue(
+          text: newBacnetPort,
+          selection: TextSelection.collapsed(offset: newBacnetPort.length),
+        );
+      }
+      final newBacnetDeviceInstance = widget.currentProject.protocols!.bacnet!.deviceInstance.toString();
+      if (_bacnetDeviceInstanceController.text != newBacnetDeviceInstance) {
+        _bacnetDeviceInstanceController.value = TextEditingValue(
+          text: newBacnetDeviceInstance,
+          selection: TextSelection.collapsed(offset: newBacnetDeviceInstance.length),
+        );
+      }
       _mqttPassword = '';
     }
   }
@@ -316,6 +342,8 @@ class _GatewayScreenState extends State<GatewayScreen> {
     _s7PortController.dispose();
     _finsPortController.dispose();
     _slmpPortController.dispose();
+    _bacnetPortController.dispose();
+    _bacnetDeviceInstanceController.dispose();
     super.dispose();
   }
 
@@ -473,6 +501,28 @@ class _GatewayScreenState extends State<GatewayScreen> {
     }
   }
 
+  String _bacnetStatusLabel(BacnetHostStatus s) {
+    switch (s) {
+      case BacnetHostStatus.stopped:
+        return 'Stopped';
+      case BacnetHostStatus.running:
+        return 'Running';
+      case BacnetHostStatus.error:
+        return 'Error';
+    }
+  }
+
+  Color _bacnetStatusColor(BacnetHostStatus s) {
+    switch (s) {
+      case BacnetHostStatus.stopped:
+        return Colors.grey;
+      case BacnetHostStatus.running:
+        return Colors.greenAccent;
+      case BacnetHostStatus.error:
+        return Colors.redAccent;
+    }
+  }
+
   String _mqttStatusLabel(MqttHostStatus s) {
     switch (s) {
       case MqttHostStatus.stopped:
@@ -559,6 +609,19 @@ class _GatewayScreenState extends State<GatewayScreen> {
 
   Future<void> _stopSlmpHosting() async {
     await widget.slmpHost.stop();
+  }
+
+  Future<void> _startBacnetHosting() async {
+    // The BacnetHost binds the persisted port/deviceInstance fields; sync
+    // them before starting so the values typed into the card are the ones
+    // bound/advertised.
+    widget.bacnetHost.port = widget.currentProject.protocols!.bacnet!.port;
+    widget.bacnetHost.deviceInstance = widget.currentProject.protocols!.bacnet!.deviceInstance;
+    await widget.bacnetHost.start(() => widget.currentProject);
+  }
+
+  Future<void> _stopBacnetHosting() async {
+    await widget.bacnetHost.stop();
   }
 
   Future<void> _connectMqtt() async {
@@ -795,6 +858,37 @@ class _GatewayScreenState extends State<GatewayScreen> {
     widget.onProjectUpdated();
   }
 
+  void _autoGenerateBacnetMap() {
+    setState(() {
+      _ensureBacnet();
+      widget.currentProject.protocols!.bacnet!.map = BacnetMap.autoGenerate(widget.currentProject);
+    });
+    widget.onProjectUpdated();
+  }
+
+  /// Appends a default entry to the BACnet object map — mirrors
+  /// `_addSlmpEntry`. New entries land as an Analog Value at instance 0; the
+  /// operator moves them from there.
+  void _addBacnetEntry(List<String> tagOptions) {
+    setState(() {
+      _ensureBacnet();
+      widget.currentProject.protocols!.bacnet!.map.entries.add(BacnetMapEntry(
+        tag: tagOptions.isNotEmpty ? tagOptions.first : '',
+        objectType: kBacnetMapTypeAv,
+        instance: 0,
+        access: 'ReadWrite',
+      ));
+    });
+    widget.onProjectUpdated();
+  }
+
+  void _deleteBacnetEntry(BacnetMapEntry entry) {
+    setState(() {
+      widget.currentProject.protocols!.bacnet!.map.entries.remove(entry);
+    });
+    widget.onProjectUpdated();
+  }
+
   /// Creates a default `ProtocolSettings` (and its OPC UA config) in place
   /// when the project has none yet, mirroring WS16's `_ensureMap`: mutate in
   /// memory only — do NOT call `onProjectUpdated` here, so an untouched
@@ -810,6 +904,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
     _ensureS7();
     _ensureFins();
     _ensureSlmp();
+    _ensureBacnet();
   }
 
   /// Creates a default `S7ProtocolConfig` in place when the project has none
@@ -837,6 +932,15 @@ class _GatewayScreenState extends State<GatewayScreen> {
   void _ensureSlmp() {
     widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
     widget.currentProject.protocols!.slmp ??= SlmpProtocolConfig.defaults(widget.currentProject);
+  }
+
+  /// Creates a default `BacnetProtocolConfig` in place when the project has
+  /// none yet — mirrors `_ensureSlmp`: mutate in memory only, no
+  /// `onProjectUpdated` call here, so a project that has merely been LOOKED
+  /// at stays serialization-clean (additive persistence).
+  void _ensureBacnet() {
+    widget.currentProject.protocols ??= ProtocolSettings.defaults(widget.currentProject);
+    widget.currentProject.protocols!.bacnet ??= BacnetProtocolConfig.defaults(widget.currentProject);
   }
 
   /// Creates a default `CipProtocolConfig` in place when the project has
@@ -1017,6 +1121,50 @@ class _GatewayScreenState extends State<GatewayScreen> {
     setState(() {
       widget.currentProject.protocols!.slmp!.port = parsed;
     });
+    widget.onProjectUpdated();
+  }
+
+  void _setBacnetEnabled(bool enabled) {
+    setState(() {
+      _ensureBacnet();
+      widget.currentProject.protocols!.bacnet!.enabled = enabled;
+    });
+    if (!enabled && widget.bacnetHost.status != BacnetHostStatus.stopped) {
+      unawaited(widget.bacnetHost.stop());
+    }
+    widget.onProjectUpdated();
+  }
+
+  void _setBacnetPort(String value) {
+    final parsed = int.tryParse(value.trim());
+    if (parsed == null || parsed < 0 || parsed > 65535) {
+      return; // ignore invalid input; keep the last-valid persisted port
+    }
+    setState(() {
+      widget.currentProject.protocols!.bacnet!.port = parsed;
+    });
+    widget.onProjectUpdated();
+  }
+
+  /// This device's Device_Object_Instance, clamped to BACnet's valid range
+  /// (0..4194302 — 4194303 is the reserved "unknown/wildcard" instance).
+  /// Clamped (not rejected) so a value typed outside the range still lands,
+  /// snapped to the nearest valid bound, rather than being silently dropped.
+  void _setBacnetDeviceInstance(String value) {
+    final parsed = int.tryParse(value.trim());
+    if (parsed == null) {
+      return; // ignore genuinely unparseable input; keep the last-valid value
+    }
+    final clamped = parsed.clamp(0, 4194302);
+    setState(() {
+      widget.currentProject.protocols!.bacnet!.deviceInstance = clamped;
+    });
+    if (clamped != parsed) {
+      _bacnetDeviceInstanceController.value = TextEditingValue(
+        text: clamped.toString(),
+        selection: TextSelection.collapsed(offset: clamped.toString().length),
+      );
+    }
     widget.onProjectUpdated();
   }
 
@@ -1270,6 +1418,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
     Tab(key: Key('protocol_tab_s7'), text: 'S7comm'),
     Tab(key: Key('protocol_tab_fins'), text: 'FINS'),
     Tab(key: Key('protocol_tab_slmp'), text: 'SLMP'),
+    Tab(key: Key('protocol_tab_bacnet'), text: 'BACnet/IP'),
   ];
 
   @override
@@ -1347,6 +1496,12 @@ class _GatewayScreenState extends State<GatewayScreen> {
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(12),
                 child: _buildSlmpCard(context, tagOptions),
+              ),
+            ),
+            _KeepAliveTabBody(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(12),
+                child: _buildBacnetCard(context, tagOptions),
               ),
             ),
           ],
@@ -3744,6 +3899,408 @@ class _GatewayScreenState extends State<GatewayScreen> {
               SizedBox(width: 80, child: addressField),
               const SizedBox(width: 8),
               SizedBox(width: 60, child: bitField),
+              const SizedBox(width: 8),
+              SizedBox(width: 150, child: accessDropdown),
+              SizedBox(width: 40, child: deleteButton),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildBacnetCard(BuildContext context, List<String> tagOptions) {
+    final bacnet = widget.currentProject.protocols!.bacnet!;
+    final isCompact = context.isCompact;
+
+    return Card(
+      color: const Color(0xFF1E293B),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'BACnet/IP',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                  ),
+                ),
+                Switch(
+                  key: const Key('bacnet_enable_switch'),
+                  value: bacnet.enabled,
+                  onChanged: _setBacnetEnabled,
+                ),
+              ],
+            ),
+            if (!bacnet.enabled)
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text(
+                  'Disabled — no tags are exposed to this protocol.',
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+              )
+            else ...[
+              const SizedBox(height: 12),
+              const Text(
+                'BACnet/IP over UDP: this device hosts a Device object plus one '
+                'Analog Value or Binary Value object per mapped tag, answering '
+                'Who-Is/I-Am, ReadProperty, ReadPropertyMultiple, and '
+                'WriteProperty.',
+                style: TextStyle(color: Colors.white70, fontSize: 11),
+              ),
+              const SizedBox(height: 12),
+              // ── Hosting controls ────────────────────────────────────
+              // Scoped to `widget.bacnetHost` alone (the WS-perf-task-1
+              // pattern every other card here follows): only the status
+              // chip, port/device-instance fields' enabled state and
+              // Start/Stop buttons are driven by host notifies. The
+              // virtualized object map below is never rebuilt by a host
+              // `notifyListeners()`.
+              ListenableBuilder(
+                listenable: widget.bacnetHost,
+                builder: (context, _) {
+                  final status = widget.bacnetHost.status;
+                  final running = status == BacnetHostStatus.running;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 10,
+                                height: 10,
+                                decoration: BoxDecoration(
+                                    color: _bacnetStatusColor(status), shape: BoxShape.circle),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                _bacnetStatusLabel(status),
+                                style: const TextStyle(
+                                    color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                            ],
+                          ),
+                          Text(
+                            'Mapped tags: ${bacnet.map.entries.length}',
+                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                          ),
+                          if (widget.bacnetHost.recentPeerCount > 0)
+                            Text(
+                              'Recent sources: ${widget.bacnetHost.recentPeerCount}',
+                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Flex(
+                        direction: isCompact ? Axis.vertical : Axis.horizontal,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _mqttFlexField(
+                            isCompact: isCompact,
+                            child: TextField(
+                              key: const Key('bacnet_port_field'),
+                              controller: _bacnetPortController,
+                              enabled: !running,
+                              keyboardType: TextInputType.number,
+                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              decoration: const InputDecoration(
+                                isDense: true,
+                                labelText: 'Port',
+                                helperText: 'Default: 47808',
+                                filled: true,
+                                fillColor: Color(0xFF0F172A),
+                                border: OutlineInputBorder(),
+                              ),
+                              onChanged: _setBacnetPort,
+                            ),
+                          ),
+                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          _mqttFlexField(
+                            isCompact: isCompact,
+                            child: TextField(
+                              key: const Key('bacnet_device_instance_field'),
+                              controller: _bacnetDeviceInstanceController,
+                              enabled: !running,
+                              keyboardType: TextInputType.number,
+                              style: const TextStyle(fontSize: 12, color: Colors.white),
+                              decoration: const InputDecoration(
+                                isDense: true,
+                                labelText: 'Device instance',
+                                helperText: 'Default: 3056',
+                                filled: true,
+                                fillColor: Color(0xFF0F172A),
+                                border: OutlineInputBorder(),
+                              ),
+                              onChanged: _setBacnetDeviceInstance,
+                            ),
+                          ),
+                        ],
+                      ),
+                      // No privileged-port caveat: BACnet/IP's default 47808
+                      // is above 1023, so binding it needs no elevation on
+                      // any platform.
+                      const SizedBox(height: 12),
+                      Flex(
+                        direction: isCompact ? Axis.vertical : Axis.horizontal,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(
+                            width: isCompact ? double.infinity : null,
+                            child: ElevatedButton(
+                              onPressed:
+                                  (running || !widget.hostingSupported) ? null : _startBacnetHosting,
+                              child: const Text('Start hosting'),
+                            ),
+                          ),
+                          SizedBox(width: isCompact ? 0 : 12, height: isCompact ? 8 : 0),
+                          SizedBox(
+                            width: isCompact ? double.infinity : null,
+                            child: OutlinedButton(
+                              onPressed: running ? _stopBacnetHosting : null,
+                              child: const Text('Stop hosting'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (!widget.hostingSupported) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Hosting runs the BACnet/IP server inside the app on a UDP socket, '
+                          'which web browsers do not allow (they cannot bind an inbound '
+                          'UDP port). Run the desktop (Windows/macOS/Linux) or mobile '
+                          '(Android/iOS) app to host — you can still design the object map '
+                          'here.',
+                          style: TextStyle(fontSize: 11, color: Colors.amber.shade200),
+                        ),
+                      ],
+                      if (running && widget.bacnetHost.endpointUrl != null) ...[
+                        const SizedBox(height: 8),
+                        SelectableText(
+                          widget.bacnetHost.endpointUrl!,
+                          style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+                        ),
+                      ],
+                      // A failed bind must never look like a card that simply
+                      // has not turned green yet: it gets its own bordered,
+                      // labelled block naming the failure.
+                      if (status == BacnetHostStatus.error && widget.bacnetHost.lastError != null) ...[
+                        const SizedBox(height: 8),
+                        Container(
+                          key: const Key('bacnet_error_banner'),
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.redAccent.withValues(alpha: 0.12),
+                            border: Border.all(color: Colors.redAccent.withValues(alpha: 0.6)),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Not hosting — the server did not start.',
+                                style: TextStyle(
+                                    color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 12),
+                              ),
+                              const SizedBox(height: 4),
+                              SelectableText(
+                                widget.bacnetHost.lastError!,
+                                style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ] else if (widget.bacnetHost.lastError != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Last error: ${widget.bacnetHost.lastError}',
+                          style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                        ),
+                      ],
+                    ],
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
+              _bacnetMapEditorCard(context, bacnet.map, tagOptions),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _bacnetMapEditorCard(BuildContext context, BacnetMap map, List<String> tagOptions) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            runSpacing: 4,
+            children: [
+              const Text(
+                'BACnet Object Map',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+              Wrap(
+                spacing: 4,
+                children: [
+                  TextButton.icon(
+                    icon: const Icon(Icons.add, size: 16, color: Colors.cyanAccent),
+                    label: const Text('Add entry', style: TextStyle(color: Colors.cyanAccent)),
+                    onPressed: () => _addBacnetEntry(tagOptions),
+                  ),
+                  TextButton.icon(
+                    icon: const Icon(Icons.autorenew, size: 16, color: Colors.cyanAccent),
+                    label: const Text('Regenerate', style: TextStyle(color: Colors.cyanAccent)),
+                    onPressed: _autoGenerateBacnetMap,
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Each entry serves one Analog Value or Binary Value object, addressed '
+            'by its own instance number (an AV 0 and a BV 0 are different '
+            'objects). Present_Value is always a Real (AV) or Enumerated 0/1 '
+            '(BV) on the wire.',
+            style: TextStyle(color: Colors.grey, fontSize: 11),
+          ),
+          const SizedBox(height: 8),
+          if (map.entries.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                'No entries yet. Tap Regenerate to build a default map from the project tags.',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            )
+          else
+            _virtualizedMapList<BacnetMapEntry>(
+              map.entries,
+              (e) => e.tag,
+              (e) => _bacnetRow(e, tagOptions),
+              listKey: const Key('bacnet_map_list'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _bacnetRow(BacnetMapEntry entry, List<String> tagOptions) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isCompact = context.isCompact;
+          final tagField = TagAutocompleteField(
+            options: tagOptions,
+            initialValue: entry.tag,
+            label: 'Tag',
+            onChanged: (v) {
+              entry.tag = v;
+              widget.onProjectUpdated();
+            },
+          );
+          final objectTypeDropdown = DropdownButtonFormField<String>(
+            initialValue:
+                (entry.objectType == kBacnetMapTypeAv || entry.objectType == kBacnetMapTypeBv)
+                    ? entry.objectType
+                    : kBacnetMapTypeAv,
+            decoration: const InputDecoration(isDense: true, labelText: 'Object type'),
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            dropdownColor: const Color(0xFF1E293B),
+            items: const [
+              DropdownMenuItem(value: kBacnetMapTypeAv, child: Text('AV')),
+              DropdownMenuItem(value: kBacnetMapTypeBv, child: Text('BV')),
+            ],
+            onChanged: (v) {
+              if (v == null) {
+                return;
+              }
+              setState(() => entry.objectType = v);
+              widget.onProjectUpdated();
+            },
+          );
+          final instanceField = TextFormField(
+            initialValue: entry.instance.toString(),
+            keyboardType: TextInputType.number,
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            decoration: const InputDecoration(isDense: true, labelText: 'Instance'),
+            onChanged: (v) {
+              final parsed = int.tryParse(v.trim());
+              if (parsed == null || parsed < 0) {
+                return;
+              }
+              entry.instance = parsed;
+              widget.onProjectUpdated();
+            },
+          );
+          final accessDropdown = DropdownButtonFormField<String>(
+            initialValue: entry.access,
+            decoration: const InputDecoration(isDense: true, labelText: 'Access'),
+            style: const TextStyle(fontSize: 12, color: Colors.white),
+            dropdownColor: const Color(0xFF1E293B),
+            items: const [
+              DropdownMenuItem(value: 'ReadOnly', child: Text('ReadOnly')),
+              DropdownMenuItem(value: 'ReadWrite', child: Text('ReadWrite')),
+            ],
+            onChanged: (v) {
+              if (v == null) {
+                return;
+              }
+              setState(() => entry.access = v);
+              widget.onProjectUpdated();
+            },
+          );
+          final deleteButton = IconButton(
+            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+            tooltip: 'Delete entry',
+            onPressed: () => _deleteBacnetEntry(entry),
+          );
+
+          if (isCompact) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                tagField,
+                const SizedBox(height: 4),
+                objectTypeDropdown,
+                const SizedBox(height: 4),
+                instanceField,
+                const SizedBox(height: 4),
+                accessDropdown,
+                Align(alignment: Alignment.centerRight, child: deleteButton),
+              ],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(flex: 3, child: tagField),
+              const SizedBox(width: 8),
+              SizedBox(width: 90, child: objectTypeDropdown),
+              const SizedBox(width: 8),
+              SizedBox(width: 80, child: instanceField),
               const SizedBox(width: 8),
               SizedBox(width: 150, child: accessDropdown),
               SizedBox(width: 40, child: deleteButton),

@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# BACnet/IP E2E machine-proof (EARLY gate, Task 3 of the workstream): starts
-# the in-app BACnet/IP host (the Dart fixture host,
+# BACnet/IP E2E machine-proof (EXTENDED/full gate, Task 5 of the workstream):
+# starts the in-app BACnet/IP host (the Dart fixture host,
 # mobile/tool/bacnet_host_probe.dart) on a non-default UDP port, waits for it
 # to report READY, then runs a REAL third-party BACnet/IP client --
 # `bacpypes3`, driven by tool/py/bacnet_probe.py -- against it.
 #
-# THIS RUNS BEFORE THE TAG-BACKED OBJECT MODEL EXISTS. The fixture serves a
-# MINIMAL hand-rolled image (one Device object, one Analog Value) so this
-# probe settles every open ASN.1-tag-encoding question (see
-# `mobile/lib/protocols/bacnet/bacnet_tags.dart`'s "TAG-STRUCTURE TRAP" note)
-# against an independent implementation before any real project tags are
-# involved -- exactly the same EARLY-gate pattern `tool/fins_e2e.sh` and
-# `tool/slmp_e2e.sh` established for their own byte-order/framing questions.
+# AS OF THIS TASK, the fixture serves the REAL tag-backed object model
+# (`BacnetTagImage`) -- a Device object plus 5 mapped Analog Value/Binary
+# Value objects -- not the Task-3 minimal `BacnetSimpleImage`. This probe is
+# therefore the authority on the FULL wire surface a shipped project exposes:
+# Who-Is/I-Am, ReadProperty (incl. Object_List array-index reads),
+# ReadPropertyMultiple (incl. a per-property embedded error inside an
+# otherwise-successful batch), WriteProperty (plain and WITH a priority
+# argument), the force/ReadOnly-gated write refusal, and the unknown-property
+# error path -- exactly the same real-client-is-the-authority pattern
+# `tool/fins_e2e.sh` and `tool/slmp_e2e.sh` established for their own
+# byte-order/framing questions.
 #
 # CLIENT LIBRARY SUBSTITUTION: the plan specified BAC0/bacpypes (bacpypes
 # 0.18.6's sync API); that pin fails to IMPORT on this venv's Python (3.12)

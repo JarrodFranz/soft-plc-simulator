@@ -625,6 +625,83 @@ void main() {
     });
   });
 
+  // --- Reverse sync: kBacnet*ServedProperties vs what the image ACTUALLY
+  // serves --------------------------------------------------------------
+  //
+  // The forward-direction tests above ("every property in
+  // kBacnetXServedProperties returns a value, never an error") only prove the
+  // list is a SUBSET of what's served. `_servedPropertiesFor` in
+  // `bacnet_dispatch.dart` is a protocol-level constant, hand-maintained in
+  // parallel with each `_readXProperty` switch — nothing enforces they stay in
+  // sync. This group closes the other direction: for a reasonable property-id
+  // range, `served ⇔ listed` for each object type, so an id the image quietly
+  // starts serving (or stops serving) without a matching edit to the constant
+  // list is caught here, not discovered by an RPM ALL/REQUIRED client in the
+  // field getting a truncated (or falsely-errored) property set.
+  group('kBacnet*ServedProperties are the EXACT set the image serves (reverse sync)', () {
+    // 0..140 comfortably covers every BACnet standard property id this device
+    // could plausibly serve or collide with (the highest id referenced
+    // anywhere in this file, kBacnetPropRelinquishDefault, is in the 100s);
+    // scanning past the declared lists' own ids proves there is nothing ELSE
+    // being served that the list fails to name.
+    const probeRange = 140;
+
+    void checkExactMatch(int objectType, int instance, List<int> served) {
+      final image = _buildImage();
+      final servedSet = served.toSet();
+      for (var propertyId = 0; propertyId <= probeRange; propertyId++) {
+        final result = image.readProperty(objectType, instance, propertyId, null);
+        final isServed = result.error == null;
+        final isListed = servedSet.contains(propertyId);
+        expect(
+          isServed,
+          isListed,
+          reason: 'property $propertyId on object type $objectType: '
+              'served=$isServed but listed-in-constant=$isListed — '
+              'kBacnet*ServedProperties must name EXACTLY what the image serves',
+        );
+      }
+    }
+
+    test('Device: readProperty for 0..$probeRange agrees exactly with kBacnetDeviceServedProperties', () {
+      checkExactMatch(kBacnetObjectDevice, _kDeviceInstance, kBacnetDeviceServedProperties);
+    });
+
+    test('Analog Value: readProperty for 0..$probeRange agrees exactly with '
+        'kBacnetAnalogValueServedProperties', () {
+      checkExactMatch(kBacnetObjectAnalogValue, 3, kBacnetAnalogValueServedProperties);
+    });
+
+    test('Binary Value: readProperty for 0..$probeRange agrees exactly with '
+        'kBacnetBinaryValueServedProperties', () {
+      checkExactMatch(kBacnetObjectBinaryValue, 0, kBacnetBinaryValueServedProperties);
+    });
+
+    // The reverse direction of `readProperty` unknown-property rejection: a
+    // SAMPLE of ids not in each list must be REFUSED (unknown-property), not
+    // silently served — a targeted spot-check alongside the exhaustive scan
+    // above (which already covers these, but this makes the "rejects unlisted
+    // ids" assertion explicit and independent of the range boundary).
+    test('a sample of property ids NOT in each served list is REJECTED as unknown-property', () {
+      final image = _buildImage();
+      const sampleUnlisted = [200, 250, 300, 999];
+      for (final propertyId in sampleUnlisted) {
+        expect(kBacnetDeviceServedProperties.contains(propertyId), isFalse);
+        expect(kBacnetAnalogValueServedProperties.contains(propertyId), isFalse);
+        expect(kBacnetBinaryValueServedProperties.contains(propertyId), isFalse);
+
+        final deviceResult = image.readProperty(kBacnetObjectDevice, _kDeviceInstance, propertyId, null);
+        expect(deviceResult.error, (kBacnetErrorClassProperty, kBacnetErrorCodeUnknownProperty));
+
+        final avResult = image.readProperty(kBacnetObjectAnalogValue, 3, propertyId, null);
+        expect(avResult.error, (kBacnetErrorClassProperty, kBacnetErrorCodeUnknownProperty));
+
+        final bvResult = image.readProperty(kBacnetObjectBinaryValue, 0, propertyId, null);
+        expect(bvResult.error, (kBacnetErrorClassProperty, kBacnetErrorCodeUnknownProperty));
+      }
+    });
+  });
+
   // --- ReadPropertyMultiple through the shared dispatch --------------------
 
   group('ReadPropertyMultiple through dispatchBacnetDatagram', () {

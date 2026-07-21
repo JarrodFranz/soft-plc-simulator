@@ -8,6 +8,7 @@
 // No Flutter dependency — this file must stay pure Dart so it can be used
 // from services and widgets alike without pulling Flutter into model code.
 
+import 'bacnet_map.dart';
 import 'cip_map.dart';
 import 'dnp3_map.dart';
 import 'fins_map.dart';
@@ -614,6 +615,70 @@ class SlmpProtocolConfig {
 /// is unprivileged (> 1023).
 const int kSlmpDefaultPortConfig = 5007;
 
+/// Per-project BACnet/IP hosting config: whether the in-app BACnet/IP host is
+/// enabled, the UDP port it binds, this device's Device_Object_Instance, and
+/// the object map exposing the project's tags as Analog Value/Binary Value
+/// objects. Mirrors [SlmpProtocolConfig] (both solve the same named-tag <->
+/// served-address problem), with one addition: BACnet identifies the device
+/// itself by a `deviceInstance` (Device_Object_Instance) that has no
+/// equivalent in the word/device-addressed protocols next door.
+///
+/// The BACnet/IP default port [kBacnetDefaultPortConfig] (47808) is the
+/// BACnet Annex J standard port and is ABOVE 1023, so binding it needs NO
+/// elevated privilege. See `docs/protocols/bacnet.md`.
+class BacnetProtocolConfig {
+  bool enabled;
+  int port;
+  int deviceInstance;
+  BacnetMap map;
+
+  BacnetProtocolConfig({
+    this.enabled = false,
+    this.port = kBacnetDefaultPortConfig,
+    this.deviceInstance = kBacnetDefaultDeviceInstanceConfig,
+    required this.map,
+  });
+
+  factory BacnetProtocolConfig.fromJson(Map<String, dynamic> j) => BacnetProtocolConfig(
+        enabled: j['enabled'] == true,
+        port: (j['port'] as num?)?.toInt() ?? kBacnetDefaultPortConfig,
+        deviceInstance: (j['device_instance'] as num?)?.toInt() ?? kBacnetDefaultDeviceInstanceConfig,
+        map: j['map'] != null
+            ? BacnetMap.fromJson(j['map'] as Map<String, dynamic>)
+            : BacnetMap(entries: []),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'enabled': enabled,
+        'port': port,
+        'device_instance': deviceInstance,
+        'map': map.toJson(),
+      };
+
+  /// Sane defaults for a project that has never configured BACnet/IP:
+  /// disabled, the standard BACnet/IP UDP port, the additive default
+  /// Device_Object_Instance, and an auto-generated map packing the project's
+  /// current scalar tags into Analog Value/Binary Value objects.
+  static BacnetProtocolConfig defaults(PlcProject p) => BacnetProtocolConfig(
+        enabled: false,
+        port: kBacnetDefaultPortConfig,
+        deviceInstance: kBacnetDefaultDeviceInstanceConfig,
+        map: BacnetMap.autoGenerate(p),
+      );
+}
+
+/// The standard BACnet/IP UDP port (BACnet Annex J). Declared here (rather
+/// than importing the `dart:io` BACnet host's `kBacnetDefaultPort`) so this
+/// pure model stays free of any Flutter/`dart:io` dependency; the two
+/// constants are the same value by construction and asserted equal in tests.
+const int kBacnetDefaultPortConfig = 47808;
+
+/// The additive default Device_Object_Instance a project advertises when it
+/// has no `bacnet` config yet. Declared here for the same reason as
+/// [kBacnetDefaultPortConfig] — kept equal to the `dart:io` host's
+/// `kBacnetDefaultDeviceInstance` by construction, asserted in tests.
+const int kBacnetDefaultDeviceInstanceConfig = 3056;
+
 /// Per-project outbound-protocol settings: the shared gateway endpoint plus
 /// one config slot per protocol.
 ///
@@ -630,6 +695,7 @@ class ProtocolSettings {
   S7ProtocolConfig? s7;
   FinsProtocolConfig? fins;
   SlmpProtocolConfig? slmp;
+  BacnetProtocolConfig? bacnet;
 
   ProtocolSettings({
     this.gatewayUrl = kDefaultGatewayUrl,
@@ -641,6 +707,7 @@ class ProtocolSettings {
     this.s7,
     this.fins,
     this.slmp,
+    this.bacnet,
   });
 
   Map<String, dynamic> toJson() => {
@@ -653,6 +720,7 @@ class ProtocolSettings {
         if (s7 != null) 's7comm': s7!.toJson(),
         if (fins != null) 'fins': fins!.toJson(),
         if (slmp != null) 'slmp': slmp!.toJson(),
+        if (bacnet != null) 'bacnet': bacnet!.toJson(),
       };
 
   factory ProtocolSettings.fromJson(Map<String, dynamic> j) => ProtocolSettings(
@@ -667,6 +735,7 @@ class ProtocolSettings {
         s7: j['s7comm'] != null ? S7ProtocolConfig.fromJson(j['s7comm'] as Map<String, dynamic>) : null,
         fins: j['fins'] != null ? FinsProtocolConfig.fromJson(j['fins'] as Map<String, dynamic>) : null,
         slmp: j['slmp'] != null ? SlmpProtocolConfig.fromJson(j['slmp'] as Map<String, dynamic>) : null,
+        bacnet: j['bacnet'] != null ? BacnetProtocolConfig.fromJson(j['bacnet'] as Map<String, dynamic>) : null,
       );
 
   static ProtocolSettings defaults(PlcProject p) => ProtocolSettings(
@@ -679,5 +748,6 @@ class ProtocolSettings {
         s7: S7ProtocolConfig.defaults(p),
         fins: FinsProtocolConfig.defaults(p),
         slmp: SlmpProtocolConfig.defaults(p),
+        bacnet: BacnetProtocolConfig.defaults(p),
       );
 }
