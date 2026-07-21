@@ -92,6 +92,12 @@ const int _flagBit = 0;
 const int _lockedAddress = 116;
 const int _lockedValue = 250;
 
+/// `MFlag` — M device, word 0, bit 3 (BOOL) = device point `M3`. Starts FALSE.
+/// Exercises the BIT-UNITS subcommand (0x0001) exactly as Ignition's
+/// Mitsubishi driver addresses a Boolean on a bit device (probe step 7b).
+const int _mFlagWord = 0;
+const int _mFlagBit = 3;
+
 /// Builds the fixture project + SLMP map the E2E probe reads and writes. Tag
 /// name == path (single top-level names) so a map entry's `tag` resolves
 /// directly. Addresses are pinned EXPLICITLY here (not taken from
@@ -115,6 +121,7 @@ PlcProject _fixtureProject() {
       PlcTag(name: 'W0v', path: 'W0v', dataType: 'INT16', value: _w0Value, ioType: 'Internal'),
       PlcTag(name: 'Reg32', path: 'Reg32', dataType: 'INT32', value: _reg32Value, ioType: 'Internal'),
       PlcTag(name: 'Flag', path: 'Flag', dataType: 'BOOL', value: false, ioType: 'Internal'),
+      PlcTag(name: 'MFlag', path: 'MFlag', dataType: 'BOOL', value: false, ioType: 'Internal'),
       PlcTag(name: 'Locked', path: 'Locked', dataType: 'INT16', value: _lockedValue, ioType: 'Internal'),
     ],
   );
@@ -131,6 +138,7 @@ PlcProject _fixtureProject() {
       SlmpMapEntry(tag: 'W0v', device: kSlmpDeviceNameW, address: _w0Address),
       SlmpMapEntry(tag: 'Reg32', device: kSlmpDeviceNameD, address: _reg32Address),
       SlmpMapEntry(tag: 'Flag', device: kSlmpDeviceNameD, address: _flagAddress, bitOffset: _flagBit),
+      SlmpMapEntry(tag: 'MFlag', device: kSlmpDeviceNameM, address: _mFlagWord, bitOffset: _mFlagBit),
       SlmpMapEntry(tag: 'Locked', device: kSlmpDeviceNameD, address: _lockedAddress, access: 'ReadOnly'),
     ]),
   );

@@ -128,6 +128,58 @@ void main() {
     });
   });
 
+  group('bit-unit nibble packing + parseBatchWriteBitRequest', () {
+    test('packSlmpBitUnits: two points per byte, FIRST point in the HIGH nibble', () {
+      // Points 1,0,1,1 -> bytes 0x10 (1,0), 0x11 (1,1).
+      expect(packSlmpBitUnits(Uint8List.fromList([1, 0, 1, 1])),
+          equals(Uint8List.fromList([0x10, 0x11])));
+      // Odd count: trailing low nibble stays 0. Points 1 -> 0x10.
+      expect(packSlmpBitUnits(Uint8List.fromList([1])),
+          equals(Uint8List.fromList([0x10])));
+      expect(packSlmpBitUnits(Uint8List(0)), equals(Uint8List(0)));
+    });
+
+    test('unpackSlmpBitUnits round-trips and rejects a wrong packed length', () {
+      final unpacked = unpackSlmpBitUnits(Uint8List.fromList([0x10, 0x11]), 4);
+      expect(unpacked, equals(Uint8List.fromList([1, 0, 1, 1])));
+      // 3 points need exactly 2 bytes.
+      expect(unpackSlmpBitUnits(Uint8List.fromList([0x10]), 3), isNull);
+      expect(unpackSlmpBitUnits(Uint8List.fromList([0x10, 0x00, 0x00]), 3), isNull);
+      expect(unpackSlmpBitUnits(Uint8List(0), 0), equals(Uint8List(0)));
+    });
+
+    // The exact command data Ignition's Mitsubishi driver sends for a
+    // single-Boolean write to M3 (bit-units Batch Write, 1 point, value ON):
+    // device spec (number 3, code M, count 1) + ONE nibble-packed byte 0x10.
+    test('decodes the Ignition single-point M write (nibble-packed)', () {
+      final data = Uint8List.fromList([0x03, 0x00, 0x00, kSlmpDevM, 0x01, 0x00, 0x10]);
+      final result = parseBatchWriteBitRequest(data);
+      expect(result, isNotNull);
+      expect(result!.spec.deviceCode, kSlmpDevM);
+      expect(result.spec.deviceNumber, 3);
+      expect(result.spec.pointCount, 1);
+      expect(result.bitValues, equals(Uint8List.fromList([0x01])));
+    });
+
+    test('returns null when the packed length does not match the point count', () {
+      // Count 3 needs 2 packed bytes; 1 given — and vice versa.
+      final tooFew = Uint8List.fromList([0x00, 0x00, 0x00, kSlmpDevM, 0x03, 0x00, 0x10]);
+      expect(parseBatchWriteBitRequest(tooFew), isNull);
+      final tooMany = Uint8List.fromList([0x00, 0x00, 0x00, kSlmpDevM, 0x01, 0x00, 0x10, 0x00]);
+      expect(parseBatchWriteBitRequest(tooMany), isNull);
+    });
+
+    // A word-unit write of 1 word (2 data bytes) must NOT parse as a bit
+    // write (count 1 demands exactly 1 packed byte) — the dispatcher relies
+    // on this disjointness when it routes by subcommand.
+    test('bit and word write layouts are mutually exclusive for the same count', () {
+      final wordWrite = Uint8List.fromList([0x00, 0x00, 0x00, kSlmpDevD, 0x01, 0x00, 0xCD, 0xAB]);
+      expect(parseBatchWriteBitRequest(wordWrite), isNull);
+      final bitWrite = Uint8List.fromList([0x00, 0x00, 0x00, kSlmpDevM, 0x01, 0x00, 0x10]);
+      expect(parseBatchWriteRequest(bitWrite), isNull);
+    });
+  });
+
   group('buildBatchReadResponseData', () {
     test('round-trips known little-endian words against literal bytes', () {
       final words = Uint8List.fromList([0x64, 0x00, 0xCD, 0xAB]); // words: 100, 0xABCD

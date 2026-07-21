@@ -91,11 +91,26 @@ back onto the tags it overlaps. SLMP word devices address a **word** (2 bytes).
 | Link register | `W` | `0xB4` |
 | File register | `R` | `0xAF` |
 
-Only these four **word** devices are served. A request naming any other device
-code gets a per-request error end code (`0xC059`, unsupported command / device),
-never a dropped frame. Only the **word-units** subcommand (`0x0000`) is served; a
-bit-units subcommand (`0x0001`) is dropped (BOOLs are addressed inside their
-containing word — see below).
+Only these four devices are served. A request naming any other device code
+gets a per-request error end code (`0xC059`, unsupported command / device),
+never a dropped frame.
+
+Both the **word-units** subcommand (`0x0000`) and the **bit-units**
+subcommand (`0x0001`) are served. Bit-units was deferred in v1 and pinned by
+a real client: **Ignition's Mitsubishi driver polls a bit device (`M0`) with
+subcommand `0x0001`**, and the word-only build dropped every poll (5-second
+timeouts, diagnosed 2026-07-21). In 3E binary, bit-unit data is
+**nibble-packed** — two points per byte, the FIRST point in the HIGH nibble,
+an odd final point leaving the trailing low nibble `0`. The device number
+counts POINTS: number `n` addresses word `n >> 4`, bit `n & 15` of the
+word-addressed map, so `M5` is map entry (address 0, bit 5) — consistent
+with word-unit access packing 16 points per word. Bit-unit reads are served
+off the same word image as word reads (bit-for-bit consistent); bit-unit
+writes land only on `BOOL` map entries at exactly that (word, bit) through
+the same write-gate chain — a point inside a non-`BOOL` entry's word is
+refused (`0xC056`) rather than corrupting the encoded value, and gap points
+are discarded, mirroring the word-write semantics. Any other subcommand
+(e.g. the iQ-R extended `0x0002`/`0x0003`) is still dropped.
 
 ### Supported types
 
@@ -227,9 +242,13 @@ card — MC protocol defines no universal default port.)
 * **ASCII frames.** SLMP defines an ASCII variant alongside binary. v1 serves binary
   only (`pymcprotocol`'s `Type3E` defaults to binary); ASCII is a separate
   wire-format layer over the same commands.
-* **X / Y and other bit devices, and exotic (EM-style) device banks.** v1 serves
-  the four core **word** devices (`D`/`M`/`W`/`R`). Additional devices are further
-  device-code mappings, not a new mechanism.
+* **X / Y and other bit devices, and exotic (EM-style) device banks.** The four
+  core devices (`D`/`M`/`W`/`R`) are served, in both word and bit units.
+  Additional devices are further device-code mappings, not a new mechanism.
+* **iQ-R extended subcommands (`0x0002`/`0x0003`).** Ignition's Mitsubishi
+  driver sends these (with 4E framing) when its device Series is set to iQ-R;
+  set **Series = Q** (or L) to speak the served 3E binary + standard
+  subcommands instead.
 * **Timers and counters.** These carry a present value plus a coil/contact flag with
   no equivalent in this app's tag model, so mapping them would mean inventing a
   semantic rather than exposing one.
@@ -274,5 +293,33 @@ bytes the app puts on the wire.
    (`0x1A2B3C4D`) and asserts the literal **low-word-first** two-word order.
 6. A `DINT` **write → independent read-back** of the exact value.
 7. A `BOOL` bit round trip (read the word, write the bit set, read it back).
+   Then (7b) the **bit-units subcommand** on an M bit device (`M3`):
+   `batchread_bitunits` / `batchwrite_bitunits` read, set, and clear the
+   point (nibble-packed, two points per byte, first point in the high
+   nibble), cross-checked through a word-units read of `M0` to prove the bit
+   and word views are the same memory — the byte-for-byte **Ignition
+   M-device Boolean shape**.
 8. A `ReadOnly`-entry write refused with the write-protect end code (`0xC05B`),
    value unchanged.
+
+---
+
+## Connecting Ignition's Mitsubishi driver (the proven recipe, 2026-07-21)
+
+1. **Device Series = Q** (or L). iQ-R makes the driver send 4E frames +
+   extended subcommands, which are dropped — every poll then times out
+   (~5s response times in the device Details page) while the device still
+   shows connected.
+2. **Addresses must be registered on the Gateway first** (device config →
+   its address-configuration page). This driver does NOT resolve freeform
+   typed OPC item paths; an unregistered address is `Bad_NodeIdUnknown`
+   before any poll is sent.
+3. **32-bit values**: the driver's default word order (`@HL`) matches this
+   host's low-word-first wire layout — `D<float>1` / `D<float@HL>1` reads a
+   REAL at D1..D2 correctly (`@LH` scrambles it to a denormal that displays
+   as 0).
+4. **Writable Booleans**: map the tag to an **M device** in the app's SLMP
+   map and address it as `M<n>` (natively Boolean, read/write via the
+   bit-units subcommand). A bit index on a word device (`D0.0`) reads fine
+   but is **read-only in the driver** (writes fail `Bad_NotSupported`), and
+   `M<n>.<bit>` is invalid — M is already a bit device.

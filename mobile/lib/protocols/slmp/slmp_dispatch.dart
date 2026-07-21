@@ -114,6 +114,20 @@ abstract class SlmpDeviceImage {
   /// NEVER throw: an unsupported device, an out-of-range address, or a refused
   /// write is reported as an error [SlmpWriteOutcome], not an exception.
   SlmpWriteOutcome writeWords(int deviceCode, int deviceNumber, Uint8List data);
+
+  /// Reads [count] consecutive device POINTS (bits) starting at device number
+  /// [deviceNumber] from the device identified by the wire [deviceCode]
+  /// (bit-units subcommand). On success the outcome's data is ONE byte per
+  /// point (`0x01`/`0x00`) — UNPACKED; the dispatcher nibble-packs it for the
+  /// wire via `packSlmpBitUnits`. Device number `n` addresses word `n >> 4`,
+  /// bit `n & 15` of the word image. Must NEVER throw.
+  SlmpReadOutcome readBits(int deviceCode, int deviceNumber, int count);
+
+  /// Writes [bits] (ONE byte per point, `0x00` = OFF / anything else = ON —
+  /// already UNPACKED from the wire's nibble packing) to consecutive device
+  /// points starting at device number [deviceNumber] of the device identified
+  /// by the wire [deviceCode]. Must NEVER throw.
+  SlmpWriteOutcome writeBits(int deviceCode, int deviceNumber, Uint8List bits);
 }
 
 /// A simple, pure, zero-filled per-device word image: a fixed-size word bank
@@ -168,6 +182,50 @@ class SlmpWordImage implements SlmpDeviceImage {
     final bd = ByteData.sublistView(data);
     for (var i = 0; i < count; i++) {
       bank[deviceNumber + i] = bd.getUint16(i * 2, Endian.little);
+    }
+    return SlmpWriteOutcome.ok();
+  }
+
+  @override
+  SlmpReadOutcome readBits(int deviceCode, int deviceNumber, int count) {
+    final bank = _devices[deviceCode];
+    if (bank == null) {
+      return SlmpReadOutcome.error(kSlmpEndCommandError);
+    }
+    if (count <= 0) {
+      return SlmpReadOutcome.error(kSlmpEndPointCount);
+    }
+    if (deviceNumber < 0 || deviceNumber + count > bank.length * 16) {
+      return SlmpReadOutcome.error(kSlmpEndAddressRange);
+    }
+    final out = Uint8List(count);
+    for (var i = 0; i < count; i++) {
+      final pos = deviceNumber + i;
+      out[i] = (bank[pos >> 4] >> (pos & 15)) & 1;
+    }
+    return SlmpReadOutcome.ok(out);
+  }
+
+  @override
+  SlmpWriteOutcome writeBits(int deviceCode, int deviceNumber, Uint8List bits) {
+    final bank = _devices[deviceCode];
+    if (bank == null) {
+      return SlmpWriteOutcome.error(kSlmpEndCommandError);
+    }
+    if (bits.isEmpty) {
+      return SlmpWriteOutcome.error(kSlmpEndPointCount);
+    }
+    if (deviceNumber < 0 || deviceNumber + bits.length > bank.length * 16) {
+      return SlmpWriteOutcome.error(kSlmpEndAddressRange);
+    }
+    for (var i = 0; i < bits.length; i++) {
+      final pos = deviceNumber + i;
+      final mask = 1 << (pos & 15);
+      if (bits[i] != 0x00) {
+        bank[pos >> 4] |= mask;
+      } else {
+        bank[pos >> 4] &= ~mask & 0xFFFF;
+      }
     }
     return SlmpWriteOutcome.ok();
   }
@@ -230,6 +288,45 @@ class SlmpTagImage implements SlmpDeviceImage {
     final results = applyDeviceWrite(project, map, device, deviceNumber, data);
     return SlmpWriteOutcome(slmpWriteEndCode(results));
   }
+
+  @override
+  SlmpReadOutcome readBits(int deviceCode, int deviceNumber, int count) {
+    final device = slmpDeviceNameForCode(deviceCode);
+    if (device == null) {
+      return SlmpReadOutcome.error(kSlmpEndCommandError);
+    }
+    if (count <= 0) {
+      return SlmpReadOutcome.error(kSlmpEndPointCount);
+    }
+    if (deviceNumber < 0 ||
+        (deviceNumber + count - 1) >> 4 >= kSlmpMaxDeviceImageWords) {
+      return SlmpReadOutcome.error(kSlmpEndAddressRange);
+    }
+    final bits = readDeviceBits(project, map, device, deviceNumber, count);
+    if (bits.length != count) {
+      // readDeviceBits only returns short for arguments this method already
+      // rejected; treat any residual mismatch as an address-range error.
+      return SlmpReadOutcome.error(kSlmpEndAddressRange);
+    }
+    return SlmpReadOutcome.ok(bits);
+  }
+
+  @override
+  SlmpWriteOutcome writeBits(int deviceCode, int deviceNumber, Uint8List bits) {
+    final device = slmpDeviceNameForCode(deviceCode);
+    if (device == null) {
+      return SlmpWriteOutcome.error(kSlmpEndCommandError);
+    }
+    if (bits.isEmpty) {
+      return SlmpWriteOutcome.error(kSlmpEndPointCount);
+    }
+    if (deviceNumber < 0 ||
+        (deviceNumber + bits.length - 1) >> 4 >= kSlmpMaxDeviceImageWords) {
+      return SlmpWriteOutcome.error(kSlmpEndAddressRange);
+    }
+    final results = applyDeviceBitWrite(project, map, device, deviceNumber, bits);
+    return SlmpWriteOutcome(slmpWriteEndCode(results));
+  }
 }
 
 /// Collapses the per-tag outcomes [applyDeviceWrite] reported for one Batch
@@ -284,10 +381,13 @@ Uint8List? dispatchSlmpFrame(Uint8List frame, SlmpDeviceImage image) {
   if (request == null) {
     return null;
   }
-  // Only the word-units subcommand is served in v1; a bit-units subcommand
-  // (0x0001) needs the per-bit addressing deferred to a later task, so it is
-  // dropped here rather than answered incorrectly.
-  if (request.subcommand != kSlmpSubcmdWord) {
+  // Word-units (0x0000) and bit-units (0x0001) subcommands are served; any
+  // other subcommand (e.g. the iQ-R extended 0x0002/0x0003) is dropped here
+  // rather than answered incorrectly. Bit-units was deferred in v1 and
+  // pinned by a real client: Ignition's Mitsubishi driver polls bit devices
+  // (`M0`) with subcommand 0x0001 (see slmp_commands.dart's BIT-UNIT note).
+  final isBit = request.subcommand == kSlmpSubcmdBit;
+  if (request.subcommand != kSlmpSubcmdWord && !isBit) {
     return null;
   }
   switch (request.command) {
@@ -295,6 +395,17 @@ Uint8List? dispatchSlmpFrame(Uint8List frame, SlmpDeviceImage image) {
       final spec = parseBatchReadRequest(request.data);
       if (spec == null) {
         return null;
+      }
+      if (isBit) {
+        // Bit-units read: the outcome's data is one byte per point, which
+        // goes on the wire NIBBLE-packed (two points per byte).
+        final outcome =
+            image.readBits(spec.deviceCode, spec.deviceNumber, spec.pointCount);
+        return buildSlmpResponse(
+          requestHeader: request.header,
+          endCode: outcome.endCode,
+          data: packSlmpBitUnits(outcome.words),
+        );
       }
       final outcome =
           image.readWords(spec.deviceCode, spec.deviceNumber, spec.pointCount);
@@ -304,6 +415,22 @@ Uint8List? dispatchSlmpFrame(Uint8List frame, SlmpDeviceImage image) {
         data: buildBatchReadResponseData(outcome.words),
       );
     case kSlmpCmdBatchWriteWord:
+      if (isBit) {
+        final parsed = parseBatchWriteBitRequest(request.data);
+        if (parsed == null) {
+          return null;
+        }
+        final outcome = image.writeBits(
+          parsed.spec.deviceCode,
+          parsed.spec.deviceNumber,
+          parsed.bitValues,
+        );
+        // A Batch Write response carries only the end code (no data).
+        return buildSlmpResponse(
+          requestHeader: request.header,
+          endCode: outcome.endCode,
+        );
+      }
       final parsed = parseBatchWriteRequest(request.data);
       if (parsed == null) {
         return null;

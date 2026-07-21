@@ -109,6 +109,14 @@ REG32_WRITTEN_HIGH = (REG32_WRITTEN >> 16) & 0xFFFF  # 0x1122
 FLAG_DEVICE = "D114"  # Flag (BOOL) lives in bit 0 of this word; starts False.
 FLAG_BIT = 0
 
+# --- Bit-units subcommand on an M bit device (step 7b) -----------------------
+# MFlag (BOOL) is mapped at M word 0, bit 3 = device point M3; starts False.
+# The bit-units subcommand (0x0001) is how Ignition's Mitsubishi driver
+# addresses a Boolean on a bit device (`M3`), which the word-only v1 dropped.
+MFLAG_BIT_DEVICE = "M3"  # bit-units head device (point number 3)
+MFLAG_WORD_DEVICE = "M0"  # word-units view of the same memory (word 0)
+MFLAG_BIT = 3  # bit position inside that word
+
 # --- ReadOnly refusal (step 8) ----------------------------------------------
 LOCKED_DEVICE = "D116"  # Locked (INT16), mapped ReadOnly.
 LOCKED_VALUE = 250
@@ -164,6 +172,7 @@ def run(host: str, port: int) -> None:
         _step5_read_32bit_settles_word_order(mc)
         _step6_write_32bit_and_read_back(mc)
         _step7_bool_bit_round_trip(mc)
+        _step7b_bit_units_m_device(mc)
         _step8_readonly_refused(mc)
     finally:
         # --- teardown: close the client socket ---------------------------------
@@ -407,6 +416,76 @@ def _step7_bool_bit_round_trip(mc: "pymcprotocol.Type3E") -> None:
         f"set. The bit write did not land.",
     )
     print(f"[probe] step 7 OK: BOOL bit at {FLAG_DEVICE}.{FLAG_BIT} written and read back set")
+
+
+# --- Step 7b: bit-units subcommand on an M bit device -----------------------
+
+
+def _step7b_bit_units_m_device(mc: "pymcprotocol.Type3E") -> None:
+    """Exercises the BIT-UNITS subcommand (0x0001) on an M bit device — the
+    exact shape Ignition's Mitsubishi driver uses for a Boolean (`M3`), which
+    the word-only v1 dropped (5s poll timeouts, diagnosed 2026-07-21).
+
+    `batchread_bitunits` / `batchwrite_bitunits` put the nibble-packed
+    bit-unit layout on the wire (two points per byte, first point in the high
+    nibble) and parse the reply themselves — a real third-party check of the
+    packing in both directions. The step ends with a WORD-units read of the
+    same memory (M0) to prove the bit and word views are the same image.
+    """
+    # (1) Initial bit-units read: M3 (MFlag, seeded False) and its neighbour.
+    try:
+        bits = mc.batchread_bitunits(headdevice=MFLAG_BIT_DEVICE, readsize=2)
+    except Exception as err:  # noqa: BLE001 - reported verbatim
+        raise ProbeFailure(
+            f"STEP 7b (bit-units read): request failed: {err!r}. The host must "
+            f"serve Batch Read with the BIT subcommand (0x0001), not drop it."
+        ) from err
+    check(
+        bits == [0, 0],
+        f"STEP 7b (bit-units initial): {MFLAG_BIT_DEVICE} x2 read as {bits!r}, "
+        f"expected [0, 0] (MFlag seeded False, neighbour a gap).",
+    )
+
+    # (2) The Ignition Boolean write shape: bit-units write of ONE point.
+    try:
+        mc.batchwrite_bitunits(headdevice=MFLAG_BIT_DEVICE, values=[1])
+    except Exception as err:  # noqa: BLE001 - reported verbatim
+        raise ProbeFailure(
+            f"STEP 7b (bit-units write): writing {MFLAG_BIT_DEVICE} = 1 was "
+            f"rejected: {err!r}"
+        ) from err
+
+    # (3) Independent bit-units read-back.
+    bits = mc.batchread_bitunits(headdevice=MFLAG_BIT_DEVICE, readsize=1)
+    check(
+        bits == [1],
+        f"STEP 7b (bit-units read-back): after writing 1, {MFLAG_BIT_DEVICE} read "
+        f"as {bits!r}, expected [1]. The bit-units write did not land.",
+    )
+
+    # (4) Cross-view: a WORD-units read of M0 must show bit 3 set — the bit
+    # and word views must be the same memory.
+    word = _u16(mc.batchread_wordunits(headdevice=MFLAG_WORD_DEVICE, readsize=1)[0])
+    check(
+        (word >> MFLAG_BIT) & 1 == 1,
+        f"STEP 7b (bit->word consistency): after the bit-units write, a "
+        f"word-units read of {MFLAG_WORD_DEVICE} returned 0x{word:04X} with bit "
+        f"{MFLAG_BIT} clear -- the bit and word views are not the same memory.",
+    )
+
+    # (5) Clear it again through bit-units and confirm.
+    mc.batchwrite_bitunits(headdevice=MFLAG_BIT_DEVICE, values=[0])
+    bits = mc.batchread_bitunits(headdevice=MFLAG_BIT_DEVICE, readsize=1)
+    check(
+        bits == [0],
+        f"STEP 7b (bit-units clear): after writing 0, {MFLAG_BIT_DEVICE} read as "
+        f"{bits!r}, expected [0].",
+    )
+    print(
+        f"[probe] step 7b OK: bit-units subcommand on {MFLAG_BIT_DEVICE} -- "
+        f"nibble-packed read/write/clear, consistent with the word view "
+        f"(the Ignition M-device Boolean shape)"
+    )
 
 
 # --- Step 8: ReadOnly write is refused --------------------------------------

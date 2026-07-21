@@ -467,6 +467,157 @@ void main() {
       expect(bd.getUint16(kSlmpResponseFixedLen, Endian.little), 0x0102);
     });
   });
+
+  // Bit-unit access (subcommand 0x0001): the same map addressed one device
+  // POINT at a time — device number n = word n >> 4, bit n & 15. Pinned by a
+  // real client: Ignition's Mitsubishi driver polls bit devices this way
+  // (2026-07-21).
+  group('readDeviceBits', () {
+    test('reads BOOL entries and gap points at their exact numbers', () {
+      final p = buildProject();
+      writePath(p, 'Flag3', true);
+      writePath(p, 'Flag5', true);
+      // Points 0..7 of word 0: only points 3 and 5 are mapped (and true).
+      final bits = readDeviceBits(p, buildMap(), 'D', 0, 8);
+      expect(bits, equals(toBytes([0, 0, 0, 1, 0, 1, 0, 0])));
+    });
+
+    test('points of a non-BOOL word read that bit of the encoded value', () {
+      final p = buildProject();
+      writePath(p, 'Word1', 0x0005); // binary 0101 -> bits 0 and 2 set.
+      // Word1 is at word 2 -> its bit 0 is device point 32.
+      final bits = readDeviceBits(p, buildMap(), 'D', 32, 4);
+      expect(bits, equals(toBytes([1, 0, 1, 0])),
+          reason: 'a bit-unit read must be consistent with the word image');
+    });
+
+    test('a read crossing a word boundary rolls into the next word', () {
+      final p = buildProject();
+      writePath(p, 'Flag5', true); // word 0, bit 5 = point 5
+      writePath(p, 'Word1', 0x0001); // word 2 -> point 32
+      // 30 points from 5: point 5 (set), then gaps, then point 32 (set) at
+      // index 27, points 33-34 clear.
+      final bits = readDeviceBits(p, buildMap(), 'D', 5, 30);
+      expect(bits.length, 30);
+      expect(bits[0], 1, reason: 'point 5 is Flag5 = true');
+      expect(bits.sublist(1, 27), equals(Uint8List(26)));
+      expect(bits[27], 1, reason: 'point 32 is Word1 bit 0');
+      expect(bits[28], 0);
+      expect(bits[29], 0);
+    });
+
+    test('returns empty — never throws — on invalid arguments', () {
+      final p = buildProject();
+      expect(readDeviceBits(p, buildMap(), 'D', -1, 1), isEmpty);
+      expect(readDeviceBits(p, buildMap(), 'D', 0, 0), isEmpty);
+    });
+  });
+
+  group('applyDeviceBitWrite', () {
+    test('writes a single mapped BOOL point — the Ignition M-device write shape', () {
+      final p = buildProject();
+      expect(readPath(p, 'Flag3'), false);
+      final results = applyDeviceBitWrite(p, buildMap(), 'D', 3, toBytes([0x01]));
+      expect(readPath(p, 'Flag3'), true);
+      expect(results.single.tag, 'Flag3');
+      expect(results.single.status, SlmpWriteStatus.written);
+    });
+
+    test('clears a point with 0x00 and does not touch the neighbouring point', () {
+      final p = buildProject();
+      writePath(p, 'Flag3', true);
+      writePath(p, 'Flag5', true);
+      final results = applyDeviceBitWrite(p, buildMap(), 'D', 3, toBytes([0x00]));
+      expect(readPath(p, 'Flag3'), false);
+      expect(readPath(p, 'Flag5'), true, reason: 'only the addressed point changes');
+      expect(results.single.status, SlmpWriteStatus.written);
+    });
+
+    test('a multi-point write covering mapped and gap points writes the mapped, discards the gaps', () {
+      final p = buildProject();
+      // Points 2..6: point 3 (Flag3) and point 5 (Flag5) are mapped.
+      final results = applyDeviceBitWrite(p, buildMap(), 'D', 2, toBytes([1, 1, 1, 1, 1]));
+      expect(readPath(p, 'Flag3'), true);
+      expect(readPath(p, 'Flag5'), true);
+      expect(results.length, 2, reason: 'gap points are discarded without a report');
+      expect(results.every((r) => r.status == SlmpWriteStatus.written), isTrue);
+    });
+
+    test('a point landing inside a non-BOOL word is refused as partiallyCovered', () {
+      final p = buildProject();
+      writePath(p, 'Word1', 0x1234);
+      final results = applyDeviceBitWrite(p, buildMap(), 'D', 32, toBytes([0x01]));
+      expect(readPath(p, 'Word1'), 0x1234, reason: 'the INT16 must not be corrupted');
+      expect(results.single.tag, 'Word1');
+      expect(results.single.status, SlmpWriteStatus.partiallyCovered);
+    });
+
+    test('a ReadOnly map entry refuses the point write', () {
+      final p = buildProject();
+      final map = SlmpMap(entries: [
+        SlmpMapEntry(tag: 'Flag3', device: 'D', address: 0, bitOffset: 3, access: 'ReadOnly'),
+      ]);
+      final results = applyDeviceBitWrite(p, map, 'D', 3, toBytes([0x01]));
+      expect(readPath(p, 'Flag3'), false);
+      expect(results.single.status, SlmpWriteStatus.refusedReadOnly);
+    });
+
+    test('a forced root tag refuses the point write, tag unchanged', () {
+      final p = buildProject();
+      final forced = p.tags.firstWhere((t) => t.name == 'Flag3');
+      forced.isForced = true;
+      forced.forcedValue = true;
+      final results = applyDeviceBitWrite(p, buildMap(), 'D', 3, toBytes([0x01]));
+      expect(forced.value, false, reason: 'the underlying tag value must be untouched');
+      expect(results.single.status, SlmpWriteStatus.refusedForced);
+    });
+
+    test('returns empty — never throws — on invalid arguments', () {
+      final p = buildProject();
+      expect(applyDeviceBitWrite(p, buildMap(), 'D', 0, Uint8List(0)), isEmpty);
+      expect(applyDeviceBitWrite(p, buildMap(), 'D', -1, toBytes([1])), isEmpty);
+    });
+  });
+
+  group('dispatchSlmpFrame — bit-units subcommand against the tag-backed image', () {
+    test('a bit-units Batch Read returns nibble-packed points', () {
+      final p = buildProject();
+      writePath(p, 'Flag3', true);
+      writePath(p, 'Flag5', true);
+      final image = SlmpTagImage(p, buildMap());
+      // 6 points from 0: 0,0,0,1,0,1 -> nibble-packed 0x00, 0x01, 0x01.
+      final frame = _buildBatchReadBitsD(0, 6);
+      final reply = dispatchSlmpFrame(frame, image);
+      expect(reply, isNotNull);
+      expect(_endCodeOf(reply!), kSlmpEndNormal);
+      expect(reply.sublist(kSlmpResponseFixedLen),
+          equals(toBytes([0x00, 0x01, 0x01])),
+          reason: 'two points per byte, first point in the HIGH nibble');
+    });
+
+    test('a bit-units Batch Write lands on the mapped BOOL — the Ignition shape', () {
+      final p = buildProject();
+      final image = SlmpTagImage(p, buildMap());
+      // ONE point at number 3 (Flag3), value ON: one data byte 0x10.
+      final frame = _buildBatchWriteBitsD(3, [1]);
+      final reply = dispatchSlmpFrame(frame, image);
+      expect(reply, isNotNull);
+      expect(_endCodeOf(reply!), kSlmpEndNormal);
+      expect(readPath(p, 'Flag3'), true);
+    });
+
+    test('an odd point count packs the final point in a high nibble both ways', () {
+      final p = buildProject();
+      final image = SlmpTagImage(p, buildMap());
+      // Points 3..5: ON, gap, ON -> bytes 0x10 (3 on, 4 gap-off), 0x10 (5 on).
+      final frame = _buildBatchWriteBitsD(3, [1, 0, 1]);
+      final reply = dispatchSlmpFrame(frame, image);
+      expect(reply, isNotNull);
+      expect(_endCodeOf(reply!), kSlmpEndNormal);
+      expect(readPath(p, 'Flag3'), true);
+      expect(readPath(p, 'Flag5'), true);
+    });
+  });
 }
 
 /// Shorthand for a literal byte buffer.
@@ -495,6 +646,55 @@ Uint8List _buildBatchReadD(int deviceNumber, int count) {
   out[17] = (deviceNumber >> 16) & 0xFF;
   out[18] = kSlmpDevD;
   bd.setUint16(19, count, Endian.little);
+  return out;
+}
+
+/// Builds a 3E Batch Read (BIT units, subcommand 0x0001) request for
+/// [pointCount] points at device number D[deviceNumber].
+Uint8List _buildBatchReadBitsD(int deviceNumber, int pointCount) {
+  const requestDataLength = 2 + 2 + 2 + kSlmpDeviceSpecLen; // timer+cmd+subcmd+spec
+  final out = Uint8List(9 + requestDataLength);
+  final bd = ByteData.sublistView(out);
+  bd.setUint16(0, kSlmpRequestSubheader, Endian.big);
+  out[2] = 0x00; // network
+  out[3] = 0xFF; // pc
+  bd.setUint16(4, 0x03FF, Endian.little); // destModuleIo
+  out[6] = 0x00; // destModuleStation
+  bd.setUint16(7, requestDataLength, Endian.little);
+  bd.setUint16(9, 0x0000, Endian.little); // monitoringTimer
+  bd.setUint16(11, kSlmpCmdBatchReadWord, Endian.little);
+  bd.setUint16(13, kSlmpSubcmdBit, Endian.little);
+  out[15] = deviceNumber & 0xFF;
+  out[16] = (deviceNumber >> 8) & 0xFF;
+  out[17] = (deviceNumber >> 16) & 0xFF;
+  out[18] = kSlmpDevD;
+  bd.setUint16(19, pointCount, Endian.little);
+  return out;
+}
+
+/// Builds a 3E Batch Write (BIT units, subcommand 0x0001) request writing the
+/// per-point [bits] (0/1 each) at device number D[deviceNumber], with the
+/// wire's nibble packing (two points per byte, first point high nibble).
+Uint8List _buildBatchWriteBitsD(int deviceNumber, List<int> bits) {
+  final packed = packSlmpBitUnits(Uint8List.fromList(bits));
+  final requestDataLength = 2 + 2 + 2 + kSlmpDeviceSpecLen + packed.length;
+  final out = Uint8List(9 + requestDataLength);
+  final bd = ByteData.sublistView(out);
+  bd.setUint16(0, kSlmpRequestSubheader, Endian.big);
+  out[2] = 0x00; // network
+  out[3] = 0xFF; // pc
+  bd.setUint16(4, 0x03FF, Endian.little); // destModuleIo
+  out[6] = 0x00; // destModuleStation
+  bd.setUint16(7, requestDataLength, Endian.little);
+  bd.setUint16(9, 0x0000, Endian.little); // monitoringTimer
+  bd.setUint16(11, kSlmpCmdBatchWriteWord, Endian.little);
+  bd.setUint16(13, kSlmpSubcmdBit, Endian.little);
+  out[15] = deviceNumber & 0xFF;
+  out[16] = (deviceNumber >> 8) & 0xFF;
+  out[17] = (deviceNumber >> 16) & 0xFF;
+  out[18] = kSlmpDevD;
+  bd.setUint16(19, bits.length, Endian.little);
+  out.setRange(21, 21 + packed.length, packed);
   return out;
 }
 
