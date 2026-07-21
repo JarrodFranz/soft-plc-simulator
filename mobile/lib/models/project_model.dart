@@ -4,6 +4,7 @@ import '../services/tag_historian.dart';
 import 'opcua_map.dart';
 import 'protocol_settings.dart';
 import 'signal_gen.dart';
+import 'tag_resolver.dart';
 
 /// HMI component type id for the multi-pen trend chart.
 const String kTrendChartDisplay = 'TrendChartDisplay';
@@ -23,6 +24,7 @@ class PlcTag {
   bool isForced;
   dynamic forcedValue;
   String folder;
+  dynamic defaultValue;
 
   PlcTag({
     required this.name,
@@ -39,6 +41,7 @@ class PlcTag {
     this.isForced = false,
     this.forcedValue,
     this.folder = '',
+    this.defaultValue,
   });
 
   factory PlcTag.fromJson(Map<String, dynamic> json) {
@@ -57,6 +60,14 @@ class PlcTag {
       isForced: json['is_forced'] ?? false,
       forcedValue: json['forced_value'],
       folder: json['folder'] ?? '',
+      // A key present (even with a null value) means this JSON was already
+      // written by the current toJson — trust it as-is so a defaultValue
+      // left unset (null) stays null across an encode/decode round-trip.
+      // Only truly legacy JSON (no key at all, pre-dating this field) adopts
+      // initial_value/value as its default.
+      defaultValue: json.containsKey('default_value')
+          ? json['default_value']
+          : (json['initial_value'] ?? json['value']),
     );
   }
 
@@ -74,8 +85,16 @@ class PlcTag {
     'io_type': ioType,
     'is_forced': isForced,
     'forced_value': forcedValue,
+    'default_value': defaultValue,
     'folder': folder,
   };
+
+  /// The declared default when set, else the built-in default for this tag's
+  /// type/shape. Callers use this instead of special-casing a null
+  /// [defaultValue] (only the project is needed, to resolve a composite's
+  /// structural default).
+  dynamic effectiveDefault(PlcProject p) =>
+      defaultValue ?? defaultValueFor(p, dataType, arrayLength);
 }
 
 class StructFieldDef {
