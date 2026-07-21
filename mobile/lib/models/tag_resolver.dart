@@ -168,6 +168,83 @@ dynamic _defaultValueFor(PlcProject p, String base, int arrayLength, Set<String>
   }
 }
 
+/// Parses a user-typed [input] string into the runtime type a scalar tag of
+/// [dataType] expects. Never throws: unparseable numeric input falls back to
+/// the type's zero default. Composites/unknown types return their structural
+/// default (callers should not offer scalar editing for those).
+dynamic coerceScalarValue(String dataType, String input) {
+  switch (dataType) {
+    case 'BOOL':
+      final s = input.trim().toLowerCase();
+      return s == 'true' || s == '1' || s == 'on';
+    case 'FLOAT64':
+      return double.tryParse(input.trim()) ?? 0.0;
+    case 'STRING':
+      return input;
+    case 'INT16':
+    case 'INT32':
+    case 'INT64':
+      return int.tryParse(input.trim()) ?? 0;
+    default:
+      return 0;
+  }
+}
+
+/// Re-coerces an existing [current] value to [newDataType] when a tag's type
+/// changes. Best-effort BOOL<->number<->string; a composite/array target (or
+/// an unparseable value) yields the new type's structural default via
+/// [defaultValueFor]. Never throws.
+dynamic coerceValueToType(
+    PlcProject p, dynamic current, String newDataType, int arrayLength) {
+  if (arrayLength > 0 || lookupComposite(p, newDataType) != null) {
+    return defaultValueFor(p, newDataType, arrayLength);
+  }
+  switch (newDataType) {
+    case 'BOOL':
+      if (current is bool) {
+        return current;
+      }
+      if (current is num) {
+        return current != 0;
+      }
+      if (current is String) {
+        return coerceScalarValue('BOOL', current);
+      }
+      return false;
+    case 'FLOAT64':
+      if (current is num) {
+        return current.toDouble();
+      }
+      if (current is bool) {
+        return current ? 1.0 : 0.0;
+      }
+      if (current is String) {
+        return double.tryParse(current.trim()) ?? 0.0;
+      }
+      return 0.0;
+    case 'STRING':
+      return current == null ? '' : '$current';
+    case 'INT16':
+    case 'INT32':
+    case 'INT64':
+      if (current is int) {
+        return current;
+      }
+      if (current is num) {
+        return current.round();
+      }
+      if (current is bool) {
+        return current ? 1 : 0;
+      }
+      if (current is String) {
+        return int.tryParse(current.trim()) ?? 0;
+      }
+      return 0;
+    default:
+      return defaultValueFor(p, newDataType, arrayLength);
+  }
+}
+
 class _Seg {
   final String raw;     // 'field' or 'N' or '2' (index inside [])
   final bool isIndex;   // came from [i]
