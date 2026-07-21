@@ -15,6 +15,9 @@ import '../models/tag_resolver.dart';
 import '../data/default_projects.dart';
 import '../data/project_repository.dart';
 import '../data/project_transfer.dart';
+import '../import/dialect_detect.dart';
+import '../import/ir_to_project.dart';
+import '../import/plcopen_parser.dart';
 import '../services/app_logger.dart';
 import '../services/bacnet_host.dart';
 import '../services/dnp3_host.dart';
@@ -39,6 +42,7 @@ import 'sfc_editor_screen.dart';
 import 'memory_manager_screen.dart';
 import 'hmi_dashboard_builder_screen.dart';
 import 'simulated_io_screen.dart';
+import 'import_xml_preview.dart';
 import 'logs_screen.dart';
 import 'pid_autotune_screen.dart';
 import 'interaction_analysis_screen.dart';
@@ -424,6 +428,12 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   @visibleForTesting
   PlcProject get debugActiveProject => _activeProject;
 
+  /// Test-only hook: every project currently in the in-memory catalog
+  /// (unmodifiable view), for asserting project-count/identity invariants
+  /// (e.g. "import is additive") without reaching into private state.
+  @visibleForTesting
+  List<PlcProject> get debugAllProjects => List.unmodifiable(_allProjects);
+
   /// Test-only hook: whether the shell currently holds a latched watchdog
   /// fault, for asserting fault state directly without scraping banner text.
   @visibleForTesting
@@ -593,6 +603,32 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// `debugSwitchToProject` exercises `_switchActiveProject` directly.
   @visibleForTesting
   Future<void> debugImportProject(PlcProject imported) => _applyImportedProject(imported);
+
+  /// Test-only hook: drives the PLCopen-XML import's parse→map→apply tail
+  /// directly from a raw XML string, skipping BOTH the file picker AND the
+  /// [ImportXmlPreview] screen — the same spirit as [debugImportProject]
+  /// bypassing the picker for a JSON project. Useful for asserting the
+  /// mapped project actually lands as a new project with the right shape;
+  /// use [debugImportXmlFlow] instead to exercise the autodetect/friendly-
+  /// error branches `_importProgramXml` adds on top of this tail.
+  @visibleForTesting
+  Future<void> debugImportXml(String xml) {
+    final ir = parsePlcOpen(xml);
+    final result = mapImportedProject(ir, projectName: ir.name, projectId: 'proj_new_test');
+    final withId =
+        ProjectTransfer.reassignIdIfColliding(result.project, _allProjects.map((p) => p.id).toSet());
+    return _applyImportedProject(withId);
+  }
+
+  /// Test-only hook: drives `_importProgramXml`'s post-file-read decision
+  /// logic (autodetect → parse/map → preview, or a friendly error snackbar)
+  /// directly from a raw XML string — i.e. everything `_importProgramXml`
+  /// does AFTER the file picker/UTF-8 decode steps, which (like
+  /// [debugImportProject]'s file-picker step) go through a real platform
+  /// channel a widget test can't faithfully mock. Split out for the same
+  /// reason `_applyImportedProject` was split out of `_importProject`.
+  @visibleForTesting
+  Future<void> debugImportXmlFlow(String xml) => _handleImportedXmlText(xml);
 
   /// Test-only hook: appends [t] to the active project's task list.
   @visibleForTesting
@@ -1425,6 +1461,107 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         'Imported project "${imported.name}" (${imported.id})');
   }
 
+  /// Imports a PLC program from a vendor XML export (currently PLCopen TC6
+  /// only): picks an `.xml` file, then routes the decoded text through
+  /// `_handleImportedXmlText`'s autodetect→parse→map→preview pipeline.
+  /// Mirrors `_importProject`'s file-pick/decode/error-snackbar shape, but
+  /// targets a brand-new project via the [ImportXmlPreview] review screen
+  /// rather than replacing the active project outright.
+  Future<void> _importProgramXml() async {
+    final messenger = ScaffoldMessenger.of(context);
+    FilePickerResult? picked;
+    try {
+      picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['xml'],
+        withData: true,
+      );
+    } catch (e) {
+      _logger.log(kLogSourceProject, LogLevel.warn, 'Import XML: file picker failed',
+          detail: e.toString());
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text("Couldn't open the file picker")),
+      );
+      return;
+    }
+    if (picked == null || picked.files.isEmpty) return; // user cancelled
+
+    final file = picked.files.single;
+    String? text;
+    try {
+      final bytes = file.bytes;
+      if (bytes != null) {
+        text = utf8.decode(bytes);
+      }
+    } catch (e) {
+      _logger.log(kLogSourceProject, LogLevel.warn,
+          'Import XML: failed to decode the selected file as UTF-8', detail: e.toString());
+      text = null;
+    }
+    if (text == null) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text("Couldn't import: unable to read the selected file")),
+      );
+      return;
+    }
+
+    await _handleImportedXmlText(text);
+  }
+
+  /// Runs the autodetect→parse→map decision over already-read XML [text]:
+  /// an unrecognized dialect or malformed/non-PLCopen document surfaces a
+  /// friendly snackbar (never a crash); a recognized, well-formed PLCopen
+  /// document is mapped and handed to [ImportXmlPreview] for review before
+  /// anything is created. Split out of `_importProgramXml` — same reason
+  /// `_applyImportedProject` is split out of `_importProject` — so it's
+  /// drivable from a widget test with literal XML text, bypassing only the
+  /// file_picker platform channel (see `debugImportXmlFlow`).
+  Future<void> _handleImportedXmlText(String text) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final dialect = detectDialect(text);
+    if (dialect == null) {
+      messenger.showSnackBar(const SnackBar(
+        content: Text("Couldn't recognize this as a supported PLC export "
+            '(only PLCopen TC6 XML is supported so far)'),
+      ));
+      return;
+    }
+
+    final ImportResult result;
+    try {
+      final ir = parsePlcOpen(text);
+      final id = 'proj_new_${DateTime.now().millisecondsSinceEpoch}';
+      result = mapImportedProject(ir, projectName: ir.name, projectId: id);
+    } on FormatException catch (e) {
+      _logger.log(kLogSourceProject, LogLevel.warn, 'Import XML: not a valid PLCopen document',
+          detail: e.toString());
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text("Couldn't import: not a valid PLCopen document")),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => ImportXmlPreview(
+        result: result,
+        onCreate: (name) async {
+          final proj = result.project..name = name;
+          final withId = ProjectTransfer.reassignIdIfColliding(
+              proj, _allProjects.map((p) => p.id).toSet());
+          await _applyImportedProject(withId);
+          if (!mounted) return;
+          Navigator.of(context).pop();
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('Imported "${withId.name}"')));
+        },
+      ),
+    ));
+  }
+
   /// Renders the autosave status indicator. On [compact] widths the label
   /// text is dropped (icon + tooltip only) so the indicator can't push the
   /// AppBar title/actions into overflow on narrow phones (360/320px) —
@@ -2156,6 +2293,9 @@ class WorkspaceShellState extends State<WorkspaceShell> {
                           case 'import':
                             _importProject();
                             break;
+                          case 'import_xml':
+                            _importProgramXml();
+                            break;
                         }
                       },
                       itemBuilder: (context) => const [
@@ -2187,6 +2327,10 @@ class WorkspaceShellState extends State<WorkspaceShell> {
                         PopupMenuItem(
                           value: 'import',
                           child: _ProjectMenuEntry(icon: Icons.file_open_outlined, label: 'Import Project'),
+                        ),
+                        PopupMenuItem(
+                          value: 'import_xml',
+                          child: _ProjectMenuEntry(icon: Icons.upload_file, label: 'Import PLC Program (XML)'),
                         ),
                       ],
                     ),
@@ -3008,7 +3152,17 @@ class _ProjectMenuEntry extends StatelessWidget {
       children: [
         Icon(icon, size: 18, color: Colors.grey),
         const SizedBox(width: 12),
-        Text(label, style: const TextStyle(color: Colors.white, fontSize: 13)),
+        // Expanded + ellipsis (rather than a bare Text) so a longer label
+        // (e.g. 'Import PLC Program (XML)') truncates cleanly instead of
+        // overflowing the popup menu's own fixed max item width.
+        Expanded(
+          child: Text(
+            label,
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
+          ),
+        ),
       ],
     );
   }
