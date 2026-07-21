@@ -2,6 +2,15 @@ import 'package:xml/xml.dart';
 
 import 'import_ir.dart';
 
+/// Upper bound on a parsed array dimension. PLCopen files are free to declare
+/// arbitrarily large `ARRAY[lo..hi]` bounds, but the mapper/tag-resolver
+/// eagerly allocates a default-value list of that length (`List.generate`).
+/// An unbounded (or hostile/typo'd) dimension would exhaust memory and throw
+/// an uncatchable OutOfMemoryError-class `Error` — bypassing the UI's
+/// `on FormatException` guard. Dimensions beyond this cap are clamped and an
+/// [ImportWarning] is recorded instead.
+const _kMaxArrayLen = 65535;
+
 /// Parses a PLCopen TC6 XML document into the vendor-neutral IR. Throws
 /// [FormatException] (with a clear message) ONLY when [xml] is not
 /// well-formed or its root is not a PLCopen `<project>`. Valid-but-unexpected
@@ -34,7 +43,7 @@ ImportedProject parsePlcOpen(String xml) {
     if (struct != null) {
       for (final v in struct.childElements
           .where((e) => e.name.local == 'variable')) {
-        fields.add(_field(v));
+        fields.add(_field(v, warnings));
       }
     }
     types.add(ImportedType(name: name, fields: fields));
@@ -46,7 +55,7 @@ ImportedProject parsePlcOpen(String xml) {
   for (final gv in _descendants(root, 'globalVars')) {
     for (final v
         in gv.childElements.where((e) => e.name.local == 'variable')) {
-      globals.add(_var(v, VarScope.global, dutNames));
+      globals.add(_var(v, VarScope.global, dutNames, warnings));
     }
   }
 
@@ -64,23 +73,26 @@ ImportedProject parsePlcOpen(String xml) {
       warnings: warnings);
 }
 
-ImportedField _field(XmlElement v) {
+ImportedField _field(XmlElement v, List<ImportWarning> warnings) {
   final typeEl = _findElement(v, 'type');
   final baseName = _baseTypeName(typeEl);
+  final name = v.getAttribute('name') ?? '';
   return ImportedField(
-    name: v.getAttribute('name') ?? '',
+    name: name,
     baseType: baseName,
-    arrayLength: _arrayLen(typeEl),
+    arrayLength: _arrayLen(typeEl, warnings, name),
     initialValue: _initialText(v),
   );
 }
 
-ImportedVar _var(XmlElement v, VarScope scope, Set<String> dutNames) {
+ImportedVar _var(XmlElement v, VarScope scope, Set<String> dutNames,
+    List<ImportWarning> warnings) {
   final typeEl = _findElement(v, 'type');
+  final name = v.getAttribute('name') ?? '';
   return ImportedVar(
-    name: v.getAttribute('name') ?? '',
+    name: name,
     baseType: _baseTypeName(typeEl),
-    arrayLength: _arrayLen(typeEl),
+    arrayLength: _arrayLen(typeEl, warnings, name),
     initialValue: _initialText(v),
     scope: scope,
     retain: (v.getAttribute('retain') ?? 'false').toLowerCase() == 'true',
@@ -109,7 +121,7 @@ ImportedPou _pou(
       };
       for (final v
           in section.childElements.where((e) => e.name.local == 'variable')) {
-        locals.add(_var(v, scope, dutNames));
+        locals.add(_var(v, scope, dutNames, warnings));
       }
     }
   }
@@ -246,7 +258,8 @@ String _baseTypeName(XmlElement? typeEl) {
   return 'INT';
 }
 
-int _arrayLen(XmlElement? typeEl) {
+int _arrayLen(
+    XmlElement? typeEl, List<ImportWarning> warnings, String elementName) {
   if (typeEl == null) {
     return 0;
   }
@@ -257,7 +270,18 @@ int _arrayLen(XmlElement? typeEl) {
   final lo = int.tryParse(dim.getAttribute('lower') ?? '0') ?? 0;
   final hi = int.tryParse(dim.getAttribute('upper') ?? '0') ?? 0;
   final n = hi - lo + 1;
-  return n > 0 ? n : 0;
+  if (n <= 0) {
+    return 0;
+  }
+  if (n > _kMaxArrayLen) {
+    warnings.add(ImportWarning(
+        severity: WarningSeverity.warning,
+        message: 'Array dimension for "$elementName": $n exceeds the '
+            'supported maximum ($_kMaxArrayLen) and was clamped; verify the '
+            'imported size.'));
+    return _kMaxArrayLen;
+  }
+  return n;
 }
 
 String? _initialText(XmlElement v) {

@@ -127,6 +127,46 @@ void main() {
       expect(graph.connections, hasLength(2));
     });
 
+    test(
+        'clamps an oversized array dimension to the supported maximum and '
+        'emits a warning instead of allocating an unbounded array', () {
+      final arrayDimXml =
+          File('test/fixtures/plcopen/array_dim.xml').readAsStringSync();
+
+      // Must not throw, even though the raw dimension (0..100000000 ->
+      // 100000001 elements) would otherwise try to eagerly allocate a
+      // huge list downstream.
+      final project = parsePlcOpen(arrayDimXml);
+
+      final main = project.pous.firstWhere((p) => p.name == 'Main');
+      final bigArr =
+          main.localVars.firstWhere((v) => v.name == 'BigArr');
+      expect(bigArr.arrayLength, 65535);
+
+      final clampWarning = project.warnings.where((w) =>
+          w.severity == WarningSeverity.warning &&
+          w.message.contains('BigArr') &&
+          w.message.contains('clamp'));
+      expect(clampWarning, isNotEmpty,
+          reason: 'expected a warning about the clamped array dimension');
+    });
+
+    test('an ordinary small array dimension is left unchanged (no clamp)',
+        () {
+      final arrayDimXml =
+          File('test/fixtures/plcopen/array_dim.xml').readAsStringSync();
+      final project = parsePlcOpen(arrayDimXml);
+
+      final main = project.pous.firstWhere((p) => p.name == 'Main');
+      final smallArr =
+          main.localVars.firstWhere((v) => v.name == 'SmallArr');
+      expect(smallArr.arrayLength, 8);
+
+      final smallArrWarnings = project.warnings.where((w) =>
+          w.message.contains('SmallArr') && w.message.contains('clamp'));
+      expect(smallArrWarnings, isEmpty);
+    });
+
     test('throws FormatException on malformed XML', () {
       final malformed =
           File('test/fixtures/plcopen/malformed.xml').readAsStringSync();

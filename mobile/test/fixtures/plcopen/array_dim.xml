@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="ArrayDimProject"/>
+  <types>
+    <dataTypes/>
+    <pous>
+      <pou name="Main" pouType="program">
+        <interface>
+          <localVars>
+            <variable name="BigArr"><type><array><dimension lower="0" upper="100000000"/><baseType><REAL/></baseType></array></type></variable>
+            <variable name="SmallArr"><type><array><dimension lower="1" upper="8"/><baseType><INT/></baseType></array></type></variable>
+          </localVars>
+        </interface>
+        <body><ST><xhtml xmlns="http://www.w3.org/1999/xhtml"></xhtml></ST></body>
+      </pou>
+    </pous>
+  </types>
+  <instances>
+    <configurations>
+      <configuration name="Config">
+        <resource name="Res">
+          <globalVars/>
+        </resource>
+      </configuration>
+    </configurations>
+  </instances>
+</project>
