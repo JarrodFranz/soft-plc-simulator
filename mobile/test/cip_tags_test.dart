@@ -1204,25 +1204,31 @@ void _getAttributeListTests() {
           kCipStatusAttributeNotSupported);
     });
 
-    test('the proprietary Rockwell class 0xAC is HANDLED (well-formed 0x14 list), NOT a blanket 0x08', () {
-      // Ignition probes class 0xAC via Get Attribute List for change detection.
+    test('the proprietary Rockwell class 0xAC returns a stable placeholder (best-effort change detection), NOT 0x08', () {
+      // Ignition probes class 0xAC via Get Attribute List for change detection
+      // and gates its tag browse on a SUCCESSFUL read. We answer a stable
+      // placeholder (4-byte zero per attr): honest for a static tag directory,
+      // no vendor impersonation. This is a best-effort for a proprietary object.
       final req = CipRequest(
         service: kCipServiceGetAttributeList,
         path: [CipPathSegment.classId(0xAC), CipPathSegment.instanceId(1)],
         data: Uint8List.fromList([0x02, 0x00, 0x01, 0x00, 0x02, 0x00]),
       );
       final resp = dispatchCipService(proj(), emptyMap(), req);
-      // The whole service does NOT fail with Service Not Supported.
+      // Not a blanket Service Not Supported; a well-formed success list.
       expect(resp.generalStatus, isNot(kCipStatusServiceNotSupported));
       expect(resp.generalStatus, kCipStatusSuccess);
-      // Each requested attribute is reported Not-Supported, in a valid list.
-      // Layout (no per-attr data, since none supported): count(2) +
-      // [id1(2) status1(2)] + [id2(2) status2(2)] -> statuses at 4 and 8.
-      expect(ByteData.sublistView(resp.data, 0, 2).getUint16(0, Endian.little), 2);
-      expect(ByteData.sublistView(resp.data, 4, 6).getUint16(0, Endian.little),
-          kCipStatusAttributeNotSupported);
-      expect(ByteData.sublistView(resp.data, 8, 10).getUint16(0, Endian.little),
-          kCipStatusAttributeNotSupported);
+      // Layout: count(2) + [id(2) status(2) data(4)] per attr.
+      final d = resp.data;
+      expect(ByteData.sublistView(d, 0, 2).getUint16(0, Endian.little), 2);
+      // attr 1: id 1, status 0 (success), 4-byte zero data.
+      expect(ByteData.sublistView(d, 2, 4).getUint16(0, Endian.little), 1);
+      expect(ByteData.sublistView(d, 4, 6).getUint16(0, Endian.little), kCipStatusSuccess);
+      expect(ByteData.sublistView(d, 6, 10).getUint32(0, Endian.little), 0);
+      // attr 2 begins at offset 10: id 2, status 0, 4-byte zero data.
+      expect(ByteData.sublistView(d, 10, 12).getUint16(0, Endian.little), 2);
+      expect(ByteData.sublistView(d, 12, 14).getUint16(0, Endian.little), kCipStatusSuccess);
+      expect(d.length, 18);
     });
 
     test('a malformed request (count claims more ids than present) returns an error, never throws', () {
