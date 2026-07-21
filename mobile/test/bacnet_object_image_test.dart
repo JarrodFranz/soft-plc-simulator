@@ -414,6 +414,51 @@ void main() {
       expect(readPath(p, 'Real1'), -3.0);
     });
 
+    test('a Real NaN written to an integer-backed AV is REFUSED (2,9), never throws, tag unchanged', () {
+      final p = _buildProject();
+      final image = BacnetTagImage(p, _buildMap(), deviceInstance: _kDeviceInstance, deviceName: _kDeviceName);
+      final before = readPath(p, 'Dint1');
+      late BacnetWriteResult result;
+      expect(
+        () => result = image.writeProperty(
+          _wpPresentValue(kBacnetObjectAnalogValue, 1, encodeAppReal(double.nan)),
+        ),
+        returnsNormally,
+        reason: 'round() on NaN throws — the image must gate it, never throw',
+      );
+      expect(result.error, (kBacnetErrorClassProperty, kBacnetErrorCodeInvalidDataType));
+      expect(readPath(p, 'Dint1'), before);
+    });
+
+    test('a Real +Infinity written to an integer-backed AV is REFUSED (2,9), never throws, tag unchanged', () {
+      final p = _buildProject();
+      final image = BacnetTagImage(p, _buildMap(), deviceInstance: _kDeviceInstance, deviceName: _kDeviceName);
+      final before = readPath(p, 'Dint1');
+      late BacnetWriteResult result;
+      expect(
+        () => result = image.writeProperty(
+          _wpPresentValue(kBacnetObjectAnalogValue, 1, encodeAppReal(double.infinity)),
+        ),
+        returnsNormally,
+        reason: 'round() on Infinity throws — the image must gate it, never throw',
+      );
+      expect(result.error, (kBacnetErrorClassProperty, kBacnetErrorCodeInvalidDataType));
+      expect(readPath(p, 'Dint1'), before);
+    });
+
+    // THE ASYMMETRY, documented: a FLOAT64 tag holds NaN/Inf natively, so a
+    // non-finite Real onto a FLOAT64-backed AV still lands.
+    test('a Real NaN written to a FLOAT64-backed AV still SUCCEEDS (doubles hold NaN natively)', () {
+      final p = _buildProject();
+      final image = BacnetTagImage(p, _buildMap(), deviceInstance: _kDeviceInstance, deviceName: _kDeviceName);
+      final result = image.writeProperty(
+        _wpPresentValue(kBacnetObjectAnalogValue, 3, encodeAppReal(double.nan)),
+      );
+      expect(result.error, isNull);
+      final stored = readPath(p, 'Real1');
+      expect(stored is double && stored.isNaN, isTrue);
+    });
+
     test('AV write with the wrong tag type is invalid-data-type (2,9), value unchanged', () {
       final p = _buildProject();
       final image = BacnetTagImage(p, _buildMap(), deviceInstance: _kDeviceInstance, deviceName: _kDeviceName);

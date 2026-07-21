@@ -375,6 +375,15 @@ class BacnetTagImage implements BacnetObjectImage {
     if (value == null) {
       return BacnetWriteResult.error(kBacnetErrorClassProperty, kBacnetErrorCodeInvalidDataType);
     }
+    if (dataType != 'FLOAT64' && !value.isFinite) {
+      // A Real NaN/±Infinity has no integer representation — `round()` on a
+      // non-finite double THROWS (UnsupportedError), which would break this
+      // file's never-throws contract and make the dispatch's catch silently
+      // drop a fully-parsed confirmed request. Refuse it as an invalid value
+      // instead (a FLOAT64 tag stores non-finite doubles fine and is left
+      // ungated here — doubles represent NaN/Inf natively).
+      return BacnetWriteResult.error(kBacnetErrorClassProperty, kBacnetErrorCodeInvalidDataType);
+    }
     writePath(project, entry.tag, dataType == 'FLOAT64' ? value : value.round());
     return BacnetWriteResult.ok();
   }
