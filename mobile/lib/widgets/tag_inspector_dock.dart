@@ -5,6 +5,7 @@ import '../models/system_tags.dart';
 import '../models/tag_resolver.dart';
 import '../ui/responsive.dart';
 import 'live_tick.dart';
+import 'scalar_value_field.dart';
 
 class TagInspectorDock extends StatefulWidget {
   final PlcProject project;
@@ -326,8 +327,12 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                                       builder: (context, _) {
                                         final effectiveVal = tag.isForced ? tag.forcedValue : tag.value;
                                         return InkWell(
+                                          key: ValueKey('inspector-value-${tag.name}'),
                                           onTap: () {
-                                            if (isBool && tag.name != kSystemTagName) {
+                                            if (tag.name == kSystemTagName) {
+                                              return;
+                                            }
+                                            if (isBool) {
                                               setState(() {
                                                 if (tag.isForced) {
                                                   tag.forcedValue = !(tag.forcedValue == true);
@@ -336,6 +341,8 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                                                 }
                                               });
                                               widget.onTagStateChanged();
+                                            } else if (tag.value is! Map && tag.value is! List) {
+                                              _editScalarLiveValue(tag);
                                             }
                                           },
                                           child: Container(
@@ -412,6 +419,48 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                           ),
                         ),
     );
+  }
+
+  // Live scalar-value POKE for a root tag's value pill: a small popover with
+  // one ScalarValueField + OK/Cancel. Follows the exact same force rule as the
+  // BOOL toggle above -- writes `forcedValue` when the tag isForced, else
+  // `value` -- and never changes `isForced` itself (a poke is never a force).
+  // The reserved System tag is excluded (its pill's onTap already filters it
+  // out, but this guard keeps the helper safe if ever called directly).
+  Future<void> _editScalarLiveValue(PlcTag tag) async {
+    if (tag.name == kSystemTagName) {
+      return;
+    }
+    dynamic pending = tag.isForced ? tag.forcedValue : tag.value;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Set ${tag.name}'),
+        content: ScalarValueField(
+          dataType: tag.dataType,
+          value: pending,
+          onChanged: (v) => pending = v,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          ElevatedButton(
+            key: const Key('scalar_live_edit_ok'),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      setState(() {
+        if (tag.isForced) {
+          tag.forcedValue = pending;
+        } else {
+          tag.value = pending;
+        }
+      });
+      widget.onTagStateChanged();
+    }
   }
 
   // Read-only row for a composite/array/integer-bit child, recursing into

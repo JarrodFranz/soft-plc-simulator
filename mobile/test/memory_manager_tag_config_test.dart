@@ -184,4 +184,49 @@ void main() {
       }
     });
   });
+
+  group('Live scalar value editing', () {
+    // Locates the Live Value text within the tag's card so the tap targets
+    // the value field itself, not the tag-name header or other fields.
+    Finder liveValueTextFor(String tagName, String text) => find.descendant(
+          of: find.ancestor(of: find.text(tagName), matching: find.byType(Card)).first,
+          matching: find.text(text),
+        );
+
+    testWidgets("tapping a numeric tag's Live Value opens the editor; entering 80 writes value",
+        (tester) async {
+      final project = _project();
+      await tester.pumpWidget(app(project));
+      await tester.pumpAndSettle();
+
+      await tester.tap(liveValueTextFor('Speed', '12.5'));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('scalar_value_text_field')), findsOneWidget);
+      await tester.enterText(find.byKey(const Key('scalar_value_text_field')), '80');
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('scalar_live_edit_ok')));
+      await tester.pumpAndSettle();
+
+      final tag = project.tags.firstWhere((t) => t.name == 'Speed');
+      expect(tag.value, equals(80.0));
+    });
+
+    testWidgets("the reserved System tag's value is not editable", (tester) async {
+      final project = _project();
+      ensureSystemTag(project);
+      await tester.pumpWidget(app(project));
+      await tester.pumpAndSettle();
+
+      final systemValueFinder = liveValueTextFor(kSystemTagName, '{...}');
+      await tester.ensureVisible(systemValueFinder);
+      await tester.pumpAndSettle();
+      await tester.tap(systemValueFinder);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('scalar_value_text_field')), findsNothing);
+      expect(find.byKey(const Key('scalar_live_edit_ok')), findsNothing);
+    });
+  });
 }

@@ -17,6 +17,7 @@ class _TagRowData {
   final String name; // display name/label (root name or '.field'/'[i]'/'.bit')
   final String path; // full dotted/bracketed path from the root tag
   final String displayType; // 'INT32[8]' etc.
+  final String dataType; // base type, no array suffix -- for ScalarValueField
   final String quality;
   final String ioClass;
   final bool isTimer;
@@ -32,6 +33,7 @@ class _TagRowData {
     required this.name,
     required this.path,
     required this.displayType,
+    required this.dataType,
     required this.quality,
     required this.ioClass,
     required this.isTimer,
@@ -914,6 +916,54 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
     return readPath(widget.currentProject, row.path);
   }
 
+  // True when [row] is eligible for the generic (non-BOOL) live scalar-value
+  // POKE: a scalar leaf (no children -- composite/array rows always report
+  // `hasChildren`, so they're excluded automatically) that doesn't fall under
+  // the reserved System tag (the whole System subtree is a read-only status
+  // readout except AlarmReset, which is a BOOL handled by the toggle branch
+  // above, not this one).
+  bool _isEditableScalarRow(_TagRowData row) {
+    return !row.hasChildren &&
+        row.path != kSystemTagName &&
+        !row.path.startsWith('$kSystemTagName.');
+  }
+
+  // Live scalar-value POKE for a Memory Manager row: a small popover with one
+  // ScalarValueField + OK/Cancel. Mirrors `_toggleBoolValue` -- writes through
+  // `writePath` (which, for a root tag, sets `tag.value` directly; root force
+  // is not surfaced here, matching `_liveValueFor`'s existing behavior) then
+  // `setState` + `onProjectUpdated`. Never touches `isForced`.
+  Future<void> _editScalarLiveValueRow(_TagRowData row) async {
+    if (!_isEditableScalarRow(row)) {
+      return;
+    }
+    dynamic pending = _liveValueFor(row);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Set ${row.name}'),
+        content: ScalarValueField(
+          dataType: row.dataType,
+          value: pending,
+          onChanged: (v) => pending = v,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          ElevatedButton(
+            key: const Key('scalar_live_edit_ok'),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      writePath(widget.currentProject, row.path, pending);
+      setState(() {});
+      widget.onProjectUpdated();
+    }
+  }
+
   Widget _cardValueField(_TagRowData row) {
     if (!row.hasChildren && row.isBoolLeaf) {
       return Padding(
@@ -941,13 +991,19 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
         ),
       );
     }
+    final editable = _isEditableScalarRow(row);
     return _cardFieldLive(
       'Live Value',
       ListenableBuilder(
         listenable: LiveTickScope.of(context),
-        builder: (context, _) => Text(row.valueTextFor(_liveValueFor(row)),
-            style: const TextStyle(color: Colors.white, fontSize: 12),
-            overflow: TextOverflow.ellipsis),
+        builder: (context, _) {
+          final text = Text(row.valueTextFor(_liveValueFor(row)),
+              style: const TextStyle(color: Colors.white, fontSize: 12),
+              overflow: TextOverflow.ellipsis);
+          return editable
+              ? touchable(text, onTap: () => _editScalarLiveValueRow(row))
+              : text;
+        },
       ),
     );
   }
@@ -972,6 +1028,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
         name: tag.name,
         path: tag.name,
         displayType: '${tag.dataType}${tag.arrayLength > 0 ? '[${tag.arrayLength}]' : ''}',
+        dataType: tag.dataType,
         quality: tag.quality,
         ioClass: tag.ioType,
         isTimer: isTimer,
@@ -1014,6 +1071,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
         name: child.label,
         path: child.path,
         displayType: '${child.dataType}${child.arrayLength > 0 ? '[${child.arrayLength}]' : ''}',
+        dataType: child.dataType,
         quality: 'Good',
         ioClass: 'Derived',
         isTimer: false,
@@ -1142,12 +1200,15 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                     color: on ? Colors.greenAccent : Colors.grey)),
           );
         }
-        return Text(text,
+        final textWidget = Text(text,
             style: TextStyle(
                 fontWeight: FontWeight.bold,
                 color: row.hasChildren ? Colors.grey : (row.depth == 0 ? Colors.greenAccent : Colors.white),
                 fontFamily: row.depth == 0 ? 'monospace' : null,
                 fontSize: row.depth == 0 ? 13 : 11));
+        return _isEditableScalarRow(row)
+            ? touchable(textWidget, onTap: () => _editScalarLiveValueRow(row))
+            : textWidget;
       },
     );
   }
