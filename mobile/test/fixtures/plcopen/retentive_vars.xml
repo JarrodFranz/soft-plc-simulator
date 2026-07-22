@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201"
+         xmlns:xhtml="http://www.w3.org/1999/xhtml"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <fileHeader companyName="Soft PLC Simulator"
+              productName="Retentive Fixture"
+              productVersion="1.0"
+              creationDateTime="2026-07-22T00:00:00"/>
+  <contentHeader name="RetentiveDemo" modificationDateTime="2026-07-22T00:00:00">
+    <coordinateInfo>
+      <fbd><scaling x="10" y="10"/></fbd>
+      <ld><scaling x="10" y="10"/></ld>
+      <sfc><scaling x="10" y="10"/></sfc>
+    </coordinateInfo>
+  </contentHeader>
+  <types>
+    <dataTypes/>
+    <pous>
+      <pou name="Main" pouType="program">
+        <interface>
+          <!-- VAR RETAIN block: the retain qualifier lives on the container,
+               per TC6 schema (varList/@retain), NOT on each <variable>. -->
+          <localVars retain="true">
+            <variable name="Accumulator">
+              <type><DINT/></type>
+              <initialValue><simpleValue value="0"/></initialValue>
+            </variable>
+          </localVars>
+          <!-- plain VAR block: not retained -->
+          <localVars>
+            <variable name="Scratch">
+              <type><INT/></type>
+            </variable>
+          </localVars>
+        </interface>
+        <body>
+          <ST><xhtml:p><![CDATA[Accumulator := Accumulator + 1;]]></xhtml:p></ST>
+        </body>
+      </pou>
+    </pous>
+  </types>
+  <instances>
+    <configurations>
+      <configuration name="Config0">
+        <resource name="Res0">
+          <!-- VAR_GLOBAL RETAIN: two retained globals -->
+          <globalVars retain="true">
+            <variable name="TotalCount">
+              <type><DINT/></type>
+              <initialValue><simpleValue value="0"/></initialValue>
+            </variable>
+            <variable name="LastRecipe">
+              <type><STRING/></type>
+            </variable>
+          </globalVars>
+          <!-- plain VAR_GLOBAL: not retained -->
+          <globalVars>
+            <variable name="Heartbeat">
+              <type><BOOL/></type>
+            </variable>
+          </globalVars>
+          <!-- VAR_GLOBAL CONSTANT: constant, and therefore NOT retained.
+               A correct importer must not confuse constant with retain. -->
+          <globalVars constant="true">
+            <variable name="MaxTemp">
+              <type><REAL/></type>
+              <initialValue><simpleValue value="150.0"/></initialValue>
+            </variable>
+          </globalVars>
+        </resource>
+      </configuration>
+    </configurations>
+  </instances>
+</project>

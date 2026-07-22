@@ -37,7 +37,9 @@
           <globalVars>
             <variable name="Temp_PV"><type><REAL/></type><initialValue><simpleValue value="20.0"/></initialValue></variable>
             <variable name="Enable"><type><BOOL/></type><initialValue><simpleValue value="TRUE"/></initialValue></variable>
-            <variable name="Retained" retain="true"><type><LREAL/></type></variable>
+          </globalVars>
+          <globalVars retain="true">
+            <variable name="Retained"><type><LREAL/></type></variable>
           </globalVars>
         </resource>
       </configuration>

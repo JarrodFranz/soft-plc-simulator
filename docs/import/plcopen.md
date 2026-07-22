@@ -21,8 +21,11 @@ PLCopen TC6 .xml file  --detect--> parse --> map -->  preview  -->  NEW project
 - **Global variables → tags.** Every `<globalVars>` variable becomes a
   `PlcTag`, with its elementary IEC type (`BOOL`, `INT`, `REAL`, `LREAL`, …)
   normalized to the app's tag type set, its array dimension, its initial
-  value (when present) becoming the tag's default, and its `retain`
-  attribute mapped to the tag's retentive flag. `input`/`output`-scoped
+  value (when present) becoming the tag's default, and its retain state
+  mapped to the tag's retentive flag. Per the TC6 schema the `retain`
+  qualifier lives on the variable-list container (`<globalVars retain="true">`),
+  not on the individual `<variable>`, and it is read from there; a
+  `constant`-qualified block is not treated as retentive. `input`/`output`-scoped
   variables map to `SimulatedInput`/`SimulatedOutput`; everything else
   (`local`, `temp`, `external`, plain globals) maps to `Internal`.
 - **DUTs (derived data types) → structs.** Each `<dataType>` with a

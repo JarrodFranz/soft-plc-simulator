@@ -50,12 +50,16 @@ ImportedProject parsePlcOpen(String xml) {
   }
   final dutNames = types.map((t) => t.name).toSet();
 
-  // Global vars (resource/config globalVars).
+  // Global vars (resource/config globalVars). Per TC6, the retain/constant/
+  // nonretain qualifiers live on the var-list CONTAINER, not on each
+  // <variable>, so the retain flag is read from `gv` and applied to every
+  // member of the block.
   final globals = <ImportedVar>[];
   for (final gv in _descendants(root, 'globalVars')) {
+    final retain = _isRetain(gv);
     for (final v
         in gv.childElements.where((e) => e.name.local == 'variable')) {
-      globals.add(_var(v, VarScope.global, dutNames, warnings));
+      globals.add(_var(v, VarScope.global, retain, dutNames, warnings));
     }
   }
 
@@ -85,8 +89,15 @@ ImportedField _field(XmlElement v, List<ImportWarning> warnings) {
   );
 }
 
-ImportedVar _var(XmlElement v, VarScope scope, Set<String> dutNames,
-    List<ImportWarning> warnings) {
+/// True when a var-list container element carries `retain="true"`. The TC6
+/// schema places retain/constant/nonretain on the container (`<globalVars>`,
+/// `<localVars>`, …), never on the individual `<variable>`.
+bool _isRetain(XmlElement varListContainer) =>
+    (varListContainer.getAttribute('retain') ?? 'false').toLowerCase() ==
+    'true';
+
+ImportedVar _var(XmlElement v, VarScope scope, bool retain,
+    Set<String> dutNames, List<ImportWarning> warnings) {
   final typeEl = _findElement(v, 'type');
   final name = v.getAttribute('name') ?? '';
   return ImportedVar(
@@ -95,7 +106,7 @@ ImportedVar _var(XmlElement v, VarScope scope, Set<String> dutNames,
     arrayLength: _arrayLen(typeEl, warnings, name),
     initialValue: _initialText(v),
     scope: scope,
-    retain: (v.getAttribute('retain') ?? 'false').toLowerCase() == 'true',
+    retain: retain,
   );
 }
 
@@ -119,9 +130,10 @@ ImportedPou _pou(
         'externalVars' => VarScope.external,
         _ => VarScope.local,
       };
+      final retain = _isRetain(section);
       for (final v
           in section.childElements.where((e) => e.name.local == 'variable')) {
-        locals.add(_var(v, scope, dutNames, warnings));
+        locals.add(_var(v, scope, retain, dutNames, warnings));
       }
     }
   }
