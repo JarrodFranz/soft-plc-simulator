@@ -186,5 +186,35 @@ void main() {
       expect(program.fbdWires, isEmpty);
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets(
+        'a cross-network wire present in loaded data self-heals (is pruned) '
+        'on editor open, while an intra-network wire survives',
+        (tester) async {
+      await setSurface(tester, desktopSize);
+      final program = _twoNetworkProgram();
+      // Hand-inject wires as if loaded from hand-edited/corrupt project
+      // JSON — no editor path can create a cross-network wire normally (see
+      // the guard test above), so this is the only way one can exist.
+      program.fbdWires.addAll([
+        FbdWire(fromBlockId: 'n0a', fromPin: 'OUT', toBlockId: 'n1b', toPin: 'IN'),
+        FbdWire(fromBlockId: 'n0a', fromPin: 'OUT', toBlockId: 'n0b', toPin: 'IN'),
+      ]);
+
+      await tester.pumpWidget(_app(_buildProject(), program));
+      await tester.pumpAndSettle();
+
+      expect(
+        program.fbdWires.any((w) => w.fromBlockId == 'n0a' && w.toBlockId == 'n1b'),
+        isFalse,
+        reason: 'cross-network wire must self-heal (be pruned) on editor open',
+      );
+      expect(
+        program.fbdWires.any((w) => w.fromBlockId == 'n0a' && w.toBlockId == 'n0b'),
+        isTrue,
+        reason: 'legitimate intra-network wire must survive',
+      );
+      expect(tester.takeException(), isNull);
+    });
   });
 }

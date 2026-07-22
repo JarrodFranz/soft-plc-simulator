@@ -43,4 +43,47 @@ void main() {
     expect(rt.fbdNetworks.length, 3);
     expect(rt.fbdBlocks.firstWhere((b) => b.id == 'b2').network, 2);
   });
+
+  test(
+      'a corrupt huge block network index (untrusted JSON) does not OOM/hang '
+      'and is clamped into range', () {
+    final json = {
+      'name': 'Huge',
+      'language': 'FunctionBlockDiagram',
+      'fbd_blocks': [
+        {'id': 'b0', 'type': 'AND', 'title': '', 'network': 0},
+        {'id': 'bHuge', 'type': 'OR', 'title': '', 'network': 1000000000},
+      ],
+      'fbd_wires': [],
+    };
+    final sw = Stopwatch()..start();
+    final p = PlcProgram.fromJson(json);
+    sw.stop();
+    // Bounded and fast: no ~1e9-element allocation loop.
+    expect(sw.elapsedMilliseconds, lessThan(5000));
+    expect(p.fbdNetworks.length, lessThanOrEqualTo(kMaxFbdNetworks));
+    for (final b in p.fbdBlocks) {
+      expect(b.network, greaterThanOrEqualTo(0));
+      expect(b.network, lessThan(p.fbdNetworks.length));
+    }
+    // The legitimate block at 0 is untouched; only the huge one is clamped.
+    expect(p.fbdBlocks.firstWhere((b) => b.id == 'b0').network, 0);
+  });
+
+  test('a legitimate 5-network program with blocks at 0..4 is unchanged', () {
+    final json = {
+      'name': 'Five',
+      'language': 'FunctionBlockDiagram',
+      'fbd_blocks': [
+        for (var i = 0; i < 5; i++)
+          {'id': 'b$i', 'type': 'AND', 'title': '', 'network': i},
+      ],
+      'fbd_wires': [],
+    };
+    final p = PlcProgram.fromJson(json);
+    expect(p.fbdNetworks.length, 5);
+    for (var i = 0; i < 5; i++) {
+      expect(p.fbdBlocks[i].network, i);
+    }
+  });
 }

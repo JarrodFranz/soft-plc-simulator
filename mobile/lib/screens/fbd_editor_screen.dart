@@ -153,13 +153,35 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
   /// `network` index has a backing header (a directly-constructed program
   /// whose blocks were added after construction may have an empty
   /// `fbdNetworks`). Never notifies — this only backfills structure.
+  ///
+  /// Also self-heals two forms of corrupt/hand-edited project data that can
+  /// only reach the editor via untrusted JSON (no in-app path produces
+  /// them): a block `network` index far beyond any reasonable header count
+  /// (capped at `kMaxFbdNetworks`, mirroring
+  /// `PlcProgram._normalizeFbdNetworks`, so this can't OOM/hang either), and
+  /// a wire whose endpoints ended up in different networks (pruned via
+  /// `pruneCrossNetworkWires` so it doesn't linger and survive re-save).
   void _ensureNetworks() {
     final maxNet = widget.program.fbdBlocks
         .fold<int>(-1, (m, b) => b.network > m ? b.network : m);
-    final needed = maxNet + 1 < 1 ? 1 : maxNet + 1;
+    final rawNeeded = maxNet + 1 < 1 ? 1 : maxNet + 1;
+    final needed =
+        rawNeeded > kMaxFbdNetworks ? kMaxFbdNetworks : rawNeeded;
     while (widget.program.fbdNetworks.length < needed) {
       widget.program.fbdNetworks.add(FbdNetwork());
     }
+    // A corrupt block network index can still exceed the capped header list
+    // built above; clamp it into range so every block.network stays a valid
+    // index (never throws, never leaves a dangling reference).
+    final maxIndex = widget.program.fbdNetworks.length - 1;
+    if (maxIndex >= 0) {
+      for (final b in widget.program.fbdBlocks) {
+        if (b.network < 0 || b.network > maxIndex) {
+          b.network = maxIndex;
+        }
+      }
+    }
+    pruneCrossNetworkWires(widget.program);
   }
 
   TextEditingController _commentController(FbdNetwork n) {

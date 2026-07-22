@@ -9,6 +9,14 @@ import 'tag_resolver.dart';
 /// HMI component type id for the multi-pen trend chart.
 const String kTrendChartDisplay = 'TrendChartDisplay';
 
+/// Hard cap on the number of FBD network headers a program will ever
+/// backfill to. Project JSON is untrusted input (loaded from disk/import);
+/// a corrupt or hand-edited block with e.g. `"network": 1000000000` must
+/// never drive an unbounded `while (result.length < needed)` allocation
+/// loop (OOM/hang on load). No legitimate FBD program has anywhere near
+/// this many networks, so the cap never affects real data.
+const int kMaxFbdNetworks = 4096;
+
 class PlcTag {
   String name;
   String path;
@@ -486,11 +494,29 @@ class PlcProgram {
       String language, List<FbdBlock> blocks, List<FbdNetwork> networks) {
     final result = List<FbdNetwork>.from(networks);
     final maxNet = blocks.fold<int>(-1, (m, b) => b.network > m ? b.network : m);
+    // Capped at kMaxFbdNetworks: `blocks` comes from untrusted project JSON,
+    // so maxNet (and therefore `needed`) can be attacker/corruption-controlled
+    // (e.g. a block with `"network": 1000000000`). Without the cap the `while`
+    // loop below would attempt ~1e9 allocations (OOM/hang on load).
     final needed = (language == 'FunctionBlockDiagram' && blocks.isNotEmpty)
-        ? (maxNet + 1).clamp(1, 1 << 30)
-        : maxNet + 1;
+        ? (maxNet + 1).clamp(1, kMaxFbdNetworks)
+        : (maxNet + 1).clamp(0, kMaxFbdNetworks);
     while (result.length < needed) {
       result.add(FbdNetwork());
+    }
+    // The cap above means a corrupt block's `network` index can still exceed
+    // the header list we just built (e.g. maxNet = 1e9, result.length capped
+    // at kMaxFbdNetworks). Clamp any such block down into range so the
+    // invariant "every block.network < fbdNetworks.length" always holds after
+    // normalization, even for corrupt input. Legitimate in-range indices
+    // (including trailing empty networks with no blocks) are left untouched.
+    if (result.isNotEmpty) {
+      final maxIndex = result.length - 1;
+      for (final b in blocks) {
+        if (b.network < 0 || b.network > maxIndex) {
+          b.network = maxIndex;
+        }
+      }
     }
     return result;
   }
