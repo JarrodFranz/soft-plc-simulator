@@ -306,6 +306,53 @@ void mainTask4() {
       expect(r.translatedRungCount, 0);
       expect(r.stubReasons['unresolved-operand'], 1);
     });
+
+    test('block rung that stubs at the faithfulness gate leaks no instance tag', () {
+      // L-[A]-[TON]-(C)-R PLUS a power bridge A->C. The TON maps (appending its
+      // TIMER instance tag) but the bridge edge makes the reduced power wiring
+      // non-series-parallel, so the faithfulness gate stubs the rung. The
+      // instance tag must NOT leak: it backs no translated block.
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        _n(1, 'contact', a: {'variable': 'A'}),
+        _n(2, 'block', a: {'typeName': 'TON', 'instanceName': 'Leak'}),
+        _n(3, 'coil', a: {'variable': 'C'}),
+      ], connections: [
+        _c(1, 100), // L -> A
+        _c(2, 1), // A -> TON
+        _c(3, 2), // TON -> C
+        _c(200, 3), // C -> R
+        _c(3, 1), // bridge A -> C
+      ]);
+      final r = t(body);
+      expect(r.translatedRungCount, 0);
+      expect(r.stubbedRungCount, 1);
+      expect(r.stubReasons['complex-topology'], 1);
+      expect(r.instanceTags, isEmpty); // no orphan TIMER tag
+    });
+
+    test('ADD block: IN1/IN2 inVariables fold to operands, outVariable to variable', () {
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        _n(1, 'block', a: {'typeName': 'ADD'}),
+        _n(2, 'inVariable', a: {'variable': 'X'}),
+        _n(3, 'inVariable', a: {'variable': '5'}),
+        _n(4, 'outVariable', a: {'variable': 'Sum'}),
+      ], connections: [
+        _c(1, 100), // L -> ADD (EN power)
+        _c(200, 1), // ADD -> R (ENO power)
+        _c(1, 2, toPin: 'IN1'), // X -> ADD.IN1 (data)
+        _c(1, 3, toPin: 'IN2'), // 5 -> ADD.IN2 (data)
+        _c(4, 1), // ADD -> outVar Sum (destination, folded)
+      ]);
+      final r = t(body);
+      expect(r.translatedRungCount, 1);
+      final blk = r.rungs.single.nodes.firstWhere((n) => n.kind == LdKind.block);
+      expect(blk.blockType, 'ADD');
+      expect(blk.operandA, 'X');
+      expect(blk.operandB, '5');
+      expect(blk.variable, 'Sum');
+    });
   });
 }
 

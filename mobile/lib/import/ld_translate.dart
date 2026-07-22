@@ -1,6 +1,23 @@
 import '../models/project_model.dart';
 import '../models/ld_graph.dart';
+import '../models/tag_resolver.dart';
 import 'import_ir.dart';
+
+/// Throwaway empty project used only to reach `tag_resolver`'s canonical
+/// composite defaults (`defaultValueFor`) for TIMER/COUNTER instance tags —
+/// so the structured shape stays in one place (no drift from a hand-written
+/// field map). `tag_resolver` imports only `project_model.dart`, so this keeps
+/// `ld_translate` Flutter-free with no import cycle.
+final PlcProject _scratchProject = PlcProject(
+  id: 'scratch',
+  name: 'scratch',
+  controllerName: 'PLC',
+  programs: [],
+  tasks: [],
+  hmis: [],
+  structDefs: [],
+  tags: [],
+);
 
 /// Result of translating one LD `GraphBody`. `rungs` includes placeholder
 /// rungs (for untranslatable components) so program rung numbering matches the
@@ -274,9 +291,21 @@ LdRung _translateComponent(
   // 5. Map elements to LdNodes and derive BranchSpec index ranges. Blocks are
   // built here (folding their data inputs/destination + appending instance
   // tags); an unsupported/unresolvable block throws _StubException.
+  //
+  // Per-component staging: THIS rung's instance tags and dedup-name
+  // reservations are accumulated in LOCAL buffers and only committed to the
+  // shared lists AFTER the faithfulness gate (step 5b) passes. A block rung
+  // that maps its block (appending an instance tag) but then stubs at the gate
+  // (e.g. a power bridge around the block) must not leak an orphan instance tag
+  // that backs no translated block, nor permanently consume its dedup name.
+  // `usedInstanceNames` seeds the local set so dedup still sees names committed
+  // by earlier successfully-translated rungs; `unsupportedBlocks` is mutated
+  // EAGERLY (an inventory that should persist across stubs).
+  final localInstanceTags = <PlcTag>[];
+  final localUsedInstanceNames = <String>{...usedInstanceNames};
   LdNode mapNode(IrGraphNode n) => n.elementType == 'block'
-      ? _buildBlockNode(
-          comp, n, byIdAll, instanceTags, unsupportedBlocks, usedInstanceNames, pouName)
+      ? _buildBlockNode(comp, n, byIdAll, localInstanceTags, unsupportedBlocks,
+          localUsedInstanceNames, pouName)
       : _toLdNode(n);
   final mainNodes = [for (final id in mainIds) mapNode(byId[id]!)];
   final mainIndex = {for (var i = 0; i < mainIds.length; i++) mainIds[i]: i};
@@ -295,6 +324,12 @@ LdRung _translateComponent(
   // extra edge got greedily pulled onto the main line (dropping the edge) is
   // caught here and stubbed instead of being emitted as silently-wrong logic.
   _assertFaithfulWiring(reduced, mainIds, branches);
+
+  // 5c. Gate passed — commit this component's instance tags and dedup-name
+  // reservations to the shared lists (a stubbed rung never reaches here, so its
+  // buffered tag/name are discarded and the name stays reusable).
+  usedInstanceNames.addAll(localUsedInstanceNames);
+  instanceTags.addAll(localInstanceTags);
 
   // 6. buildRung assigns ids/rows, builds rails, series-wires main, and wires
   // each branch as a parallel lane spanning main[startIndex..endIndex].
@@ -381,18 +416,16 @@ LdNode _buildBlockNode(
   if (isTimer || _kCounterBlocks.contains(typeName)) {
     final name = _instanceName(node, pouName, usedInstanceNames);
     ld.variable = name;
+    final typeForTag = isTimer ? 'TIMER' : 'COUNTER';
     instanceTags.add(PlcTag(
       name: name,
       path: name,
-      dataType: isTimer ? 'TIMER' : 'COUNTER',
-      value: isTimer
-          ? <String, dynamic>{
-              'EN': false, 'TT': false, 'DN': false, 'PRE': ld.presetMs, 'ACC': 0,
-            }
-          : <String, dynamic>{
-              'CU': false, 'CD': false, 'QU': false, 'QD': false, 'R': false,
-              'CV': 0, 'PV': ld.presetMs,
-            },
+      dataType: typeForTag,
+      // Canonical structured default from tag_resolver's built-in composites —
+      // single source of truth for the field shape. The preset is carried on
+      // the LdNode (`presetMs`) and re-synced onto the tag by ld_exec every
+      // scan, so it need not be overlaid onto the tag's initial value here.
+      value: defaultValueFor(_scratchProject, typeForTag, 0),
       ioType: 'Internal',
     ));
   }
