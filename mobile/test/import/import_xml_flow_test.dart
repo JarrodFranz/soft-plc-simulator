@@ -94,11 +94,20 @@ void main() {
           reason: "basic.xml's <contentHeader name=\"DemoProject\"/> supplies the project name");
 
       // basic.xml: 3 globalVars -> 3 tags, 1 DUT -> 1 struct, 2 POUs (Main:ST,
-      // Rung1:LD) -> 1 ST program + 1 graphical stub = 2 programs total.
+      // Rung1:LD) -> 1 ST program + 1 LadderLogic program = 2 programs total.
+      // Rung1's contact->coil wiring in the fixture has no explicit power-rail
+      // nodes (see plcopen_parser_test.dart's "lossless GraphBody" test), so
+      // translateLdBody's edge-coverage faithfulness gate stubs it (Task 5:
+      // LD is now translated per-rung by the mapper, not skipped wholesale —
+      // this fixture just happens to still fully stub).
       final imported = state.debugAllProjects.firstWhere((p) => p.name == 'DemoProject');
       expect(imported.tags, hasLength(3));
       expect(imported.structDefs, hasLength(1));
       expect(imported.programs, hasLength(2));
+      final rung1 = imported.programs.singleWhere((p) => p.name == 'Rung1');
+      expect(rung1.language, 'LadderLogic');
+      expect(rung1.rungs, isEmpty);
+      expect(rung1.description, contains('not yet translated'));
       expect(imported.id, isNot(previousActiveId));
 
       final previous = state.debugAllProjects.firstWhere((p) => p.id == previousActiveId);

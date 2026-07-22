@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/import/import_ir.dart';
 import 'package:soft_plc_mobile/import/ir_to_project.dart';
+import 'package:soft_plc_mobile/models/project_model.dart';
 
 /// Builds a representative [ImportedProject] in-code so this test exercises
 /// the mapper in isolation, independent of the parser/fixture.
@@ -77,7 +78,89 @@ ImportedProject _buildNestedIr() {
   );
 }
 
+IrGraphNode _ldNode(int id, String type, {double x = 0, double y = 0, Map<String, String>? a}) =>
+    IrGraphNode(localId: id, elementType: type, x: x, y: y, attributes: a ?? const {});
+IrConnection _ldConn(int to, int from, {String? toPin}) =>
+    IrConnection(toLocalId: to, fromLocalId: from, toPin: toPin);
+
+/// An IR with two LD POUs: `GoodRung` (L -> [Start] -> [TON] -> (Motor) -> R)
+/// translates fully (a real series rung with a timer block, producing a
+/// backing TIMER instance tag), and `BadRung` (an unsupported PID block)
+/// stubs entirely. Exercises Task 5's wiring end to end.
+ImportedProject _buildLdIr() {
+  final goodPou = ImportedPou(
+    name: 'GoodRung',
+    kind: PouKind.program,
+    lang: PouLanguage.ld,
+    localVars: const [],
+    body: GraphBody(nodes: [
+      _ldNode(100, 'leftPowerRail'), _ldNode(200, 'rightPowerRail'),
+      _ldNode(1, 'contact', a: {'variable': 'Start'}),
+      _ldNode(2, 'block', a: {'typeName': 'TON'}),
+      _ldNode(3, 'coil', a: {'variable': 'Motor'}),
+    ], connections: [
+      _ldConn(1, 100), _ldConn(2, 1), _ldConn(3, 2), _ldConn(200, 3),
+    ]),
+  );
+  final badPou = ImportedPou(
+    name: 'BadRung',
+    kind: PouKind.program,
+    lang: PouLanguage.ld,
+    localVars: const [],
+    body: GraphBody(nodes: [
+      _ldNode(100, 'leftPowerRail'), _ldNode(200, 'rightPowerRail'),
+      _ldNode(1, 'block', a: {'typeName': 'PID'}),
+      _ldNode(2, 'coil', a: {'variable': 'Out'}),
+    ], connections: [
+      _ldConn(1, 100), _ldConn(2, 1), _ldConn(200, 2),
+    ]),
+  );
+  return ImportedProject(
+    name: 'LdImport', types: const [], globalVars: const [],
+    pous: [goodPou, badPou], warnings: const [],
+  );
+}
+
 void main() {
+  group('mapImportedProject: LD translation wiring (Task 5)', () {
+    test('a translatable LD POU becomes a real LadderLogic program with rungs', () {
+      final result = mapImportedProject(_buildLdIr(), projectName: 'P', projectId: 'p1');
+      final good = result.project.programs.singleWhere((p) => p.name == 'GoodRung');
+      expect(good.language, 'LadderLogic');
+      expect(good.rungs, isNotEmpty);
+      expect(
+        good.rungs.single.nodes.any((n) => n.kind == LdKind.contact && n.variable == 'Start'),
+        isTrue,
+      );
+      expect(
+        good.rungs.single.nodes.any((n) => n.kind == LdKind.coil && n.variable == 'Motor'),
+        isTrue,
+      );
+    });
+
+    test('report aggregates translated/stubbed rung counts and unsupported block types', () {
+      final result = mapImportedProject(_buildLdIr(), projectName: 'P', projectId: 'p1');
+      expect(result.report.translatedRungCount, greaterThanOrEqualTo(1));
+      expect(result.report.stubbedRungCount, greaterThanOrEqualTo(1));
+      expect(result.report.unsupportedLdBlockTypes, contains('PID'));
+    });
+
+    test('a TON instance tag from the translated POU appears in project.tags', () {
+      final result = mapImportedProject(_buildLdIr(), projectName: 'P', projectId: 'p1');
+      final timerTags = result.project.tags.where((t) => t.dataType == 'TIMER').toList();
+      expect(timerTags, isNotEmpty);
+    });
+
+    test('a fully-untranslatable LD POU still counts toward graphicalStubCount and stubs', () {
+      final result = mapImportedProject(_buildLdIr(), projectName: 'P', projectId: 'p1');
+      final bad = result.project.programs.singleWhere((p) => p.name == 'BadRung');
+      expect(bad.language, 'LadderLogic');
+      expect(bad.rungs, isEmpty);
+      // Only BadRung stubs (GoodRung is a real program) -> exactly 1.
+      expect(result.report.graphicalStubCount, 1);
+    });
+  });
+
   group('mapImportedProject: nested DUT defaults (incremental struct build)', () {
     test('struct-in-struct field defaults to a nested Map, not scalar 0', () {
       final result = mapImportedProject(_buildNestedIr(), projectName: 'P', projectId: 'p1');
