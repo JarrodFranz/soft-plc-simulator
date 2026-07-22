@@ -202,10 +202,9 @@ abstract class DefaultProjects {
           FbdWire(fromBlockId: 't_ga', fromPin: 'OUT', toBlockId: 't_oa', toPin: 'IN'),
         ],
       ),
-      PlcProgram(name: 'TankSequence_SFC', language: 'SequentialFunctionChart', description: 'Tank fill/drain sequence state machine'),
     ],
     tasks: [
-      PlcTask(name: 'ProcessLoopTask', type: 'Continuous', periodMs: 100, programNames: ['TankLevel_FBD', 'TankSequence_SFC']),
+      PlcTask(name: 'ProcessLoopTask', type: 'Continuous', periodMs: 100, programNames: ['TankLevel_FBD']),
     ],
     hmis: [
       HmiScreenDef(
