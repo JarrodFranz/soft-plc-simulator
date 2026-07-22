@@ -102,6 +102,54 @@ void main() {
     expect((readPath(p, 'Flow_PV') as num).toDouble(), lessThan(1.0));
   });
 
+  test(
+      'WaterQuality_FBD is split across 2 networks: network 0 computes the '
+      'threshold tags, network 1 ANDs them into Quality_OK the same scan',
+      () {
+    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_all_water');
+    final prog =
+        p.programs.firstWhere((x) => x.name == 'WaterQuality_FBD');
+
+    // Structural proof: 2 networks, and blocks are actually split across
+    // both (not all parked on network 0 with an unused second header).
+    expect(prog.fbdNetworks.length, 2);
+    final netsInUse = prog.fbdBlocks.map((b) => b.network).toSet();
+    expect(netsInUse, {0, 1});
+
+    // No wire crosses a network boundary — cross-network data must go via
+    // tags (TAG_OUTPUT in one network, TAG_INPUT in another).
+    final byId = {for (final b in prog.fbdBlocks) b.id: b};
+    for (final w in prog.fbdWires) {
+      final from = byId[w.fromBlockId];
+      final to = byId[w.toBlockId];
+      expect(from, isNotNull);
+      expect(to, isNotNull);
+      expect(from!.network, to!.network,
+          reason: 'wire ${w.fromBlockId}->${w.toBlockId} must stay within one network');
+    }
+
+    // Behavioral proof: same-scan cross-network propagation via the
+    // Turbidity_Below_SP / Level_Above_Min handoff tags reproduces the exact
+    // truth table as the single-network diagram did.
+    final sim = SimRuntime();
+    final ld = LdExecRuntime();
+    final fbd = FbdRuntime();
+
+    writePath(p, 'Turbidity_PV', 2.0);
+    writePath(p, 'Level_PV', 50.0);
+    _scan(p, sim, ld, fbd);
+    expect(_b(p, 'Turbidity_Below_SP'), isTrue);
+    expect(_b(p, 'Level_Above_Min'), isTrue);
+    expect(_b(p, 'Quality_OK'), isTrue);
+
+    // Bad turbidity: network 0's result tag flips false, network 1 (same
+    // scan) reads that fresh value and Quality_OK follows immediately.
+    writePath(p, 'Turbidity_PV', 20.0);
+    _scan(p, sim, ld, fbd);
+    expect(_b(p, 'Turbidity_Below_SP'), isFalse);
+    expect(_b(p, 'Quality_OK'), isFalse);
+  });
+
   test('tank TankLevel_FBD reproduces the retired hardcoded fill/drain/alarm',
       () {
     final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_tank');

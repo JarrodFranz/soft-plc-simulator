@@ -15,9 +15,11 @@ executors are deterministic (no wall clock, no randomness) and force-aware.
 
 The pages here describe each *language*; for the shipped **editor** behaviour
 see [`../ld-editor.md`](../ld-editor.md) (ladder canvas, branches, Go-Online
-monitoring) and [`../sfc-branching.md`](../sfc-branching.md) (2D SFC charts,
+monitoring), [`../sfc-branching.md`](../sfc-branching.md) (2D SFC charts,
 alternative and parallel fork/join branching, the multi-token engine, and
-Go-Online step highlighting).
+Go-Online step highlighting), and [`../fbd-networks.md`](../fbd-networks.md)
+(multi-network lanes, network-ordered execution, cross-network data flow via
+tags, block naming, and the FBD Go-Online overlay).
 
 > Historical note: the original Phase-0 design compiled every language into a
 > single instruction model executed by a Rust `ScanEngine`. That was superseded
