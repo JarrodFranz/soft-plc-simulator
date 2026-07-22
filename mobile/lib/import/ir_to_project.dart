@@ -10,9 +10,22 @@ class ImportReport {
   final int stProgramCount;
   final int graphicalStubCount;
   final List<ImportWarning> warnings;
-  ImportReport({required this.tagCount, required this.structCount,
-      required this.stProgramCount, required this.graphicalStubCount,
-      required this.warnings});
+  // LD-translation reporting (default-safe so existing call sites compile).
+  final int translatedRungCount;
+  final int stubbedRungCount;
+  final Set<String> unsupportedLdBlockTypes;
+  final Map<String, int> ldStubReasons;
+  ImportReport({
+    required this.tagCount,
+    required this.structCount,
+    required this.stProgramCount,
+    required this.graphicalStubCount,
+    required this.warnings,
+    this.translatedRungCount = 0,
+    this.stubbedRungCount = 0,
+    this.unsupportedLdBlockTypes = const {},
+    this.ldStubReasons = const {},
+  });
 }
 
 class ImportResult {
