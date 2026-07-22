@@ -2,8 +2,11 @@
 // Rename, Delete, Reset to Defaults, Export, Import) were collapsed into a
 // single PopupMenuButton (⋮) beside the SELECT PROJECT dropdown to save
 // space in the narrow left dock. Assert the old inline buttons are gone,
-// the ⋮ menu exists, and all 7 actions are reachable through it — at both
+// the ⋮ menu exists, and all actions are reachable through it — at both
 // phone and desktop widths, with no overflow.
+//
+// Task 5 of the PLCopen-XML import feature added an 8th action, 'Import PLC
+// Program (XML)', beside 'Import Project' in the same menu.
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -54,7 +57,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('$label: opening the ⋮ menu reveals all 7 project actions', (tester) async {
+    testWidgets('$label: opening the ⋮ menu reveals all 8 project actions', (tester) async {
       await setSurface(tester, size);
       await tester.pumpWidget(_app());
       await tester.pumpAndSettle();
@@ -80,6 +83,7 @@ void main() {
       expect(find.text('Reset to Defaults'), findsOneWidget);
       expect(find.text('Export Project'), findsOneWidget);
       expect(find.text('Import Project'), findsOneWidget);
+      expect(find.text('Import PLC Program (XML)'), findsOneWidget);
 
       expect(tester.takeException(), isNull);
 
