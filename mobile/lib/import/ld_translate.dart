@@ -182,6 +182,18 @@ const Set<String> _kSupportedBlocks = {
   'MOVE',
 };
 
+/// True when [blockType] is an instance-backed LD block — a timer
+/// (TON/TOF/TP) or counter (CTU/CTD/CTUD) — whose `LdNode.variable` holds the
+/// name of its backing instance tag. MOVE/math (ADD/SUB/MUL/DIV) blocks also
+/// use `variable`, but for the DESTINATION tag, not an instance name; compare
+/// blocks don't use `variable` at all. Callers that rename a renamed
+/// instance tag onto its owning block(s) MUST restrict the match to this
+/// predicate — otherwise a MOVE/math block whose destination happens to share
+/// the pre-rename instance name gets its destination silently retargeted.
+/// Pure.
+bool isInstanceBackedLdBlock(String blockType) =>
+    _kTimerBlocks.contains(blockType) || _kCounterBlocks.contains(blockType);
+
 /// The operand slot a block *data* pin routes into, or null if [pin] is a
 /// *power* pin (`IN`/`EN`/`CU`/`CD`/`R`/`LD`, or an implicit contact/coil pin).
 /// Data pins fold into operands/preset and are excluded from the power wiring;

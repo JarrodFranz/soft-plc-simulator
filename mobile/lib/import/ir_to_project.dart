@@ -190,7 +190,13 @@ ImportResult mapImportedProject(ImportedProject ir,
           if (name != original) {
             for (final rung in tr.rungs) {
               for (final node in rung.nodes) {
-                if (node.kind == LdKind.block && node.variable == original) {
+                // Restrict to instance-backed blocks (timers/counters): their
+                // `variable` is the instance name. MOVE/math blocks also use
+                // `variable`, but for their DESTINATION tag — a coincidental
+                // match there must NOT be retargeted (Finding 1).
+                if (node.kind == LdKind.block &&
+                    isInstanceBackedLdBlock(node.blockType) &&
+                    node.variable == original) {
                   node.variable = name;
                 }
               }
