@@ -152,6 +152,21 @@ topology / no coil / unresolved operand). `ImportReport` gains `stubbedRungCount
 whole-POU stub; `graphicalStubCount` continues to count whole-POU stubs
 (all-rungs-stubbed LD POUs, and all FBD/SFC POUs).
 
+**Unsupported-construct inventory (actionable "build next" list).** Beyond the
+per-rung warnings, the translator aggregates a **de-duplicated inventory of the
+constructs that forced a stub**, so the output is a prioritized roadmap signal
+rather than scattered noise. Concretely, `ImportReport` gains:
+- `unsupportedLdBlockTypes: Set<String>` — every block `typeName` encountered on
+  a rung that the app's LD engine does not yet support. **Custom/user function
+  blocks land here** and are the primary driver of the next expansion.
+- `ldStubReasons: Map<String,int>` — count of stubbed rungs by reason category
+  (`unsupported-block`, `complex-topology`, `no-coil`, `unresolved-operand`,
+  `unsupported-modifier-combo`).
+
+These are surfaced in the import preview (a compact "N rungs not translated —
+unsupported blocks: X, Y" note) and logged, so a user immediately sees what's
+missing and we get a concrete, data-driven backlog of block types to implement.
+
 **Existing tests that will change:** any that assert an LD POU imports as a stub
 (e.g. `basic.xml`'s `Rung1`, the import-flow test's `graphicalStubCount`) are
 updated to the new reality (a translatable LD rung becomes a real program).
@@ -175,8 +190,10 @@ updated to the new reality (a translatable LD rung becomes a real program).
 ## Out of scope / deferred
 
 - **FBD and SFC translators** — separate later sub-projects.
-- **Unknown/user function blocks** in ladder — stub-the-rung for now; a future
-  block-support expansion + re-import picks them up.
+- **Unknown/user (custom) function blocks** in ladder — stub-the-rung for now,
+  but every such `typeName` is recorded in `ImportReport.unsupportedLdBlockTypes`
+  (see §4). Supporting custom function blocks is the intended **near-term
+  follow-up**, driven directly by that inventory; a re-import then picks them up.
 - **Honoring PLCopen pixel coordinates** for layout — the app re-derives
   geometry; coordinates are used only for rung ordering.
 - **Nested/complex branch topology** beyond single-level parallel — stubbed.
