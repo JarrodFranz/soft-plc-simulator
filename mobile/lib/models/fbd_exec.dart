@@ -1,6 +1,7 @@
 import 'project_model.dart';
 import 'fbd_pins.dart';
 import 'tag_resolver.dart';
+import 'fbd_monitor.dart';
 
 /// Per-block timer state for stateful FBD blocks (TON/TOF), keyed by block id
 /// (block ids are unique within a project's FBD programs). Cleared on project
@@ -482,17 +483,24 @@ String _resolvedToPin(FbdWire w, FbdBlock? toBlock) {
   return ins.isNotEmpty ? ins.first : '';
 }
 
-/// Executes every FunctionBlockDiagram program: evaluates the block graph in
-/// dependency (topological) order — a block after all blocks feeding any of
-/// its input pins — producing a `Map<String,dynamic>` of output-pin values
-/// per block. An input pin's value is resolved from the wire targeting
-/// `(block, pin)`, read from the source block's named output in the cache.
-/// Arithmetic/comparator operand order follows the registry's pin order
-/// (`IN1`, `IN2`, ... / `MN`, `IN`, `MX`), not wire-insertion order.
-/// TON/TOF are executed statefully (per-block state in [rt]), producing both
-/// `Q` and `ET` outputs. TAG_OUTPUT writes its `IN` force-aware. Cycles
-/// terminate deterministically without hanging. Never throws.
-void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? only, Set<String>? readOnly}) {
+/// Executes every FunctionBlockDiagram program: partitions the program's
+/// blocks by `network` and evaluates the networks in ascending index order
+/// (IEC 61131-3 network-ordered execution), running the same dependency
+/// (topological) worklist scoped to each network's blocks in turn — a block
+/// after all blocks feeding any of its input pins — producing a
+/// `Map<String,dynamic>` of output-pin values per block. An input pin's
+/// value is resolved from the wire targeting `(block, pin)`, read from the
+/// source block's named output in the cache. Arithmetic/comparator operand
+/// order follows the registry's pin order (`IN1`, `IN2`, ... / `MN`, `IN`,
+/// `MX`), not wire-insertion order. TON/TOF are executed statefully
+/// (per-block state in [rt]), producing both `Q` and `ET` outputs.
+/// TAG_OUTPUT writes its `IN` force-aware, immediately, so a later network
+/// in the same scan reads the updated tag via its own TAG_INPUT (this is how
+/// data flows across networks — wires never cross a network boundary).
+/// Cycles terminate deterministically without hanging. Never throws. When
+/// [monitor] is supplied, every evaluated block's output-pin values are
+/// recorded into it, keyed by `monitor.keyFor(prog.name, block.id, pin)`.
+void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? only, Set<String>? readOnly, FbdMonitor? monitor}) {
   for (final prog in p.programs) {
     if (prog.language != 'FunctionBlockDiagram' || prog.fbdBlocks.isEmpty) {
       continue;
@@ -505,85 +513,118 @@ void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? onl
       byId[b.id] = b;
     }
 
-    // For each block, the ordered list of (fromBlockId, fromPin) feeding each
-    // of its input pins in registry order (null entry = unconnected input).
-    final inputWireFor = <String, List<FbdWire?>>{};
-    for (final b in prog.fbdBlocks) {
-      final pins = fbdInputPins(b.type, inputCount: b.inputCount);
-      inputWireFor[b.id] = List<FbdWire?>.filled(pins.length, null);
-    }
-    for (final w in prog.fbdWires) {
-      final toBlock = byId[w.toBlockId];
-      final fromBlock = byId[w.fromBlockId];
-      if (toBlock == null || fromBlock == null) {
-        continue;
-      }
-      final toPin = _resolvedToPin(w, toBlock);
-      if (toPin.isEmpty) {
-        continue;
-      }
-      final pins = fbdInputPins(toBlock.type, inputCount: toBlock.inputCount);
-      final idx = pins.indexOf(toPin);
-      if (idx < 0) {
-        continue;
-      }
-      inputWireFor[toBlock.id]![idx] = w;
-    }
+    // Networks execute in ascending index order. Wires are intra-network
+    // (a block's deps are always in its own network), so scoping is just
+    // filtering prog.fbdBlocks by network — the worklist below is otherwise
+    // identical to the pre-network-aware single-pass version. A one-network
+    // program (all blocks `network == 0`) runs exactly one pass, byte
+    // identical to before.
+    final netIndices = prog.fbdBlocks.map((b) => b.network).toSet().toList()
+      ..sort();
+    for (final net in netIndices) {
+      final netBlocks =
+          prog.fbdBlocks.where((b) => b.network == net).toList();
+      final netIds = netBlocks.map((b) => b.id).toSet();
 
-    // Dependency ids (source block ids) per block, for the topological pass.
-    final depsOf = <String, List<String>>{};
-    for (final b in prog.fbdBlocks) {
-      depsOf[b.id] = [
-        for (final w in inputWireFor[b.id]!)
-          if (w != null) w.fromBlockId,
-      ];
-    }
-
-    final cache = <String, Map<String, dynamic>>{};
-    final done = <String>{};
-
-    dynamic resolveInput(FbdWire? w) {
-      if (w == null) {
-        return null;
+      // For each block, the ordered list of (fromBlockId, fromPin) feeding
+      // each of its input pins in registry order (null entry = unconnected
+      // input).
+      final inputWireFor = <String, List<FbdWire?>>{};
+      for (final b in netBlocks) {
+        final pins = fbdInputPins(b.type, inputCount: b.inputCount);
+        inputWireFor[b.id] = List<FbdWire?>.filled(pins.length, null);
       }
-      final fromBlock = byId[w.fromBlockId];
-      final fromPin = _resolvedFromPin(w, fromBlock);
-      final outMap = cache[w.fromBlockId];
-      if (outMap == null || fromPin.isEmpty) {
-        return null;
+      for (final w in prog.fbdWires) {
+        if (!netIds.contains(w.toBlockId) || !netIds.contains(w.fromBlockId)) {
+          continue;
+        }
+        final toBlock = byId[w.toBlockId];
+        final fromBlock = byId[w.fromBlockId];
+        if (toBlock == null || fromBlock == null) {
+          continue;
+        }
+        final toPin = _resolvedToPin(w, toBlock);
+        if (toPin.isEmpty) {
+          continue;
+        }
+        final pins = fbdInputPins(toBlock.type, inputCount: toBlock.inputCount);
+        final idx = pins.indexOf(toPin);
+        if (idx < 0) {
+          continue;
+        }
+        inputWireFor[toBlock.id]![idx] = w;
       }
-      return outMap[fromPin];
-    }
 
-    List<dynamic> orderedInputs(FbdBlock b) =>
-        inputWireFor[b.id]!.map(resolveInput).toList();
+      // Dependency ids (source block ids) per block, for the topological
+      // pass.
+      final depsOf = <String, List<String>>{};
+      for (final b in netBlocks) {
+        depsOf[b.id] = [
+          for (final w in inputWireFor[b.id]!)
+            if (w != null) w.fromBlockId,
+        ];
+      }
 
-    // Evaluate blocks whose dependencies are all resolved; repeat until
-    // stable (topological worklist).
-    bool progressed = true;
-    while (progressed) {
-      progressed = false;
-      for (final b in prog.fbdBlocks) {
+      final cache = <String, Map<String, dynamic>>{};
+      final done = <String>{};
+
+      dynamic resolveInput(FbdWire? w) {
+        if (w == null) {
+          return null;
+        }
+        final fromBlock = byId[w.fromBlockId];
+        final fromPin = _resolvedFromPin(w, fromBlock);
+        final outMap = cache[w.fromBlockId];
+        if (outMap == null || fromPin.isEmpty) {
+          return null;
+        }
+        return outMap[fromPin];
+      }
+
+      List<dynamic> orderedInputs(FbdBlock b) =>
+          inputWireFor[b.id]!.map(resolveInput).toList();
+
+      void recordMonitor(FbdBlock b) {
+        if (monitor == null) {
+          return;
+        }
+        final out = cache[b.id];
+        if (out == null) {
+          return;
+        }
+        out.forEach((pin, val) =>
+            monitor.pinValue[monitor.keyFor(prog.name, b.id, pin)] = val);
+      }
+
+      // Evaluate blocks whose dependencies are all resolved; repeat until
+      // stable (topological worklist).
+      bool progressed = true;
+      while (progressed) {
+        progressed = false;
+        for (final b in netBlocks) {
+          if (done.contains(b.id)) {
+            continue;
+          }
+          final deps = depsOf[b.id]!;
+          if (!deps.every(done.contains)) {
+            continue;
+          }
+          cache[b.id] = _evalBlock(p, b, orderedInputs(b), dtMs, rt, readOnly);
+          recordMonitor(b);
+          done.add(b.id);
+          progressed = true;
+        }
+      }
+      // Any block left unresolved is in a cycle: evaluate once with whatever
+      // is cached so the scan always terminates.
+      for (final b in netBlocks) {
         if (done.contains(b.id)) {
           continue;
         }
-        final deps = depsOf[b.id]!;
-        if (!deps.every(done.contains)) {
-          continue;
-        }
         cache[b.id] = _evalBlock(p, b, orderedInputs(b), dtMs, rt, readOnly);
+        recordMonitor(b);
         done.add(b.id);
-        progressed = true;
       }
-    }
-    // Any block left unresolved is in a cycle: evaluate once with whatever is
-    // cached so the scan always terminates.
-    for (final b in prog.fbdBlocks) {
-      if (done.contains(b.id)) {
-        continue;
-      }
-      cache[b.id] = _evalBlock(p, b, orderedInputs(b), dtMs, rt, readOnly);
-      done.add(b.id);
     }
   }
 }
