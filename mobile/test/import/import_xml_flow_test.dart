@@ -38,7 +38,11 @@ const String _malformedButRecognizedXml =
 /// "unrecognized dialect" case, handled before `parsePlcOpen` is ever called.
 const String _unrecognizedXml = '<RSLogix5000Content><Controller/></RSLogix5000Content>';
 
-ImportResult _fakeResult({List<ImportWarning>? warnings}) {
+ImportResult _fakeResult({
+  List<ImportWarning>? warnings,
+  int stubbedRungCount = 0,
+  Set<String> unsupportedLdBlockTypes = const {},
+}) {
   final project = PlcProject(
     id: 'proj_new_test',
     name: 'Imported Demo',
@@ -64,6 +68,8 @@ ImportResult _fakeResult({List<ImportWarning>? warnings}) {
                 severity: WarningSeverity.warning,
                 message: 'POU "Rung1" (LadderLogic): graphical body not yet translated.'),
           ],
+      stubbedRungCount: stubbedRungCount,
+      unsupportedLdBlockTypes: unsupportedLdBlockTypes,
     ),
   );
 }
@@ -130,6 +136,33 @@ void main() {
       expect(find.textContaining('2 programs'), findsOneWidget);
       expect(find.textContaining('1 graphical stubs'), findsOneWidget);
       expect(find.textContaining('graphical body not yet translated'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+        'shows the untranslated-rung note with unsupported blocks when stubbedRungCount > 0',
+        (tester) async {
+      final result =
+          _fakeResult(stubbedRungCount: 2, unsupportedLdBlockTypes: {'FANCYFB'});
+      await tester.pumpWidget(MaterialApp(
+        home: ImportXmlPreview(result: result, onCreate: (_) {}),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('2 rung(s) not translated'), findsOneWidget);
+      expect(find.textContaining('FANCYFB'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('does not show the untranslated-rung note when stubbedRungCount is 0',
+        (tester) async {
+      final result = _fakeResult();
+      await tester.pumpWidget(MaterialApp(
+        home: ImportXmlPreview(result: result, onCreate: (_) {}),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('rung(s) not translated'), findsNothing);
       expect(tester.takeException(), isNull);
     });
 
