@@ -557,6 +557,21 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   @visibleForTesting
   void debugRunScan() => _executeScan();
 
+  /// An HMI write (slider/switch/button) always updates the tag value, but it
+  /// must only drive a scan tick when the PLC is actually running. Gating here
+  /// matches the timer loop (`isRunning && !_faulted`) — a paused PLC must not
+  /// advance the process simulation or logic just because a slider moved. The
+  /// explicit "Step Scan" toolbar button still calls [_executeScan] directly,
+  /// so single-stepping while paused keeps working.
+  void _onHmiScanTriggered() => setState(() {
+        if (isRunning && !_faulted) _executeScan();
+      });
+
+  /// Test-only hook mirroring the HMI's `onScanTriggered` callback, so a widget
+  /// test can assert the paused-write gate without driving a slider.
+  @visibleForTesting
+  void debugHmiScanTrigger() => _onHmiScanTriggered();
+
   /// Test-only hook: the shell's [TagHistorian], so a widget test can assert
   /// on captured samples directly without driving a trend chart HMI widget.
   @visibleForTesting
@@ -3049,7 +3064,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       return HmiDashboardBuilderScreen(
         currentProject: _activeProject,
         hmiScreen: hmi,
-        onScanTriggered: () => setState(() => _executeScan()),
+        onScanTriggered: _onHmiScanTriggered,
         onProjectUpdated: _markDirtyAndAutosave,
         historian: _historian,
         hapticsEnabled: _hapticsEnabled,
