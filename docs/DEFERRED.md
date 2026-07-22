@@ -26,6 +26,12 @@ plan that defers something records it here (and links back here from its own
 | Custom / user function blocks in FBD | later | The block `type` set is a fixed vocabulary; user-defined FBs are out of scope. Related to the LD custom-FB item below — a shared future capability. |
 | Cross-network wiring | later | By design wires are intra-network; cross-network data flows through tags. |
 
+**Minor code-quality follow-ups (from the whole-branch review, non-blocking):**
+- Add direct unit tests for the constructor-level `fbdNetworks` normalization + the no-over-extension invariant (currently only indirectly covered).
+- `executeFbdPrograms` re-scans blocks/wires per network (O(networks×wires)) — could pre-bucket once; negligible today.
+- The desktop palette dock / phone add-block FAB add blocks into network 0 (no "active lane" cue); per-lane add-block is the primary path.
+- `_resolvedWireFromPin` in the editor hand-mirrors `fbd_exec`'s private `_resolvedFromPin` — promote the exec helpers to public and share, to remove drift risk.
+
 ## LD graphical translator (PR #4)
 
 | Item | Priority | Notes |
