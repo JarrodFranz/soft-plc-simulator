@@ -1,4 +1,5 @@
 import '../models/project_model.dart';
+import '../models/ld_graph.dart';
 import 'import_ir.dart';
 
 /// Result of translating one LD `GraphBody`. `rungs` includes placeholder
@@ -68,6 +69,332 @@ class LdComponent {
     required this.leftRailNodeIds,
     required this.rightRailNodeIds,
   });
+}
+
+/// Thrown internally when a component cannot be translated to a real rung.
+/// [reason] is the `stubReasons` category key; [detail] is a human sentence.
+class _StubException implements Exception {
+  final String reason;
+  final String detail;
+  _StubException(this.reason, this.detail);
+}
+
+/// One extracted single-level parallel branch: an ordered [chain] of non-main
+/// nodes that taps off an upstream anchor (a main node or the left rail) and
+/// merges into a downstream anchor (a main node or the right rail).
+class _BranchPlan {
+  final List<IrGraphNode> chain;
+  final bool upstreamIsLeftRail;
+  final int? upstreamAnchor; // main node localId when not the left rail
+  final bool downstreamIsRightRail;
+  final int? downstreamAnchor; // main node localId when not the right rail
+  _BranchPlan({
+    required this.chain,
+    required this.upstreamIsLeftRail,
+    required this.upstreamAnchor,
+    required this.downstreamIsRightRail,
+    required this.downstreamAnchor,
+  });
+}
+
+/// Translates a PLCopen LD [body] into the app's native executable [LdRung]s.
+///
+/// Task 3 scope: BOOLEAN ladder (contacts/coils/rails + single-level parallel
+/// branches). Any component containing a function block, in/out variable,
+/// complex (nested) topology, no coil, or an unsupported modifier combo becomes
+/// a commented placeholder rung (2 rails + one L->R wire) plus a
+/// [WarningSeverity.warning] naming the POU, rung ordinal, and reason. This
+/// function never throws — every untranslatable component degrades to a stub.
+LdTranslation translateLdBody(GraphBody body, {required String pouName}) {
+  final comps = segmentRungs(body);
+  final rungs = <LdRung>[];
+  final warnings = <ImportWarning>[];
+  final unsupportedBlocks = <String>{};
+  final reasons = <String, int>{};
+  final instanceTags = <PlcTag>[];
+  var translated = 0;
+  var stubbed = 0;
+
+  for (var i = 0; i < comps.length; i++) {
+    try {
+      rungs.add(_translateComponent(comps[i], i, instanceTags, unsupportedBlocks));
+      translated++;
+    } on _StubException catch (e) {
+      reasons[e.reason] = (reasons[e.reason] ?? 0) + 1;
+      warnings.add(ImportWarning(
+        severity: WarningSeverity.warning,
+        message: 'POU "$pouName" rung ${i + 1}: not translated (${e.detail}).',
+      ));
+      rungs.add(LdRung(
+        rungIndex: i,
+        comment: 'Rung not translated on import: ${e.detail}.',
+        nodes: [
+          LdNode(id: kLeftRailId, kind: LdKind.leftRail),
+          LdNode(id: kRightRailId, kind: LdKind.rightRail),
+        ],
+        wires: [LdWire(fromId: kLeftRailId, toId: kRightRailId)],
+      ));
+      stubbed++;
+    }
+  }
+
+  return LdTranslation(
+    rungs: rungs,
+    warnings: warnings,
+    translatedRungCount: translated,
+    stubbedRungCount: stubbed,
+    unsupportedBlockTypes: unsupportedBlocks,
+    stubReasons: reasons,
+    instanceTags: instanceTags,
+  );
+}
+
+/// Translates one [comp] (a single rung) into an executable [LdRung], or throws
+/// [_StubException] if it is outside Task-3 scope. [instanceTags] and
+/// [unsupportedBlocks] are threaded through for Task 4 (blocks); Task 3 only
+/// records the unsupported block type before stubbing.
+LdRung _translateComponent(
+  LdComponent comp,
+  int index,
+  List<PlcTag> instanceTags,
+  Set<String> unsupportedBlocks,
+) {
+  // 1. Reject unsupported element types up front.
+  for (final n in comp.nodes) {
+    switch (n.elementType) {
+      case 'contact':
+      case 'coil':
+        break;
+      case 'block':
+        // Task 4 replaces this branch with real block handling.
+        final typeName = n.attributes['typeName'] ?? '';
+        if (typeName.isNotEmpty) unsupportedBlocks.add(typeName);
+        throw _StubException('unsupported-block', 'contains a function block');
+      case 'inVariable':
+      case 'outVariable':
+        // Task 4 folds these into block operands.
+        throw _StubException('complex-topology', 'in/out variable');
+      default:
+        throw _StubException('complex-topology', 'unsupported element ${n.elementType}');
+    }
+  }
+
+  // 2. Require >= 1 output coil.
+  final coils = [for (final n in comp.nodes) if (n.elementType == 'coil') n];
+  if (coils.isEmpty) {
+    throw _StubException('no-coil', 'no output coil');
+  }
+
+  // 3. Directed power graph: longest-path depth per node (left rail = 0).
+  final depth = _depths(comp);
+
+  // 4. Split into a single main series path plus single-level parallel branches.
+  final byId = {for (final n in comp.nodes) n.localId: n};
+  final mainIds = _mainLine(comp, coils, depth);
+  final branches = _extractBranches(comp, mainIds, byId);
+
+  // 5. Map elements to LdNodes and derive BranchSpec index ranges.
+  final mainNodes = [for (final id in mainIds) _toLdNode(byId[id]!)];
+  final mainIndex = {for (var i = 0; i < mainIds.length; i++) mainIds[i]: i};
+  final specs = <BranchSpec>[];
+  for (final b in branches) {
+    final nodes = [for (final n in b.chain) _toLdNode(n)];
+    final startIndex = b.upstreamIsLeftRail ? 0 : mainIndex[b.upstreamAnchor]! + 1;
+    final endIndex =
+        b.downstreamIsRightRail ? mainNodes.length - 1 : mainIndex[b.downstreamAnchor]! - 1;
+    specs.add(BranchSpec(startIndex: startIndex, endIndex: endIndex, nodes: nodes));
+  }
+
+  // 6. buildRung assigns ids/rows, builds rails, series-wires main, and wires
+  // each branch as a parallel lane spanning main[startIndex..endIndex].
+  return buildRung(index: index, main: mainNodes, branches: specs);
+}
+
+/// Longest-path depth of each node measured from the left rail (which sits at
+/// depth 0, so a left-rail-attached element is depth 1). Deterministic; a cycle
+/// (which should not occur in a valid ladder) is guarded to depth 0.
+Map<int, int> _depths(LdComponent comp) {
+  final preds = <int, List<int>>{for (final n in comp.nodes) n.localId: <int>[]};
+  for (final e in comp.edges) {
+    preds[e.toLocalId]?.add(e.fromLocalId);
+  }
+  final depth = <int, int>{};
+  final visiting = <int>{};
+  int depthOf(int id) {
+    final cached = depth[id];
+    if (cached != null) return cached;
+    if (!visiting.add(id)) return 0; // cycle guard
+    var m = comp.leftRailNodeIds.contains(id) ? 1 : 0;
+    for (final p in preds[id] ?? const <int>[]) {
+      final d = depthOf(p) + 1;
+      if (d > m) m = d;
+    }
+    visiting.remove(id);
+    return depth[id] = m;
+  }
+
+  for (final n in comp.nodes) {
+    depthOf(n.localId);
+  }
+  return depth;
+}
+
+/// The main series path: the deepest source->coil chain (tie-break: lowest coil
+/// localId, then at each step the predecessor with highest depth then lowest
+/// localId). Returned rail-to-coil in power-flow order.
+List<int> _mainLine(LdComponent comp, List<IrGraphNode> coils, Map<int, int> depth) {
+  final preds = <int, List<int>>{for (final n in comp.nodes) n.localId: <int>[]};
+  for (final e in comp.edges) {
+    preds[e.toLocalId]?.add(e.fromLocalId);
+  }
+  // Pick the terminal coil for the main line: greatest depth, then lowest id.
+  var coil = coils.first;
+  for (final c in coils) {
+    final dc = depth[c.localId]!;
+    final dbest = depth[coil.localId]!;
+    if (dc > dbest || (dc == dbest && c.localId < coil.localId)) coil = c;
+  }
+  final main = <int>[coil.localId];
+  final guard = <int>{coil.localId};
+  var cur = coil.localId;
+  while (true) {
+    final ps = preds[cur] ?? const <int>[];
+    if (ps.isEmpty) break;
+    var best = ps.first;
+    for (final p in ps) {
+      final dp = depth[p]!;
+      final db = depth[best]!;
+      if (dp > db || (dp == db && p < best)) best = p;
+    }
+    if (!guard.add(best)) break; // cycle guard
+    main.insert(0, best);
+    cur = best;
+  }
+  return main;
+}
+
+/// Extracts single-level parallel branches (non-main nodes). Each branch must be
+/// a linear chain of non-main nodes that taps a single upstream anchor (a main
+/// node or the left rail) and merges into a single downstream anchor (a main
+/// node or the right rail). Anything nested/complex throws [_StubException].
+List<_BranchPlan> _extractBranches(
+    LdComponent comp, List<int> mainIds, Map<int, IrGraphNode> byId) {
+  final mainSet = mainIds.toSet();
+  final preds = <int, List<int>>{for (final n in comp.nodes) n.localId: <int>[]};
+  final succs = <int, List<int>>{for (final n in comp.nodes) n.localId: <int>[]};
+  for (final e in comp.edges) {
+    preds[e.toLocalId]?.add(e.fromLocalId);
+    succs[e.fromLocalId]?.add(e.toLocalId);
+  }
+  List<int> nonMainPreds(int id) =>
+      [for (final p in preds[id] ?? const <int>[]) if (!mainSet.contains(p)) p];
+  List<int> nonMainSuccs(int id) =>
+      [for (final s in succs[id] ?? const <int>[]) if (!mainSet.contains(s)) s];
+  List<int> mainPreds(int id) =>
+      [for (final p in preds[id] ?? const <int>[]) if (mainSet.contains(p)) p];
+  List<int> mainSuccs(int id) =>
+      [for (final s in succs[id] ?? const <int>[]) if (mainSet.contains(s)) s];
+
+  void complex() => throw _StubException('complex-topology', 'branch structure too complex');
+
+  final visited = <int>{};
+  final branches = <_BranchPlan>[];
+  for (final n in comp.nodes) {
+    if (mainSet.contains(n.localId) || visited.contains(n.localId)) continue;
+    // Only start from a chain head (no non-main predecessor).
+    if (nonMainPreds(n.localId).isNotEmpty) continue;
+
+    // Walk the linear chain of non-main successors from this head.
+    final chain = <IrGraphNode>[];
+    var cur = n.localId;
+    while (true) {
+      if (!visited.add(cur)) complex();
+      chain.add(byId[cur]!);
+      final nss = nonMainSuccs(cur);
+      if (nss.isEmpty) break;
+      if (nss.length > 1) complex();
+      final next = nss.single;
+      if (nonMainPreds(next).length > 1) complex();
+      cur = next;
+    }
+
+    // Interior nodes must not touch main or the rails (that would be a
+    // second-level divergence/convergence, i.e. nested topology).
+    for (var ci = 0; ci < chain.length; ci++) {
+      final id = chain[ci].localId;
+      final isHead = ci == 0;
+      final isTail = ci == chain.length - 1;
+      if (!isHead && (mainPreds(id).isNotEmpty || comp.leftRailNodeIds.contains(id))) complex();
+      if (!isTail && (mainSuccs(id).isNotEmpty || comp.rightRailNodeIds.contains(id))) complex();
+    }
+
+    final head = chain.first.localId;
+    final tail = chain.last.localId;
+    final upFromLeft = comp.leftRailNodeIds.contains(head);
+    final upMain = mainPreds(head);
+    final downToRight = comp.rightRailNodeIds.contains(tail);
+    final downMain = mainSuccs(tail);
+    // Exactly one upstream anchor and exactly one downstream anchor.
+    if (upMain.length + (upFromLeft ? 1 : 0) != 1) complex();
+    if (downMain.length + (downToRight ? 1 : 0) != 1) complex();
+
+    branches.add(_BranchPlan(
+      chain: chain,
+      upstreamIsLeftRail: upFromLeft,
+      upstreamAnchor: upFromLeft ? null : upMain.single,
+      downstreamIsRightRail: downToRight,
+      downstreamAnchor: downToRight ? null : downMain.single,
+    ));
+  }
+
+  // Any non-main node not placed on a branch is unreachable/complex.
+  for (final n in comp.nodes) {
+    if (!mainSet.contains(n.localId) && !visited.contains(n.localId)) complex();
+  }
+  return branches;
+}
+
+/// Maps a contact/coil IR node to a native [LdNode], applying the modifier rules.
+LdNode _toLdNode(IrGraphNode n) {
+  final variable = n.attributes['variable'] ?? '';
+  if (n.elementType == 'coil') {
+    return LdNode(id: '', kind: LdKind.coil, variable: variable, modifier: _coilModifier(n));
+  }
+  return LdNode(id: '', kind: LdKind.contact, variable: variable, modifier: _contactModifier(n));
+}
+
+bool _hasEdge(IrGraphNode n) {
+  final e = n.attributes['edge'];
+  return e == 'rising' || e == 'falling';
+}
+
+String _contactModifier(IrGraphNode n) {
+  final negated = n.attributes['negated'] == 'true';
+  if (negated && _hasEdge(n)) {
+    throw _StubException(
+        'unsupported-modifier-combo', 'contact with both negation and edge detection');
+  }
+  if (negated) return 'negated';
+  final edge = n.attributes['edge'];
+  if (edge == 'rising') return 'rising';
+  if (edge == 'falling') return 'falling';
+  return 'normal';
+}
+
+String _coilModifier(IrGraphNode n) {
+  final negated = n.attributes['negated'] == 'true';
+  if (negated && _hasEdge(n)) {
+    throw _StubException(
+        'unsupported-modifier-combo', 'coil with both negation and edge detection');
+  }
+  final storage = n.attributes['storage'];
+  if (storage == 'set') return 'set';
+  if (storage == 'reset') return 'reset';
+  if (negated) return 'negated';
+  final edge = n.attributes['edge'];
+  if (edge == 'rising') return 'rising';
+  if (edge == 'falling') return 'falling';
+  return 'normal';
 }
 
 bool _isLeftRail(String t) => t == 'leftPowerRail';
