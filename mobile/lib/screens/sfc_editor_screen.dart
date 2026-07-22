@@ -55,12 +55,6 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
   static const Color _kEnergized = Colors.greenAccent;
 
   @override
-  void initState() {
-    super.initState();
-    _ensureDefaultSfc();
-  }
-
-  @override
   void dispose() {
     _fallbackTick.dispose();
     super.dispose();
@@ -76,22 +70,6 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
     final ms = widget.sfcRuntime.stepElapsedMs['${widget.program.name}|${step.id}'] ?? 0;
     final formatted = ms < 1000 ? '${ms}ms' : '${(ms / 1000).toStringAsFixed(1)}s';
     return 'STEP_T $formatted';
-  }
-
-  void _ensureDefaultSfc() {
-    if (widget.program.sfcSteps.isEmpty) {
-      widget.program.sfcSteps.addAll([
-        SfcStep(id: 's0', name: 'Step_0_Init', isInitial: true, actionSt: 'Fill_Valve := FALSE; Drain_Valve := FALSE;'),
-        SfcStep(id: 's1', name: 'Step_1_Filling', actionSt: 'Fill_Valve := TRUE;'),
-        SfcStep(id: 's2', name: 'Step_2_Draining', actionSt: 'Drain_Valve := TRUE;'),
-      ]);
-
-      widget.program.sfcTransitions.addAll([
-        SfcTransition(id: 't0', fromStepId: 's0', toStepId: 's1', conditionSt: 'Start_PB AND Level_PV < 10.0'),
-        SfcTransition(id: 't1', fromStepId: 's1', toStepId: 's2', conditionSt: 'Level_PV >= Level_SP'),
-        SfcTransition(id: 't2', fromStepId: 's2', toStepId: 's0', conditionSt: 'Level_PV <= 10.0'),
-      ]);
-    }
   }
 
   void _addNewStep() {
