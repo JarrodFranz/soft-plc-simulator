@@ -205,6 +205,13 @@ LdRung _translateComponent(
     specs.add(BranchSpec(startIndex: startIndex, endIndex: endIndex, nodes: nodes));
   }
 
+  // 5b. Edge-coverage faithfulness gate: confirm the main+branch wiring we are
+  // about to emit reproduces the component's exact edge set and rail
+  // attachments. A non-series-parallel bridge/bypass topology whose extra edge
+  // got greedily pulled onto the main line (dropping the edge) is caught here
+  // and stubbed instead of being emitted as silently-wrong pure-series logic.
+  _assertFaithfulWiring(comp, mainIds, branches);
+
   // 6. buildRung assigns ids/rows, builds rails, series-wires main, and wires
   // each branch as a parallel lane spanning main[startIndex..endIndex].
   return buildRung(index: index, main: mainNodes, branches: specs);
@@ -282,7 +289,11 @@ List<_BranchPlan> _extractBranches(
   final mainSet = mainIds.toSet();
   final preds = <int, List<int>>{for (final n in comp.nodes) n.localId: <int>[]};
   final succs = <int, List<int>>{for (final n in comp.nodes) n.localId: <int>[]};
+  // De-duplicate by (from,to) so a duplicated connection does not inflate an
+  // adjacency count and trip the complex() stub over-conservatively.
+  final seenEdge = <String>{};
   for (final e in comp.edges) {
+    if (!seenEdge.add('${e.fromLocalId}>${e.toLocalId}')) continue;
     preds[e.toLocalId]?.add(e.fromLocalId);
     succs[e.fromLocalId]?.add(e.toLocalId);
   }
@@ -352,6 +363,63 @@ List<_BranchPlan> _extractBranches(
     if (!mainSet.contains(n.localId) && !visited.contains(n.localId)) complex();
   }
   return branches;
+}
+
+/// Reconstructs the exact non-rail (internal) adjacency plus the left/right-rail
+/// attachments that `buildRung` will wire from [mainIds] + [branches], then
+/// asserts it reproduces [comp]'s own edge set and rail attachments. Throws
+/// [_StubException] ('complex-topology') on ANY discrepancy — a missing
+/// component edge, an added edge, or a differing rail attachment. This makes
+/// `translateLdBody` faithful-or-stub for every topology, closing the silent
+/// edge-drop on non-series-parallel bridge/bypass rungs. Pure/deterministic.
+void _assertFaithfulWiring(
+    LdComponent comp, List<int> mainIds, List<_BranchPlan> branches) {
+  final internal = <String>{};
+  final leftAttach = <int>{};
+  final rightAttach = <int>{};
+  String key(int from, int to) => '$from>$to';
+
+  // Main series line: left rail -> main[0] -> ... -> main[last] -> right rail.
+  if (mainIds.isNotEmpty) {
+    leftAttach.add(mainIds.first);
+    for (var i = 0; i + 1 < mainIds.length; i++) {
+      internal.add(key(mainIds[i], mainIds[i + 1]));
+    }
+    rightAttach.add(mainIds.last);
+  }
+
+  // Each parallel branch, anchored to the SAME nodes buildRung will use
+  // (upstream: left rail or the main node before the span; downstream: right
+  // rail or the main node after the span).
+  for (final b in branches) {
+    final chain = [for (final n in b.chain) n.localId];
+    if (b.upstreamIsLeftRail) {
+      leftAttach.add(chain.first);
+    } else {
+      internal.add(key(b.upstreamAnchor!, chain.first));
+    }
+    for (var i = 0; i + 1 < chain.length; i++) {
+      internal.add(key(chain[i], chain[i + 1]));
+    }
+    if (b.downstreamIsRightRail) {
+      rightAttach.add(chain.last);
+    } else {
+      internal.add(key(chain.last, b.downstreamAnchor!));
+    }
+  }
+
+  // Component's own edges are already rail-free; reduce (producer->consumer) and
+  // de-duplicate so a duplicated connection does not force a spurious mismatch.
+  final compInternal = <String>{
+    for (final e in comp.edges) key(e.fromLocalId, e.toLocalId)
+  };
+
+  bool sameSet<T>(Set<T> a, Set<T> b) => a.length == b.length && a.containsAll(b);
+  if (!sameSet(internal, compInternal) ||
+      !sameSet(leftAttach, comp.leftRailNodeIds) ||
+      !sameSet(rightAttach, comp.rightRailNodeIds)) {
+    throw _StubException('complex-topology', 'branch structure too complex');
+  }
 }
 
 /// Maps a contact/coil IR node to a native [LdNode], applying the modifier rules.

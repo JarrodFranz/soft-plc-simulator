@@ -119,6 +119,74 @@ void mainTask3() {
       expect(r.stubbedRungCount, 1);
       expect(r.stubReasons['unsupported-modifier-combo'], 1);
     });
+
+    test('bypass-short topology (A->OUT jumper) stubs, not mis-translated', () {
+      // L-[A]-[B]-(OUT) plus a bypass jumper A->OUT. Faithful: OUT = A.
+      // A greedy pure-series emit would drop A->OUT and compute OUT = A AND B.
+      // The edge-coverage gate must reject this as complex-topology.
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        _n(1, 'contact', a: {'variable': 'A'}),
+        _n(2, 'contact', a: {'variable': 'B'}),
+        _n(3, 'coil', a: {'variable': 'OUT'}),
+      ], connections: [
+        _c(1, 100), _c(2, 1), _c(3, 2), _c(200, 3),
+        _c(3, 1), // bypass jumper A -> OUT
+      ]);
+      final r = t(body);
+      expect(r.translatedRungCount, 0);
+      expect(r.stubbedRungCount, 1);
+      expect(r.stubReasons['complex-topology'], 1);
+    });
+
+    test('bridge (non-series-parallel) topology stubs, not mis-translated', () {
+      // Edges A->B, A->Z, B->Z, B->OUT, Z->OUT. Faithful: OUT = A AND (B OR Z).
+      // Greedy pure-series A-B-Z-OUT would compute OUT = A AND B AND Z.
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        _n(1, 'contact', a: {'variable': 'A'}),
+        _n(2, 'contact', a: {'variable': 'B'}),
+        _n(3, 'contact', a: {'variable': 'Z'}),
+        _n(4, 'coil', a: {'variable': 'OUT'}),
+      ], connections: [
+        _c(1, 100), // L -> A
+        _c(2, 1), // A -> B
+        _c(3, 1), // A -> Z
+        _c(3, 2), // B -> Z
+        _c(4, 2), // B -> OUT
+        _c(4, 3), // Z -> OUT
+        _c(200, 4), // OUT -> R
+      ]);
+      final r = t(body);
+      expect(r.translatedRungCount, 0);
+      expect(r.stubbedRungCount, 1);
+      expect(r.stubReasons['complex-topology'], 1);
+    });
+
+    test('legit series + single-level parallel still translates (gate does not over-stub)', () {
+      // L-[A]-([B] || [D])-(C): C = A AND (B OR D). A valid series-parallel
+      // ladder the edge-coverage gate must NOT stub.
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        _n(1, 'contact', a: {'variable': 'A'}),
+        _n(2, 'contact', y: 0, a: {'variable': 'B'}),
+        _n(3, 'contact', y: 20, a: {'variable': 'D'}),
+        _n(4, 'coil', a: {'variable': 'C'}),
+      ], connections: [
+        _c(1, 100), // L -> A
+        _c(2, 1), // A -> B
+        _c(3, 1), // A -> D
+        _c(4, 2), // B -> C
+        _c(4, 3), // D -> C
+        _c(200, 4), // C -> R
+      ]);
+      final r = t(body);
+      expect(r.translatedRungCount, 1);
+      expect(r.stubbedRungCount, 0);
+      // One node on a branch lane (row > 0): the parallel D.
+      final rung = r.rungs.single;
+      expect(rung.nodes.where((n) => n.row > 0).length, 1);
+    });
   });
 }
 
