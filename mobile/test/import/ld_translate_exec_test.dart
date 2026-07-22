@@ -82,4 +82,66 @@ void main() {
     expect(readPath(proj, 'T1.DN'), true);
     expect(proj.tags.firstWhere((t) => t.name == 'Done').value, true);
   });
+
+  test('F3: translated CTU counts rising edges and fires its output at PV', () {
+    // L-[Count]-[CTU C1]-(Done)-R, PV<-inVariable 2. Rising edges on the Count
+    // contact drive the single CU power input; CV increments and QU (block
+    // output -> Done coil) fires when CV reaches PV. Proves translated counters
+    // actually execute.
+    IrGraphNode n(int id, String type, {Map<String, String>? a}) =>
+        IrGraphNode(localId: id, elementType: type, attributes: a ?? const {});
+    IrConnection c(int to, int from, {String? toPin}) =>
+        IrConnection(toLocalId: to, fromLocalId: from, toPin: toPin);
+    final body = GraphBody(nodes: [
+      n(100, 'leftPowerRail'), n(200, 'rightPowerRail'),
+      n(1, 'block', a: {'typeName': 'CTU', 'instanceName': 'C1'}),
+      n(2, 'coil', a: {'variable': 'Done'}),
+      n(3, 'contact', a: {'variable': 'Count'}),
+      n(4, 'inVariable', a: {'variable': '2'}),
+    ], connections: [
+      c(3, 100), // L -> Count
+      c(1, 3), // Count -> CTU (CU primary power)
+      c(2, 1), // CTU -> Done
+      c(200, 2), // Done -> R rail
+      c(1, 4, toPin: 'PV'), // inVar 2 -> CTU.PV (data)
+    ]);
+    final tr = translateLdBody(body, pouName: 'P');
+    expect(tr.translatedRungCount, 1);
+    expect(tr.instanceTags.single.dataType, 'COUNTER');
+
+    final proj = PlcProject(
+      id: 'p', name: 'p', controllerName: 'PLC',
+      programs: [
+        PlcProgram(name: 'Main', language: 'LadderLogic', rungs: tr.rungs),
+      ],
+      tasks: [], hmis: [], structDefs: [],
+      tags: [
+        ...tr.instanceTags,
+        PlcTag(name: 'Count', path: 'Count', dataType: 'BOOL', value: false, ioType: 'Internal'),
+        PlcTag(name: 'Done', path: 'Done', dataType: 'BOOL', value: false, ioType: 'Internal'),
+      ]);
+    final rt = LdExecRuntime();
+    void scan() => executeLdPrograms(proj, 100, rt);
+    void setCount(bool v) => proj.tags.firstWhere((t) => t.name == 'Count').value = v;
+
+    // Establish the "off" baseline (no spurious edge on the first scan).
+    scan();
+    expect(readPath(proj, 'C1.CV'), 0);
+
+    // First rising edge -> CV = 1, not yet at PV.
+    setCount(true);
+    scan();
+    expect(readPath(proj, 'C1.CV'), 1);
+    expect(readPath(proj, 'C1.QU'), false);
+    expect(proj.tags.firstWhere((t) => t.name == 'Done').value, false);
+
+    // Falling edge (no count), then a second rising edge -> CV = 2 == PV -> QU.
+    setCount(false);
+    scan();
+    setCount(true);
+    scan();
+    expect(readPath(proj, 'C1.CV'), 2);
+    expect(readPath(proj, 'C1.QU'), true);
+    expect(proj.tags.firstWhere((t) => t.name == 'Done').value, true);
+  });
 }

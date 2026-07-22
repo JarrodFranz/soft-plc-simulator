@@ -252,20 +252,41 @@ LdRung _translateComponent(
 
   // 2. Build the reduced power view: fold in/out-variable nodes and data-pin
   // edges out of the structural graph so only power wiring remains.
-  final foldedIds = <int>{
+  //
+  // CRITICAL: a value-variable edge may be folded ONLY when it is a genuine
+  // DATA connection — an inVariable feeding a block DATA pin (`_dataSlotFor`
+  // non-null: IN1/IN2/PT/PV, MOVE.IN) or a math/MOVE block writing its output
+  // to an outVariable destination. A value variable wired to a POWER pin (e.g.
+  // an inVariable on a counter R/CD/LD or a timer IN) or to a non-block is NOT
+  // representable — folding it would silently DROP a power connection before
+  // the faithfulness gate ever sees it. Those edges STUB instead.
+  final varTypeByLocalId = <int, String>{
     for (final n in comp.nodes)
-      if (n.elementType == 'inVariable' || n.elementType == 'outVariable') n.localId
+      if (n.elementType == 'inVariable' || n.elementType == 'outVariable')
+        n.localId: n.elementType
   };
+  final foldedIds = varTypeByLocalId.keys.toSet();
   final blockByLocalId = <int, IrGraphNode>{
     for (final n in comp.nodes) if (n.elementType == 'block') n.localId: n
   };
   bool isFoldedEdge(IrConnection e) {
-    if (foldedIds.contains(e.fromLocalId) || foldedIds.contains(e.toLocalId)) {
-      return true; // touches a folded in/out variable
+    // A block DATA-pin edge (operand/preset) folds regardless of its source.
+    final tgtBlock = blockByLocalId[e.toLocalId];
+    if (tgtBlock != null &&
+        _dataSlotFor(tgtBlock.attributes['typeName'] ?? '', e.toPin) != null) {
+      return true;
     }
-    final tgt = blockByLocalId[e.toLocalId];
-    if (tgt != null && _dataSlotFor(tgt.attributes['typeName'] ?? '', e.toPin) != null) {
-      return true; // a block data-pin edge
+    // Any OTHER edge touching a folded value variable must be a math/MOVE
+    // destination write (block -> outVariable); anything else feeds a power pin
+    // or a non-data endpoint and cannot be silently folded away.
+    if (foldedIds.contains(e.fromLocalId) || foldedIds.contains(e.toLocalId)) {
+      final srcBlock = blockByLocalId[e.fromLocalId];
+      final srcType = srcBlock?.attributes['typeName'] ?? '';
+      final isDestinationWrite = varTypeByLocalId[e.toLocalId] == 'outVariable' &&
+          srcBlock != null &&
+          (_kMathBlocks.contains(srcType) || srcType == 'MOVE');
+      if (isDestinationWrite) return true;
+      throw _StubException('complex-topology', 'value variable feeds a non-data pin');
     }
     return false;
   }
@@ -368,6 +389,31 @@ LdNode _buildBlockNode(
     unsupportedBlocks.add(typeName.isEmpty ? '?' : typeName);
     throw _StubException('unsupported-block', 'unsupported block "$typeName"');
   }
+
+  // Timer/counter power-pin faithfulness: `ld_exec` drives a timer/counter from
+  // a SINGLE primary power input — the count pin for counters (CU for
+  // CTU/CTUD, CD for CTD) and `IN` for timers. Separate power pins (counter
+  // CD/R/LD, or any second power pin) cannot be represented, so a wired power
+  // connection to any non-primary power pin would be dropped or spuriously
+  // OR'd into the primary — silently-wrong logic. Determine each incoming
+  // power edge's target from its `toPin`: a data-pin edge (`_dataSlotFor`
+  // non-null) is a fold, the implicit/primary power edge (null or the primary
+  // pin name) is fine, and any other named power pin STUBS. Full CD/R/LD
+  // support is a deferred follow-up.
+  if (_kTimerBlocks.contains(typeName) || _kCounterBlocks.contains(typeName)) {
+    final primaryPin =
+        _kTimerBlocks.contains(typeName) ? 'IN' : (typeName == 'CTD' ? 'CD' : 'CU');
+    for (final e in comp.edges) {
+      if (e.toLocalId != node.localId) continue;
+      if (_dataSlotFor(typeName, e.toPin) != null) continue; // data operand/preset
+      final pin = e.toPin;
+      if (pin != null && pin != primaryPin) {
+        throw _StubException(
+            'complex-topology', 'block uses an unsupported power pin (CD/R/LD/...)');
+      }
+    }
+  }
+
   final ld = LdNode(id: '', kind: LdKind.block, blockType: typeName);
 
   // Fold data inputs: scan the ORIGINAL edges into this block (the reduced view

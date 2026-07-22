@@ -154,6 +154,29 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets(
+        'T6: no overflow at 320 with stubbed rungs and long unsupported block names',
+        (tester) async {
+      await setSurface(tester, smallPhoneSize);
+      final result = _fakeResult(
+        stubbedRungCount: 3,
+        unsupportedLdBlockTypes: {
+          'VERY_LONG_UNSUPPORTED_FUNCTION_BLOCK_TYPE_ONE',
+          'ANOTHER_EXTREMELY_LONG_VENDOR_SPECIFIC_BLOCK_NAME_TWO',
+        },
+      );
+      await tester.pumpWidget(MaterialApp(
+        home: ImportXmlPreview(result: result, onCreate: (_) {}),
+      ));
+      await tester.pumpAndSettle();
+
+      // The inventory line renders and nothing overflows at the narrow width.
+      expect(find.textContaining('3 rung(s) not translated'), findsOneWidget);
+      expect(find.textContaining('VERY_LONG_UNSUPPORTED_FUNCTION_BLOCK_TYPE_ONE'),
+          findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('does not show the untranslated-rung note when stubbedRungCount is 0',
         (tester) async {
       final result = _fakeResult();

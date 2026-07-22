@@ -356,6 +356,126 @@ void mainTask4() {
   });
 }
 
+// Power-pin fold/stub fix: the app's native LD block model drives a
+// timer/counter from a SINGLE primary power input (count pin for counters, IN
+// for timers). Separate CD/R/LD power pins — and value variables feeding a
+// power pin — cannot be represented, so such rungs must STUB, never
+// mistranslate.
+void mainLdPowerPinFix() {
+  LdTranslation t(GraphBody b) => translateLdBody(b, pouName: 'P');
+
+  group('translateLdBody power-pin faithfulness', () {
+    test('F1: CTU with R (reset) fed by an inVariable stubs (value var -> power pin)', () {
+      // L-[Count]-[CTU]-(Done)-R, PV<-inVar 2, R<-inVar ResetSig. The R pin is a
+      // POWER pin the block model cannot drive from a value variable; folding it
+      // away would silently drop the reset -> stub instead.
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        _n(1, 'block', a: {'typeName': 'CTU', 'instanceName': 'Cnt'}),
+        _n(2, 'coil', a: {'variable': 'Done'}),
+        _n(5, 'contact', a: {'variable': 'Count'}),
+        _n(3, 'inVariable', a: {'variable': '2'}),
+        _n(4, 'inVariable', a: {'variable': 'ResetSig'}),
+      ], connections: [
+        _c(5, 100), // L -> Count
+        _c(1, 5), // Count -> CTU (CU primary power)
+        _c(2, 1), // CTU -> Done
+        _c(200, 2), // Done -> R rail
+        _c(1, 3, toPin: 'PV'), // inVar 2 -> CTU.PV (data, folds)
+        _c(1, 4, toPin: 'R'), // inVar ResetSig -> CTU.R (POWER pin!)
+      ]);
+      final r = t(body);
+      expect(r.translatedRungCount, 0);
+      expect(r.stubbedRungCount, 1);
+      expect(r.stubReasons['complex-topology'], greaterThanOrEqualTo(1));
+      expect(r.instanceTags, isEmpty); // no orphan COUNTER tag
+    });
+
+    test('T4a: CTUD with CD (down-count) fed by a contact stubs (unsupported power pin)', () {
+      // L-[Up]-[CTUD]-(Q)-R, PV<-inVar 5, and L-[Down]->CTUD.CD. CD is a power
+      // pin the block model cannot represent -> stub, not a silent operandA="".
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        _n(1, 'block', a: {'typeName': 'CTUD', 'instanceName': 'Cud'}),
+        _n(2, 'coil', a: {'variable': 'Q'}),
+        _n(5, 'contact', a: {'variable': 'Up'}),
+        _n(3, 'contact', a: {'variable': 'Down'}),
+        _n(4, 'inVariable', a: {'variable': '5'}),
+      ], connections: [
+        _c(5, 100), // L -> Up
+        _c(1, 5), // Up -> CTUD (CU primary power)
+        _c(2, 1), // CTUD -> Q
+        _c(200, 2), // Q -> R rail
+        _c(3, 100), // L -> Down
+        _c(1, 3, toPin: 'CD'), // Down -> CTUD.CD (POWER pin!)
+        _c(1, 4, toPin: 'PV'), // inVar 5 -> CTUD.PV (data, folds)
+      ]);
+      final r = t(body);
+      expect(r.translatedRungCount, 0);
+      expect(r.stubbedRungCount, 1);
+      expect(r.stubReasons['complex-topology'], greaterThanOrEqualTo(1));
+      expect(r.instanceTags, isEmpty);
+    });
+
+    test('positive: plain CTU (single CU count + PV data + coil) still translates', () {
+      // L-[Count]-[CTU]-(Done)-R, PV<-inVar 2. The count power is the single
+      // supported primary pin, so this MUST still translate after the fix.
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        _n(1, 'block', a: {'typeName': 'CTU', 'instanceName': 'Cnt'}),
+        _n(2, 'coil', a: {'variable': 'Done'}),
+        _n(5, 'contact', a: {'variable': 'Count'}),
+        _n(3, 'inVariable', a: {'variable': '2'}),
+      ], connections: [
+        _c(5, 100), _c(1, 5), _c(2, 1), _c(200, 2), _c(1, 3, toPin: 'PV'),
+      ]);
+      final r = t(body);
+      expect(r.translatedRungCount, 1);
+      expect(r.stubbedRungCount, 0);
+      final blk = r.rungs.single.nodes.firstWhere((n) => n.kind == LdKind.block);
+      expect(blk.blockType, 'CTU');
+      expect(blk.presetMs, 2);
+      expect(r.instanceTags.single.dataType, 'COUNTER');
+    });
+
+    test('T4b: a stubbed timer/counter instance name is reusable by a later translated rung', () {
+      // Rung1 (y=0): L-[A]-[TON "Shared"]-(C)-R PLUS bridge A->C -> maps the
+      // block (reserving "Shared" locally) then STUBS at the faithfulness gate,
+      // so the name is discarded. Rung2 (y=100): plain TON "Shared" translates
+      // and must get "Shared" (not "Shared_2") — dedup didn't permanently
+      // consume the discarded name.
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        // Rung 1 (stubs at the gate via the bridge)
+        _n(1, 'contact', y: 0, a: {'variable': 'A'}),
+        _n(2, 'block', y: 0, a: {'typeName': 'TON', 'instanceName': 'Shared'}),
+        _n(3, 'coil', y: 0, a: {'variable': 'C'}),
+        _n(4, 'inVariable', y: 0, a: {'variable': 'T#1s'}),
+        // Rung 2 (translates)
+        _n(11, 'block', y: 100, a: {'typeName': 'TON', 'instanceName': 'Shared'}),
+        _n(12, 'coil', y: 100, a: {'variable': 'D'}),
+        _n(13, 'inVariable', y: 100, a: {'variable': 'T#2s'}),
+      ], connections: [
+        // Rung 1: L->A->TON->C->R plus bridge A->C
+        _c(1, 100), _c(2, 1), _c(3, 2), _c(200, 3), _c(3, 1),
+        _c(2, 4, toPin: 'PT'),
+        // Rung 2: L->TON->D->R
+        _c(11, 100), _c(12, 11), _c(200, 12), _c(11, 13, toPin: 'PT'),
+      ]);
+      final r = t(body);
+      expect(r.translatedRungCount, 1);
+      expect(r.stubbedRungCount, 1);
+      // The one translated instance tag reuses the discarded name.
+      expect(r.instanceTags, hasLength(1));
+      expect(r.instanceTags.single.name, 'Shared');
+      final translatedBlock = r.rungs
+          .expand((rung) => rung.nodes)
+          .firstWhere((n) => n.kind == LdKind.block);
+      expect(translatedBlock.variable, 'Shared');
+    });
+  });
+}
+
 void main() {
   group('parseIecDuration', () {
     test('parses seconds, ms, minutes, compound, and TIME# prefix', () {
@@ -377,4 +497,5 @@ void main() {
   mainTask2();
   mainTask3();
   mainTask4();
+  mainLdPowerPinFix();
 }
