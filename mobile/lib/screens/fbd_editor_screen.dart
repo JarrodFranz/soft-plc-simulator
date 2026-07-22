@@ -648,6 +648,38 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
                   ],
                 ),
               ],
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  const Text('Network:', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  const SizedBox(width: 8),
+                  // Expanded + isExpanded:true so the dropdown shrinks to fit
+                  // the dialog's content width (as narrow as a 320px phone)
+                  // instead of sizing to its own intrinsic width and
+                  // overflowing the Row.
+                  Expanded(
+                    child: DropdownButton<int>(
+                      key: const Key('fbd_block_network_dropdown'),
+                      value: block.network,
+                      isExpanded: true,
+                      items: [
+                        for (var i = 0; i < widget.program.fbdNetworks.length; i++)
+                          DropdownMenuItem(value: i, child: Text('Network ${i + 1}')),
+                      ],
+                      onChanged: (newNet) {
+                        if (newNet == null) return;
+                        // Applied immediately (not deferred to Save), mirroring
+                        // every other network-membership mutation in this
+                        // screen — reuses setBlockNetwork so cross-network
+                        // wires get pruned the same way everywhere else.
+                        setState(() => setBlockNetwork(widget.program, block.id, newNet));
+                        widget.onProgramUpdated();
+                        setDlgState(() {});
+                      },
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
           actions: [
@@ -958,13 +990,29 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
                 Icon(Icons.drag_indicator, size: 16, color: color),
                 const SizedBox(width: 4),
                 Expanded(child: Text(block.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12), overflow: TextOverflow.ellipsis)),
-                if (showInlineEditors)
-                  IconButton(
-                    icon: const Icon(Icons.close, size: 14, color: Colors.redAccent),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                    onPressed: () => _deleteBlock(block),
+                if (showInlineEditors) ...[
+                  // Always-present edit affordance: on desktop (expanded) the
+                  // outer Positioned > GestureDetector's onTap is null (that
+                  // slot is claimed by onPanUpdate for block dragging), so
+                  // this is the only route into _showConfigureBlockDialog for
+                  // every block type — not just TAG_*/CONST, which used to be
+                  // the sole types with a pencil affordance further down.
+                  // Plain GestureDetector + bare Icon (not IconButton) to keep
+                  // the footprint to the icon's own size — the 180px-wide
+                  // card header has no room to spare for two IconButtons'
+                  // built-in tap-target padding.
+                  GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => _showConfigureBlockDialog(block),
+                    child: const Icon(Icons.edit, size: 14, color: Colors.tealAccent),
                   ),
+                  const SizedBox(width: 6),
+                  GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => _deleteBlock(block),
+                    child: const Icon(Icons.close, size: 14, color: Colors.redAccent),
+                  ),
+                ],
               ],
             ),
             const Divider(height: 10),
@@ -1004,20 +1052,13 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
                 style: const TextStyle(fontSize: 10, color: Colors.grey),
               )
             else if (block.type.startsWith('TAG_') || block.type == 'CONST')
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      block.tagBinding.isNotEmpty ? block.tagBinding : '(unset)',
-                      style: const TextStyle(fontSize: 10, color: Colors.grey),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  touchable(
-                    const Icon(Icons.edit, size: 14, color: Colors.tealAccent),
-                    onTap: () => _showConfigureBlockDialog(block),
-                  ),
-                ],
+              // The header's edit pencil (added above, present for every
+              // block type) is now the route into the config dialog, so this
+              // row just displays the binding — no second pencil needed.
+              Text(
+                block.tagBinding.isNotEmpty ? block.tagBinding : '(unset)',
+                style: const TextStyle(fontSize: 10, color: Colors.grey),
+                overflow: TextOverflow.ellipsis,
               )
             else
               Text('Block Function: ${block.type}', style: const TextStyle(fontSize: 10, color: Colors.grey)),
