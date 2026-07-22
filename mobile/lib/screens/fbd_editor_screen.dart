@@ -604,6 +604,11 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
       desiredWidth: 400,
       child: StatefulBuilder(
         builder: (context, setDlgState) => AlertDialog(
+          // scrollable: true wraps title+content in a SingleChildScrollView so
+          // a tall dialog (e.g. an extensible block's extra "Inputs:" row) can
+          // never overflow vertically at a short/narrow viewport like 320x568
+          // — it scrolls instead.
+          scrollable: true,
           title: Text('Configure: ${block.title}'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
@@ -632,18 +637,34 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
                 ),
               if (_typeIsExtensible(block.type)) ...[
                 const SizedBox(height: 12),
+                // Plain GestureDetector + bare Icon (not the 44px-min-width
+                // touchable()/IconButton used elsewhere) — at a 320px dialog
+                // width the content area is only ~160px, and two 44px touch
+                // targets plus the label and counter don't fit on one Row
+                // (this used to overflow by 36px). This mirrors the
+                // compact edit-affordance pattern already used on the block
+                // card header further down in this file.
                 Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     const Text('Inputs:', style: TextStyle(fontSize: 12, color: Colors.grey)),
                     const SizedBox(width: 8),
-                    touchable(
-                      const Icon(Icons.remove_circle_outline, size: 20),
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
                       onTap: () => setDlgState(() => _changeInputCount(block, -1)),
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 8),
+                        child: Icon(Icons.remove_circle_outline, size: 20),
+                      ),
                     ),
                     Text('${block.inputCount}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                    touchable(
-                      const Icon(Icons.add_circle_outline, size: 20),
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
                       onTap: () => setDlgState(() => _changeInputCount(block, 1)),
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 8),
+                        child: Icon(Icons.add_circle_outline, size: 20),
+                      ),
                     ),
                   ],
                 ),
