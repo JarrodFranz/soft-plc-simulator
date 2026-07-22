@@ -60,6 +60,13 @@ gateway/pki/
 # Vendor/reference manuals kept locally for development, not tracked
 /Project Resources/
 
+# Third-party PLC project exports gathered for import testing (Beremiz=GPL,
+# TwinCAT=EPL-2.0, Rockwell=MIT, etc.). Kept locally as import fixtures, not
+# redistributed in this repo. Provenance/licenses recorded in the folder's
+# MANIFEST.md; the corpus_import_test picks them up when present and skips
+# when absent.
+/Resources/Project Exports/
+
 # Python probe lane (tool/py/): the virtualenv and anything pip downloads
 # into it are build artifacts, never committed. `tool/py/requirements.txt`
 # pins the exact client-library versions instead -- see tool/enip_e2e.sh.
