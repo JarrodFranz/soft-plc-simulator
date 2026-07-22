@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/fbd_pins.dart';
 import '../models/fbd_layout.dart';
+import '../models/fbd_networks.dart';
 import '../models/project_model.dart';
 import '../ui/responsive.dart';
 import '../widgets/tag_autocomplete_field.dart';
@@ -37,14 +38,23 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
   // Wire selection state (for delete).
   int? _selectedWireIndex;
 
-  // Anchor cache: 'blockId|IN|pin' or 'blockId|OUT|pin' -> local offset within
-  // the 1600x1200 canvas content (i.e. absolute canvas coordinates).
-  final Map<String, Offset> _anchors = {};
+  // Comment-field controllers, keyed by the FbdNetwork instance (stable across
+  // reorders — `moveFbdNetwork` shuffles the list but keeps the same objects).
+  final Map<FbdNetwork, TextEditingController> _commentControllers = {};
 
   @override
   void initState() {
     super.initState();
     _ensureDefaultFbd();
+    _ensureNetworks();
+  }
+
+  @override
+  void dispose() {
+    for (final c in _commentControllers.values) {
+      c.dispose();
+    }
+    super.dispose();
   }
 
   void _ensureDefaultFbd() {
@@ -58,8 +68,35 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     }
   }
 
-  void _addFbdBlock(String type, String title) {
+  /// Guarantees at least one network lane exists and that every block's
+  /// `network` index has a backing header (a directly-constructed program
+  /// whose blocks were added after construction may have an empty
+  /// `fbdNetworks`). Never notifies — this only backfills structure.
+  void _ensureNetworks() {
+    final maxNet = widget.program.fbdBlocks
+        .fold<int>(-1, (m, b) => b.network > m ? b.network : m);
+    final needed = maxNet + 1 < 1 ? 1 : maxNet + 1;
+    while (widget.program.fbdNetworks.length < needed) {
+      widget.program.fbdNetworks.add(FbdNetwork());
+    }
+  }
+
+  TextEditingController _commentController(FbdNetwork n) {
+    return _commentControllers.putIfAbsent(
+        n, () => TextEditingController(text: n.comment));
+  }
+
+  FbdBlock? _blockById(String id) {
+    for (final b in widget.program.fbdBlocks) {
+      if (b.id == id) return b;
+    }
+    return null;
+  }
+
+  void _addFbdBlock(String type, String title, {int network = 0}) {
     String tag = widget.currentProject.tags.isNotEmpty ? widget.currentProject.tags.first.name : '';
+    final netCount = widget.program.fbdNetworks.length;
+    final targetNet = (network >= 0 && network < netCount) ? network : 0;
 
     final newBlock = FbdBlock(
       id: 'b_${DateTime.now().millisecondsSinceEpoch}',
@@ -68,12 +105,59 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
       tagBinding: tag,
       x: 150,
       y: 150,
+      network: targetNet,
     );
 
     setState(() {
       widget.program.fbdBlocks.add(newBlock);
     });
     widget.onProgramUpdated();
+  }
+
+  // -----------------------------------------------------------------
+  // Network CRUD (consumes the pure fbd_networks.dart helpers)
+  // -----------------------------------------------------------------
+
+  void _addNetwork() {
+    setState(() => addFbdNetwork(widget.program));
+    widget.onProgramUpdated();
+  }
+
+  void _moveNetwork(int from, int to) {
+    setState(() => moveFbdNetwork(widget.program, from, to));
+    widget.onProgramUpdated();
+  }
+
+  void _confirmDeleteNetwork(int net) {
+    showAdaptiveWidthDialog(
+      context,
+      desiredWidth: 360,
+      child: AlertDialog(
+        title: Text('Delete Network ${net + 1}?'),
+        content: const Text(
+            'This removes the network and every block and wire inside it. '
+            'This cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          ElevatedButton(
+            key: const Key('fbd_net_del_confirm'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () {
+              Navigator.pop(context);
+              setState(() {
+                deleteFbdNetwork(widget.program, net);
+                _selectedWireIndex = null;
+                _armedBlockId = null;
+                _armedPin = null;
+              });
+              _ensureNetworks();
+              widget.onProgramUpdated();
+            },
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
   }
 
   // -----------------------------------------------------------------
@@ -128,6 +212,17 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
 
     if (fromBlockId == toBlockId) {
       _showSnack('Cannot wire a block to itself.');
+      _cancelArm();
+      return;
+    }
+
+    // Wiring is confined to a single network lane: both endpoints must live in
+    // the same network. This closes the runtime "cross-network wire" gap at the
+    // source — the editor never lets a user draw one.
+    final fromBlock = _blockById(fromBlockId);
+    final toBlock = _blockById(toBlockId);
+    if (fromBlock == null || toBlock == null || fromBlock.network != toBlock.network) {
+      _showSnack('Wires must stay within one network.');
       _cancelArm();
       return;
     }
@@ -191,13 +286,149 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
   }
 
   // -----------------------------------------------------------------
-  // Canvas
+  // Lane list + per-network canvas
   // -----------------------------------------------------------------
 
-  Widget _buildCanvas(bool expanded) {
-    _anchors.clear();
+  /// The vertical stack of network lanes — one bounded pan/zoom canvas per
+  /// `program.fbdNetworks` entry — plus a trailing "+ Network" button. This is
+  /// the whole editor body (wrapped in an Expanded next to the palette dock on
+  /// desktop).
+  Widget _buildLaneList(bool expanded) {
+    final nets = widget.program.fbdNetworks;
+    return Container(
+      color: const Color(0xFF0F172A),
+      child: ListView(
+        padding: const EdgeInsets.all(8),
+        children: [
+          for (var i = 0; i < nets.length; i++) _buildLane(i, expanded),
+          const SizedBox(height: 4),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              key: const Key('fbd_add_network'),
+              onPressed: _addNetwork,
+              icon: const Icon(Icons.add),
+              label: const Text('Network'),
+            ),
+          ),
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
 
-    final blockWidgets = widget.program.fbdBlocks.map((block) {
+  Widget _buildLane(int net, bool expanded) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.white12),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _buildNetworkHeader(net),
+          SizedBox(
+            height: _laneCanvasHeight(net),
+            child: _buildLaneCanvas(net, expanded),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// A bounded viewport height sized to comfortably contain this network's
+  /// blocks (so nothing important sits clipped off-stage), clamped to a sane
+  /// range. Panning still reaches the full 1600×1200 logical canvas.
+  double _laneCanvasHeight(int net) {
+    var maxY = 0.0;
+    for (final b in fbdBlocksInNetwork(widget.program, net)) {
+      if (b.y > maxY) maxY = b.y;
+    }
+    // + a generous block-card allowance so a block near the bottom is fully in
+    // view (header row + pins + footer editors).
+    return (maxY + 220).clamp(260.0, 1200.0);
+  }
+
+  Widget _buildNetworkHeader(int net) {
+    final n = widget.program.fbdNetworks.length;
+    final network = widget.program.fbdNetworks[net];
+    Widget iconBtn(String keySuffix, IconData icon, String tooltip, VoidCallback? onPressed) {
+      // Shrink-wrapped tap target (not the default 48px) so five buttons plus
+      // the label + comment field still fit a 320px-wide phone header.
+      return IconButton(
+        key: Key('fbd_net_${keySuffix}_$net'),
+        icon: Icon(icon, size: 18),
+        tooltip: tooltip,
+        style: IconButton.styleFrom(
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          minimumSize: const Size(32, 36),
+          padding: EdgeInsets.zero,
+          visualDensity: VisualDensity.compact,
+        ),
+        onPressed: onPressed,
+      );
+    }
+
+    return Container(
+      key: Key('fbd_network_header_$net'),
+      color: const Color(0xFF1E293B),
+      padding: const EdgeInsets.fromLTRB(8, 2, 2, 2),
+      child: Row(
+        children: [
+          Flexible(
+            child: Text(
+              'Network ${net + 1}',
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+                color: Colors.tealAccent,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: TextField(
+              key: Key('fbd_network_comment_$net'),
+              controller: _commentController(network),
+              style: const TextStyle(fontSize: 12),
+              decoration: const InputDecoration(
+                isDense: true,
+                hintText: 'Comment…',
+                border: InputBorder.none,
+              ),
+              onChanged: (v) {
+                network.comment = v;
+                widget.onProgramUpdated();
+              },
+            ),
+          ),
+          iconBtn('addblock', Icons.add_box_outlined, 'Add block to this network',
+              () => _openPaletteSheet(network: net)),
+          iconBtn('arrange', Icons.auto_awesome_mosaic, 'Auto-arrange this network',
+              () => _autoArrangeNetwork(net)),
+          iconBtn('up', Icons.arrow_upward, 'Move network up',
+              net > 0 ? () => _moveNetwork(net, net - 1) : null),
+          iconBtn('down', Icons.arrow_downward, 'Move network down',
+              net < n - 1 ? () => _moveNetwork(net, net + 1) : null),
+          iconBtn('del', Icons.delete_outline, 'Delete network',
+              () => _confirmDeleteNetwork(net)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLaneCanvas(int net, bool expanded) {
+    // Local anchor cache for THIS lane only: 'blockId|IN|pin' / 'blockId|OUT|pin'
+    // -> offset within the lane's 1600×1200 canvas content. Kept local (not a
+    // shared field) so sibling lanes never clobber each other's anchors.
+    final anchors = <String, Offset>{};
+    final blocks = fbdBlocksInNetwork(widget.program, net);
+
+    final blockWidgets = blocks.map((block) {
       return Positioned(
         left: block.x,
         top: block.y,
@@ -219,16 +450,16 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
 
     // Pre-compute pin anchors for the painter (after blocks are laid out with
     // known positions/sizes, purely arithmetic — no need to wait for a frame).
-    for (final block in widget.program.fbdBlocks) {
+    for (final block in blocks) {
       final inputs = fbdInputPins(block.type, inputCount: block.inputCount);
       final outputs = fbdOutputPins(block.type);
       for (var i = 0; i < inputs.length; i++) {
         final dy = _kHeaderHeight + i * _kPinRowHeight + _kPinRowHeight / 2;
-        _anchors['${block.id}|IN|${inputs[i]}'] = Offset(block.x, block.y + dy);
+        anchors['${block.id}|IN|${inputs[i]}'] = Offset(block.x, block.y + dy);
       }
       for (var i = 0; i < outputs.length; i++) {
         final dy = _kHeaderHeight + i * _kPinRowHeight + _kPinRowHeight / 2;
-        _anchors['${block.id}|OUT|${outputs[i]}'] = Offset(block.x + _kBlockWidth, block.y + dy);
+        anchors['${block.id}|OUT|${outputs[i]}'] = Offset(block.x + _kBlockWidth, block.y + dy);
       }
     }
 
@@ -242,7 +473,9 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
           ),
         ),
 
-        // Wires painted beneath the blocks so block cards remain tappable.
+        // Wires painted beneath the blocks so block cards remain tappable. Only
+        // wires whose BOTH endpoints resolve to anchors in THIS lane draw here;
+        // any cross-lane wire is simply skipped by the painter.
         Positioned.fill(
           child: GestureDetector(
             behavior: HitTestBehavior.translucent,
@@ -256,7 +489,7 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
             child: CustomPaint(
               painter: _WirePainter(
                 wires: widget.program.fbdWires,
-                anchors: _anchors,
+                anchors: anchors,
                 selectedIndex: _selectedWireIndex,
               ),
             ),
@@ -265,24 +498,24 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
 
         // Tap targets over each wire midpoint for selection (simple circular
         // hit areas placed at the wire midpoint).
-        ..._buildWireHitTargets(),
+        ..._buildWireHitTargets(anchors),
 
         // FBD Blocks
         ...blockWidgets,
       ],
     );
 
-    // Give the canvas a generously large logical area so pan/zoom on compact
-    // has room to explore blocks placed far from the origin.
+    // Give the canvas a generously large logical area so pan/zoom has room to
+    // explore blocks placed far from the origin.
     final content = SizedBox(
       width: 1600,
       height: 1200,
       child: stack,
     );
 
-    // The whole workspace pans/zooms on every platform. On desktop (expanded)
-    // individual blocks stay draggable via their own pan handler — dragging a
-    // block moves the block, dragging the empty background pans the canvas.
+    // The lane pans/zooms on every platform. On desktop (expanded) individual
+    // blocks stay draggable via their own pan handler — dragging a block moves
+    // the block, dragging the empty background pans the canvas.
     return Container(
       color: const Color(0xFF0F172A),
       child: InteractiveViewer(
@@ -295,12 +528,12 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     );
   }
 
-  List<Widget> _buildWireHitTargets() {
+  List<Widget> _buildWireHitTargets(Map<String, Offset> anchors) {
     final widgets = <Widget>[];
     for (var i = 0; i < widget.program.fbdWires.length; i++) {
       final w = widget.program.fbdWires[i];
-      final from = _anchors['${w.fromBlockId}|OUT|${w.fromPin}'];
-      final to = _anchors['${w.toBlockId}|IN|${w.toPin}'];
+      final from = anchors['${w.fromBlockId}|OUT|${w.fromPin}'];
+      final to = anchors['${w.toBlockId}|IN|${w.toPin}'];
       if (from == null || to == null) continue;
       final mid = Offset((from.dx + to.dx) / 2, (from.dy + to.dy) / 2);
       widgets.add(Positioned(
@@ -333,7 +566,7 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     return widgets;
   }
 
-  void _openPaletteSheet() {
+  void _openPaletteSheet({int network = 0}) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -345,6 +578,7 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
             child: StatefulBuilder(
               builder: (context, setSheetState) => _buildPaletteDock(
                 onChangedSearch: (v) => setSheetState(() => _searchQuery = v),
+                targetNetwork: network,
               ),
             ),
           ),
@@ -437,10 +671,18 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     );
   }
 
-  /// Re-lays the blocks into tidy dependency-ordered columns with generous
+  /// Re-lays ALL blocks into tidy dependency-ordered columns with generous
   /// spacing (non-destructive — blocks stay free-draggable afterward).
   void _autoArrangeBlocks() {
-    final layout = autoArrangeFbd(widget.program);
+    _applyLayout(autoArrangeFbd(widget.program));
+  }
+
+  /// Re-lays only network [net]'s blocks — the per-lane arrange affordance.
+  void _autoArrangeNetwork(int net) {
+    _applyLayout(autoArrangeFbdNetwork(widget.program, net));
+  }
+
+  void _applyLayout(Map<String, ({double x, double y})> layout) {
     if (layout.isEmpty) {
       return;
     }
@@ -479,27 +721,34 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
       floatingActionButton: expanded
           ? null
           : FloatingActionButton.extended(
-              onPressed: _openPaletteSheet,
+              onPressed: () => _openPaletteSheet(network: 0),
               icon: const Icon(Icons.add),
               label: const Text('Add block'),
             ),
       body: expanded
           ? Row(
               children: [
-                // CENTER WORKSPACE: Signal Flow Block Canvas
-                Expanded(child: _buildCanvas(true)),
+                // CENTER WORKSPACE: vertical stack of network lanes.
+                Expanded(child: _buildLaneList(true)),
 
                 const VerticalDivider(width: 1, color: Colors.white12),
 
-                // RIGHT DOCK: FBD Function Block Autocomplete Palette
-                _buildPaletteDock(onChangedSearch: (v) => setState(() => _searchQuery = v)),
+                // RIGHT DOCK: FBD Function Block Autocomplete Palette. Adds
+                // land in the first network; per-lane add buttons target any.
+                _buildPaletteDock(
+                  onChangedSearch: (v) => setState(() => _searchQuery = v),
+                  targetNetwork: 0,
+                ),
               ],
             )
-          : _buildCanvas(false),
+          : _buildLaneList(false),
     );
   }
 
-  Widget _buildPaletteDock({required ValueChanged<String> onChangedSearch}) {
+  Widget _buildPaletteDock({
+    required ValueChanged<String> onChangedSearch,
+    required int targetNetwork,
+  }) {
     return Container(
       width: 260,
       color: const Color(0xFF0F172A),
@@ -530,31 +779,31 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
             child: ListView(
               padding: const EdgeInsets.all(8),
               children: [
-                _buildBlockPaletteItem('AND', 'AND Logic Gate', Icons.call_split, Colors.blueAccent),
-                _buildBlockPaletteItem('OR', 'OR Logic Gate', Icons.alt_route, Colors.purpleAccent),
-                _buildBlockPaletteItem('NOT', 'NOT Inverter Gate', Icons.do_not_disturb_on, Colors.redAccent),
-                _buildBlockPaletteItem('TON', 'Timer On Delay Block', Icons.timer, Colors.amberAccent),
-                _buildBlockPaletteItem('PID', 'PID Controller', Icons.speed, Colors.pinkAccent),
-                _buildBlockPaletteItem('CTU', 'Count Up', Icons.exposure_plus_1, Colors.amberAccent),
-                _buildBlockPaletteItem('CTD', 'Count Down', Icons.exposure_neg_1, Colors.amberAccent),
-                _buildBlockPaletteItem('CTUD', 'Up/Down Counter', Icons.swap_vert, Colors.amberAccent),
-                _buildBlockPaletteItem('R_TRIG', 'Rising Edge (R_TRIG)', Icons.trending_up, Colors.amberAccent),
-                _buildBlockPaletteItem('F_TRIG', 'Falling Edge (F_TRIG)', Icons.trending_down, Colors.amberAccent),
-                _buildBlockPaletteItem('TP', 'Pulse Timer (TP)', Icons.bolt, Colors.amberAccent),
-                _buildBlockPaletteItem('LIMIT', 'Limit Clamp (Min, In, Max)', Icons.tune, Colors.orangeAccent),
-                _buildBlockPaletteItem('CONST', 'Constant Value', Icons.pin, Colors.limeAccent),
-                _buildBlockPaletteItem('ADD', 'Add (+)', Icons.add, Colors.tealAccent),
-                _buildBlockPaletteItem('SUB', 'Subtract (-)', Icons.remove, Colors.tealAccent),
-                _buildBlockPaletteItem('MUL', 'Multiply (x)', Icons.close, Colors.tealAccent),
-                _buildBlockPaletteItem('DIV', 'Divide (/)', Icons.percent, Colors.tealAccent),
-                _buildBlockPaletteItem('GT', 'Greater Than (>)', Icons.chevron_right, Colors.lightBlueAccent),
-                _buildBlockPaletteItem('LT', 'Less Than (<)', Icons.chevron_left, Colors.lightBlueAccent),
-                _buildBlockPaletteItem('GE', 'Greater or Equal (>=)', Icons.keyboard_double_arrow_right, Colors.lightBlueAccent),
-                _buildBlockPaletteItem('LE', 'Less or Equal (<=)', Icons.keyboard_double_arrow_left, Colors.lightBlueAccent),
-                _buildBlockPaletteItem('EQ', 'Equal (=)', Icons.drag_handle, Colors.lightBlueAccent),
-                _buildBlockPaletteItem('NE', 'Not Equal (<>)', Icons.compare_arrows, Colors.lightBlueAccent),
-                _buildBlockPaletteItem('TAG_INPUT', 'Tag Input Pin', Icons.login, Colors.greenAccent),
-                _buildBlockPaletteItem('TAG_OUTPUT', 'Tag Output Pin', Icons.logout, Colors.cyanAccent),
+                _buildBlockPaletteItem('AND', 'AND Logic Gate', Icons.call_split, Colors.blueAccent, targetNetwork),
+                _buildBlockPaletteItem('OR', 'OR Logic Gate', Icons.alt_route, Colors.purpleAccent, targetNetwork),
+                _buildBlockPaletteItem('NOT', 'NOT Inverter Gate', Icons.do_not_disturb_on, Colors.redAccent, targetNetwork),
+                _buildBlockPaletteItem('TON', 'Timer On Delay Block', Icons.timer, Colors.amberAccent, targetNetwork),
+                _buildBlockPaletteItem('PID', 'PID Controller', Icons.speed, Colors.pinkAccent, targetNetwork),
+                _buildBlockPaletteItem('CTU', 'Count Up', Icons.exposure_plus_1, Colors.amberAccent, targetNetwork),
+                _buildBlockPaletteItem('CTD', 'Count Down', Icons.exposure_neg_1, Colors.amberAccent, targetNetwork),
+                _buildBlockPaletteItem('CTUD', 'Up/Down Counter', Icons.swap_vert, Colors.amberAccent, targetNetwork),
+                _buildBlockPaletteItem('R_TRIG', 'Rising Edge (R_TRIG)', Icons.trending_up, Colors.amberAccent, targetNetwork),
+                _buildBlockPaletteItem('F_TRIG', 'Falling Edge (F_TRIG)', Icons.trending_down, Colors.amberAccent, targetNetwork),
+                _buildBlockPaletteItem('TP', 'Pulse Timer (TP)', Icons.bolt, Colors.amberAccent, targetNetwork),
+                _buildBlockPaletteItem('LIMIT', 'Limit Clamp (Min, In, Max)', Icons.tune, Colors.orangeAccent, targetNetwork),
+                _buildBlockPaletteItem('CONST', 'Constant Value', Icons.pin, Colors.limeAccent, targetNetwork),
+                _buildBlockPaletteItem('ADD', 'Add (+)', Icons.add, Colors.tealAccent, targetNetwork),
+                _buildBlockPaletteItem('SUB', 'Subtract (-)', Icons.remove, Colors.tealAccent, targetNetwork),
+                _buildBlockPaletteItem('MUL', 'Multiply (x)', Icons.close, Colors.tealAccent, targetNetwork),
+                _buildBlockPaletteItem('DIV', 'Divide (/)', Icons.percent, Colors.tealAccent, targetNetwork),
+                _buildBlockPaletteItem('GT', 'Greater Than (>)', Icons.chevron_right, Colors.lightBlueAccent, targetNetwork),
+                _buildBlockPaletteItem('LT', 'Less Than (<)', Icons.chevron_left, Colors.lightBlueAccent, targetNetwork),
+                _buildBlockPaletteItem('GE', 'Greater or Equal (>=)', Icons.keyboard_double_arrow_right, Colors.lightBlueAccent, targetNetwork),
+                _buildBlockPaletteItem('LE', 'Less or Equal (<=)', Icons.keyboard_double_arrow_left, Colors.lightBlueAccent, targetNetwork),
+                _buildBlockPaletteItem('EQ', 'Equal (=)', Icons.drag_handle, Colors.lightBlueAccent, targetNetwork),
+                _buildBlockPaletteItem('NE', 'Not Equal (<>)', Icons.compare_arrows, Colors.lightBlueAccent, targetNetwork),
+                _buildBlockPaletteItem('TAG_INPUT', 'Tag Input Pin', Icons.login, Colors.greenAccent, targetNetwork),
+                _buildBlockPaletteItem('TAG_OUTPUT', 'Tag Output Pin', Icons.logout, Colors.cyanAccent, targetNetwork),
               ],
             ),
           ),
@@ -563,7 +812,7 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     );
   }
 
-  Widget _buildBlockPaletteItem(String type, String title, IconData icon, Color color) {
+  Widget _buildBlockPaletteItem(String type, String title, IconData icon, Color color, int targetNetwork) {
     if (_searchQuery.isNotEmpty && !title.toLowerCase().contains(_searchQuery.toLowerCase())) {
       return const SizedBox.shrink();
     }
@@ -581,7 +830,7 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
           trailing: IconButton(
             icon: const Icon(Icons.add, color: Colors.tealAccent, size: 18),
             onPressed: () {
-              _addFbdBlock(type, title);
+              _addFbdBlock(type, title, network: targetNetwork);
               if (!context.isExpanded && Navigator.of(context).canPop()) {
                 Navigator.of(context).pop();
               }

@@ -27,7 +27,29 @@ double _blockHeight(FbdBlock b) {
 /// gets a position. Returns a map of block id -> (x, y); an empty program (or
 /// a program with no blocks) returns an empty map.
 Map<String, ({double x, double y})> autoArrangeFbd(PlcProgram program) {
-  final blocks = program.fbdBlocks;
+  return _arrange(program.fbdBlocks, program.fbdWires);
+}
+
+/// Like [autoArrangeFbd] but scoped to a single network: lays out only the
+/// blocks in network [net] (and considers only the wires whose both endpoints
+/// are in that network), so each lane arranges independently. Out-of-range
+/// [net] (or an empty network) returns an empty map.
+Map<String, ({double x, double y})> autoArrangeFbdNetwork(
+    PlcProgram program, int net) {
+  final blocks = program.fbdBlocks.where((b) => b.network == net).toList();
+  if (blocks.isEmpty) {
+    return const {};
+  }
+  final ids = {for (final b in blocks) b.id};
+  final wires = program.fbdWires
+      .where((w) => ids.contains(w.fromBlockId) && ids.contains(w.toBlockId))
+      .toList();
+  return _arrange(blocks, wires);
+}
+
+/// Shared dependency-depth layout over an arbitrary [blocks]/[wires] slice.
+Map<String, ({double x, double y})> _arrange(
+    List<FbdBlock> blocks, List<FbdWire> wires) {
   if (blocks.isEmpty) {
     return const {};
   }
@@ -36,7 +58,7 @@ Map<String, ({double x, double y})> autoArrangeFbd(PlcProgram program) {
   // Dependency source-ids per block (blocks feeding any of its input pins);
   // self-wires and dangling endpoints are ignored.
   final deps = <String, List<String>>{for (final b in blocks) b.id: <String>[]};
-  for (final w in program.fbdWires) {
+  for (final w in wires) {
     if (w.toBlockId != w.fromBlockId &&
         ids.contains(w.toBlockId) &&
         ids.contains(w.fromBlockId)) {
