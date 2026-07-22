@@ -62,13 +62,27 @@ class IrGraphNode {
       : attributes = attributes ?? const {};
 }
 
+/// A directed edge in a graphical (LD/FBD/SFC) body: the producer element
+/// [fromLocalId] feeds the consumer element [toLocalId].
+///
+/// [toPin]/[fromPin] carry the PLCopen `formalParameter` pin names so that a
+/// multi-input block is unambiguous (e.g. which wire feeds `IN1` vs `IN2`):
+///  * [toPin] — the destination input pin, from the `formalParameter` of the
+///    `<inputVariables><variable>` wrapping the `<connectionPointIn>`. Null for
+///    contact/coil elements, whose single input pin is implicit.
+///  * [fromPin] — the source output pin, from the optional `formalParameter` on
+///    the `<connection>` element (names the producer block's VAR_OUTPUT). Null
+///    when the source pin is implicit/unspecified (e.g. a contact output).
 class IrConnection {
   final int toLocalId;
-  final int toPort;
+  final String? toPin;
   final int fromLocalId;
-  final int fromPort;
-  IrConnection({required this.toLocalId, this.toPort = 0,
-      required this.fromLocalId, this.fromPort = 0});
+  final String? fromPin;
+  IrConnection(
+      {required this.toLocalId,
+      this.toPin,
+      required this.fromLocalId,
+      this.fromPin});
 }
 
 class GraphBody extends PouBody {

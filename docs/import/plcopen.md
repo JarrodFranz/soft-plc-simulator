@@ -55,8 +55,10 @@ surprise.
 Re-importing the same file once a per-language graphical translator ships
 will turn these stubs into real, editable diagrams — the capture already
 holds everything a translator needs (node types, positions, and the
-connection graph), so no new import work will be required upstream of the
-translator when it lands.
+connection graph, including each wire's **pin identity** — which
+`formalParameter` input/output pin of a multi-input block it attaches to),
+so no new import work will be required upstream of the translator when it
+lands.
 
 ## Autodetect (no format picker)
 
