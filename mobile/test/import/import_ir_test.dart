@@ -8,7 +8,7 @@ void main() {
     expect(v.name, 'Speed');
     final body = GraphBody(
       nodes: [IrGraphNode(localId: 1, elementType: 'contact', x: 0, y: 0, attributes: {'negated': 'false'})],
-      connections: [IrConnection(toLocalId: 2, toPort: 0, fromLocalId: 1, fromPort: 0)],
+      connections: [IrConnection(toLocalId: 2, toPin: 'IN1', fromLocalId: 1, fromPin: 'OUT')],
     );
     final pou = ImportedPou(name: 'Main', kind: PouKind.program,
         lang: PouLanguage.ld, localVars: const [], body: body);

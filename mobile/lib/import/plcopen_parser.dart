@@ -216,10 +216,23 @@ GraphBody _graphBody(
     // (which also covers the direct-child case) so no connection is silently
     // dropped, mirroring the descendant-based `_findElement` helper.
     for (final cpi in _descendants(el, 'connectionPointIn')) {
+      // Destination pin: for a <block>, the <connectionPointIn> is wrapped in
+      // an <inputVariables>/<inOutVariables> <variable formalParameter="IN1">.
+      // For a <contact>/<coil>/<inVariable> the input pin is implicit (null).
+      final parent = cpi.parent;
+      final toPin = (parent is XmlElement && parent.name.local == 'variable')
+          ? parent.getAttribute('formalParameter')
+          : null;
       for (final c in cpi.findElements('connection')) {
         final from = int.tryParse(c.getAttribute('refLocalId') ?? '') ?? -1;
+        // Source pin: optional formalParameter on the <connection> names the
+        // producer block's output (VAR_OUTPUT/VAR_IN_OUT); implicit otherwise.
+        final fromPin = c.getAttribute('formalParameter');
         conns.add(IrConnection(
-            toLocalId: localId, toPort: 0, fromLocalId: from, fromPort: 0));
+            toLocalId: localId,
+            toPin: toPin,
+            fromLocalId: from,
+            fromPin: fromPin));
       }
     }
   }

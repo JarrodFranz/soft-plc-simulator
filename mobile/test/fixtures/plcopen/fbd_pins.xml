@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="FbdPinsProject"/>
+  <types>
+    <dataTypes/>
+    <pous>
+      <pou name="FbdPins" pouType="program">
+        <interface><localVars/></interface>
+        <body><FBD>
+          <!-- Two distinct input sources -->
+          <inVariable localId="1"><position x="10" y="20"/><expression>A</expression>
+            <connectionPointOut/></inVariable>
+          <inVariable localId="2"><position x="10" y="60"/><expression>B</expression>
+            <connectionPointOut/></inVariable>
+          <!-- AND block: IN1 fed by localId 1, IN2 fed by localId 2 -->
+          <block localId="3" typeName="AND"><position x="80" y="20"/>
+            <inputVariables>
+              <variable formalParameter="IN1">
+                <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+              </variable>
+              <variable formalParameter="IN2">
+                <connectionPointIn><connection refLocalId="2"/></connectionPointIn>
+              </variable>
+            </inputVariables>
+            <outputVariables>
+              <variable formalParameter="OUT">
+                <connectionPointOut/>
+              </variable>
+            </outputVariables>
+          </block>
+          <!-- Output var wired to the block's OUT pin (source formalParameter) -->
+          <outVariable localId="4"><position x="200" y="20"/><expression>Q</expression>
+            <connectionPointIn>
+              <connection refLocalId="3" formalParameter="OUT"/>
+            </connectionPointIn></outVariable>
+        </FBD></body>
+      </pou>
+    </pous>
+  </types>
+  <instances>
+    <configurations>
+      <configuration name="Config">
+        <resource name="Res">
+          <globalVars/>
+        </resource>
+      </configuration>
+    </configurations>
+  </instances>
+</project>
