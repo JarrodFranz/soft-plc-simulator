@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/import/import_ir.dart';
 import 'package:soft_plc_mobile/import/ir_to_project.dart';
+import 'package:soft_plc_mobile/models/project_model.dart';
 
 /// Builds a representative [ImportedProject] in-code so this test exercises
 /// the mapper in isolation, independent of the parser/fixture.
@@ -77,7 +78,172 @@ ImportedProject _buildNestedIr() {
   );
 }
 
+IrGraphNode _ldNode(int id, String type, {double x = 0, double y = 0, Map<String, String>? a}) =>
+    IrGraphNode(localId: id, elementType: type, x: x, y: y, attributes: a ?? const {});
+IrConnection _ldConn(int to, int from, {String? toPin}) =>
+    IrConnection(toLocalId: to, fromLocalId: from, toPin: toPin);
+
+/// An IR with two LD POUs: `GoodRung` (L -> [Start] -> [TON] -> (Motor) -> R)
+/// translates fully (a real series rung with a timer block, producing a
+/// backing TIMER instance tag), and `BadRung` (an unsupported PID block)
+/// stubs entirely. Exercises Task 5's wiring end to end.
+ImportedProject _buildLdIr() {
+  final goodPou = ImportedPou(
+    name: 'GoodRung',
+    kind: PouKind.program,
+    lang: PouLanguage.ld,
+    localVars: const [],
+    body: GraphBody(nodes: [
+      _ldNode(100, 'leftPowerRail'), _ldNode(200, 'rightPowerRail'),
+      _ldNode(1, 'contact', a: {'variable': 'Start'}),
+      _ldNode(2, 'block', a: {'typeName': 'TON'}),
+      _ldNode(3, 'coil', a: {'variable': 'Motor'}),
+    ], connections: [
+      _ldConn(1, 100), _ldConn(2, 1), _ldConn(3, 2), _ldConn(200, 3),
+    ]),
+  );
+  final badPou = ImportedPou(
+    name: 'BadRung',
+    kind: PouKind.program,
+    lang: PouLanguage.ld,
+    localVars: const [],
+    body: GraphBody(nodes: [
+      _ldNode(100, 'leftPowerRail'), _ldNode(200, 'rightPowerRail'),
+      _ldNode(1, 'block', a: {'typeName': 'PID'}),
+      _ldNode(2, 'coil', a: {'variable': 'Out'}),
+    ], connections: [
+      _ldConn(1, 100), _ldConn(2, 1), _ldConn(200, 2),
+    ]),
+  );
+  return ImportedProject(
+    name: 'LdImport', types: const [], globalVars: const [],
+    pous: [goodPou, badPou], warnings: const [],
+  );
+}
+
+/// An IR proving the instance-rename-sync path (Task 5 follow-up): a global
+/// var `Timer1` collides with an LD POU's TON instance also named `Timer1`
+/// (forcing the instance tag to be renamed to `Timer1_1`), AND the same POU
+/// has a second rung with a MOVE block whose destination is the timer's
+/// ORIGINAL name `Timer1`. The rename must reach the TON block's `variable`
+/// (so the running ladder still finds its backing TIMER tag) but must NOT
+/// bleed onto the MOVE block's destination, which is a genuinely different
+/// tag reference that happens to share the pre-rename name.
+ImportedProject _buildRenameCollisionIr() {
+  final timer1Var =
+      ImportedVar(name: 'Timer1', baseType: 'BOOL', scope: VarScope.global);
+
+  final tonRung = GraphBody(nodes: [
+    _ldNode(100, 'leftPowerRail'), _ldNode(200, 'rightPowerRail'),
+    _ldNode(1, 'contact', a: {'variable': 'Start'}),
+    _ldNode(2, 'block', a: {'typeName': 'TON', 'instanceName': 'Timer1'}),
+    _ldNode(3, 'coil', a: {'variable': 'Motor'}),
+  ], connections: [
+    _ldConn(1, 100), _ldConn(2, 1), _ldConn(3, 2), _ldConn(200, 3),
+  ]);
+  final moveRung = GraphBody(nodes: [
+    _ldNode(300, 'leftPowerRail'), _ldNode(400, 'rightPowerRail'),
+    _ldNode(4, 'block', a: {'typeName': 'MOVE'}),
+    _ldNode(5, 'inVariable', a: {'variable': 'Src'}),
+    _ldNode(6, 'outVariable', a: {'variable': 'Timer1'}),
+  ], connections: [
+    _ldConn(4, 300), // L -> MOVE (EN power)
+    _ldConn(400, 4), // MOVE -> R (ENO power)
+    _ldConn(4, 5, toPin: 'IN'), // inVar -> MOVE.IN (data)
+    _ldConn(6, 4), // MOVE -> outVar (destination, folded)
+  ]);
+  final mixedPou = ImportedPou(
+    name: 'MixedRung',
+    kind: PouKind.program,
+    lang: PouLanguage.ld,
+    localVars: const [],
+    body: GraphBody(
+      nodes: [...tonRung.nodes, ...moveRung.nodes],
+      connections: [...tonRung.connections, ...moveRung.connections],
+    ),
+  );
+
+  return ImportedProject(
+    name: 'RenameCollision',
+    types: const [],
+    globalVars: [timer1Var],
+    pous: [mixedPou],
+    warnings: const [],
+  );
+}
+
 void main() {
+  group('mapImportedProject: instance-rename sync (renamed timer + MOVE non-corruption)', () {
+    test('a TON instance colliding with an existing tag gets renamed, and the '
+        'rename is synced onto its own block node', () {
+      final result =
+          mapImportedProject(_buildRenameCollisionIr(), projectName: 'P', projectId: 'p1');
+      final timerTags = result.project.tags.where((t) => t.dataType == 'TIMER').toList();
+      expect(timerTags, hasLength(1));
+      final renamedName = timerTags.single.name;
+      expect(renamedName, 'Timer1_1'); // renamed away from the colliding 'Timer1'
+
+      final program = result.project.programs.singleWhere((p) => p.name == 'MixedRung');
+      final tonNode = program.rungs
+          .expand((r) => r.nodes)
+          .singleWhere((n) => n.kind == LdKind.block && n.blockType == 'TON');
+      expect(tonNode.variable, renamedName);
+    });
+
+    test('Finding 1 fix: a MOVE block destination equal to the timer\'s ORIGINAL '
+        'instance name is NOT rewritten by the rename-sync loop', () {
+      final result =
+          mapImportedProject(_buildRenameCollisionIr(), projectName: 'P', projectId: 'p1');
+      final program = result.project.programs.singleWhere((p) => p.name == 'MixedRung');
+      final moveNode = program.rungs
+          .expand((r) => r.nodes)
+          .singleWhere((n) => n.kind == LdKind.block && n.blockType == 'MOVE');
+      // Must stay the original destination tag name — the timer's rename to
+      // 'Timer1_1' must not bleed onto this unrelated MOVE destination.
+      expect(moveNode.variable, 'Timer1');
+    });
+  });
+
+  group('mapImportedProject: LD translation wiring (Task 5)', () {
+    test('a translatable LD POU becomes a real LadderLogic program with rungs', () {
+      final result = mapImportedProject(_buildLdIr(), projectName: 'P', projectId: 'p1');
+      final good = result.project.programs.singleWhere((p) => p.name == 'GoodRung');
+      expect(good.language, 'LadderLogic');
+      expect(good.rungs, isNotEmpty);
+      expect(
+        good.rungs.single.nodes.any((n) => n.kind == LdKind.contact && n.variable == 'Start'),
+        isTrue,
+      );
+      expect(
+        good.rungs.single.nodes.any((n) => n.kind == LdKind.coil && n.variable == 'Motor'),
+        isTrue,
+      );
+    });
+
+    test('report aggregates translated/stubbed rung counts and unsupported block types', () {
+      final result = mapImportedProject(_buildLdIr(), projectName: 'P', projectId: 'p1');
+      expect(result.report.translatedRungCount, greaterThanOrEqualTo(1));
+      expect(result.report.stubbedRungCount, greaterThanOrEqualTo(1));
+      expect(result.report.unsupportedLdBlockTypes, contains('PID'));
+      expect(result.report.ldStubReasons['unsupported-block'], greaterThanOrEqualTo(1));
+    });
+
+    test('a TON instance tag from the translated POU appears in project.tags', () {
+      final result = mapImportedProject(_buildLdIr(), projectName: 'P', projectId: 'p1');
+      final timerTags = result.project.tags.where((t) => t.dataType == 'TIMER').toList();
+      expect(timerTags, isNotEmpty);
+    });
+
+    test('a fully-untranslatable LD POU still counts toward graphicalStubCount and stubs', () {
+      final result = mapImportedProject(_buildLdIr(), projectName: 'P', projectId: 'p1');
+      final bad = result.project.programs.singleWhere((p) => p.name == 'BadRung');
+      expect(bad.language, 'LadderLogic');
+      expect(bad.rungs, isEmpty);
+      // Only BadRung stubs (GoodRung is a real program) -> exactly 1.
+      expect(result.report.graphicalStubCount, 1);
+    });
+  });
+
   group('mapImportedProject: nested DUT defaults (incremental struct build)', () {
     test('struct-in-struct field defaults to a nested Map, not scalar 0', () {
       final result = mapImportedProject(_buildNestedIr(), projectName: 'P', projectId: 'p1');

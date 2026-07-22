@@ -81,6 +81,14 @@ class _ImportXmlPreviewState extends State<ImportXmlPreview> {
               const SizedBox(height: 16),
               Text(countsLine,
                   style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              if (report.stubbedRungCount > 0) ...[
+                const SizedBox(height: 4),
+                Text(
+                  '${report.stubbedRungCount} rung(s) not translated'
+                  '${report.unsupportedLdBlockTypes.isNotEmpty ? ' — unsupported blocks: ${report.unsupportedLdBlockTypes.join(', ')}' : ''}',
+                  style: const TextStyle(color: Colors.amber, fontSize: 12),
+                ),
+              ],
               const SizedBox(height: 16),
               const Text('WARNINGS',
                   style: TextStyle(

@@ -2,6 +2,7 @@ import '../models/project_model.dart';
 import '../models/system_tags.dart';
 import '../models/tag_resolver.dart';
 import 'import_ir.dart';
+import 'ld_translate.dart';
 import 'type_normalize.dart';
 
 class ImportReport {
@@ -10,9 +11,22 @@ class ImportReport {
   final int stProgramCount;
   final int graphicalStubCount;
   final List<ImportWarning> warnings;
-  ImportReport({required this.tagCount, required this.structCount,
-      required this.stProgramCount, required this.graphicalStubCount,
-      required this.warnings});
+  // LD-translation reporting (default-safe so existing call sites compile).
+  final int translatedRungCount;
+  final int stubbedRungCount;
+  final Set<String> unsupportedLdBlockTypes;
+  final Map<String, int> ldStubReasons;
+  ImportReport({
+    required this.tagCount,
+    required this.structCount,
+    required this.stProgramCount,
+    required this.graphicalStubCount,
+    required this.warnings,
+    this.translatedRungCount = 0,
+    this.stubbedRungCount = 0,
+    this.unsupportedLdBlockTypes = const {},
+    this.ldStubReasons = const {},
+  });
 }
 
 class ImportResult {
@@ -121,6 +135,10 @@ ImportResult mapImportedProject(ImportedProject ir,
   // POUs -> programs.
   var stCount = 0;
   var stubCount = 0;
+  var translatedRungCount = 0;
+  var stubbedRungCount = 0;
+  final unsupportedLdBlockTypes = <String>{};
+  final ldStubReasons = <String, int>{};
   final programs = <PlcProgram>[];
   for (final pou in ir.pous) {
     final body = pou.body;
@@ -132,9 +150,79 @@ ImportResult mapImportedProject(ImportedProject ir,
       }
       programs.add(PlcProgram(name: pou.name, language: 'StructuredText', stSource: body.source));
       stCount++;
+    } else if (body is GraphBody && pou.lang == PouLanguage.ld) {
+      // LD is translated per-rung (Task 5): rungs that translate become real
+      // LdRungs; rungs that don't degrade to a commented placeholder rung
+      // inside the SAME program (see translateLdBody). The whole POU is
+      // stubbed only when NOTHING in it translated.
+      final tr = translateLdBody(body, pouName: pou.name);
+      translatedRungCount += tr.translatedRungCount;
+      stubbedRungCount += tr.stubbedRungCount;
+      unsupportedLdBlockTypes.addAll(tr.unsupportedBlockTypes);
+      tr.stubReasons.forEach((k, v) {
+        ldStubReasons[k] = (ldStubReasons[k] ?? 0) + v;
+      });
+      warnings.addAll(tr.warnings);
+      if (tr.translatedRungCount > 0) {
+        // Merge instance tags with the same sanitize + dedup rule used for
+        // global vars above. A rename (identifier rules, reserved name, or a
+        // collision) must also be reflected onto the block node(s) in the
+        // translated rungs that reference the tag by name — otherwise the
+        // running ladder would look up a tag that no longer exists.
+        for (final it in tr.instanceTags) {
+          final original = it.name;
+          var name = _sanitizeIdentifier(original);
+          if (name != original) {
+            warnings.add(ImportWarning(severity: WarningSeverity.info,
+                message: 'Variable "$original" renamed to "$name" (identifier rules).'));
+          }
+          if (name == kSystemTagName || used.contains(name)) {
+            var n = 1;
+            while (used.contains('${name}_$n') || '${name}_$n' == kSystemTagName) {
+              n++;
+            }
+            final renamed = '${name}_$n';
+            warnings.add(ImportWarning(severity: WarningSeverity.info,
+                message: 'Variable "$name" renamed to "$renamed" (name collision'
+                    '${name == kSystemTagName ? '/reserved' : ''}).'));
+            name = renamed;
+          }
+          if (name != original) {
+            for (final rung in tr.rungs) {
+              for (final node in rung.nodes) {
+                // Restrict to instance-backed blocks (timers/counters): their
+                // `variable` is the instance name. MOVE/math blocks also use
+                // `variable`, but for their DESTINATION tag — a coincidental
+                // match there must NOT be retargeted (Finding 1).
+                if (node.kind == LdKind.block &&
+                    isInstanceBackedLdBlock(node.blockType) &&
+                    node.variable == original) {
+                  node.variable = name;
+                }
+              }
+            }
+          }
+          used.add(name);
+          it.name = name;
+          it.path = name;
+          tags.add(it);
+        }
+        programs.add(PlcProgram(name: pou.name, language: 'LadderLogic', rungs: tr.rungs));
+      } else {
+        // Nothing translated -> keep the whole-POU stub (unchanged from
+        // before Task 5), still folding tr's per-rung warnings/counts above.
+        warnings.add(ImportWarning(severity: WarningSeverity.warning,
+            message: 'POU "${pou.name}" (LadderLogic): graphical body not yet translated '
+                '(${body.nodes.length} elements captured) — re-import once graphical '
+                'translation ships.'));
+        programs.add(PlcProgram(name: pou.name, language: 'LadderLogic',
+            description: 'Graphical body not yet translated (${body.nodes.length} elements captured).'));
+        stubCount++;
+      }
     } else if (body is GraphBody) {
+      // FBD/SFC: unchanged whole-POU stub (graphical translation not yet
+      // implemented for these languages).
       final lang = switch (pou.lang) {
-        PouLanguage.ld => 'LadderLogic',
         PouLanguage.fbd => 'FunctionBlockDiagram',
         PouLanguage.sfc => 'SequentialFunctionChart',
         _ => 'StructuredText',
@@ -156,7 +244,9 @@ ImportResult mapImportedProject(ImportedProject ir,
   return ImportResult(
     project: project,
     report: ImportReport(tagCount: tags.length, structCount: structs.length,
-        stProgramCount: stCount, graphicalStubCount: stubCount, warnings: warnings),
+        stProgramCount: stCount, graphicalStubCount: stubCount, warnings: warnings,
+        translatedRungCount: translatedRungCount, stubbedRungCount: stubbedRungCount,
+        unsupportedLdBlockTypes: unsupportedLdBlockTypes, ldStubReasons: ldStubReasons),
   );
 }
 

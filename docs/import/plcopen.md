@@ -38,19 +38,36 @@ PLCopen TC6 .xml file  --detect--> parse --> map -->  preview  -->  NEW project
   IL is imported as-is into the ST source and flagged with an info warning —
   **verify it against the app's ST subset**; this is a straight text carry,
   not an IL-to-ST translation.
+- **Ladder Diagram POUs → real `LadderLogic` programs.** A `<pou>` whose body
+  is `<LD>` is translated **per rung** into the app's own executable ladder
+  format — this is correctness-first, not best-effort: contacts, coils (with
+  their set/reset/negated/edge modifiers), series/parallel wiring, and the
+  timer/counter/compare/math/MOVE function blocks it supports are turned into
+  real, editable `LdRung`s, with backing `TIMER`/`COUNTER` tags created for
+  any timer/counter block instance. Any individual rung whose topology or
+  block usage falls outside what the translator currently supports (an
+  unsupported block type, a non-series-parallel bridge/bypass, an
+  unresolvable operand, …) becomes a commented placeholder rung **in that
+  same program** instead — it never silently drops or misrepresents logic.
+  Every stubbed rung raises a **warning** naming the POU, the rung number, and
+  the reason, and the import report's counts (translated vs. stubbed rungs,
+  and which block types weren't recognized) surface in the preview so nothing
+  is silently lossy. A POU where *every* rung stubs is reported as a
+  **graphical stub** (see below) exactly like an untranslated FBD/SFC POU;
+  a POU with at least one translated rung is a real program, with any
+  remaining stubbed rungs still called out by warning.
 
-## What's captured but not yet translated (LD/FBD/SFC)
+## What's captured but not yet translated (FBD/SFC)
 
-A `<pou>` whose body is `<LD>`, `<FBD>`, or `<SFC>` (Ladder Diagram, Function
-Block Diagram, Sequential Function Chart) is **not** rendered into the app's
-own ladder/FBD/SFC editors yet. Its graphical body (every element's type,
-position, and connections) is captured **losslessly** internally, but the
-program that lands in the new project is a **stub**: an empty
-`LadderLogic`/`FunctionBlockDiagram`/`SequentialFunctionChart` program named
-after the original POU, with a description noting how many graphical
-elements were captured and that the body isn't translated yet. Each stub
-raises a **warning** in the import preview so it's never silently lossy-by
-surprise.
+A `<pou>` whose body is `<FBD>` or `<SFC>` (Function Block Diagram,
+Sequential Function Chart) is **not** rendered into the app's own FBD/SFC
+editors yet. Its graphical body (every element's type, position, and
+connections) is captured **losslessly** internally, but the program that
+lands in the new project is a **stub**: an empty
+`FunctionBlockDiagram`/`SequentialFunctionChart` program named after the
+original POU, with a description noting how many graphical elements were
+captured and that the body isn't translated yet. Each stub raises a
+**warning** in the import preview so it's never silently lossy-by surprise.
 
 Re-importing the same file once a per-language graphical translator ships
 will turn these stubs into real, editable diagrams — the capture already
@@ -108,9 +125,10 @@ graphical-stub/collision warnings in amber. Nothing is created until you tap
 
 ## Deferred (not in this release)
 
-- **Graphical translators.** Turning the captured LD/FBD/SFC graph into real
-  editable ladder/FBD/SFC bodies (rather than a stub) — a later workstream,
-  re-importable against the same file once it ships.
+- **FBD/SFC graphical translators.** Turning the captured FBD/SFC graph into
+  real editable FBD/SFC bodies (rather than a stub) — a later workstream,
+  re-importable against the same file once it ships. (Ladder Diagram already
+  has a per-rung translator; see above.)
 - **Other vendor formats.** Rockwell L5X, Siemens TIA Portal exports, and any
   other non-PLCopen dialect are not recognized yet — only PLCopen TC6 XML is
   autodetected today.

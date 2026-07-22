@@ -38,7 +38,11 @@ const String _malformedButRecognizedXml =
 /// "unrecognized dialect" case, handled before `parsePlcOpen` is ever called.
 const String _unrecognizedXml = '<RSLogix5000Content><Controller/></RSLogix5000Content>';
 
-ImportResult _fakeResult({List<ImportWarning>? warnings}) {
+ImportResult _fakeResult({
+  List<ImportWarning>? warnings,
+  int stubbedRungCount = 0,
+  Set<String> unsupportedLdBlockTypes = const {},
+}) {
   final project = PlcProject(
     id: 'proj_new_test',
     name: 'Imported Demo',
@@ -64,6 +68,8 @@ ImportResult _fakeResult({List<ImportWarning>? warnings}) {
                 severity: WarningSeverity.warning,
                 message: 'POU "Rung1" (LadderLogic): graphical body not yet translated.'),
           ],
+      stubbedRungCount: stubbedRungCount,
+      unsupportedLdBlockTypes: unsupportedLdBlockTypes,
     ),
   );
 }
@@ -94,11 +100,20 @@ void main() {
           reason: "basic.xml's <contentHeader name=\"DemoProject\"/> supplies the project name");
 
       // basic.xml: 3 globalVars -> 3 tags, 1 DUT -> 1 struct, 2 POUs (Main:ST,
-      // Rung1:LD) -> 1 ST program + 1 graphical stub = 2 programs total.
+      // Rung1:LD) -> 1 ST program + 1 LadderLogic program = 2 programs total.
+      // Rung1's contact->coil wiring in the fixture has no explicit power-rail
+      // nodes (see plcopen_parser_test.dart's "lossless GraphBody" test), so
+      // translateLdBody's edge-coverage faithfulness gate stubs it (Task 5:
+      // LD is now translated per-rung by the mapper, not skipped wholesale —
+      // this fixture just happens to still fully stub).
       final imported = state.debugAllProjects.firstWhere((p) => p.name == 'DemoProject');
       expect(imported.tags, hasLength(3));
       expect(imported.structDefs, hasLength(1));
       expect(imported.programs, hasLength(2));
+      final rung1 = imported.programs.singleWhere((p) => p.name == 'Rung1');
+      expect(rung1.language, 'LadderLogic');
+      expect(rung1.rungs, isEmpty);
+      expect(rung1.description, contains('not yet translated'));
       expect(imported.id, isNot(previousActiveId));
 
       final previous = state.debugAllProjects.firstWhere((p) => p.id == previousActiveId);
@@ -121,6 +136,56 @@ void main() {
       expect(find.textContaining('2 programs'), findsOneWidget);
       expect(find.textContaining('1 graphical stubs'), findsOneWidget);
       expect(find.textContaining('graphical body not yet translated'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+        'shows the untranslated-rung note with unsupported blocks when stubbedRungCount > 0',
+        (tester) async {
+      final result =
+          _fakeResult(stubbedRungCount: 2, unsupportedLdBlockTypes: {'FANCYFB'});
+      await tester.pumpWidget(MaterialApp(
+        home: ImportXmlPreview(result: result, onCreate: (_) {}),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('2 rung(s) not translated'), findsOneWidget);
+      expect(find.textContaining('FANCYFB'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+        'T6: no overflow at 320 with stubbed rungs and long unsupported block names',
+        (tester) async {
+      await setSurface(tester, smallPhoneSize);
+      final result = _fakeResult(
+        stubbedRungCount: 3,
+        unsupportedLdBlockTypes: {
+          'VERY_LONG_UNSUPPORTED_FUNCTION_BLOCK_TYPE_ONE',
+          'ANOTHER_EXTREMELY_LONG_VENDOR_SPECIFIC_BLOCK_NAME_TWO',
+        },
+      );
+      await tester.pumpWidget(MaterialApp(
+        home: ImportXmlPreview(result: result, onCreate: (_) {}),
+      ));
+      await tester.pumpAndSettle();
+
+      // The inventory line renders and nothing overflows at the narrow width.
+      expect(find.textContaining('3 rung(s) not translated'), findsOneWidget);
+      expect(find.textContaining('VERY_LONG_UNSUPPORTED_FUNCTION_BLOCK_TYPE_ONE'),
+          findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('does not show the untranslated-rung note when stubbedRungCount is 0',
+        (tester) async {
+      final result = _fakeResult();
+      await tester.pumpWidget(MaterialApp(
+        home: ImportXmlPreview(result: result, onCreate: (_) {}),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('rung(s) not translated'), findsNothing);
       expect(tester.takeException(), isNull);
     });
 
