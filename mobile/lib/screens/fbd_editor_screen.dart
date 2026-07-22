@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import '../models/fbd_monitor.dart';
 import '../models/fbd_pins.dart';
 import '../models/fbd_layout.dart';
 import '../models/fbd_networks.dart';
 import '../models/project_model.dart';
 import '../ui/responsive.dart';
+import '../widgets/live_tick.dart';
 import '../widgets/tag_autocomplete_field.dart';
 
 const double _kBlockWidth = 180;
@@ -17,11 +19,24 @@ class FbdEditorScreen extends StatefulWidget {
   final PlcProgram program;
   final VoidCallback onProgramUpdated;
 
+  /// Live per-block pin-value tap populated by the scan (Task 2). Read only
+  /// when the session-only Go-Online toggle is on; otherwise the editor is
+  /// fully static. Optional (and `scanRunning` defaults false) so existing
+  /// call sites/tests that predate the online overlay keep compiling.
+  final FbdMonitor? monitor;
+
+  /// Whether the scan is actually running (mirrors the LD/SFC editors'
+  /// `scanRunning`). Drives the LIVE / FROZEN badge; when false the monitored
+  /// values simply stop changing (frozen view).
+  final bool scanRunning;
+
   const FbdEditorScreen({
     super.key,
     required this.currentProject,
     required this.program,
     required this.onProgramUpdated,
+    this.monitor,
+    this.scanRunning = false,
   });
 
   @override
@@ -42,6 +57,21 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
   // reorders — `moveFbdNetwork` shuffles the list but keeps the same objects).
   final Map<FbdNetwork, TextEditingController> _commentControllers = {};
 
+  // Session-only "Go-Online" live-monitor toggle. When true, wires/pins
+  // reflect the last scan's values (via widget.monitor); default false so the
+  // static editor view is byte-for-byte unchanged. Never persisted.
+  bool _online = false;
+
+  // Fallback repaint pulse used only when no [LiveTickScope] is present in the
+  // ancestor tree (e.g. widget tests that pump the editor standalone). In the
+  // app the shell provides the real scan-driven tick.
+  final LiveTick _fallbackTick = LiveTick();
+
+  // Energized/de-energized palette for the live "online" view (mirrors the
+  // LD/SFC editors).
+  static const Color _kEnergized = Colors.greenAccent;
+  static const Color _kDeEnergized = Color(0xFF475569); // slate-600
+
   @override
   void initState() {
     super.initState();
@@ -54,7 +84,58 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     for (final c in _commentControllers.values) {
       c.dispose();
     }
+    _fallbackTick.dispose();
     super.dispose();
+  }
+
+  // -----------------------------------------------------------------
+  // Live-value overlay helpers (Task 6)
+  // -----------------------------------------------------------------
+
+  /// The monitored value at (blockId, pin), or null if not online / no
+  /// monitor / never recorded.
+  dynamic _pinMonitorValue(String blockId, String pin) {
+    if (!_online) return null;
+    final m = widget.monitor;
+    if (m == null) return null;
+    return m.pinValue[m.keyFor(widget.program.name, blockId, pin)];
+  }
+
+  /// Resolves a wire's effective source output pin, falling back to the
+  /// source block's first output pin when the wire predates pin-addressing.
+  /// Mirrors `_resolvedFromPin` in `fbd_exec.dart` (private there, so this is
+  /// a local copy over the same pure `fbdOutputPins` registry).
+  String _resolvedWireFromPin(FbdWire w, FbdBlock? fromBlock) {
+    if (w.fromPin.isNotEmpty) return w.fromPin;
+    if (fromBlock == null) return '';
+    final outs = fbdOutputPins(fromBlock.type);
+    return outs.isNotEmpty ? outs.first : '';
+  }
+
+  /// Compact live-value text: bools as TRUE/FALSE, ints as-is, other numbers
+  /// to 2dp.
+  String _formatMonitorValue(dynamic v) {
+    if (v is bool) return v ? 'TRUE' : 'FALSE';
+    if (v is int) return '$v';
+    if (v is num) return v.toStringAsFixed(2);
+    return v?.toString() ?? '';
+  }
+
+  /// Every wire's carried value, keyed by its index in `program.fbdWires`
+  /// (empty map when offline).
+  Map<int, dynamic> _wireValues() {
+    if (!_online) return const {};
+    final result = <int, dynamic>{};
+    final wires = widget.program.fbdWires;
+    for (var i = 0; i < wires.length; i++) {
+      final w = wires[i];
+      final fromBlock = _blockById(w.fromBlockId);
+      final fromPin = _resolvedWireFromPin(w, fromBlock);
+      if (fromPin.isEmpty) continue;
+      final v = _pinMonitorValue(w.fromBlockId, fromPin);
+      if (v != null) result[i] = v;
+    }
+    return result;
   }
 
   void _ensureDefaultFbd() {
@@ -323,6 +404,20 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
   }
 
   Widget _buildLane(int net, bool expanded) {
+    // While online, rebuild just this lane's canvas on each LiveTick pulse so
+    // its wire/pin values track the scan — the header (name/comment/arrange
+    // buttons) never needs to repaint per-tick, so only the canvas child is
+    // wrapped. Offline, this is a pass-through and the static path is
+    // byte-for-byte unchanged.
+    Widget canvas = _buildLaneCanvas(net, expanded);
+    if (_online) {
+      final tick =
+          context.getInheritedWidgetOfExactType<LiveTickScope>()?.notifier ?? _fallbackTick;
+      canvas = ListenableBuilder(
+        listenable: tick,
+        builder: (_, __) => _buildLaneCanvas(net, expanded),
+      );
+    }
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
@@ -337,7 +432,7 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
           _buildNetworkHeader(net),
           SizedBox(
             height: _laneCanvasHeight(net),
-            child: _buildLaneCanvas(net, expanded),
+            child: canvas,
           ),
         ],
       ),
@@ -496,6 +591,7 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
                 wires: widget.program.fbdWires,
                 anchors: anchors,
                 selectedIndex: _selectedWireIndex,
+                wireValues: _wireValues(),
               ),
             ),
           ),
@@ -504,6 +600,18 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
         // Tap targets over each wire midpoint for selection (simple circular
         // hit areas placed at the wire midpoint).
         ..._buildWireHitTargets(anchors),
+
+        // Online only: the value each wire carries, as compact text above its
+        // midpoint (numbers ~2dp, TRUE/FALSE for bool).
+        if (_online) ..._buildWireValueLabels(anchors),
+
+        // Online only: every output pin's own monitored value (Q/ET/CV/... on
+        // stateful blocks, plus AND/OR/compare/etc.), shown at the pin
+        // itself — independent of whether that pin happens to be wired, so
+        // an unwired output still reads live. Positioned as an overlay (not
+        // inside the fixed-width block card) so it can never overflow the
+        // card's layout regardless of value length.
+        if (_online) ..._buildPinValueLabels(anchors, blocks),
 
         // FBD Blocks
         ...blockWidgets,
@@ -567,6 +675,109 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
           ),
         ),
       ));
+    }
+    return widgets;
+  }
+
+  /// Compact value readouts positioned just above each wire's midpoint,
+  /// mirroring the LD editor's live block-face readouts. Only wires whose
+  /// endpoints resolve to anchors in this lane (i.e. not cross-lane) and that
+  /// carry a recorded monitor value get a label; a non-IEEE/unset value is
+  /// silently skipped (never throws).
+  List<Widget> _buildWireValueLabels(Map<String, Offset> anchors) {
+    final widgets = <Widget>[];
+    final wires = widget.program.fbdWires;
+    for (var i = 0; i < wires.length; i++) {
+      final w = wires[i];
+      final fromBlock = _blockById(w.fromBlockId);
+      final fromPin = _resolvedWireFromPin(w, fromBlock);
+      final toBlock = _blockById(w.toBlockId);
+      final toPin = w.toPin.isNotEmpty
+          ? w.toPin
+          : (toBlock != null && fbdInputPins(toBlock.type, inputCount: toBlock.inputCount).isNotEmpty
+              ? fbdInputPins(toBlock.type, inputCount: toBlock.inputCount).first
+              : '');
+      final from = anchors['${w.fromBlockId}|OUT|$fromPin'];
+      final to = anchors['${w.toBlockId}|IN|$toPin'];
+      if (from == null || to == null) continue;
+
+      final value = _pinMonitorValue(w.fromBlockId, fromPin);
+      if (value == null) continue;
+
+      final energized = value == true;
+      final deEnergized = value == false;
+      final color = energized ? _kEnergized : (deEnergized ? _kDeEnergized : Colors.lightBlueAccent);
+      final mid = Offset((from.dx + to.dx) / 2, (from.dy + to.dy) / 2);
+
+      widgets.add(Positioned(
+        left: mid.dx - 30,
+        top: mid.dy - 26,
+        width: 60,
+        child: IgnorePointer(
+          child: Container(
+            key: Key('fbdwireval_$i'),
+            alignment: Alignment.center,
+            padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+            decoration: BoxDecoration(
+              color: const Color(0xCC0F172A),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: color.withValues(alpha: 0.7)),
+            ),
+            child: Text(
+              _formatMonitorValue(value),
+              textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: color),
+            ),
+          ),
+        ),
+      ));
+    }
+    return widgets;
+  }
+
+  /// Compact value readouts anchored right at each block's own output pins
+  /// (Q/ET/CV/... on stateful blocks, OUT on gates/compares/math/CONST/...),
+  /// independent of whether that pin is wired — an unwired output still reads
+  /// live. Positioned relative to the pin anchor (just outside the block's
+  /// right edge), never inside the block card, so it can't affect the card's
+  /// fixed-width internal layout.
+  List<Widget> _buildPinValueLabels(Map<String, Offset> anchors, List<FbdBlock> blocks) {
+    final widgets = <Widget>[];
+    for (final block in blocks) {
+      for (final pin in fbdOutputPins(block.type)) {
+        final anchor = anchors['${block.id}|OUT|$pin'];
+        if (anchor == null) continue;
+        final value = _pinMonitorValue(block.id, pin);
+        if (value == null) continue;
+
+        final energized = value == true;
+        final deEnergized = value == false;
+        final color = energized ? _kEnergized : (deEnergized ? _kDeEnergized : Colors.lightBlueAccent);
+
+        widgets.add(Positioned(
+          left: anchor.dx + 4,
+          top: anchor.dy - 8,
+          width: 46,
+          child: IgnorePointer(
+            child: Container(
+              key: Key('fbdpinval_${block.id}_$pin'),
+              padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+              decoration: BoxDecoration(
+                color: const Color(0xCC0F172A),
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: color.withValues(alpha: 0.7)),
+              ),
+              child: Text(
+                _formatMonitorValue(value),
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+                style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: color),
+              ),
+            ),
+          ),
+        ));
+      }
     }
     return widgets;
   }
@@ -769,6 +980,26 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
         backgroundColor: const Color(0xFF1E293B),
         toolbarHeight: short ? 46 : null,
         actions: [
+          if (_online)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Center(
+                child: Text(
+                  widget.scanRunning ? 'LIVE' : 'FROZEN',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: widget.scanRunning ? Colors.greenAccent : Colors.amberAccent,
+                  ),
+                ),
+              ),
+            ),
+          IconButton(
+            key: const Key('fbd_online_toggle'),
+            icon: Icon(Icons.sensors, color: _online ? Colors.greenAccent : Colors.grey),
+            tooltip: _online ? 'Go Offline (stop live monitor)' : 'Go Online (live monitor)',
+            onPressed: () => setState(() => _online = !_online),
+          ),
           IconButton(
             tooltip: 'Auto-arrange blocks',
             icon: const Icon(Icons.auto_awesome_mosaic),
@@ -900,9 +1131,26 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
   }
 
   Widget _buildPinDot(FbdBlock block, String pin, {required bool isInput}) {
-    final color = _pinColor(pin);
     final armed = !isInput && _armedBlockId == block.id && _armedPin == pin;
     final key = Key('fbdpin_${block.id}_${isInput ? 'in' : 'out'}_$pin');
+
+    // Live monitored value at this pin. The monitor only records per-block
+    // OUTPUT values (mirrors `fbd_exec.dart`'s recording site), so this is
+    // null for input pins — their live value is shown on the feeding wire
+    // instead (see `_buildWireValueLabels`). Covers Task 6's "stateful block
+    // outputs (Q/ET/CV/...) show their monitored values at the pins".
+    final monVal = !isInput ? _pinMonitorValue(block.id, pin) : null;
+    final energized = monVal == true;
+    final deEnergized = monVal == false;
+
+    Color color;
+    if (energized) {
+      color = _kEnergized;
+    } else if (deEnergized) {
+      color = _kDeEnergized;
+    } else {
+      color = _pinColor(pin);
+    }
 
     final dot = Container(
       key: key,
@@ -1091,13 +1339,26 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
 }
 
 /// Paints straight lines between each wire's source output-pin anchor and
-/// target input-pin anchor. The selected wire (if any) is highlighted.
+/// target input-pin anchor. The selected wire (if any) is highlighted. While
+/// online, [wireValues] (index -> monitored value, from `_wireValues()`)
+/// recolors a boolean-carrying wire energized (true, green) or de-energized
+/// (false, dim slate) — mirroring the LD editor's power-flow coloring; a
+/// numeric/unset value leaves the wire's static color unchanged.
 class _WirePainter extends CustomPainter {
   final List<FbdWire> wires;
   final Map<String, Offset> anchors;
   final int? selectedIndex;
+  final Map<int, dynamic> wireValues;
 
-  _WirePainter({required this.wires, required this.anchors, required this.selectedIndex});
+  static const Color _kEnergized = Colors.greenAccent;
+  static const Color _kDeEnergized = Color(0xFF475569); // slate-600
+
+  _WirePainter({
+    required this.wires,
+    required this.anchors,
+    required this.selectedIndex,
+    this.wireValues = const {},
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1108,8 +1369,17 @@ class _WirePainter extends CustomPainter {
       if (from == null || to == null) continue;
 
       final selected = selectedIndex == i;
+      final value = wireValues[i];
+      Color baseColor;
+      if (value == true) {
+        baseColor = _kEnergized;
+      } else if (value == false) {
+        baseColor = _kDeEnergized;
+      } else {
+        baseColor = Colors.tealAccent.withValues(alpha: 0.8);
+      }
       final paint = Paint()
-        ..color = selected ? Colors.orangeAccent : Colors.tealAccent.withValues(alpha: 0.8)
+        ..color = selected ? Colors.orangeAccent : baseColor
         ..strokeWidth = selected ? 3 : 2
         ..style = PaintingStyle.stroke;
 
@@ -1120,8 +1390,19 @@ class _WirePainter extends CustomPainter {
     }
   }
 
+  bool _wireValuesEqual(Map<int, dynamic> a, Map<int, dynamic> b) {
+    if (a.length != b.length) return false;
+    for (final entry in a.entries) {
+      if (!b.containsKey(entry.key) || b[entry.key] != entry.value) return false;
+    }
+    return true;
+  }
+
   @override
   bool shouldRepaint(covariant _WirePainter oldDelegate) {
-    return oldDelegate.wires != wires || oldDelegate.anchors != anchors || oldDelegate.selectedIndex != selectedIndex;
+    return oldDelegate.wires != wires ||
+        oldDelegate.anchors != anchors ||
+        oldDelegate.selectedIndex != selectedIndex ||
+        !_wireValuesEqual(oldDelegate.wireValues, wireValues);
   }
 }
