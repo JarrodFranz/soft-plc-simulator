@@ -144,12 +144,17 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
             style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
             onPressed: () {
               Navigator.pop(context);
+              final removedNetwork = widget.program.fbdNetworks[net];
               setState(() {
                 deleteFbdNetwork(widget.program, net);
                 _selectedWireIndex = null;
                 _armedBlockId = null;
                 _armedPin = null;
               });
+              // The deleted network's comment controller is no longer bound to
+              // any TextField — dispose it now instead of leaving it to linger
+              // (keyed by instance) until the whole screen is disposed.
+              _commentControllers.remove(removedNetwork)?.dispose();
               _ensureNetworks();
               widget.onProgramUpdated();
             },

@@ -156,5 +156,35 @@ void main() {
       expect(find.byKey(const Key('fbd_network_header_0')), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets(
+        'tapping an output pin in network 0 then an input pin in network 1 '
+        'creates NO wire (cross-network wiring is blocked at the tap path)',
+        (tester) async {
+      await setSurface(tester, desktopSize);
+      final program = _twoNetworkProgram();
+      await tester.pumpWidget(_app(_buildProject(), program));
+      await tester.pumpAndSettle();
+
+      expect(program.fbdWires, isEmpty);
+
+      // Arm network 0's TAG_INPUT output pin (n0a -> OUT) via the real
+      // _onOutputTap path, exactly like the same-network wiring tests in
+      // fbd_editor_test.dart.
+      await tester.tap(find.byKey(const Key('fbdpin_n0a_out_OUT')));
+      await tester.pumpAndSettle();
+
+      // Then tap network 1's TAG_OUTPUT input pin (n1b -> IN) via the real
+      // _onInputTap -> _completeWire path. n0a and n1b live in different
+      // networks, so the guard at fbd_editor_screen.dart's _completeWire
+      // (fromBlock.network != toBlock.network) must reject this — the same
+      // choke point that keeps runtime cross-network wires from ever being
+      // drawable in the first place.
+      await tester.tap(find.byKey(const Key('fbdpin_n1b_in_IN')));
+      await tester.pumpAndSettle();
+
+      expect(program.fbdWires, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
   });
 }
