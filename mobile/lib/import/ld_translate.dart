@@ -112,12 +112,14 @@ LdTranslation translateLdBody(GraphBody body, {required String pouName}) {
   final unsupportedBlocks = <String>{};
   final reasons = <String, int>{};
   final instanceTags = <PlcTag>[];
+  final usedInstanceNames = <String>{};
   var translated = 0;
   var stubbed = 0;
 
   for (var i = 0; i < comps.length; i++) {
     try {
-      rungs.add(_translateComponent(comps[i], i, instanceTags, unsupportedBlocks));
+      rungs.add(_translateComponent(
+          comps[i], i, instanceTags, unsupportedBlocks, usedInstanceNames, pouName));
       translated++;
     } on _StubException catch (e) {
       reasons[e.reason] = (reasons[e.reason] ?? 0) + 1;
@@ -149,72 +151,269 @@ LdTranslation translateLdBody(GraphBody body, {required String pouName}) {
   );
 }
 
+/// Supported function-block types. `blockType` strings match the app's LD
+/// engine (`ld_exec.dart`): timers, counters, compares, math, and MOVE.
+const Set<String> _kTimerBlocks = {'TON', 'TOF', 'TP'};
+const Set<String> _kCounterBlocks = {'CTU', 'CTD', 'CTUD'};
+const Set<String> _kCompareBlocks = {'GT', 'LT', 'GE', 'LE', 'EQ', 'NE'};
+const Set<String> _kMathBlocks = {'ADD', 'SUB', 'MUL', 'DIV'};
+const Set<String> _kSupportedBlocks = {
+  ..._kTimerBlocks,
+  ..._kCounterBlocks,
+  ..._kCompareBlocks,
+  ..._kMathBlocks,
+  'MOVE',
+};
+
+/// The operand slot a block *data* pin routes into, or null if [pin] is a
+/// *power* pin (`IN`/`EN`/`CU`/`CD`/`R`/`LD`, or an implicit contact/coil pin).
+/// Data pins fold into operands/preset and are excluded from the power wiring;
+/// power pins stay as series/parallel wires. `MOVE.IN` is the sole single-input
+/// data source (timers/counters treat `IN` as their enable/count power pin).
+String? _dataSlotFor(String blockType, String? pin) {
+  switch (pin) {
+    case 'IN1':
+      return 'A';
+    case 'IN2':
+      return 'B';
+    case 'PT': // timer preset (duration)
+    case 'PV': // counter preset (count)
+      return 'preset';
+    case 'IN':
+      return blockType == 'MOVE' ? 'A' : null;
+    default:
+      return null;
+  }
+}
+
 /// Translates one [comp] (a single rung) into an executable [LdRung], or throws
-/// [_StubException] if it is outside Task-3 scope. [instanceTags] and
-/// [unsupportedBlocks] are threaded through for Task 4 (blocks); Task 3 only
-/// records the unsupported block type before stubbing.
+/// [_StubException] if it is outside scope.
+///
+/// Function blocks (Task 4): a block's *data* pins (`IN1`/`IN2`/`PT`/`PV`, and
+/// `MOVE.IN`) and the `inVariable`/`outVariable` nodes feeding/consuming them
+/// are FOLDED into the block's operands/preset/destination — they are NOT
+/// nodes or wires on the ladder. The remaining *power* pins keep the block on
+/// the main/branch line exactly like a contact. To keep the Task-3 edge-
+/// coverage gate ([_assertFaithfulWiring]) from over-stubbing every block rung,
+/// the whole structural pipeline (depths, main line, branches, faithfulness)
+/// runs against a REDUCED component: [comp] minus the folded in/out-variable
+/// nodes and minus the folded data-pin edges.
 LdRung _translateComponent(
   LdComponent comp,
   int index,
   List<PlcTag> instanceTags,
   Set<String> unsupportedBlocks,
+  Set<String> usedInstanceNames,
+  String pouName,
 ) {
-  // 1. Reject unsupported element types up front.
+  // 1. Reject unsupported element types up front (blocks + in/out variables are
+  // now accepted; in/out variables must fold away into the reduced view).
   for (final n in comp.nodes) {
     switch (n.elementType) {
       case 'contact':
       case 'coil':
-        break;
       case 'block':
-        // Task 4 replaces this branch with real block handling.
-        final typeName = n.attributes['typeName'] ?? '';
-        if (typeName.isNotEmpty) unsupportedBlocks.add(typeName);
-        throw _StubException('unsupported-block', 'contains a function block');
       case 'inVariable':
       case 'outVariable':
-        // Task 4 folds these into block operands.
-        throw _StubException('complex-topology', 'in/out variable');
+        break;
       default:
         throw _StubException('complex-topology', 'unsupported element ${n.elementType}');
     }
   }
 
-  // 2. Require >= 1 output coil.
-  final coils = [for (final n in comp.nodes) if (n.elementType == 'coil') n];
-  if (coils.isEmpty) {
+  // 2. Build the reduced power view: fold in/out-variable nodes and data-pin
+  // edges out of the structural graph so only power wiring remains.
+  final foldedIds = <int>{
+    for (final n in comp.nodes)
+      if (n.elementType == 'inVariable' || n.elementType == 'outVariable') n.localId
+  };
+  final blockByLocalId = <int, IrGraphNode>{
+    for (final n in comp.nodes) if (n.elementType == 'block') n.localId: n
+  };
+  bool isFoldedEdge(IrConnection e) {
+    if (foldedIds.contains(e.fromLocalId) || foldedIds.contains(e.toLocalId)) {
+      return true; // touches a folded in/out variable
+    }
+    final tgt = blockByLocalId[e.toLocalId];
+    if (tgt != null && _dataSlotFor(tgt.attributes['typeName'] ?? '', e.toPin) != null) {
+      return true; // a block data-pin edge
+    }
+    return false;
+  }
+
+  final reducedNodes = [for (final n in comp.nodes) if (!foldedIds.contains(n.localId)) n];
+  final reduced = LdComponent(
+    nodes: reducedNodes,
+    edges: [for (final e in comp.edges) if (!isFoldedEdge(e)) e],
+    leftRailNodeIds: {
+      for (final id in comp.leftRailNodeIds) if (!foldedIds.contains(id)) id
+    },
+    rightRailNodeIds: {
+      for (final id in comp.rightRailNodeIds) if (!foldedIds.contains(id)) id
+    },
+  );
+
+  // 3. Require >= 1 output coil OR >= 1 function block (a block rung — e.g. a
+  // bare MOVE — legitimately has no coil).
+  final coils = [for (final n in reducedNodes) if (n.elementType == 'coil') n];
+  final blocks = [for (final n in reducedNodes) if (n.elementType == 'block') n];
+  if (coils.isEmpty && blocks.isEmpty) {
     throw _StubException('no-coil', 'no output coil');
   }
 
-  // 3. Directed power graph: longest-path depth per node (left rail = 0).
-  final depth = _depths(comp);
+  // 4. Directed power graph over the REDUCED view.
+  final depth = _depths(reduced);
+  final byId = {for (final n in reducedNodes) n.localId: n};
+  final byIdAll = {for (final n in comp.nodes) n.localId: n};
+  // Terminal candidates: coils plus blocks (a block can terminate a coil-less
+  // rung). For a boolean rung this is exactly the coil set (Task-3 behaviour).
+  final terminals = [...coils, ...blocks];
+  final mainIds = _mainLine(reduced, terminals, depth);
+  final branches = _extractBranches(reduced, mainIds, byId);
 
-  // 4. Split into a single main series path plus single-level parallel branches.
-  final byId = {for (final n in comp.nodes) n.localId: n};
-  final mainIds = _mainLine(comp, coils, depth);
-  final branches = _extractBranches(comp, mainIds, byId);
-
-  // 5. Map elements to LdNodes and derive BranchSpec index ranges.
-  final mainNodes = [for (final id in mainIds) _toLdNode(byId[id]!)];
+  // 5. Map elements to LdNodes and derive BranchSpec index ranges. Blocks are
+  // built here (folding their data inputs/destination + appending instance
+  // tags); an unsupported/unresolvable block throws _StubException.
+  LdNode mapNode(IrGraphNode n) => n.elementType == 'block'
+      ? _buildBlockNode(
+          comp, n, byIdAll, instanceTags, unsupportedBlocks, usedInstanceNames, pouName)
+      : _toLdNode(n);
+  final mainNodes = [for (final id in mainIds) mapNode(byId[id]!)];
   final mainIndex = {for (var i = 0; i < mainIds.length; i++) mainIds[i]: i};
   final specs = <BranchSpec>[];
   for (final b in branches) {
-    final nodes = [for (final n in b.chain) _toLdNode(n)];
+    final nodes = [for (final n in b.chain) mapNode(n)];
     final startIndex = b.upstreamIsLeftRail ? 0 : mainIndex[b.upstreamAnchor]! + 1;
     final endIndex =
         b.downstreamIsRightRail ? mainNodes.length - 1 : mainIndex[b.downstreamAnchor]! - 1;
     specs.add(BranchSpec(startIndex: startIndex, endIndex: endIndex, nodes: nodes));
   }
 
-  // 5b. Edge-coverage faithfulness gate: confirm the main+branch wiring we are
-  // about to emit reproduces the component's exact edge set and rail
-  // attachments. A non-series-parallel bridge/bypass topology whose extra edge
-  // got greedily pulled onto the main line (dropping the edge) is caught here
-  // and stubbed instead of being emitted as silently-wrong pure-series logic.
-  _assertFaithfulWiring(comp, mainIds, branches);
+  // 5b. Edge-coverage faithfulness gate over the REDUCED power wiring: confirm
+  // the main+branch wiring we are about to emit reproduces the reduced edge set
+  // and rail attachments. A non-series-parallel bridge/bypass topology whose
+  // extra edge got greedily pulled onto the main line (dropping the edge) is
+  // caught here and stubbed instead of being emitted as silently-wrong logic.
+  _assertFaithfulWiring(reduced, mainIds, branches);
 
   // 6. buildRung assigns ids/rows, builds rails, series-wires main, and wires
   // each branch as a parallel lane spanning main[startIndex..endIndex].
   return buildRung(index: index, main: mainNodes, branches: specs);
+}
+
+/// Builds the [LdNode] for a function [block], folding its data inputs
+/// (`IN1`/`IN2`/`PT`/`PV`, `MOVE.IN`) into operands/preset and its output
+/// `outVariable` into the destination `variable`. Timers/counters get a
+/// deterministic instance name and a backing `TIMER`/`COUNTER` [PlcTag] appended
+/// to [instanceTags] so `ld_exec` has structured state to read/write. Throws
+/// [_StubException] on an unsupported type or an unresolvable data input.
+LdNode _buildBlockNode(
+  LdComponent comp,
+  IrGraphNode node,
+  Map<int, IrGraphNode> byId,
+  List<PlcTag> instanceTags,
+  Set<String> unsupportedBlocks,
+  Set<String> usedInstanceNames,
+  String pouName,
+) {
+  final typeName = node.attributes['typeName'] ?? '';
+  if (!_kSupportedBlocks.contains(typeName)) {
+    unsupportedBlocks.add(typeName.isEmpty ? '?' : typeName);
+    throw _StubException('unsupported-block', 'unsupported block "$typeName"');
+  }
+  final ld = LdNode(id: '', kind: LdKind.block, blockType: typeName);
+
+  // Fold data inputs: scan the ORIGINAL edges into this block (the reduced view
+  // dropped them) and resolve each source to a literal/tag.
+  for (final e in comp.edges) {
+    if (e.toLocalId != node.localId) continue;
+    final slot = _dataSlotFor(typeName, e.toPin);
+    if (slot == null) continue; // power pin -> stays a wire
+    final src = byId[e.fromLocalId];
+    final literal = src?.attributes['variable'];
+    if (literal == null || literal.isEmpty) {
+      throw _StubException('unresolved-operand', 'unresolved data input on ${e.toPin}');
+    }
+    switch (slot) {
+      case 'A':
+        ld.operandA = literal;
+        break;
+      case 'B':
+        ld.operandB = literal;
+        break;
+      case 'preset':
+        if (_kTimerBlocks.contains(typeName)) {
+          final ms = parseIecDuration(literal);
+          if (ms == null) {
+            throw _StubException('unresolved-operand', 'unparseable preset "$literal"');
+          }
+          ld.presetMs = ms;
+        } else {
+          final count = int.tryParse(literal.trim());
+          if (count == null) {
+            throw _StubException('unresolved-operand', 'unparseable preset "$literal"');
+          }
+          ld.presetMs = count;
+        }
+        break;
+    }
+  }
+
+  // Math/MOVE write to a destination supplied by an outVariable on the output.
+  if (_kMathBlocks.contains(typeName) || typeName == 'MOVE') {
+    String? dest;
+    for (final e in comp.edges) {
+      if (e.fromLocalId != node.localId) continue;
+      final tgt = byId[e.toLocalId];
+      if (tgt?.elementType == 'outVariable') {
+        dest = tgt?.attributes['variable'];
+        break;
+      }
+    }
+    if (dest == null || dest.isEmpty) {
+      throw _StubException('unresolved-operand', 'no output destination for $typeName');
+    }
+    ld.variable = dest;
+  }
+
+  // Instance-backed blocks: a deterministic name + backing structured tag.
+  final isTimer = _kTimerBlocks.contains(typeName);
+  if (isTimer || _kCounterBlocks.contains(typeName)) {
+    final name = _instanceName(node, pouName, usedInstanceNames);
+    ld.variable = name;
+    instanceTags.add(PlcTag(
+      name: name,
+      path: name,
+      dataType: isTimer ? 'TIMER' : 'COUNTER',
+      value: isTimer
+          ? <String, dynamic>{
+              'EN': false, 'TT': false, 'DN': false, 'PRE': ld.presetMs, 'ACC': 0,
+            }
+          : <String, dynamic>{
+              'CU': false, 'CD': false, 'QU': false, 'QD': false, 'R': false,
+              'CV': 0, 'PV': ld.presetMs,
+            },
+      ioType: 'Internal',
+    ));
+  }
+  return ld;
+}
+
+/// Deterministic instance name for a timer/counter block: the `instanceName`
+/// attribute when it is a valid identifier, else `'${pouName}_fb${localId}'`.
+/// De-duplicated within a translation via [used] by appending `_2`, `_3`, ...
+String _instanceName(IrGraphNode node, String pouName, Set<String> used) {
+  final attr = node.attributes['instanceName'];
+  final safe = attr != null && RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$').hasMatch(attr);
+  final base = safe ? attr : '${pouName}_fb${node.localId}';
+  var name = base;
+  var i = 2;
+  while (used.contains(name)) {
+    name = '${base}_$i';
+    i++;
+  }
+  used.add(name);
+  return name;
 }
 
 /// Longest-path depth of each node measured from the left rail (which sits at
@@ -246,24 +445,26 @@ Map<int, int> _depths(LdComponent comp) {
   return depth;
 }
 
-/// The main series path: the deepest source->coil chain (tie-break: lowest coil
-/// localId, then at each step the predecessor with highest depth then lowest
-/// localId). Returned rail-to-coil in power-flow order.
-List<int> _mainLine(LdComponent comp, List<IrGraphNode> coils, Map<int, int> depth) {
+/// The main series path: the deepest source->terminal chain (tie-break: lowest
+/// terminal localId, then at each step the predecessor with highest depth then
+/// lowest localId). [terminals] are the rung's output candidates — coils, plus
+/// function blocks for a coil-less block rung. Returned rail-to-terminal in
+/// power-flow order.
+List<int> _mainLine(LdComponent comp, List<IrGraphNode> terminals, Map<int, int> depth) {
   final preds = <int, List<int>>{for (final n in comp.nodes) n.localId: <int>[]};
   for (final e in comp.edges) {
     preds[e.toLocalId]?.add(e.fromLocalId);
   }
-  // Pick the terminal coil for the main line: greatest depth, then lowest id.
-  var coil = coils.first;
-  for (final c in coils) {
+  // Pick the terminal for the main line: greatest depth, then lowest id.
+  var terminal = terminals.first;
+  for (final c in terminals) {
     final dc = depth[c.localId]!;
-    final dbest = depth[coil.localId]!;
-    if (dc > dbest || (dc == dbest && c.localId < coil.localId)) coil = c;
+    final dbest = depth[terminal.localId]!;
+    if (dc > dbest || (dc == dbest && c.localId < terminal.localId)) terminal = c;
   }
-  final main = <int>[coil.localId];
-  final guard = <int>{coil.localId};
-  var cur = coil.localId;
+  final main = <int>[terminal.localId];
+  final guard = <int>{terminal.localId};
+  var cur = terminal.localId;
   while (true) {
     final ps = preds[cur] ?? const <int>[];
     if (ps.isEmpty) break;

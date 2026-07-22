@@ -85,7 +85,9 @@ void mainTask3() {
           containsAll(['A', 'B']));
     });
 
-    test('a component with a block stubs (Task 3 has no block support yet)', () {
+    test('a contact in series with a supported block now translates (Task 4)', () {
+      // L-[A]-[TON]-(C)-R. Task 4 translates function blocks, so this rung is
+      // no longer stubbed: the TON sits on the main line after contact A.
       final body = GraphBody(nodes: [
         _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
         _n(1, 'contact', a: {'variable': 'A'}),
@@ -93,10 +95,11 @@ void mainTask3() {
         _n(3, 'coil', a: {'variable': 'C'}),
       ], connections: [_c(1, 100), _c(2, 1), _c(3, 2), _c(200, 3)]);
       final r = t(body);
-      expect(r.translatedRungCount, 0);
-      expect(r.stubbedRungCount, 1);
-      expect(r.rungs.single.comment, contains('not translated'));
-      expect(r.warnings, isNotEmpty);
+      expect(r.translatedRungCount, 1);
+      expect(r.stubbedRungCount, 0);
+      final rung = r.rungs.single;
+      expect(rung.nodes.firstWhere((n) => n.kind == LdKind.block).blockType, 'TON');
+      expect(rung.nodes.any((n) => n.kind == LdKind.contact && n.variable == 'A'), isTrue);
     });
 
     test('component with no coil stubs', () {
@@ -190,6 +193,122 @@ void mainTask3() {
   });
 }
 
+void mainTask4() {
+  LdTranslation t(GraphBody b) => translateLdBody(b, pouName: 'P');
+
+  group('translateLdBody function blocks', () {
+    test('TON block: PT inVariable folds to presetMs, instance tag TIMER, sits on main', () {
+      // L-[TON]-(Q)-R with PT <- inVariable T#5s.
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        _n(1, 'block', a: {'typeName': 'TON', 'instanceName': 'MyTimer'}),
+        _n(2, 'coil', a: {'variable': 'Q'}),
+        _n(3, 'inVariable', a: {'variable': 'T#5s'}),
+      ], connections: [
+        _c(1, 100), // L -> TON (IN power)
+        _c(2, 1), // TON -> coil
+        _c(200, 2), // coil -> R
+        _c(1, 3, toPin: 'PT'), // inVar -> TON.PT (data, folded)
+      ]);
+      final r = t(body);
+      expect(r.translatedRungCount, 1);
+      expect(r.stubbedRungCount, 0);
+      final blk = r.rungs.single.nodes.firstWhere((n) => n.kind == LdKind.block);
+      expect(blk.blockType, 'TON');
+      expect(blk.presetMs, 5000);
+      expect(blk.variable, 'MyTimer');
+      final tag = r.instanceTags.single;
+      expect(tag.dataType, 'TIMER');
+      expect(tag.name, 'MyTimer');
+    });
+
+    test('CTU block: PV literal folds to presetMs, instance tag COUNTER', () {
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        _n(1, 'block', a: {'typeName': 'CTU', 'instanceName': 'Cnt'}),
+        _n(2, 'coil', a: {'variable': 'Done'}),
+        _n(3, 'inVariable', a: {'variable': '10'}),
+      ], connections: [
+        _c(1, 100), _c(2, 1), _c(200, 2), _c(1, 3, toPin: 'PV'),
+      ]);
+      final r = t(body);
+      expect(r.translatedRungCount, 1);
+      final blk = r.rungs.single.nodes.firstWhere((n) => n.kind == LdKind.block);
+      expect(blk.blockType, 'CTU');
+      expect(blk.presetMs, 10);
+      expect(r.instanceTags.single.dataType, 'COUNTER');
+    });
+
+    test('GT compare block: IN1/IN2 inVariables fold to operandA/operandB', () {
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        _n(1, 'block', a: {'typeName': 'GT'}),
+        _n(2, 'coil', a: {'variable': 'Fast'}),
+        _n(3, 'inVariable', a: {'variable': 'Speed'}),
+        _n(4, 'inVariable', a: {'variable': '100'}),
+      ], connections: [
+        _c(1, 100), _c(2, 1), _c(200, 2),
+        _c(1, 3, toPin: 'IN1'), _c(1, 4, toPin: 'IN2'),
+      ]);
+      final r = t(body);
+      expect(r.translatedRungCount, 1);
+      final blk = r.rungs.single.nodes.firstWhere((n) => n.kind == LdKind.block);
+      expect(blk.blockType, 'GT');
+      expect(blk.operandA, 'Speed');
+      expect(blk.operandB, '100');
+      expect(r.instanceTags, isEmpty);
+    });
+
+    test('MOVE block: IN source folds to operandA, outVariable to destination variable', () {
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        _n(1, 'block', a: {'typeName': 'MOVE'}),
+        _n(2, 'inVariable', a: {'variable': 'Src'}),
+        _n(3, 'outVariable', a: {'variable': 'Dst'}),
+      ], connections: [
+        _c(1, 100), // L -> MOVE (EN power)
+        _c(200, 1), // MOVE -> R (ENO power)
+        _c(1, 2, toPin: 'IN'), // inVar -> MOVE.IN (data)
+        _c(3, 1), // MOVE -> outVar (destination, folded)
+      ]);
+      final r = t(body);
+      expect(r.translatedRungCount, 1);
+      final blk = r.rungs.single.nodes.firstWhere((n) => n.kind == LdKind.block);
+      expect(blk.blockType, 'MOVE');
+      expect(blk.operandA, 'Src');
+      expect(blk.variable, 'Dst');
+    });
+
+    test('unsupported block type stubs and is recorded in unsupportedBlockTypes', () {
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        _n(1, 'contact', a: {'variable': 'A'}),
+        _n(2, 'block', a: {'typeName': 'FANCYFB'}),
+        _n(3, 'coil', a: {'variable': 'C'}),
+      ], connections: [_c(1, 100), _c(2, 1), _c(3, 2), _c(200, 3)]);
+      final r = t(body);
+      expect(r.translatedRungCount, 0);
+      expect(r.stubbedRungCount, 1);
+      expect(r.stubReasons['unsupported-block'], 1);
+      expect(r.unsupportedBlockTypes, contains('FANCYFB'));
+    });
+
+    test('unparseable timer preset stubs as unresolved-operand', () {
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        _n(1, 'block', a: {'typeName': 'TON', 'instanceName': 'Bad'}),
+        _n(2, 'coil', a: {'variable': 'Q'}),
+        _n(3, 'inVariable', a: {'variable': 'notaduration'}),
+      ], connections: [
+        _c(1, 100), _c(2, 1), _c(200, 2), _c(1, 3, toPin: 'PT'),
+      ]);
+      final r = t(body);
+      expect(r.translatedRungCount, 0);
+      expect(r.stubReasons['unresolved-operand'], 1);
+    });
+  });
+}
+
 void main() {
   group('parseIecDuration', () {
     test('parses seconds, ms, minutes, compound, and TIME# prefix', () {
@@ -210,4 +329,5 @@ void main() {
 
   mainTask2();
   mainTask3();
+  mainTask4();
 }
