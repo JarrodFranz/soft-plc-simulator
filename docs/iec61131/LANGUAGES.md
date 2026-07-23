@@ -21,6 +21,11 @@ Go-Online step highlighting), and [`../fbd-networks.md`](../fbd-networks.md)
 (multi-network lanes, network-ordered execution, cross-network data flow via
 tags, block naming, and the FBD Go-Online overlay).
 
+Both FBD and LD can also host **custom, user-defined function blocks** — a
+project-level type (typed interface + ST body) instantiated with
+per-instance state and usable as a block in either language; see
+[`FUNCTION_BLOCKS.md`](FUNCTION_BLOCKS.md).
+
 > Historical note: the original Phase-0 design compiled every language into a
 > single instruction model executed by a Rust `ScanEngine`. That was superseded
 > by ADR-010 — the Rust runtime remains in `runtime/` but the app executes all

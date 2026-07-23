@@ -118,8 +118,10 @@ intra-network-only wire invariant.
 
 ## What's still deferred
 
-EN/ENO chaining, jumps/returns/labels, and custom/user function blocks in
-FBD remain out of scope — see `docs/DEFERRED.md`'s "FBD editor overhaul"
-section. "Cross-network wiring" is listed there too, but that's a
-description of the by-design constraint above (wires are intra-network by
-design; the workaround is tags), not a missing feature.
+EN/ENO chaining and jumps/returns/labels remain out of scope — see
+`docs/DEFERRED.md`'s "FBD editor overhaul" section. "Cross-network wiring"
+is listed there too, but that's a description of the by-design constraint
+above (wires are intra-network by design; the workaround is tags), not a
+missing feature. Custom/user function blocks in FBD have since shipped —
+see [`iec61131/FUNCTION_BLOCKS.md`](iec61131/FUNCTION_BLOCKS.md); only
+*importing* one from a PLCopen file remains deferred.

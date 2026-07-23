@@ -23,7 +23,7 @@ plan that defers something records it here (and links back here from its own
 |---|---|---|
 | EN/ENO chaining | later | Enable/enable-out gating on blocks (IEC execution-control) — not needed for network ordering. |
 | Jumps / returns / labels | later | The PDF's execution-control elements; networks already deliver the ordering the user asked for. |
-| Custom / user function blocks in FBD | later | The block `type` set is a fixed vocabulary; user-defined FBs are out of scope. Related to the LD custom-FB item below — a shared future capability. |
+| ~~Custom / user function blocks in FBD~~ | ~~later~~ | **Shipped** (2026-07-23, custom-function-blocks feature): FB definitions appear in the FBD palette and execute via the `fbDefinitionFor` registry fallback in `fbd_pins.dart`/`fbd_exec.dart`. See `docs/iec61131/FUNCTION_BLOCKS.md` and the "Custom (user-defined) function blocks" section below (import mapping from PLCopen remains deferred there). |
 | Cross-network wiring | later | By design wires are intra-network; cross-network data flows through tags. |
 
 **Minor code-quality follow-ups (from the whole-branch review, non-blocking):**
