@@ -111,6 +111,33 @@ PlcStructDef? lookupComposite(PlcProject p, String typeName) {
       return s;
     }
   }
+  final fb = fbDefinitionFor(p, typeName);
+  if (fb != null) {
+    return PlcStructDef(
+      name: fb.name,
+      fields: [
+        for (final v in fb.vars)
+          StructFieldDef(
+              name: v.name,
+              dataType: v.dataType,
+              arrayLength: 0,
+              defaultValue: v.initialValue),
+      ],
+    );
+  }
+  return null;
+}
+
+/// The [FbDefinition] named [name] in [p.fbDefinitions], or null if no
+/// function block by that name is defined. A struct or builtin composite of
+/// the same name is resolved first by [lookupComposite] — this lookup only
+/// runs as the last resort, so an FB definition never shadows a struct.
+FbDefinition? fbDefinitionFor(PlcProject p, String name) {
+  for (final fb in p.fbDefinitions) {
+    if (fb.name == name) {
+      return fb;
+    }
+  }
   return null;
 }
 
