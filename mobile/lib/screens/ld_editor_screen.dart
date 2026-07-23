@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import '../models/fb_instance.dart';
 import '../models/project_model.dart';
 import '../models/ld_graph.dart';
 import '../models/ld_layout.dart';
@@ -494,8 +495,19 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     );
   }
 
-  /// Opens a grouped picker (Timers / Counters / Compare / Math) for the
-  /// "Block" toolbar button. Selecting a type sets [_pendingBlockType] and
+  /// True if [blockType] names a custom function block defined in the
+  /// current project (see `fbDefinitionFor`) — never true for a built-in
+  /// compare/math/timer/counter type, since `isValidFbName`
+  /// (`fb_name_validation.dart`) rejects an FB definition that reuses one of
+  /// those reserved names.
+  bool _isFbBlock(String blockType) => fbDefinitionFor(widget.currentProject, blockType) != null;
+
+  /// Opens a grouped picker (Timers / Counters / Compare / Math / Function
+  /// Blocks) for the "Block" toolbar button. The first four groups are the
+  /// fixed built-ins (`_kBlockGroups`); "Function Blocks" is a dynamic group
+  /// appended after them, one chip per project `FbDefinition` — absent
+  /// entirely when the project has none, so a zero-FB project's picker is
+  /// byte-identical to before. Selecting a type sets [_pendingBlockType] and
   /// switches the editor into block-insert mode.
   Future<void> _showBlockTypePicker() async {
     final selected = await showAdaptiveWidthDialog<String>(
@@ -525,6 +537,25 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                         ActionChip(
                           label: Text(type, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
                           onPressed: () => Navigator.pop(context, type),
+                        ),
+                    ],
+                  ),
+                ],
+                if (widget.currentProject.fbDefinitions.isNotEmpty) ...[
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8, bottom: 4),
+                    child: Text('Function Blocks',
+                        style: TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.bold, color: Colors.cyanAccent)),
+                  ),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final fb in widget.currentProject.fbDefinitions)
+                        ActionChip(
+                          label: Text(fb.name, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                          onPressed: () => Navigator.pop(context, fb.name),
                         ),
                     ],
                   ),
@@ -779,19 +810,30 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
         filled = fillLink(rung, n, LdNode(id: '', kind: LdKind.coil, variable: 'Output_Coil'));
       } else {
         final blockType = _pendingBlockType;
-        filled = fillLink(
-          rung,
-          n,
-          LdNode(
-            id: '',
-            kind: LdKind.block,
-            blockType: blockType,
-            variable: 'T1',
-            presetMs: 5000,
-            operandA: _isDataBlock(blockType) ? '0' : '',
-            operandB: _isDataBlock(blockType) ? '0' : '',
-          ),
-        );
+        if (_isFbBlock(blockType)) {
+          final fb = fbDefinitionFor(widget.currentProject, blockType)!;
+          final tag = createFbInstanceTag(widget.currentProject, fb);
+          widget.currentProject.tags.add(tag);
+          filled = fillLink(
+            rung,
+            n,
+            LdNode(id: '', kind: LdKind.block, blockType: blockType, variable: tag.name),
+          );
+        } else {
+          filled = fillLink(
+            rung,
+            n,
+            LdNode(
+              id: '',
+              kind: LdKind.block,
+              blockType: blockType,
+              variable: 'T1',
+              presetMs: 5000,
+              operandA: _isDataBlock(blockType) ? '0' : '',
+              operandB: _isDataBlock(blockType) ? '0' : '',
+            ),
+          );
+        }
       }
       _editMode = 'select';
     });
@@ -936,6 +978,11 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
   void _insertOnWire(LdRung rung, LdWire w) {
     final LdNode node;
+    // Set only by the Function Block branch below — the new instance tag is
+    // added to the project inside the same `setState` as the node insertion
+    // so both mutations land in one visible step (mirrors the FBD editor's
+    // `_addFbBlockInstance`).
+    PlcTag? newFbTag;
     if (_editMode == 'coil') {
       node = LdNode(id: newNodeId(rung), kind: LdKind.coil, variable: 'Output_Coil');
     } else if (_editMode == 'block') {
@@ -958,6 +1005,15 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           operandA: '0',
           operandB: '0',
         );
+      } else if (_isFbBlock(blockType)) {
+        final fb = fbDefinitionFor(widget.currentProject, blockType)!;
+        newFbTag = createFbInstanceTag(widget.currentProject, fb);
+        node = LdNode(
+          id: newNodeId(rung),
+          kind: LdKind.block,
+          blockType: blockType,
+          variable: newFbTag.name,
+        );
       } else {
         node = LdNode(
           id: newNodeId(rung),
@@ -971,6 +1027,9 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       node = LdNode(id: newNodeId(rung), kind: LdKind.contact, variable: 'New_Contact');
     }
     setState(() {
+      if (newFbTag != null) {
+        widget.currentProject.tags.add(newFbTag);
+      }
       insertContactOnWire(rung, w, node);
       _editMode = 'select';
     });
@@ -1164,6 +1223,12 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     final isCompare = isBlock && _isCompareBlock(n.blockType);
     final isMath = isBlock && _isMathBlock(n.blockType);
     final isDataBlock = isCompare || isMath;
+    // A custom function block instance: its INPUT/OUTPUT-direction vars are
+    // wired to real tags via `pinBindings` (edited below), not a preset
+    // time/count — those fields are timer/counter-only and hidden here.
+    final isFb = isBlock && _isFbBlock(n.blockType);
+    final fbVars = isFb ? fbDefinitionFor(widget.currentProject, n.blockType)!.vars : const <FbVar>[];
+    final pendingPinBindings = Map<String, String>.from(n.pinBindings);
 
     const contactMods = [
       DropdownMenuItem(value: 'normal', child: Text('Normally Open  -| |-')),
@@ -1203,7 +1268,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                   TagAutocompleteField(
                     options: leafAndNodePaths(widget.currentProject),
                     initialValue: tagCtrl.text,
-                    label: 'Tag / literal',
+                    label: isFb ? 'Instance Name' : 'Tag / literal',
                     onChanged: (v) => tagCtrl.text = v,
                   ),
                 if (isMath) ...[
@@ -1225,7 +1290,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     onChanged: (v) => setDlg(() => modifier = v!),
                   ),
                 ],
-                if (isBlock && !isDataBlock) ...[
+                if (isBlock && !isDataBlock && !isFb) ...[
                   const SizedBox(height: 12),
                   TextField(
                     controller: presetCtrl,
@@ -1234,6 +1299,21 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                       labelText: isCounter ? 'Preset Count (PV)' : 'Preset Time (PT) ms',
                     ),
                   ),
+                ],
+                if (isFb) ...[
+                  const SizedBox(height: 12),
+                  const Text('Pin Bindings', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.cyanAccent)),
+                  for (final v in fbVars)
+                    if (v.direction != FbVarDir.internal) ...[
+                      const SizedBox(height: 8),
+                      TagAutocompleteField(
+                        key: Key('fb_pin_${v.name}'),
+                        options: leafAndNodePaths(widget.currentProject),
+                        initialValue: pendingPinBindings[v.name] ?? '',
+                        label: '${v.name} (${v.direction.name})',
+                        onChanged: (val) => pendingPinBindings[v.name] = val,
+                      ),
+                    ],
                 ],
                 if (isCtud) ...[
                   const SizedBox(height: 12),
@@ -1317,6 +1397,9 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     n.presetMs = int.tryParse(presetCtrl.text) ?? n.presetMs;
                     if (isCtud) {
                       n.operandA = downTagCtrl.text.trim();
+                    }
+                    if (isFb) {
+                      n.pinBindings = pendingPinBindings;
                     }
                   }
                 });

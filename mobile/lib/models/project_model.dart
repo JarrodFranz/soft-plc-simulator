@@ -160,6 +160,70 @@ class PlcStructDef {
 }
 
 // -------------------------------------------------------------
+// CUSTOM FUNCTION BLOCK (FB) — reusable user-defined typed interface + ST body
+// -------------------------------------------------------------
+enum FbVarDir { input, output, internal }
+
+class FbVar {
+  String name;
+  String dataType;
+  FbVarDir direction;
+  dynamic initialValue;
+
+  FbVar({
+    required this.name,
+    required this.dataType,
+    this.direction = FbVarDir.internal,
+    this.initialValue,
+  });
+
+  factory FbVar.fromJson(Map<String, dynamic> json) {
+    return FbVar(
+      name: json['name'] ?? '',
+      dataType: json['data_type'] ?? 'BOOL',
+      direction: FbVarDir.values.firstWhere(
+        (d) => d.name == json['direction'],
+        orElse: () => FbVarDir.internal,
+      ),
+      initialValue: json['initial_value'],
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'data_type': dataType,
+    'direction': direction.name,
+    'initial_value': initialValue,
+  };
+}
+
+class FbDefinition {
+  String name;
+  List<FbVar> vars;
+  String stSource;
+
+  FbDefinition({
+    required this.name,
+    List<FbVar>? vars,
+    this.stSource = '',
+  }) : vars = vars ?? [];
+
+  factory FbDefinition.fromJson(Map<String, dynamic> json) {
+    return FbDefinition(
+      name: json['name'] ?? '',
+      vars: (json['vars'] as List? ?? []).map((v) => FbVar.fromJson(v)).toList(),
+      stSource: json['st_source'] ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'vars': vars.map((v) => v.toJson()).toList(),
+    'st_source': stSource,
+  };
+}
+
+// -------------------------------------------------------------
 // LADDER LOGIC (LD) — node-and-wire graph model
 // -------------------------------------------------------------
 enum LdKind { leftRail, rightRail, contact, coil, block, link }
@@ -176,6 +240,7 @@ class LdNode {
   int row;           // grid lane (0 = main line)
   String operandA;   // first data operand (e.g. compare/move block LHS)
   String operandB;   // second data operand (e.g. compare/move block RHS)
+  Map<String, String> pinBindings; // FB pin name -> bound tag/expr (kind == LdKind.block, custom FB instance)
 
   LdNode({
     required this.id,
@@ -189,7 +254,8 @@ class LdNode {
     this.row = 0,
     this.operandA = '',
     this.operandB = '',
-  });
+    Map<String, String>? pinBindings,
+  }) : pinBindings = pinBindings ?? {};
 
   factory LdNode.fromJson(Map<String, dynamic> json) {
     return LdNode(
@@ -207,6 +273,7 @@ class LdNode {
       row: json['row'] ?? 0,
       operandA: json['operand_a'] ?? '',
       operandB: json['operand_b'] ?? '',
+      pinBindings: Map<String, String>.from(json['pin_bindings'] ?? {}),
     );
   }
 
@@ -217,6 +284,7 @@ class LdNode {
     };
     if (operandA.isNotEmpty) m['operand_a'] = operandA;
     if (operandB.isNotEmpty) m['operand_b'] = operandB;
+    if (pinBindings.isNotEmpty) m['pin_bindings'] = pinBindings;
     return m;
   }
 }
@@ -895,6 +963,7 @@ class PlcProject {
   List<SimRule> simRules;
   List<SignalGen> signalGens;
   List<TrendPen> trends;
+  List<FbDefinition> fbDefinitions;
   ProtocolSettings? protocols;
 
   PlcProject({
@@ -912,10 +981,12 @@ class PlcProject {
     List<SimRule>? simRules,
     List<SignalGen>? signalGens,
     List<TrendPen>? trends,
+    List<FbDefinition>? fbDefinitions,
     this.protocols,
   }) : simRules = simRules ?? [],
        signalGens = signalGens ?? [],
-       trends = trends ?? [];
+       trends = trends ?? [],
+       fbDefinitions = fbDefinitions ?? [];
 
   factory PlcProject.fromJson(Map<String, dynamic> json) {
     final proj = json['project'] ?? json;
@@ -936,6 +1007,9 @@ class PlcProject {
       signalGens: (proj['signal_gens'] as List? ?? []).map((g) => SignalGen.fromJson(g)).toList(),
       trends: (proj['trends'] as List? ?? [])
           .map((e) => TrendPen.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      fbDefinitions: (proj['fb_definitions'] as List? ?? [])
+          .map((f) => FbDefinition.fromJson(f))
           .toList(),
       protocols: proj['protocols'] != null
           ? ProtocolSettings.fromJson(proj['protocols'] as Map<String, dynamic>)
@@ -972,6 +1046,7 @@ class PlcProject {
       'sim_rules': simRules.map((r) => r.toJson()).toList(),
       'signal_gens': signalGens.map((g) => g.toJson()).toList(),
       'trends': trends.map((e) => e.toJson()).toList(),
+      'fb_definitions': fbDefinitions.map((f) => f.toJson()).toList(),
       if (protocols != null) 'protocols': protocols!.toJson(),
     }
   };

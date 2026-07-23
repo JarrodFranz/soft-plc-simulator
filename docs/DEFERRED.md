@@ -23,7 +23,7 @@ plan that defers something records it here (and links back here from its own
 |---|---|---|
 | EN/ENO chaining | later | Enable/enable-out gating on blocks (IEC execution-control) — not needed for network ordering. |
 | Jumps / returns / labels | later | The PDF's execution-control elements; networks already deliver the ordering the user asked for. |
-| Custom / user function blocks in FBD | later | The block `type` set is a fixed vocabulary; user-defined FBs are out of scope. Related to the LD custom-FB item below — a shared future capability. |
+| ~~Custom / user function blocks in FBD~~ | ~~later~~ | **Shipped** (2026-07-23, custom-function-blocks feature): FB definitions appear in the FBD palette and execute via the `fbDefinitionFor` registry fallback in `fbd_pins.dart`/`fbd_exec.dart`. See `docs/iec61131/FUNCTION_BLOCKS.md` and the "Custom (user-defined) function blocks" section below (import mapping from PLCopen remains deferred there). |
 | Cross-network wiring | later | By design wires are intra-network; cross-network data flows through tags. |
 
 **Minor code-quality follow-ups (from the whole-branch review, non-blocking):**
@@ -31,6 +31,18 @@ plan that defers something records it here (and links back here from its own
 - `executeFbdPrograms` re-scans blocks/wires per network (O(networks×wires)) — could pre-bucket once; negligible today.
 - The desktop palette dock / phone add-block FAB add blocks into network 0 (no "active lane" cue); per-lane add-block is the primary path.
 - `_resolvedWireFromPin` in the editor hand-mirrors `fbd_exec`'s private `_resolvedFromPin` — promote the exec helpers to public and share, to remove drift risk.
+
+## Custom (user-defined) function blocks (spec 2026-07-23)
+
+| Item | Priority | Notes |
+|---|---|---|
+| **Import mapping → FB defs/instances** | **near-term** | Sub-project 2: PLCopen `functionBlock` POUs → `FbDefinition` + instances; route custom-FB calls in the LD/FBD import translators to instances instead of the unsupported-block stub. The import payoff that follows the native FB capability. |
+| Graphical-bodied FBs (LD/FBD body) | later | v1 FBs have an ST body; a graphical body needs nested-engine execution + instance-scoped state for stateful sub-blocks. |
+| FB calling another FB (nesting/recursion) | later | The app's ST subset has no FB-call syntax, so v1 FB bodies can't instantiate other FBs. |
+| FB body ST beyond the app's ST subset | later | An imported FB whose ST exceeds IF/ELSIF/ELSE + assignments is handled as ST programs are today (partial). |
+| IEC *functions* (stateless POUs) | later | v1 is function *blocks* (stateful instances); stateless FUNs are a separate POU kind. |
+| Dotted read into a struct-typed local FB var | later | `StScope.readVars` only keys bare top-level var names, and `st_expr` lexes `SubVar.Field` as one dotted identifier → a body read of `SubVar.Field` (SubVar a local struct-typed var) misses the scope and falls through to a global. No current FB has struct-typed locals; revisit if Tasks 4-5 introduce them. (CFBX Task 3 review.) |
+| FB interface-var rename does not propagate to pin refs | later | Renaming an `FbVar` (interface var) in the FB editor does not propagate to already-set `LdNode.pinBindings` keys or FBD wire pin references for placed instances of that FB — the FB continues to resolve (name-keyed), but existing pin bindings keyed to the old var name go stale. Consistent with the existing (also non-propagating) behavior of struct-field renames in `memory_manager_screen.dart`'s `_showEditStructDialog`, which likewise never updates any binding/reference that named the old field. `renameFbDefinition` (Task 6 fix pass, `tag_resolver.dart`) DOES propagate an FB *definition* rename (name itself) everywhere, since that mirrors `renameStructDef`'s existing propagation contract — only the var-level rename is deferred. |
 
 ## LD graphical translator (PR #4)
 

@@ -4,6 +4,9 @@
 // empty pin lists.
 library;
 
+import 'project_model.dart';
+import 'tag_resolver.dart';
+
 /// Ordered input pin names for a block [type]. [inputCount] only affects the
 /// extensible operators (AND/OR/ADD/MUL); it is ignored otherwise.
 List<String> fbdInputPins(String type, {int inputCount = 2}) {
@@ -99,4 +102,56 @@ List<String> fbdOutputPins(String type) {
     default:
       return const [];
   }
+}
+
+/// Every built-in FBD block `type` string handled by the `fbdInputPins`/
+/// `fbdOutputPins` switches above (the union of every `case` label). This is
+/// the canonical reserved set for FBD: `fbdInputPinsFor`/`fbdOutputPinsFor`
+/// (and `fbd_exec.dart`'s own block dispatch) resolve `fbDefinitionFor` BEFORE
+/// falling back to these built-ins, so a custom function block sharing one of
+/// these names would silently shadow the built-in block project-wide instead
+/// of erroring. Kept as a plain literal (not derived via reflection — Dart
+/// can't enumerate switch-case labels at runtime) with a guard test
+/// (`fbd_pins_test.dart`) that checks every entry actually yields non-empty
+/// pins, so a future edit to the switches above that drops an entry here
+/// fails loudly.
+const List<String> kFbdBuiltinBlockTypes = [
+  'TAG_INPUT', 'TAG_OUTPUT', 'CONST',
+  'NOT', 'AND', 'OR',
+  'ADD', 'SUB', 'MUL', 'DIV',
+  'GT', 'LT', 'GE', 'LE', 'EQ', 'NE',
+  'LIMIT', 'SEL',
+  'TON', 'TOF', 'PID', 'CTU', 'CTD', 'CTUD',
+  'R_TRIG', 'F_TRIG', 'TP',
+];
+
+/// Ordered input pin names for block [b] in project [p]. When `b.type` names
+/// a custom function block (see `fbDefinitionFor`), returns that FB's
+/// INPUT-direction var names in declaration order; otherwise falls back to
+/// the built-in registry (`fbdInputPins`). Never throws.
+List<String> fbdInputPinsFor(PlcProject p, FbdBlock b) {
+  final fb = fbDefinitionFor(p, b.type);
+  if (fb != null) {
+    return [
+      for (final v in fb.vars)
+        if (v.direction == FbVarDir.input) v.name,
+    ];
+  }
+  return fbdInputPins(b.type, inputCount: b.inputCount);
+}
+
+/// Ordered output pin names for block [b] in project [p]. When `b.type`
+/// names a custom function block, returns that FB's OUTPUT-direction var
+/// names in declaration order (these names ARE the output pin names read by
+/// downstream wires); otherwise falls back to the built-in registry
+/// (`fbdOutputPins`). Never throws.
+List<String> fbdOutputPinsFor(PlcProject p, FbdBlock b) {
+  final fb = fbDefinitionFor(p, b.type);
+  if (fb != null) {
+    return [
+      for (final v in fb.vars)
+        if (v.direction == FbVarDir.output) v.name,
+    ];
+  }
+  return fbdOutputPins(b.type);
 }

@@ -146,4 +146,24 @@ void main() {
       expect(fbdOutputPins(''), isEmpty);
     });
   });
+
+  group('kFbdBuiltinBlockTypes (reserved-name guard)', () {
+    test('every entry actually yields input or output pins', () {
+      // `kFbdBuiltinBlockTypes` is a hand-kept literal (fb_name_validation.dart
+      // relies on it to reject a custom FB name that collides with a
+      // built-in). This guards against the list silently drifting out of
+      // sync with the switches above: every entry must be a type the
+      // switches actually recognize (non-empty pins on at least one side —
+      // e.g. TAG_OUTPUT has input pins but no output pins, still non-empty
+      // overall).
+      for (final type in kFbdBuiltinBlockTypes) {
+        final hasPins = fbdInputPins(type).isNotEmpty || fbdOutputPins(type).isNotEmpty;
+        expect(hasPins, isTrue, reason: '$type should have at least one input or output pin');
+      }
+    });
+
+    test('an unrecognized name is not in the reserved set', () {
+      expect(kFbdBuiltinBlockTypes.contains('TotallyMadeUpFbName'), isFalse);
+    });
+  });
 }

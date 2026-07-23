@@ -4,6 +4,7 @@ import 'project_model.dart';
 import 'ld_graph.dart';
 import 'ld_monitor.dart';
 import 'tag_resolver.dart';
+import 'fb_exec.dart';
 
 /// Prev-scan state for edge contacts and pulse coils, keyed by
 /// "program|rungIndex|nodeId".
@@ -50,6 +51,22 @@ double _operandValue(PlcProject p, String s) {
   }
   return 0;
 }
+
+/// Every built-in LD block `type` string this file's `LdKind.block` dispatch
+/// (below) recognizes by name BEFORE it checks `fbDefinitionFor`: the
+/// compare/math operator sets, the pulse/counter blocks, and the TON/TOF
+/// timer default. This is the canonical reserved set for LD — a custom
+/// function block sharing one of these names would either never be reached
+/// (compare/math/TP/CTU/CTD/CTUD are checked first) or would itself hijack
+/// every plain TON/TOF timer block in the project (the FB check runs before
+/// the unconditional TON/TOF fallback). Kept as a literal (Dart can't
+/// enumerate an `if`-chain's string literals at runtime); a guard test
+/// exercises the dispatch order directly.
+const List<String> kLdBuiltinBlockTypes = [
+  'GT', 'LT', 'GE', 'LE', 'EQ', 'NE', // compareOps
+  'ADD', 'SUB', 'MUL', 'DIV', 'MOVE', // mathOps
+  'TP', 'CTU', 'CTD', 'CTUD', 'TON', 'TOF',
+];
 
 /// Executes every LadderLogic program in [p], rungs top-to-bottom, once.
 /// Writes are immediately visible to later rungs (seal-in works).
@@ -341,6 +358,36 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
           write('$base.R', reset);
           power[n.id] = qu;
           elemTrue[n.id] = inP; // glow while the up/down counter is enabled
+          break;
+        }
+
+        final fb = fbDefinitionFor(p, n.blockType);
+        if (fb != null) {
+          // Custom function block instance: a data block (like compare/math),
+          // transparent to power flow. Execution/writes are gated on input
+          // power exactly like the math-block ENO convention above; power
+          // passes straight through regardless (`power[n.id] = inP`), so the
+          // FB never breaks the rung.
+          if (inP) {
+            final inputs = <String, dynamic>{};
+            for (final v in fb.vars) {
+              if (v.direction == FbVarDir.input) {
+                final tag = n.pinBindings[v.name];
+                if (tag != null && tag.isNotEmpty) {
+                  inputs[v.name] = readPath(p, tag);
+                }
+              }
+            }
+            final outputs = executeFbInstance(p, fb, n.variable, inputs);
+            outputs.forEach((name, value) {
+              final tag = n.pinBindings[name];
+              if (tag != null && tag.isNotEmpty && value != null) {
+                write(tag, value);
+              }
+            });
+          }
+          power[n.id] = inP;
+          elemTrue[n.id] = inP; // glow while the FB block executes
           break;
         }
 

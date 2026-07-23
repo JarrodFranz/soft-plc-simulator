@@ -99,6 +99,51 @@ void renameStructDef(PlcProject p, String oldName, String newName) {
   }
 }
 
+/// Renames function block definition [oldName] to [newName] everywhere it is
+/// referenced: the FB's own name, every FBD block of that type
+/// (`FbdBlock.type`), every LD block instance of that type (`LdNode.blockType`),
+/// and every instance tag's data type (`PlcTag.dataType`) — mirroring
+/// [renameStructDef]'s exact traversal/immutability idiom (in-place field
+/// mutation, not copyWith, so autosave/serialization sees the same object
+/// graph). No-op if the names are equal or no such FB definition exists.
+///
+/// Interface-var renames (`FbVar.name`) are deliberately NOT propagated to
+/// already-set `LdNode.pinBindings` keys or FBD wire pin references — this
+/// matches the existing (also non-propagating) behavior of struct field
+/// renames elsewhere in the app; see docs/DEFERRED.md.
+void renameFbDefinition(PlcProject p, String oldName, String newName) {
+  if (oldName == newName) {
+    return;
+  }
+  if (!p.fbDefinitions.any((fb) => fb.name == oldName)) {
+    return;
+  }
+  for (final t in p.tags) {
+    if (t.dataType == oldName) {
+      t.dataType = newName;
+    }
+  }
+  for (final prog in p.programs) {
+    for (final b in prog.fbdBlocks) {
+      if (b.type == oldName) {
+        b.type = newName;
+      }
+    }
+    for (final rung in prog.rungs) {
+      for (final n in rung.nodes) {
+        if (n.blockType == oldName) {
+          n.blockType = newName;
+        }
+      }
+    }
+  }
+  for (final fb in p.fbDefinitions) {
+    if (fb.name == oldName) {
+      fb.name = newName;
+    }
+  }
+}
+
 /// The DUT/composite definition for a type name, or null if it is a scalar.
 PlcStructDef? lookupComposite(PlcProject p, String typeName) {
   for (final s in p.structDefs) {
@@ -109,6 +154,33 @@ PlcStructDef? lookupComposite(PlcProject p, String typeName) {
   for (final s in _builtinComposites) {
     if (s.name == typeName) {
       return s;
+    }
+  }
+  final fb = fbDefinitionFor(p, typeName);
+  if (fb != null) {
+    return PlcStructDef(
+      name: fb.name,
+      fields: [
+        for (final v in fb.vars)
+          StructFieldDef(
+              name: v.name,
+              dataType: v.dataType,
+              arrayLength: 0,
+              defaultValue: v.initialValue),
+      ],
+    );
+  }
+  return null;
+}
+
+/// The [FbDefinition] named [name] in [p.fbDefinitions], or null if no
+/// function block by that name is defined. A struct or builtin composite of
+/// the same name is resolved first by [lookupComposite] — this lookup only
+/// runs as the last resort, so an FB definition never shadows a struct.
+FbDefinition? fbDefinitionFor(PlcProject p, String name) {
+  for (final fb in p.fbDefinitions) {
+    if (fb.name == name) {
+      return fb;
     }
   }
   return null;
