@@ -104,6 +104,27 @@ List<String> fbdOutputPins(String type) {
   }
 }
 
+/// Every built-in FBD block `type` string handled by the `fbdInputPins`/
+/// `fbdOutputPins` switches above (the union of every `case` label). This is
+/// the canonical reserved set for FBD: `fbdInputPinsFor`/`fbdOutputPinsFor`
+/// (and `fbd_exec.dart`'s own block dispatch) resolve `fbDefinitionFor` BEFORE
+/// falling back to these built-ins, so a custom function block sharing one of
+/// these names would silently shadow the built-in block project-wide instead
+/// of erroring. Kept as a plain literal (not derived via reflection — Dart
+/// can't enumerate switch-case labels at runtime) with a guard test
+/// (`fbd_pins_test.dart`) that checks every entry actually yields non-empty
+/// pins, so a future edit to the switches above that drops an entry here
+/// fails loudly.
+const List<String> kFbdBuiltinBlockTypes = [
+  'TAG_INPUT', 'TAG_OUTPUT', 'CONST',
+  'NOT', 'AND', 'OR',
+  'ADD', 'SUB', 'MUL', 'DIV',
+  'GT', 'LT', 'GE', 'LE', 'EQ', 'NE',
+  'LIMIT', 'SEL',
+  'TON', 'TOF', 'PID', 'CTU', 'CTD', 'CTUD',
+  'R_TRIG', 'F_TRIG', 'TP',
+];
+
 /// Ordered input pin names for block [b] in project [p]. When `b.type` names
 /// a custom function block (see `fbDefinitionFor`), returns that FB's
 /// INPUT-direction var names in declaration order; otherwise falls back to

@@ -38,6 +38,7 @@ import 'scan_tick.dart';
 import 'st_editor_screen.dart';
 import 'ld_editor_screen.dart';
 import 'fbd_editor_screen.dart';
+import 'fb_editor_screen.dart';
 import 'sfc_editor_screen.dart';
 import 'memory_manager_screen.dart';
 import 'hmi_dashboard_builder_screen.dart';
@@ -106,7 +107,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   late PlcProject _activeProject;
 
   // Active Main Content View
-  // 'HMI:<hmi_id>', 'PROGRAM:<prog_name>', 'MEMORY'
+  // 'HMI:<hmi_id>', 'PROGRAM:<prog_name>', 'MEMORY', 'FB'
   String _activeViewId = 'HMI:hmi_motor';
 
   // PLC Engine State
@@ -2439,6 +2440,28 @@ class WorkspaceShellState extends State<WorkspaceShell> {
                 Container(
                   margin: const EdgeInsets.only(left: 12, top: 2),
                   decoration: BoxDecoration(
+                    color: _activeViewId == 'FB' ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(Icons.extension, size: 16, color: _activeViewId == 'FB' ? Colors.cyanAccent : Colors.tealAccent),
+                      title: Text(
+                        'Function Blocks (${_activeProject.fbDefinitions.length})',
+                        style: TextStyle(fontSize: 11, fontWeight: _activeViewId == 'FB' ? FontWeight.bold : FontWeight.normal),
+                      ),
+                      onTap: () => _selectView(context, 'FB'),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 8),
+
+                Container(
+                  margin: const EdgeInsets.only(left: 12, top: 2),
+                  decoration: BoxDecoration(
                     color: _activeViewId == 'SIMIO:rules' ? Colors.cyan.withValues(alpha: 0.2) : Colors.transparent,
                     borderRadius: BorderRadius.circular(4),
                   ),
@@ -3074,6 +3097,11 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         currentProject: _activeProject,
         onProjectUpdated: _markDirtyAndAutosave,
         historian: _historian,
+      );
+    } else if (_activeViewId == 'FB') {
+      return FbEditorScreen(
+        currentProject: _activeProject,
+        onProjectUpdated: _markDirtyAndAutosave,
       );
     } else if (_activeViewId.startsWith('PROGRAM:')) {
       final progName = _activeViewId.replaceFirst('PROGRAM:', '');

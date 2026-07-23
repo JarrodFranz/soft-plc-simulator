@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../models/fb_instance.dart';
 import '../models/fbd_monitor.dart';
 import '../models/fbd_pins.dart';
 import '../models/fbd_layout.dart';
@@ -212,6 +213,36 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     );
 
     setState(() {
+      widget.program.fbdBlocks.add(newBlock);
+    });
+    widget.onProgramUpdated();
+  }
+
+  /// Adds a new instance of custom function block [fb]: a uniquely-named
+  /// backing tag (`dataType == fb.name`, struct-shaped default value — see
+  /// `fb_instance.dart`) plus an `FbdBlock` whose `type` is the FB's name and
+  /// whose `tagBinding` points at that new tag. Mirrors `_addFbdBlock` above
+  /// but, unlike it, always creates a fresh instance tag rather than
+  /// re-binding an existing one — each FB instance needs its own private
+  /// backing storage (EN/DN/CV-equivalents), so reusing another tag would
+  /// alias two unrelated instances together.
+  void _addFbBlockInstance(FbDefinition fb, {int network = 0}) {
+    final netCount = widget.program.fbdNetworks.length;
+    final targetNet = (network >= 0 && network < netCount) ? network : 0;
+    final tag = createFbInstanceTag(widget.currentProject, fb);
+
+    final newBlock = FbdBlock(
+      id: 'b_${DateTime.now().millisecondsSinceEpoch}',
+      type: fb.name,
+      title: fb.name,
+      tagBinding: tag.name,
+      x: 150,
+      y: 150,
+      network: targetNet,
+    );
+
+    setState(() {
+      widget.currentProject.tags.add(tag);
       widget.program.fbdBlocks.add(newBlock);
     });
     widget.onProgramUpdated();
@@ -573,8 +604,8 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     // Pre-compute pin anchors for the painter (after blocks are laid out with
     // known positions/sizes, purely arithmetic — no need to wait for a frame).
     for (final block in blocks) {
-      final inputs = fbdInputPins(block.type, inputCount: block.inputCount);
-      final outputs = fbdOutputPins(block.type);
+      final inputs = fbdInputPinsFor(widget.currentProject, block);
+      final outputs = fbdOutputPinsFor(widget.currentProject, block);
       for (var i = 0; i < inputs.length; i++) {
         final dy = _kHeaderHeight + i * _kPinRowHeight + _kPinRowHeight / 2;
         anchors['${block.id}|IN|${inputs[i]}'] = Offset(block.x, block.y + dy);
@@ -716,8 +747,8 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
       final toBlock = _blockById(w.toBlockId);
       final toPin = w.toPin.isNotEmpty
           ? w.toPin
-          : (toBlock != null && fbdInputPins(toBlock.type, inputCount: toBlock.inputCount).isNotEmpty
-              ? fbdInputPins(toBlock.type, inputCount: toBlock.inputCount).first
+          : (toBlock != null && fbdInputPinsFor(widget.currentProject, toBlock).isNotEmpty
+              ? fbdInputPinsFor(widget.currentProject, toBlock).first
               : '');
       final from = anchors['${w.fromBlockId}|OUT|$fromPin'];
       final to = anchors['${w.toBlockId}|IN|$toPin'];
@@ -767,7 +798,7 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
   List<Widget> _buildPinValueLabels(Map<String, Offset> anchors, List<FbdBlock> blocks) {
     final widgets = <Widget>[];
     for (final block in blocks) {
-      for (final pin in fbdOutputPins(block.type)) {
+      for (final pin in fbdOutputPinsFor(widget.currentProject, block)) {
         final anchor = anchors['${block.id}|OUT|$pin'];
         if (anchor == null) continue;
         final value = _pinMonitorValue(block.id, pin);
@@ -1115,10 +1146,53 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
                 _buildBlockPaletteItem('NE', 'Not Equal (<>)', Icons.compare_arrows, Colors.lightBlueAccent, targetNetwork),
                 _buildBlockPaletteItem('TAG_INPUT', 'Tag Input Pin', Icons.login, Colors.greenAccent, targetNetwork),
                 _buildBlockPaletteItem('TAG_OUTPUT', 'Tag Output Pin', Icons.logout, Colors.cyanAccent, targetNetwork),
+                // Custom function blocks: dynamic entries appended AFTER every
+                // built-in above, one per project FbDefinition. Zero FBs means
+                // zero extra widgets here — byte-identical to pre-FB behavior.
+                if (widget.currentProject.fbDefinitions.isNotEmpty) ...[
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: Divider(color: Colors.white12, height: 1),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 8),
+                    child: Text('FUNCTION BLOCKS', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Colors.grey)),
+                  ),
+                  for (final fb in widget.currentProject.fbDefinitions)
+                    _buildFbPaletteItem(fb, targetNetwork),
+                ],
               ],
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildFbPaletteItem(FbDefinition fb, int targetNetwork) {
+    if (_searchQuery.isNotEmpty && !fb.name.toLowerCase().contains(_searchQuery.toLowerCase())) {
+      return const SizedBox.shrink();
+    }
+    return Card(
+      color: const Color(0xFF1E293B),
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: Colors.transparent,
+        child: ListTile(
+          dense: true,
+          leading: const Icon(Icons.extension, color: Colors.pinkAccent, size: 18),
+          title: Text(fb.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+          subtitle: const Text('Custom Function Block', style: TextStyle(fontSize: 10, color: Colors.grey)),
+          trailing: IconButton(
+            icon: const Icon(Icons.add, color: Colors.tealAccent, size: 18),
+            onPressed: () {
+              _addFbBlockInstance(fb, network: targetNetwork);
+              if (!context.isExpanded && Navigator.of(context).canPop()) {
+                Navigator.of(context).pop();
+              }
+            },
+          ),
+        ),
       ),
     );
   }
@@ -1247,8 +1321,8 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     if (block.type == 'TAG_OUTPUT') color = Colors.amberAccent;
     if (block.type == 'TON') color = Colors.purpleAccent;
 
-    final inputs = fbdInputPins(block.type, inputCount: block.inputCount);
-    final outputs = fbdOutputPins(block.type);
+    final inputs = fbdInputPinsFor(widget.currentProject, block);
+    final outputs = fbdOutputPinsFor(widget.currentProject, block);
     final maxPinRows = inputs.length > outputs.length ? inputs.length : outputs.length;
     final extensible = _typeIsExtensible(block.type);
 
