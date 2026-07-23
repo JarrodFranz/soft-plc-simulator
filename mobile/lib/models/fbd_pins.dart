@@ -4,6 +4,9 @@
 // empty pin lists.
 library;
 
+import 'project_model.dart';
+import 'tag_resolver.dart';
+
 /// Ordered input pin names for a block [type]. [inputCount] only affects the
 /// extensible operators (AND/OR/ADD/MUL); it is ignored otherwise.
 List<String> fbdInputPins(String type, {int inputCount = 2}) {
@@ -99,4 +102,35 @@ List<String> fbdOutputPins(String type) {
     default:
       return const [];
   }
+}
+
+/// Ordered input pin names for block [b] in project [p]. When `b.type` names
+/// a custom function block (see `fbDefinitionFor`), returns that FB's
+/// INPUT-direction var names in declaration order; otherwise falls back to
+/// the built-in registry (`fbdInputPins`). Never throws.
+List<String> fbdInputPinsFor(PlcProject p, FbdBlock b) {
+  final fb = fbDefinitionFor(p, b.type);
+  if (fb != null) {
+    return [
+      for (final v in fb.vars)
+        if (v.direction == FbVarDir.input) v.name,
+    ];
+  }
+  return fbdInputPins(b.type, inputCount: b.inputCount);
+}
+
+/// Ordered output pin names for block [b] in project [p]. When `b.type`
+/// names a custom function block, returns that FB's OUTPUT-direction var
+/// names in declaration order (these names ARE the output pin names read by
+/// downstream wires); otherwise falls back to the built-in registry
+/// (`fbdOutputPins`). Never throws.
+List<String> fbdOutputPinsFor(PlcProject p, FbdBlock b) {
+  final fb = fbDefinitionFor(p, b.type);
+  if (fb != null) {
+    return [
+      for (final v in fb.vars)
+        if (v.direction == FbVarDir.output) v.name,
+    ];
+  }
+  return fbdOutputPins(b.type);
 }

@@ -2,6 +2,7 @@ import 'project_model.dart';
 import 'fbd_pins.dart';
 import 'tag_resolver.dart';
 import 'fbd_monitor.dart';
+import 'fb_exec.dart';
 
 /// Per-block timer state for stateful FBD blocks (TON/TOF), keyed by block id
 /// (block ids are unique within a project's FBD programs). Cleared on project
@@ -171,6 +172,30 @@ Map<String, dynamic> _evalBlock(
   FbdRuntime rt,
   Set<String>? readOnly,
 ) {
+  // Custom function block instance: `inputs` is aligned with
+  // `fbdInputPinsFor(p, b)` (the FB's INPUT-var names, in order). Pair them
+  // up positionally to build the named-input map `executeFbInstance` expects;
+  // an unwired pin resolves to `null` and is skipped rather than overwriting
+  // the instance's current/initial value for that var (e.g. a `Gain` input
+  // left unwired keeps its FB-declared default). The returned output-var map
+  // IS the block's pin->value map: output pin names are exactly the FB's
+  // OUTPUT-direction var names.
+  final fb = fbDefinitionFor(p, b.type);
+  if (fb != null) {
+    final inNames = [
+      for (final v in fb.vars)
+        if (v.direction == FbVarDir.input) v.name,
+    ];
+    final inputMap = <String, dynamic>{};
+    for (var i = 0; i < inNames.length && i < inputs.length; i++) {
+      final v = inputs[i];
+      if (v == null) {
+        continue;
+      }
+      inputMap[inNames[i]] = v;
+    }
+    return executeFbInstance(p, fb, b.tagBinding, inputMap);
+  }
   switch (b.type) {
     case 'TAG_INPUT':
       return {'OUT': b.tagBinding.isEmpty ? null : readPath(p, b.tagBinding)};
@@ -459,27 +484,27 @@ Map<String, dynamic> _evalBlock(
 
 /// Resolves a wire's effective source output pin, falling back to the source
 /// block's first output pin when the wire predates pin-addressing.
-String _resolvedFromPin(FbdWire w, FbdBlock? fromBlock) {
+String _resolvedFromPin(PlcProject p, FbdWire w, FbdBlock? fromBlock) {
   if (w.fromPin.isNotEmpty) {
     return w.fromPin;
   }
   if (fromBlock == null) {
     return '';
   }
-  final outs = fbdOutputPins(fromBlock.type);
+  final outs = fbdOutputPinsFor(p, fromBlock);
   return outs.isNotEmpty ? outs.first : '';
 }
 
 /// Resolves a wire's effective target input pin, falling back to the target
 /// block's first input pin when the wire predates pin-addressing.
-String _resolvedToPin(FbdWire w, FbdBlock? toBlock) {
+String _resolvedToPin(PlcProject p, FbdWire w, FbdBlock? toBlock) {
   if (w.toPin.isNotEmpty) {
     return w.toPin;
   }
   if (toBlock == null) {
     return '';
   }
-  final ins = fbdInputPins(toBlock.type, inputCount: toBlock.inputCount);
+  final ins = fbdInputPinsFor(p, toBlock);
   return ins.isNotEmpty ? ins.first : '';
 }
 
@@ -531,7 +556,7 @@ void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? onl
       // input).
       final inputWireFor = <String, List<FbdWire?>>{};
       for (final b in netBlocks) {
-        final pins = fbdInputPins(b.type, inputCount: b.inputCount);
+        final pins = fbdInputPinsFor(p, b);
         inputWireFor[b.id] = List<FbdWire?>.filled(pins.length, null);
       }
       for (final w in prog.fbdWires) {
@@ -543,11 +568,11 @@ void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? onl
         if (toBlock == null || fromBlock == null) {
           continue;
         }
-        final toPin = _resolvedToPin(w, toBlock);
+        final toPin = _resolvedToPin(p, w, toBlock);
         if (toPin.isEmpty) {
           continue;
         }
-        final pins = fbdInputPins(toBlock.type, inputCount: toBlock.inputCount);
+        final pins = fbdInputPinsFor(p, toBlock);
         final idx = pins.indexOf(toPin);
         if (idx < 0) {
           continue;
@@ -573,7 +598,7 @@ void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? onl
           return null;
         }
         final fromBlock = byId[w.fromBlockId];
-        final fromPin = _resolvedFromPin(w, fromBlock);
+        final fromPin = _resolvedFromPin(p, w, fromBlock);
         final outMap = cache[w.fromBlockId];
         if (outMap == null || fromPin.isEmpty) {
           return null;
