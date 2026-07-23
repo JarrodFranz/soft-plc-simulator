@@ -153,7 +153,7 @@ class _FbEditorScreenState extends State<FbEditorScreen> {
                     setDlgState(() => errorText = error);
                     return;
                   }
-                  setState(() => fb.name = name);
+                  setState(() => renameFbDefinition(widget.currentProject, fb.name, name));
                   widget.onProjectUpdated();
                   Navigator.pop(ctx);
                 },

@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:soft_plc_mobile/models/fb_instance.dart';
+import 'package:soft_plc_mobile/models/fbd_pins.dart';
+import 'package:soft_plc_mobile/models/ld_exec.dart';
 import 'package:soft_plc_mobile/models/ld_graph.dart';
 import 'package:soft_plc_mobile/models/ld_monitor.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/tag_resolver.dart';
 import 'package:soft_plc_mobile/screens/fb_editor_screen.dart';
 import 'package:soft_plc_mobile/screens/fbd_editor_screen.dart';
 import 'package:soft_plc_mobile/screens/ld_editor_screen.dart';
@@ -45,6 +49,34 @@ Widget _fbEditorApp(PlcProject project) {
 }
 
 void main() {
+  group('uniqueFbInstanceName — multi-add', () {
+    test('adding the same FB name twice yields distinct instance names with '
+        'no tag-name collision, per the real bare-then-suffix scheme', () {
+      final fb = _scalerFb();
+      final project = _buildProject(fbDefinitions: [fb]);
+
+      // First instance: no tag named 'Scaler' exists yet, so it gets the bare
+      // FB name (no suffix) — the real scheme, not a guessed '_1'.
+      final first = uniqueFbInstanceName(project, fb.name);
+      expect(first, 'Scaler');
+      project.tags.add(createFbInstanceTag(project, fb, name: first));
+
+      // Second instance: 'Scaler' is now taken, so it suffixes to '_2'.
+      final second = uniqueFbInstanceName(project, fb.name);
+      expect(second, 'Scaler_2');
+      project.tags.add(createFbInstanceTag(project, fb, name: second));
+
+      // Third instance: both 'Scaler' and 'Scaler_2' are taken -> '_3'.
+      final third = uniqueFbInstanceName(project, fb.name);
+      expect(third, 'Scaler_3');
+
+      expect({first, second}, hasLength(2)); // distinct
+      final tagNames = project.tags.map((t) => t.name).toList();
+      expect(tagNames.toSet().length, tagNames.length); // no collision
+      expect(project.tags.every((t) => t.dataType == 'Scaler'), isTrue);
+    });
+  });
+
   group('FbEditorScreen — interface (vars) editing', () {
     testWidgets('add a var, set its name/type/direction, lands in fbDefinition.vars', (tester) async {
       await setSurface(tester, desktopSize);
@@ -126,6 +158,79 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(fb.name, 'GainBlock');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+        'renaming an FB propagates to a placed LD node, an FBD block, and the '
+        'instance tag — the LD node still executes as the FB (not a timer), '
+        'the FBD block still resolves pins, and the instance tag data type follows',
+        (tester) async {
+      await setSurface(tester, desktopSize);
+      final fb = _scalerFb();
+      final project = _buildProject(fbDefinitions: [fb]);
+
+      // A placed instance tag (as the FBD palette / LD picker would create).
+      final instanceTag = createFbInstanceTag(project, fb);
+      project.tags.add(instanceTag);
+
+      // A placed FBD block of this FB type.
+      final fbdBlock = FbdBlock(id: 'b1', type: 'Scaler', title: 'Scaler', tagBinding: instanceTag.name);
+      final fbdProgram = PlcProgram(name: 'FBD1', language: 'FunctionBlockDiagram', fbdBlocks: [fbdBlock]);
+      project.programs.add(fbdProgram);
+
+      // A placed LD FB-call node, wired via pinBindings to real scalar tags.
+      project.tags.addAll([
+        _tag('Enable', 'BOOL', true),
+        _tag('InTag', 'FLOAT64', 5.0),
+        _tag('GainTag', 'FLOAT64', 2.0),
+        _tag('OutTag', 'FLOAT64', 0.0),
+      ]);
+      final ldNode = LdNode(
+        id: 'n1',
+        kind: LdKind.block,
+        blockType: 'Scaler',
+        variable: instanceTag.name,
+        pinBindings: {'In': 'InTag', 'Gain': 'GainTag', 'Out': 'OutTag'},
+      );
+      final rung = buildRung(index: 0, main: [
+        LdNode(id: '', kind: LdKind.contact, variable: 'Enable'),
+        ldNode,
+      ]);
+      final ldProgram = PlcProgram(name: 'P1', language: 'LadderLogic', rungs: [rung]);
+      project.programs.add(ldProgram);
+
+      await tester.pumpWidget(_fbEditorApp(project));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('fb_rename_button')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('fb_rename_name_field')), 'GainBlock');
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('fb_rename_confirm')));
+      await tester.pumpAndSettle();
+
+      // The definition itself resolves under the new name.
+      expect(fbDefinitionFor(project, 'GainBlock'), isNotNull);
+      expect(fbDefinitionFor(project, 'Scaler'), isNull);
+
+      // The FBD block's type followed the rename and still resolves pins.
+      expect(fbdBlock.type, 'GainBlock');
+      expect(fbdInputPinsFor(project, fbdBlock), containsAll(['In', 'Gain']));
+      expect(fbdOutputPinsFor(project, fbdBlock), contains('Out'));
+
+      // The instance tag's data type followed the rename.
+      expect(instanceTag.dataType, 'GainBlock');
+
+      // The LD node's blockType followed the rename, and it still executes as
+      // the FB (computing Out = In * Gain via the ST body) rather than
+      // silently falling through to the TON/TOF timer default (which would
+      // leave OutTag at its initial 0.0 and instead stamp EN/ACC/DN fields
+      // nobody reads).
+      expect(ldNode.blockType, 'GainBlock');
+      executeLdPrograms(project, 100, LdExecRuntime());
+      expect(readPath(project, 'OutTag'), 10.0);
+
       expect(tester.takeException(), isNull);
     });
   });
@@ -271,6 +376,43 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets('adding the same FB twice via the palette yields two distinct instances '
+        '(no tag-name collision)', (tester) async {
+      await setSurface(tester, const Size(1400, 3600));
+      final fb = _scalerFb();
+      final project = _buildProject(fbDefinitions: [fb]);
+      final program = PlcProgram(name: 'FBD1', language: 'FunctionBlockDiagram');
+
+      await tester.pumpWidget(fbdApp(project, program));
+      await tester.pumpAndSettle();
+
+      // The editor seeds a default demo circuit on init (existing behavior,
+      // unrelated to FBs), so compare against before-counts rather than
+      // absolute totals — same convention as the single-add test above.
+      final blocksBefore = program.fbdBlocks.length;
+      final tagsBefore = project.tags.length;
+
+      await tester.tap(find.byIcon(Icons.add).last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.add).last);
+      await tester.pumpAndSettle();
+
+      final added = program.fbdBlocks.sublist(blocksBefore);
+      expect(added.length, 2);
+      expect(added.every((b) => b.type == 'Scaler'), isTrue);
+      final tagBindings = added.map((b) => b.tagBinding).toList();
+      expect(tagBindings.toSet().length, 2); // distinct instance names
+      expect(tagBindings, ['Scaler', 'Scaler_2']); // the real bare-then-suffix scheme
+
+      // Both instance tags landed in the project with no name collision.
+      expect(project.tags.length, tagsBefore + 2);
+      final tagNames = project.tags.map((t) => t.name).toList();
+      expect(tagNames.toSet().length, tagNames.length);
+      expect(tagNames, containsAll(['Scaler', 'Scaler_2']));
+
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('zero FB definitions: palette is unchanged (no Function Blocks section)', (tester) async {
       await setSurface(tester, desktopSize);
       final project = _buildProject(tags: [_tag('Motor_Run', 'BOOL', false)]);
@@ -358,5 +500,67 @@ void main() {
 
       expect(tester.takeException(), isNull);
     });
+
+    for (final size in [smallPhoneSize, desktopSize]) {
+      testWidgets('Pin Bindings section (${size.width.toInt()}px): one field per FB var, '
+          'entering a tag commits to n.pinBindings on Apply, no overflow', (tester) async {
+        await setSurface(tester, size);
+        final fb = _scalerFb();
+        final project = buildLdProject(fb);
+        project.tags.addAll([
+          _tag('SensorIn', 'FLOAT64', 0.0),
+          _tag('GainVal', 'FLOAT64', 0.0),
+          _tag('ScaledOut', 'FLOAT64', 0.0),
+        ]);
+        final instTag = createFbInstanceTag(project, fb, name: 'Scaler_1');
+        project.tags.add(instTag);
+        final node = LdNode(id: 'n1', kind: LdKind.block, blockType: 'Scaler', variable: instTag.name);
+        final program = PlcProgram(
+          name: 'P1',
+          language: 'LadderLogic',
+          rungs: [buildRung(index: 0, main: [node])],
+        );
+
+        await tester.pumpWidget(ldApp(project, program));
+        await tester.pumpAndSettle();
+
+        // Open the block's config dialog (two quick taps register as the
+        // double-tap that opens it — same convention as the existing GT
+        // edit-dialog widget test in ld_editor_test.dart).
+        await tester.tap(find.text('Scaler'));
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.tap(find.text('Scaler'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Edit Scaler'), findsOneWidget);
+        expect(find.text('Pin Bindings'), findsOneWidget);
+        expect(find.byKey(const Key('fb_pin_In')), findsOneWidget);
+        expect(find.byKey(const Key('fb_pin_Gain')), findsOneWidget);
+        expect(find.byKey(const Key('fb_pin_Out')), findsOneWidget);
+
+        await tester.enterText(
+          find.descendant(of: find.byKey(const Key('fb_pin_In')), matching: find.byType(TextField)),
+          'SensorIn',
+        );
+        await tester.enterText(
+          find.descendant(of: find.byKey(const Key('fb_pin_Gain')), matching: find.byType(TextField)),
+          'GainVal',
+        );
+        await tester.enterText(
+          find.descendant(of: find.byKey(const Key('fb_pin_Out')), matching: find.byType(TextField)),
+          'ScaledOut',
+        );
+        await tester.pumpAndSettle();
+
+        // Not written to the model until Apply is tapped.
+        expect(node.pinBindings, isEmpty);
+
+        await tester.tap(find.widgetWithText(ElevatedButton, 'Apply'));
+        await tester.pumpAndSettle();
+
+        expect(node.pinBindings, {'In': 'SensorIn', 'Gain': 'GainVal', 'Out': 'ScaledOut'});
+        expect(tester.takeException(), isNull); // no overflow at 320px
+      });
+    }
   });
 }
