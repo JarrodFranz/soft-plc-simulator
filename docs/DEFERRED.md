@@ -32,6 +32,16 @@ plan that defers something records it here (and links back here from its own
 - The desktop palette dock / phone add-block FAB add blocks into network 0 (no "active lane" cue); per-lane add-block is the primary path.
 - `_resolvedWireFromPin` in the editor hand-mirrors `fbd_exec`'s private `_resolvedFromPin` — promote the exec helpers to public and share, to remove drift risk.
 
+## Custom (user-defined) function blocks (spec 2026-07-23)
+
+| Item | Priority | Notes |
+|---|---|---|
+| **Import mapping → FB defs/instances** | **near-term** | Sub-project 2: PLCopen `functionBlock` POUs → `FbDefinition` + instances; route custom-FB calls in the LD/FBD import translators to instances instead of the unsupported-block stub. The import payoff that follows the native FB capability. |
+| Graphical-bodied FBs (LD/FBD body) | later | v1 FBs have an ST body; a graphical body needs nested-engine execution + instance-scoped state for stateful sub-blocks. |
+| FB calling another FB (nesting/recursion) | later | The app's ST subset has no FB-call syntax, so v1 FB bodies can't instantiate other FBs. |
+| FB body ST beyond the app's ST subset | later | An imported FB whose ST exceeds IF/ELSIF/ELSE + assignments is handled as ST programs are today (partial). |
+| IEC *functions* (stateless POUs) | later | v1 is function *blocks* (stateful instances); stateless FUNs are a separate POU kind. |
+
 ## LD graphical translator (PR #4)
 
 | Item | Priority | Notes |
