@@ -41,6 +41,7 @@ plan that defers something records it here (and links back here from its own
 | FB calling another FB (nesting/recursion) | later | The app's ST subset has no FB-call syntax, so v1 FB bodies can't instantiate other FBs. |
 | FB body ST beyond the app's ST subset | later | An imported FB whose ST exceeds IF/ELSIF/ELSE + assignments is handled as ST programs are today (partial). |
 | IEC *functions* (stateless POUs) | later | v1 is function *blocks* (stateful instances); stateless FUNs are a separate POU kind. |
+| Dotted read into a struct-typed local FB var | later | `StScope.readVars` only keys bare top-level var names, and `st_expr` lexes `SubVar.Field` as one dotted identifier → a body read of `SubVar.Field` (SubVar a local struct-typed var) misses the scope and falls through to a global. No current FB has struct-typed locals; revisit if Tasks 4-5 introduce them. (CFBX Task 3 review.) |
 
 ## LD graphical translator (PR #4)
 
