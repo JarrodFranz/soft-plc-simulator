@@ -254,30 +254,69 @@ class _Parser {
       RegExp(r'^[A-Za-z_][A-Za-z0-9_\.\[\]]*$').hasMatch(s);
 }
 
+// ── Scoping ─────────────────────────────────────────────────────────────────
+/// Scopes ST body execution to one FB instance: bare references to the
+/// instance's own vars (`localVars`) resolve/write against
+/// `<instancePath>.<var>` instead of a global tag path.
+class StScope {
+  final String instancePath; // e.g. 'A1'
+  final Set<String> localVars; // the FB var names
+  StScope(this.instancePath, this.localVars);
+
+  /// Live snapshot of every local var's current value, keyed by var name —
+  /// rebuilt on demand so a write earlier in the body is visible to a later
+  /// read in the same execution.
+  Map<String, dynamic> readVars(PlcProject p) =>
+      {for (final v in localVars) v: readPath(p, '$instancePath.$v')};
+
+  /// Rewrites an assignment target path into the instance's namespace when
+  /// its root segment is one of this scope's local vars (handles `x`, `x.y`,
+  /// and `x[i]`); otherwise the path is left untouched (falls through global).
+  String rewrite(String path) {
+    final root = path.split('.').first.split('[').first;
+    return localVars.contains(root) ? '$instancePath.$path' : path;
+  }
+}
+
 // ── Executor ────────────────────────────────────────────────────────────────
-void _execBlock(PlcProject p, String src, List<_Stmt> stmts, Set<String>? readOnly) {
+// Reads rebuild `scope.readVars(p)` at every evalExpr/evalStCondition call so a
+// just-written var (e.g. `Sum := Sum + In` then a later read of Sum) is live.
+void _execBlock(PlcProject p, String src, List<_Stmt> stmts, Set<String>? readOnly, [StScope? scope]) {
+  Map<String, dynamic> vars() => scope == null ? const {} : scope.readVars(p);
   for (final s in stmts) {
     if (s is _Assign) {
-      final v = evalExpr(p, src.substring(s.rhsStart, s.rhsEnd));
+      final v = evalExpr(p, src.substring(s.rhsStart, s.rhsEnd), extraVars: vars());
       if (v != null) {
-        if (readOnly == null || !readOnly.contains(s.path)) {
-          _forceAwareWrite(p, s.path, v);
+        final target = scope?.rewrite(s.path) ?? s.path;
+        if (readOnly == null || !readOnly.contains(target)) {
+          _forceAwareWrite(p, target, v);
         }
       }
     } else if (s is _If) {
       bool taken = false;
       for (final b in s.branches) {
-        if (evalStCondition(p, src.substring(b.condStart, b.condEnd))) {
-          _execBlock(p, src, b.body, readOnly);
+        if (evalStCondition(p, src.substring(b.condStart, b.condEnd), extraVars: vars())) {
+          _execBlock(p, src, b.body, readOnly, scope);
           taken = true;
           break;
         }
       }
       if (!taken && s.elseBody != null) {
-        _execBlock(p, src, s.elseBody!, readOnly);
+        _execBlock(p, src, s.elseBody!, readOnly, scope);
       }
     }
   }
+}
+
+/// Parses and runs a single ST source body scoped to one FB instance: bare
+/// references to [scope]'s local vars resolve/write against
+/// `<instancePath>.<var>`; anything else falls through to the global tag
+/// namespace exactly as top-level program execution does. Never throws.
+void runScopedStBody(PlcProject p, String src, StScope scope) {
+  final clean = stripStComments(src);
+  final toks = _tokenize(clean);
+  if (toks.isEmpty) return;
+  _execBlock(p, clean, _Parser(toks).parseBlock(), null, scope);
 }
 
 /// Executes every StructuredText program's `stSource` each scan: IF/ELSIF/ELSE
