@@ -9,6 +9,14 @@ import 'tag_resolver.dart';
 /// HMI component type id for the multi-pen trend chart.
 const String kTrendChartDisplay = 'TrendChartDisplay';
 
+/// Hard cap on the number of FBD network headers a program will ever
+/// backfill to. Project JSON is untrusted input (loaded from disk/import);
+/// a corrupt or hand-edited block with e.g. `"network": 1000000000` must
+/// never drive an unbounded `while (result.length < needed)` allocation
+/// loop (OOM/hang on load). No legitimate FBD program has anywhere near
+/// this many networks, so the cap never affects real data.
+const int kMaxFbdNetworks = 4096;
+
 class PlcTag {
   String name;
   String path;
@@ -284,6 +292,7 @@ class FbdBlock {
   double x;
   double y;
   int inputCount; // extensible AND/OR/ADD/MUL input count (default 2); ignored otherwise
+  int network; // index into the owning PlcProgram.fbdNetworks list (default 0)
 
   FbdBlock({
     required this.id,
@@ -293,6 +302,7 @@ class FbdBlock {
     this.x = 100,
     this.y = 100,
     this.inputCount = 2,
+    this.network = 0,
   });
 
   factory FbdBlock.fromJson(Map<String, dynamic> json) {
@@ -304,6 +314,7 @@ class FbdBlock {
       x: (json['x'] as num?)?.toDouble() ?? 100,
       y: (json['y'] as num?)?.toDouble() ?? 100,
       inputCount: json['input_count'] ?? 2,
+      network: json['network'] ?? 0,
     );
   }
 
@@ -315,6 +326,7 @@ class FbdBlock {
     'x': x,
     'y': y,
     'input_count': inputCount,
+    'network': network,
   };
 }
 
@@ -351,6 +363,16 @@ class FbdWire {
     'to_block_id': toBlockId,
     'to_pin': toPin,
   };
+}
+
+/// Header/metadata for one FBD network (a horizontal rung-like grouping of
+/// blocks). `FbdBlock.network` indexes into the owning `PlcProgram.fbdNetworks`.
+class FbdNetwork {
+  String comment;
+  FbdNetwork({this.comment = ''});
+  factory FbdNetwork.fromJson(Map<String, dynamic> json) =>
+      FbdNetwork(comment: json['comment'] ?? '');
+  Map<String, dynamic> toJson() => {'comment': comment};
 }
 
 // -------------------------------------------------------------
@@ -437,6 +459,7 @@ class PlcProgram {
   List<LdRung> rungs;
   List<FbdBlock> fbdBlocks;
   List<FbdWire> fbdWires;
+  List<FbdNetwork> fbdNetworks;
   List<SfcStep> sfcSteps;
   List<SfcTransition> sfcTransitions;
   bool enabled;
@@ -449,14 +472,54 @@ class PlcProgram {
     List<LdRung>? rungs,
     List<FbdBlock>? fbdBlocks,
     List<FbdWire>? fbdWires,
+    List<FbdNetwork>? fbdNetworks,
     List<SfcStep>? sfcSteps,
     List<SfcTransition>? sfcTransitions,
     this.enabled = true,
   })  : rungs = rungs ?? [],
         fbdBlocks = fbdBlocks ?? [],
         fbdWires = fbdWires ?? [],
+        fbdNetworks =
+            _normalizeFbdNetworks(language, fbdBlocks ?? [], fbdNetworks ?? []),
         sfcSteps = sfcSteps ?? [],
         sfcTransitions = sfcTransitions ?? [];
+
+  /// Normalizes `fbdNetworks` so every block's `network` index has a
+  /// corresponding header, and an FBD program with blocks always has at
+  /// least one network (legacy migration). Applied in the constructor
+  /// itself (not just `fromJson`) so directly-constructed FBD programs
+  /// (e.g. the built-in default projects) stay consistent with what
+  /// loading the same data through `fromJson` would produce.
+  static List<FbdNetwork> _normalizeFbdNetworks(
+      String language, List<FbdBlock> blocks, List<FbdNetwork> networks) {
+    final result = List<FbdNetwork>.from(networks);
+    final maxNet = blocks.fold<int>(-1, (m, b) => b.network > m ? b.network : m);
+    // Capped at kMaxFbdNetworks: `blocks` comes from untrusted project JSON,
+    // so maxNet (and therefore `needed`) can be attacker/corruption-controlled
+    // (e.g. a block with `"network": 1000000000`). Without the cap the `while`
+    // loop below would attempt ~1e9 allocations (OOM/hang on load).
+    final needed = (language == 'FunctionBlockDiagram' && blocks.isNotEmpty)
+        ? (maxNet + 1).clamp(1, kMaxFbdNetworks)
+        : (maxNet + 1).clamp(0, kMaxFbdNetworks);
+    while (result.length < needed) {
+      result.add(FbdNetwork());
+    }
+    // The cap above means a corrupt block's `network` index can still exceed
+    // the header list we just built (e.g. maxNet = 1e9, result.length capped
+    // at kMaxFbdNetworks). Clamp any such block down into range so the
+    // invariant "every block.network < fbdNetworks.length" always holds after
+    // normalization, even for corrupt input. Legitimate in-range indices
+    // (including trailing empty networks with no blocks) are left untouched.
+    if (result.isNotEmpty) {
+      final maxIndex = result.length - 1;
+      for (final b in blocks) {
+        if (b.network < 0 || b.network > maxIndex) {
+          b.network = maxIndex;
+        }
+      }
+    }
+    return result;
+  }
 
   factory PlcProgram.fromJson(Map<String, dynamic> json) {
     return PlcProgram(
@@ -467,6 +530,8 @@ class PlcProgram {
       rungs: (json['rungs'] as List? ?? []).map((r) => LdRung.fromJson(r)).toList(),
       fbdBlocks: (json['fbd_blocks'] as List? ?? []).map((b) => FbdBlock.fromJson(b)).toList(),
       fbdWires: (json['fbd_wires'] as List? ?? []).map((w) => FbdWire.fromJson(w)).toList(),
+      fbdNetworks:
+          (json['fbd_networks'] as List? ?? []).map((n) => FbdNetwork.fromJson(n)).toList(),
       sfcSteps: (json['sfc_steps'] as List? ?? []).map((s) => SfcStep.fromJson(s)).toList(),
       sfcTransitions: (json['sfc_transitions'] as List? ?? [])
           .map((t) => SfcTransition.fromJson(t))
@@ -483,6 +548,7 @@ class PlcProgram {
     'rungs': rungs.map((r) => r.toJson()).toList(),
     'fbd_blocks': fbdBlocks.map((b) => b.toJson()).toList(),
     'fbd_wires': fbdWires.map((w) => w.toJson()).toList(),
+    'fbd_networks': fbdNetworks.map((n) => n.toJson()).toList(),
     'sfc_steps': sfcSteps.map((s) => s.toJson()).toList(),
     'sfc_transitions': sfcTransitions.map((t) => t.toJson()).toList(),
     'enabled': enabled,

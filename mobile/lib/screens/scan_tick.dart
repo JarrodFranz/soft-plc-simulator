@@ -4,6 +4,7 @@ import '../models/signal_engine.dart';
 import '../models/ld_exec.dart';
 import '../models/ld_monitor.dart';
 import '../models/fbd_exec.dart';
+import '../models/fbd_monitor.dart';
 import '../models/sfc_exec.dart';
 import '../models/st_exec.dart';
 import '../models/task_scheduler.dart';
@@ -15,6 +16,7 @@ class ScanTickRuntime {
   final LdExecRuntime ld = LdExecRuntime();
   final LdMonitor ldMonitor = LdMonitor();
   final FbdRuntime fbd = FbdRuntime();
+  final FbdMonitor fbdMonitor = FbdMonitor();
   final SfcRuntime sfc = SfcRuntime();
   final StRuntime st = StRuntime();
   final TaskSchedulerRuntime scheduler = TaskSchedulerRuntime();
@@ -29,6 +31,7 @@ class ScanTickRuntime {
     ld.clear();
     ldMonitor.clear();
     fbd.clear();
+    fbdMonitor.clear();
     sfc.clear();
     st.clear();
     scheduler.reset();
@@ -71,7 +74,7 @@ ScanTickResult runScanTick(PlcProject p, int dtMs, ScanTickRuntime rt) {
     final only = task.programs.toSet();
     final sw = Stopwatch()..start();
     executeLdPrograms(p, dtMs, rt.ld, only: only, readOnly: readOnly, monitor: rt.ldMonitor);
-    executeFbdPrograms(p, dtMs, rt.fbd, only: only, readOnly: readOnly);
+    executeFbdPrograms(p, dtMs, rt.fbd, only: only, readOnly: readOnly, monitor: rt.fbdMonitor);
     executeSfcPrograms(p, dtMs, rt.sfc, only: only, readOnly: readOnly);
     executeStPrograms(p, dtMs, rt.st, only: only, readOnly: readOnly);
     sw.stop();

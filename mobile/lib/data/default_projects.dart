@@ -728,6 +728,12 @@ Reactor_Ready := NOT Alarm_High
         PlcTag(name: 'Turbidity_SP', path: 'Internal/Turbidity_SP', dataType: 'FLOAT64', value: 5.0, ioType: 'Internal', engineeringUnits: 'NTU', description: 'Max turbidity setpoint'),
         PlcTag(name: 'Level_PV', path: 'Inputs/Level_PV', dataType: 'FLOAT64', value: 65.0, ioType: 'SimulatedInput', engineeringUnits: '%', description: 'Clear water reservoir level'),
         PlcTag(name: 'Flow_PV', path: 'Inputs/Flow_PV', dataType: 'FLOAT64', value: 0.0, ioType: 'SimulatedInput', engineeringUnits: 'L/min', description: 'Treated water flow rate'),
+        // Cross-network handoff tags: WaterQuality_FBD network 0 ("Thresholds")
+        // writes these, network 1 ("Quality gate") reads them back the same
+        // scan — the FBD demo's proof that data flows between networks via
+        // tags rather than wires.
+        PlcTag(name: 'Turbidity_Below_SP', path: 'Internal/Turbidity_Below_SP', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'Turbidity within setpoint (network 0 result)'),
+        PlcTag(name: 'Level_Above_Min', path: 'Internal/Level_Above_Min', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'Reservoir level above minimum (network 0 result)'),
         PlcTag(name: 'Quality_OK', path: 'Internal/Quality_OK', dataType: 'BOOL', value: false, ioType: 'Internal', description: 'Water quality within spec'),
         // ST supervisor outputs
         PlcTag(name: 'Treat_Dosing', path: 'Outputs/Treat_Dosing', dataType: 'BOOL', value: false, ioType: 'SimulatedOutput', description: 'Chemical dosing pump'),
@@ -861,28 +867,49 @@ System_Ready := Pump_Motor AND Quality_OK AND NOT Alarm_Active;''',
           ),
         ],
       ),
-      // FBD: Water quality gate logic
+      // FBD: Water quality gate logic — split across 2 networks to showcase
+      // multi-network authoring + top-to-bottom execution ordering. Network 0
+      // ("Thresholds") evaluates the turbidity and level comparisons and
+      // hands its two BOOL results to network 1 via tags (Turbidity_Below_SP,
+      // Level_Above_Min) rather than wires — wires never cross a network
+      // boundary. Network 1 ("Quality gate & output") reads those tags back
+      // the same scan, ANDs them, and writes Quality_OK — byte-identical
+      // behavior to the prior single-network diagram.
       PlcProgram(
         name: 'WaterQuality_FBD',
         language: 'FunctionBlockDiagram',
-        description: 'Water quality gate logic using LT/GT/AND signal flow gates',
+        description: 'Water quality gate logic using LT/GT/AND signal flow gates, across 2 networks',
+        fbdNetworks: [
+          FbdNetwork(comment: 'Thresholds — turbidity vs. setpoint, level vs. minimum'),
+          FbdNetwork(comment: 'Quality gate & output — AND the threshold results, write Quality_OK'),
+        ],
         fbdBlocks: [
-          FbdBlock(id: 'wf_i1', type: 'TAG_INPUT', title: 'Turbidity PV', tagBinding: 'Turbidity_PV', x: 50, y: 80),
-          FbdBlock(id: 'wf_i2', type: 'TAG_INPUT', title: 'Turbidity SP', tagBinding: 'Turbidity_SP', x: 50, y: 190),
-          FbdBlock(id: 'wf_lt', type: 'LT', title: 'Turbidity < SP', tagBinding: '', x: 260, y: 130),
-          FbdBlock(id: 'wf_i3', type: 'TAG_INPUT', title: 'Level PV', tagBinding: 'Level_PV', x: 50, y: 320),
-          FbdBlock(id: 'wf_c1', type: 'CONST', title: 'Min Level', tagBinding: '10.0', x: 50, y: 430),
-          FbdBlock(id: 'wf_gt', type: 'GT', title: 'Level > 10', tagBinding: '', x: 260, y: 360),
-          FbdBlock(id: 'wf_a1', type: 'AND', title: 'Quality OK', tagBinding: '', x: 460, y: 240),
-          FbdBlock(id: 'wf_o1', type: 'TAG_OUTPUT', title: 'Quality OK', tagBinding: 'Quality_OK', x: 660, y: 240),
+          // Network 0: Thresholds.
+          FbdBlock(id: 'wf_i1', type: 'TAG_INPUT', title: 'Turbidity PV', tagBinding: 'Turbidity_PV', x: 50, y: 80, network: 0),
+          FbdBlock(id: 'wf_i2', type: 'TAG_INPUT', title: 'Turbidity SP', tagBinding: 'Turbidity_SP', x: 50, y: 190, network: 0),
+          FbdBlock(id: 'wf_lt', type: 'LT', title: 'Turbidity < SP', tagBinding: '', x: 260, y: 130, network: 0),
+          FbdBlock(id: 'wf_i3', type: 'TAG_INPUT', title: 'Level PV', tagBinding: 'Level_PV', x: 50, y: 320, network: 0),
+          FbdBlock(id: 'wf_c1', type: 'CONST', title: 'Min Level', tagBinding: '10.0', x: 50, y: 430, network: 0),
+          FbdBlock(id: 'wf_gt', type: 'GT', title: 'Level > 10', tagBinding: '', x: 260, y: 360, network: 0),
+          FbdBlock(id: 'wf_o_lt', type: 'TAG_OUTPUT', title: 'Turbidity OK', tagBinding: 'Turbidity_Below_SP', x: 460, y: 130, network: 0),
+          FbdBlock(id: 'wf_o_gt', type: 'TAG_OUTPUT', title: 'Level OK', tagBinding: 'Level_Above_Min', x: 460, y: 360, network: 0),
+          // Network 1: Quality gate & output.
+          FbdBlock(id: 'wf_i4', type: 'TAG_INPUT', title: 'Turbidity OK', tagBinding: 'Turbidity_Below_SP', x: 50, y: 130, network: 1),
+          FbdBlock(id: 'wf_i5', type: 'TAG_INPUT', title: 'Level OK', tagBinding: 'Level_Above_Min', x: 50, y: 240, network: 1),
+          FbdBlock(id: 'wf_a1', type: 'AND', title: 'Quality OK', tagBinding: '', x: 260, y: 185, network: 1),
+          FbdBlock(id: 'wf_o1', type: 'TAG_OUTPUT', title: 'Quality OK', tagBinding: 'Quality_OK', x: 460, y: 185, network: 1),
         ],
         fbdWires: [
+          // Network 0.
           FbdWire(fromBlockId: 'wf_i1', fromPin: 'OUT', toBlockId: 'wf_lt', toPin: 'IN1'), // Turbidity_PV
           FbdWire(fromBlockId: 'wf_i2', fromPin: 'OUT', toBlockId: 'wf_lt', toPin: 'IN2'), // Turbidity_SP
           FbdWire(fromBlockId: 'wf_i3', fromPin: 'OUT', toBlockId: 'wf_gt', toPin: 'IN1'), // Level_PV
           FbdWire(fromBlockId: 'wf_c1', fromPin: 'OUT', toBlockId: 'wf_gt', toPin: 'IN2'), // 10.0
-          FbdWire(fromBlockId: 'wf_lt', fromPin: 'OUT', toBlockId: 'wf_a1', toPin: 'IN1'),
-          FbdWire(fromBlockId: 'wf_gt', fromPin: 'OUT', toBlockId: 'wf_a1', toPin: 'IN2'),
+          FbdWire(fromBlockId: 'wf_lt', fromPin: 'OUT', toBlockId: 'wf_o_lt', toPin: 'IN'),
+          FbdWire(fromBlockId: 'wf_gt', fromPin: 'OUT', toBlockId: 'wf_o_gt', toPin: 'IN'),
+          // Network 1 (wf_i4/wf_i5 read the tags network 0 just wrote).
+          FbdWire(fromBlockId: 'wf_i4', fromPin: 'OUT', toBlockId: 'wf_a1', toPin: 'IN1'),
+          FbdWire(fromBlockId: 'wf_i5', fromPin: 'OUT', toBlockId: 'wf_a1', toPin: 'IN2'),
           FbdWire(fromBlockId: 'wf_a1', fromPin: 'OUT', toBlockId: 'wf_o1', toPin: 'IN'),
         ],
       ),

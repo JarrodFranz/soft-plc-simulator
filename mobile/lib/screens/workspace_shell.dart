@@ -3093,6 +3093,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
           currentProject: _activeProject,
           program: prog,
           onProgramUpdated: _markDirtyAndAutosave,
+          monitor: _scan.fbdMonitor,
+          scanRunning: isRunning && !_faulted,
         );
       } else if (prog.language == 'SequentialFunctionChart') {
         return SfcEditorScreen(
