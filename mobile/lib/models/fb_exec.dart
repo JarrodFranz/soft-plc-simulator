@@ -8,6 +8,10 @@ import 'tag_resolver.dart';
 /// Pure/deterministic; never throws.
 Map<String, dynamic> executeFbInstance(
     PlcProject p, FbDefinition fb, String instanceName, Map<String, dynamic> inputs) {
+  // An empty instance name has no struct to scope into: paths like `.In` would
+  // strip to bare `In` and alias onto same-named GLOBAL tags. Refuse to run
+  // rather than read/write unrelated globals (dangling/unbound binding).
+  if (instanceName.isEmpty) return const {};
   // 1. Write inputs into the instance struct.
   for (final v in fb.vars) {
     if (v.direction == FbVarDir.input && inputs.containsKey(v.name)) {
