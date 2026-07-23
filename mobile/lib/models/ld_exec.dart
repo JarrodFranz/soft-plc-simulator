@@ -4,6 +4,7 @@ import 'project_model.dart';
 import 'ld_graph.dart';
 import 'ld_monitor.dart';
 import 'tag_resolver.dart';
+import 'fb_exec.dart';
 
 /// Prev-scan state for edge contacts and pulse coils, keyed by
 /// "program|rungIndex|nodeId".
@@ -341,6 +342,36 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
           write('$base.R', reset);
           power[n.id] = qu;
           elemTrue[n.id] = inP; // glow while the up/down counter is enabled
+          break;
+        }
+
+        final fb = fbDefinitionFor(p, n.blockType);
+        if (fb != null) {
+          // Custom function block instance: a data block (like compare/math),
+          // transparent to power flow. Execution/writes are gated on input
+          // power exactly like the math-block ENO convention above; power
+          // passes straight through regardless (`power[n.id] = inP`), so the
+          // FB never breaks the rung.
+          if (inP) {
+            final inputs = <String, dynamic>{};
+            for (final v in fb.vars) {
+              if (v.direction == FbVarDir.input) {
+                final tag = n.pinBindings[v.name];
+                if (tag != null && tag.isNotEmpty) {
+                  inputs[v.name] = readPath(p, tag);
+                }
+              }
+            }
+            final outputs = executeFbInstance(p, fb, n.variable, inputs);
+            outputs.forEach((name, value) {
+              final tag = n.pinBindings[name];
+              if (tag != null && tag.isNotEmpty && value != null) {
+                write(tag, value);
+              }
+            });
+          }
+          power[n.id] = inP;
+          elemTrue[n.id] = inP; // glow while the FB block executes
           break;
         }
 
