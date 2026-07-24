@@ -1,0 +1,10 @@
+{
+  "name": "soft-plc-browser-tooling",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dev-only browser-testing tooling (Playwright MCP + scripts) for headless responsive/visual verification of the Flutter web build. Not part of the Flutter app.",
+  "devDependencies": {
+    "@playwright/mcp": "latest",
+    "playwright": "latest"
+  }
+}

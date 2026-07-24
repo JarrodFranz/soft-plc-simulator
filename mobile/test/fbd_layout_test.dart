@@ -111,49 +111,68 @@ void main() {
     });
   });
 
-  group('fbdContentSize', () {
-    test('an empty network floors at the default minimum', () {
-      final size = fbdContentSize(_prog([], []), 0);
-      expect(size.width, 1600);
-      expect(size.height, 1200);
+  group('fbdCanvasGeometry', () {
+    test('an empty network floors at the default minimum with no offset', () {
+      final geo = fbdCanvasGeometry(_prog([], []), 0);
+      expect(geo.width, 1600);
+      expect(geo.height, 1200);
+      // No negative blocks -> no render offset (blocks draw at their real coords).
+      expect(geo.offsetX, 0);
+      expect(geo.offsetY, 0);
     });
 
-    test('a network smaller than the default still floors at the minimum', () {
+    test('a purely positive network floors at the minimum with no offset', () {
       final p = _prog([_b('A', 'TAG_INPUT', x: 20, y: 20)], []);
-      final size = fbdContentSize(p, 0);
-      expect(size.width, 1600);
-      expect(size.height, 1200);
+      final geo = fbdCanvasGeometry(p, 0);
+      expect(geo.width, 1600);
+      expect(geo.height, 1200);
+      // A positive-only diagram is not re-normalized: it renders unshifted.
+      expect(geo.offsetX, 0);
+      expect(geo.offsetY, 0);
     });
 
     test('a block far to the right grows the width to contain it (never clips)', () {
       // Auto-arrange can push a deep column past the old fixed 1600 width.
       final p = _prog([_b('A', 'TAG_INPUT', x: 2000, y: 20)], []);
-      final size = fbdContentSize(p, 0);
+      final geo = fbdCanvasGeometry(p, 0);
       // Must reach past the block's right edge (x + block width) with padding.
-      expect(size.width, greaterThan(2000 + 180));
-      expect(size.height, 1200); // vertical still at floor
+      expect(geo.width, greaterThan(2000 + 180));
+      expect(geo.height, 1200); // vertical still at floor
     });
 
     test('a block far below grows the height to contain it', () {
       final p = _prog([_b('A', 'TAG_INPUT', x: 20, y: 1500)], []);
-      final size = fbdContentSize(p, 0);
-      expect(size.height, greaterThan(1500));
-      expect(size.width, 1600);
+      final geo = fbdCanvasGeometry(p, 0);
+      expect(geo.height, greaterThan(1500));
+      expect(geo.width, 1600);
     });
 
-    test('only blocks in the queried network count toward its size', () {
+    test('a negative-coordinate block is pulled inside the box by the offset', () {
+      // A block placed above/left of the origin must render at a POSITIVE canvas
+      // position (block.x + offsetX >= 0) so it stays inside the hit-testable box.
+      final p = _prog([_b('A', 'AND', x: -500, y: -300)], []);
+      final geo = fbdCanvasGeometry(p, 0);
+      expect(-500 + geo.offsetX, greaterThanOrEqualTo(0));
+      expect(-300 + geo.offsetY, greaterThanOrEqualTo(0));
+      // The offset extends further than the default pad to make room for it.
+      final empty = fbdCanvasGeometry(_prog([], []), 0);
+      expect(geo.offsetX, greaterThan(empty.offsetX));
+      expect(geo.offsetY, greaterThan(empty.offsetY));
+    });
+
+    test('only blocks in the queried network count toward its geometry', () {
       // A block way out in network 1 must not inflate network 0's canvas.
       final p = _prog([
         _b('A', 'TAG_INPUT', x: 20, y: 20),
         FbdBlock(id: 'far', type: 'TAG_INPUT', title: 'far', x: 9000, y: 9000, network: 1),
       ], []);
-      final size = fbdContentSize(p, 0);
-      expect(size.width, 1600);
-      expect(size.height, 1200);
+      final geo0 = fbdCanvasGeometry(p, 0);
+      expect(geo0.width, 1600);
+      expect(geo0.height, 1200);
       // Network 1, by contrast, grows to contain its far-out block.
-      final size1 = fbdContentSize(p, 1);
-      expect(size1.width, greaterThan(9000));
-      expect(size1.height, greaterThan(9000));
+      final geo1 = fbdCanvasGeometry(p, 1);
+      expect(geo1.width, greaterThan(9000));
+      expect(geo1.height, greaterThan(9000));
     });
   });
 }

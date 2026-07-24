@@ -366,4 +366,56 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   });
+
+  group('network navigator rail', () {
+    // A two-network program where network 0's lane is tall (a block far down)
+    // so network 1 starts below the fold and must be scrolled to.
+    PlcProgram twoNetworkProgram() {
+      final program = PlcProgram(name: 'FBD1', language: 'FunctionBlockDiagram');
+      program.fbdNetworks
+        ..clear()
+        ..addAll([FbdNetwork(comment: ''), FbdNetwork(comment: '')]);
+      program.fbdBlocks.addAll([
+        FbdBlock(id: 'n0a', type: 'CONST', title: 'N0 top', tagBinding: '1', x: 40, y: 40, network: 0),
+        FbdBlock(id: 'n0b', type: 'CONST', title: 'N0 low', tagBinding: '2', x: 40, y: 1400, network: 0),
+        FbdBlock(id: 'n1a', type: 'CONST', title: 'N1 top', tagBinding: '3', x: 40, y: 40, network: 1),
+      ]);
+      return program;
+    }
+
+    testWidgets('a single-network program shows no rail', (tester) async {
+      await setSurface(tester, desktopSize);
+      await tester.pumpWidget(app(_buildProject(), _buildProgram()));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('fbd_network_rail')), findsNothing);
+    });
+
+    testWidgets('>=2 networks show a rail with a chip per network', (tester) async {
+      await setSurface(tester, desktopSize);
+      await tester.pumpWidget(app(_buildProject(), twoNetworkProgram()));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('fbd_network_rail')), findsOneWidget);
+      expect(find.byKey(const Key('fbd_rail_0')), findsOneWidget);
+      expect(find.byKey(const Key('fbd_rail_1')), findsOneWidget);
+    });
+
+    testWidgets('tapping a rail chip scrolls an off-screen network into view', (tester) async {
+      await setSurface(tester, desktopSize);
+      await tester.pumpWidget(app(_buildProject(), twoNetworkProgram()));
+      await tester.pumpAndSettle();
+
+      // Network 0's lane is taller than the viewport, so network 1's header
+      // starts below the fold (not built in the lazy list).
+      expect(find.byKey(const Key('fbd_network_header_1')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('fbd_rail_1')));
+      await tester.pumpAndSettle();
+
+      // After the jump it is built and sits in the upper part of the viewport.
+      expect(find.byKey(const Key('fbd_network_header_1')), findsOneWidget);
+      final top = tester.getTopLeft(find.byKey(const Key('fbd_network_header_1'))).dy;
+      expect(top, lessThan(desktopSize.height));
+      expect(tester.takeException(), isNull);
+    });
+  });
 }
