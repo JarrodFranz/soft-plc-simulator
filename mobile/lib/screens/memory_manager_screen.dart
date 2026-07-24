@@ -662,7 +662,10 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
         ],
       ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
+        // Generous bottom padding so the last table rows can scroll clear of
+        // the two stacked floating action buttons instead of sitting hidden
+        // beneath them.
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 148),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -770,29 +773,60 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
 
   // Renders one folder-group's rows as a DataTable (wide layouts) or a
   // vertical card list (narrow layouts) — same row-data source either way.
+  //
+  // The wide table keeps the edit/delete actions usable at ANY window size by
+  // two means. First, the Actions column sits directly after the tag name, so
+  // even when the table is wider than the pane the actions are in the
+  // never-scrolled-away leading edge (they used to be the LAST column of an
+  // invisible horizontal scroll — cut off entirely in small windows). Second,
+  // the informational columns (I/O Classification, Browse Path, Quality) drop
+  // progressively as the pane narrows (the pane, not the window — so an open
+  // Tag Inspector counts), which usually avoids scrolling altogether; any
+  // residual overflow scrolls with an always-visible scrollbar.
   Widget _buildGroupBody(List<PlcTag> folderTopLevelTags) {
     final data = _buildRowData(topLevelTags: folderTopLevelTags);
     if (context.isExpanded) {
-      return Card(
-        color: const Color(0xFF1E293B),
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: DataTable(
-            sortColumnIndex: _sortColumnIndex,
-            sortAscending: _isAscending,
-            columns: [
-              DataColumn(label: const Text('Tag / Member Name'), onSort: _sortTags),
-              DataColumn(label: const Text('Browse Path'), onSort: _sortTags),
-              DataColumn(label: const Text('Data Type'), onSort: _sortTags),
-              DataColumn(label: const Text('Live Value'), onSort: _sortTags),
-              DataColumn(label: const Text('Quality'), onSort: _sortTags),
-              DataColumn(label: const Text('I/O Classification'), onSort: _sortTags),
-              const DataColumn(label: Text('Actions / Expand')),
-            ],
-            rows: _buildHierarchicalRows(data),
+      return LayoutBuilder(builder: (context, constraints) {
+        final w = constraints.maxWidth;
+        final showIo = w >= 1170;
+        final showPath = w >= 1350;
+        final showQuality = w >= 1430;
+        // (label, sort-field id) per visible column; the id matches the stable
+        // 0-5 field mapping in `_sortTags`, independent of column POSITION —
+        // required because hidden columns shift positions. Actions (-1) has no
+        // sort. The DataTable's display index is looked up per build so a sort
+        // on a now-hidden column simply shows no arrow instead of crashing.
+        final specs = <({String label, int fieldId})>[
+          (label: 'Tag / Member Name', fieldId: 0),
+          (label: 'Actions', fieldId: -1),
+          if (showPath) (label: 'Browse Path', fieldId: 1),
+          (label: 'Data Type', fieldId: 2),
+          (label: 'Live Value', fieldId: 3),
+          if (showQuality) (label: 'Quality', fieldId: 4),
+          if (showIo) (label: 'I/O Classification', fieldId: 5),
+        ];
+        final displaySortIndex = specs.indexWhere((s) => s.fieldId == _sortColumnIndex);
+        return Card(
+          color: const Color(0xFF1E293B),
+          child: _HorizontalScrollWithBar(
+            child: DataTable(
+              sortColumnIndex: displaySortIndex < 0 ? null : displaySortIndex,
+              sortAscending: _isAscending,
+              columnSpacing: 28,
+              horizontalMargin: 12,
+              columns: [
+                for (final s in specs)
+                  DataColumn(
+                    label: Text(s.label),
+                    onSort: s.fieldId < 0 ? null : (_, asc) => _sortTags(s.fieldId, asc),
+                  ),
+              ],
+              rows: _buildHierarchicalRows(data,
+                  showPath: showPath, showQuality: showQuality, showIo: showIo),
+            ),
           ),
-        ),
-      );
+        );
+      });
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1131,7 +1165,8 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
     widget.onProjectUpdated();
   }
 
-  List<DataRow> _buildHierarchicalRows(List<_TagRowData> data) {
+  List<DataRow> _buildHierarchicalRows(List<_TagRowData> data,
+      {bool showPath = true, bool showQuality = true, bool showIo = true}) {
     return data.map((row) {
       final expandIconColor = row.isTimer ? Colors.purpleAccent : Colors.amberAccent;
       return DataRow(cells: [
@@ -1157,21 +1192,6 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                     fontSize: row.depth == 0 ? 14 : 12)),
           ]),
         )),
-        DataCell(Text(row.path, style: TextStyle(color: Colors.grey, fontSize: row.depth == 0 ? 11 : 10))),
-        DataCell(Container(
-          padding: row.depth == 0 ? const EdgeInsets.symmetric(horizontal: 6, vertical: 2) : EdgeInsets.zero,
-          decoration: row.depth == 0
-              ? BoxDecoration(color: (row.isTimer ? Colors.purple : Colors.cyan).withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4))
-              : null,
-          child: Text(row.displayType,
-              style: TextStyle(
-                  color: row.depth == 0 ? (row.isTimer ? Colors.purpleAccent : Colors.cyanAccent) : Colors.cyanAccent,
-                  fontWeight: row.depth == 0 ? FontWeight.bold : FontWeight.normal,
-                  fontSize: row.depth == 0 ? 11 : 10)),
-        )),
-        DataCell(_valueCellForTable(row)),
-        DataCell(Text(row.quality, style: TextStyle(color: row.depth == 0 ? Colors.green : Colors.greenAccent, fontSize: row.depth == 0 ? 11 : 10))),
-        DataCell(Text(row.ioClass, style: TextStyle(color: Colors.grey, fontSize: row.depth == 0 ? 11 : 10))),
         DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
           if (row.isDeletable && row.depth == 0 && row.name != kSystemTagName)
             IconButton(
@@ -1188,6 +1208,24 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
               onPressed: () => _deleteTag(row.name),
             ),
         ])),
+        if (showPath)
+          DataCell(Text(row.path, style: TextStyle(color: Colors.grey, fontSize: row.depth == 0 ? 11 : 10))),
+        DataCell(Container(
+          padding: row.depth == 0 ? const EdgeInsets.symmetric(horizontal: 6, vertical: 2) : EdgeInsets.zero,
+          decoration: row.depth == 0
+              ? BoxDecoration(color: (row.isTimer ? Colors.purple : Colors.cyan).withValues(alpha: 0.2), borderRadius: BorderRadius.circular(4))
+              : null,
+          child: Text(row.displayType,
+              style: TextStyle(
+                  color: row.depth == 0 ? (row.isTimer ? Colors.purpleAccent : Colors.cyanAccent) : Colors.cyanAccent,
+                  fontWeight: row.depth == 0 ? FontWeight.bold : FontWeight.normal,
+                  fontSize: row.depth == 0 ? 11 : 10)),
+        )),
+        DataCell(_valueCellForTable(row)),
+        if (showQuality)
+          DataCell(Text(row.quality, style: TextStyle(color: row.depth == 0 ? Colors.green : Colors.greenAccent, fontSize: row.depth == 0 ? 11 : 10))),
+        if (showIo)
+          DataCell(Text(row.ioClass, style: TextStyle(color: Colors.grey, fontSize: row.depth == 0 ? 11 : 10))),
       ]);
     }).toList();
   }
@@ -1238,7 +1276,8 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
       body: structs.isEmpty
           ? const Center(child: Text('No Struct definitions defined yet.'))
           : ListView.builder(
-              padding: const EdgeInsets.all(16),
+              // Bottom padding keeps the last DUT card clear of the Add DUT FAB.
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
               itemCount: structs.length,
               itemBuilder: (context, index) {
                 final s = structs[index];
@@ -1698,6 +1737,42 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// A horizontal [SingleChildScrollView] with an always-visible scrollbar, so
+/// content wider than the viewport is visibly discoverable (an invisible
+/// horizontal scroll region hid the tag table's action buttons in small
+/// windows). Owns its controller so sibling tables never share scroll state.
+class _HorizontalScrollWithBar extends StatefulWidget {
+  const _HorizontalScrollWithBar({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_HorizontalScrollWithBar> createState() => _HorizontalScrollWithBarState();
+}
+
+class _HorizontalScrollWithBarState extends State<_HorizontalScrollWithBar> {
+  final ScrollController _controller = ScrollController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scrollbar(
+      controller: _controller,
+      thumbVisibility: true,
+      child: SingleChildScrollView(
+        controller: _controller,
+        scrollDirection: Axis.horizontal,
+        child: widget.child,
       ),
     );
   }
