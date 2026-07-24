@@ -110,4 +110,50 @@ void main() {
       expect(layout.containsKey('B'), isTrue);
     });
   });
+
+  group('fbdContentSize', () {
+    test('an empty network floors at the default minimum', () {
+      final size = fbdContentSize(_prog([], []), 0);
+      expect(size.width, 1600);
+      expect(size.height, 1200);
+    });
+
+    test('a network smaller than the default still floors at the minimum', () {
+      final p = _prog([_b('A', 'TAG_INPUT', x: 20, y: 20)], []);
+      final size = fbdContentSize(p, 0);
+      expect(size.width, 1600);
+      expect(size.height, 1200);
+    });
+
+    test('a block far to the right grows the width to contain it (never clips)', () {
+      // Auto-arrange can push a deep column past the old fixed 1600 width.
+      final p = _prog([_b('A', 'TAG_INPUT', x: 2000, y: 20)], []);
+      final size = fbdContentSize(p, 0);
+      // Must reach past the block's right edge (x + block width) with padding.
+      expect(size.width, greaterThan(2000 + 180));
+      expect(size.height, 1200); // vertical still at floor
+    });
+
+    test('a block far below grows the height to contain it', () {
+      final p = _prog([_b('A', 'TAG_INPUT', x: 20, y: 1500)], []);
+      final size = fbdContentSize(p, 0);
+      expect(size.height, greaterThan(1500));
+      expect(size.width, 1600);
+    });
+
+    test('only blocks in the queried network count toward its size', () {
+      // A block way out in network 1 must not inflate network 0's canvas.
+      final p = _prog([
+        _b('A', 'TAG_INPUT', x: 20, y: 20),
+        FbdBlock(id: 'far', type: 'TAG_INPUT', title: 'far', x: 9000, y: 9000, network: 1),
+      ], []);
+      final size = fbdContentSize(p, 0);
+      expect(size.width, 1600);
+      expect(size.height, 1200);
+      // Network 1, by contrast, grows to contain its far-out block.
+      final size1 = fbdContentSize(p, 1);
+      expect(size1.width, greaterThan(9000));
+      expect(size1.height, greaterThan(9000));
+    });
+  });
 }
