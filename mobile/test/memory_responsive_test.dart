@@ -82,5 +82,98 @@ void main() {
 
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets('small desktop window (1300x709): edit/delete actions visible on-screen',
+        (tester) async {
+      // Regression: at moderate desktop widths the 7-column table used to push
+      // the Actions column past the right edge of an invisible horizontal
+      // scroll region, hiding edit/delete entirely. With priority columns the
+      // actions must be laid out inside the visible viewport.
+      await setSurface(tester, const Size(1300, 709));
+      await tester.pumpWidget(app(_project()));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(DataTable), findsOneWidget);
+
+      // An edit button for a root tag exists and sits within the screen bounds.
+      final edit = find.byKey(const Key('edit_tag_Start_PB'));
+      expect(edit, findsOneWidget);
+      final rect = tester.getRect(edit);
+      expect(rect.right, lessThanOrEqualTo(1300));
+      expect(rect.left, greaterThanOrEqualTo(0));
+
+      // Its sibling delete button is present too.
+      final actionsRow = find.ancestor(of: edit, matching: find.byType(Row)).first;
+      expect(
+        find.descendant(of: actionsRow, matching: find.byIcon(Icons.delete)),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('wide desktop (1600x900): all informational columns present', (tester) async {
+      await setSurface(tester, const Size(1600, 900));
+      await tester.pumpWidget(app(_project()));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Browse Path'), findsOneWidget);
+      expect(find.text('Quality'), findsOneWidget);
+      expect(find.text('I/O Classification'), findsOneWidget);
+      // Actions remain visible alongside the full column set.
+      expect(find.byKey(const Key('edit_tag_Start_PB')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('narrow desktop (900x709): low-priority columns drop, actions stay',
+        (tester) async {
+      await setSurface(tester, const Size(900, 709));
+      await tester.pumpWidget(app(_project()));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(DataTable), findsOneWidget);
+      // Browse Path and Quality are dropped at this width; actions remain.
+      expect(find.text('Browse Path'), findsNothing);
+      expect(find.text('Quality'), findsNothing);
+      final edit = find.byKey(const Key('edit_tag_Start_PB'));
+      expect(edit, findsOneWidget);
+      expect(tester.getRect(edit).right, lessThanOrEqualTo(900));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('fit is content-measured: columns reappear as the pane grows',
+        (tester) async {
+      // (The test font renders every glyph a full em wide, so absolute widths
+      // here are ~1.7x real rendering — assert the BEHAVIOR, not exact
+      // breakpoints: mid width already readmits I/O Classification, and a
+      // clearly-wide pane shows the full column set with actions intact.)
+      final mimo = DefaultProjects.all().firstWhere((p) => p.id == 'proj_mimo_two_zone');
+      await setSurface(tester, const Size(1300, 709));
+      await tester.pumpWidget(app(mimo));
+      await tester.pumpAndSettle();
+      expect(find.text('I/O Classification'), findsOneWidget);
+      expect(find.byKey(const Key('edit_tag_Heater_A')), findsOneWidget);
+
+      await setSurface(tester, const Size(1800, 709));
+      await tester.pumpWidget(app(mimo));
+      await tester.pumpAndSettle();
+      expect(find.text('Browse Path'), findsOneWidget);
+      expect(find.text('Quality'), findsOneWidget);
+      expect(find.text('I/O Classification'), findsOneWidget);
+      expect(find.byKey(const Key('edit_tag_Heater_A')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('table stretches to fill the pane (no dead space beside it)',
+        (tester) async {
+      final mimo = DefaultProjects.all().firstWhere((p) => p.id == 'proj_mimo_two_zone');
+      await setSurface(tester, const Size(1300, 709));
+      await tester.pumpWidget(app(mimo));
+      await tester.pumpAndSettle();
+
+      // Pane = window − 16px padding either side.
+      final table = tester.getSize(find.byType(DataTable).first);
+      expect(table.width, greaterThanOrEqualTo(1300 - 32 - 1));
+      expect(tester.takeException(), isNull);
+    });
   });
 }
