@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/system_tags.dart';
@@ -661,24 +663,114 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
           ),
         ],
       ),
-      body: SingleChildScrollView(
-        // Generous bottom padding so the last table rows can scroll clear of
-        // the two stacked floating action buttons instead of sitting hidden
-        // beneath them.
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 148),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('HIERARCHICAL TAG DATABASE (TIMERS, STRUCTS & BITS)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.cyanAccent)),
-            const SizedBox(height: 4),
-            const Text('Expand structured tags (timers, DUTs, arrays) to see their members. Expand integer tags to view individual bits.', style: TextStyle(color: Colors.grey, fontSize: 11)),
-            const SizedBox(height: 16),
+      // One LayoutBuilder for the whole tab so every folder group's table is
+      // fitted against the SAME pane width and they agree on visible columns.
+      body: LayoutBuilder(builder: (context, constraints) {
+        // 32 = the scroll view's horizontal padding; the remainder is what a
+        // group card can actually occupy.
+        final fit = _computeColumnFit(constraints.maxWidth - 32);
+        return SingleChildScrollView(
+          // Generous bottom padding so the last table rows can scroll clear of
+          // the two stacked floating action buttons instead of sitting hidden
+          // beneath them.
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 148),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('HIERARCHICAL TAG DATABASE (TIMERS, STRUCTS & BITS)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.cyanAccent)),
+              const SizedBox(height: 4),
+              const Text('Expand structured tags (timers, DUTs, arrays) to see their members. Expand integer tags to view individual bits.', style: TextStyle(color: Colors.grey, fontSize: 11)),
+              const SizedBox(height: 16),
 
-            ..._buildFolderSections(),
-          ],
-        ),
-      ),
+              ..._buildFolderSections(fit),
+            ],
+          ),
+        );
+      }),
     );
+  }
+
+  // ---------------------------------------------------------------
+  // Content-measured column fitting for the wide tag table
+  // ---------------------------------------------------------------
+
+  static const double _kColSpacing = 28;
+  static const double _kTableMargins = 24; // horizontalMargin * 2
+  static const double _kSortArrow = 18; // arrow + gap DataColumn reserves
+  static const double _kFitSlack = 20; // safety so a few px never force a bar
+
+  double _textW(String s, TextStyle style) {
+    final tp = TextPainter(
+      text: TextSpan(text: s, style: style),
+      textDirection: TextDirection.ltr,
+      textScaler: MediaQuery.textScalerOf(context),
+    )..layout();
+    return tp.width;
+  }
+
+  /// Decides which informational columns fit by MEASURING the current rows'
+  /// actual text (project content varies wildly — fixed thresholds either hide
+  /// columns beside dead space or overflow), dropping the least valuable
+  /// columns first (Quality, then Browse Path, then I/O Classification) until
+  /// the table fits [availWidth]. The essential columns (Name, Actions, Data
+  /// Type, Live Value) always stay. [availWidth] is also returned as the width
+  /// the table should stretch to fill, so no dead space remains beside it.
+  ({bool showPath, bool showQuality, bool showIo, double fillWidth}) _computeColumnFit(
+      double availWidth) {
+    const heading = TextStyle(fontSize: 14, fontWeight: FontWeight.w500);
+    final rows = _buildRowData(
+        topLevelTags:
+            widget.currentProject.tags.where((t) => !t.name.contains('.')).toList());
+
+    double nameW = _textW('Tag / Member Name', heading) + _kSortArrow;
+    double pathW = _textW('Browse Path', heading) + _kSortArrow;
+    double typeW = _textW('Data Type', heading) + _kSortArrow;
+    double valueW = _textW('Live Value', heading) + _kSortArrow;
+    double qualityW = _textW('Quality', heading) + _kSortArrow;
+    double ioW = _textW('I/O Classification', heading) + _kSortArrow;
+    final double actionsW =
+        math.max(_textW('Actions', heading), 80); // two 40px icon buttons
+
+    for (final row in rows) {
+      final root = row.depth == 0;
+      final nameStyle = TextStyle(
+          fontWeight: FontWeight.bold, fontFamily: 'monospace', fontSize: root ? 14 : 12);
+      // indent + expand icon chrome in front of the name.
+      final chrome = root ? 28.0 : 16.0 * row.depth + 20.0;
+      nameW = math.max(nameW, chrome + _textW(row.name, nameStyle));
+      final small = TextStyle(fontSize: root ? 11 : 10);
+      pathW = math.max(pathW, _textW(row.path, small));
+      typeW = math.max(
+          typeW,
+          _textW(row.displayType, TextStyle(fontWeight: root ? FontWeight.bold : FontWeight.normal, fontSize: root ? 11 : 10)) +
+              (root ? 12 : 0));
+      // Live FLOAT values re-randomise their decimals every scan; measure a
+      // stable representative instead so the fit never flickers mid-run.
+      final valueText = row.rawValue is double
+          ? '-00.000000000000000'
+          : (row.rawValue is Map || row.rawValue is List)
+              ? '{...}'
+              : '${row.rawValue}';
+      valueW = math.max(valueW, _textW(valueText, small));
+      qualityW = math.max(qualityW, _textW(row.quality, small));
+      ioW = math.max(ioW, _textW(row.ioClass, small));
+    }
+
+    double needed(bool path, bool quality, bool io) {
+      final cols = [nameW, actionsW, if (path) pathW, typeW, valueW, if (quality) qualityW, if (io) ioW];
+      return cols.fold<double>(0, (a, b) => a + b) +
+          _kColSpacing * (cols.length - 1) +
+          _kTableMargins +
+          _kFitSlack;
+    }
+
+    var showPath = true;
+    var showQuality = true;
+    var showIo = true;
+    if (needed(showPath, showQuality, showIo) > availWidth) showQuality = false;
+    if (needed(showPath, showQuality, showIo) > availWidth) showPath = false;
+    if (needed(showPath, showQuality, showIo) > availWidth) showIo = false;
+    return (showPath: showPath, showQuality: showQuality, showIo: showIo, fillWidth: availWidth);
   }
 
   // Top-level tags (no dot in name) bucketed by `folder`, in display order:
@@ -711,19 +803,20 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
   // Root tags (folder == '') render directly with no header (there is
   // nothing to collapse/delete). Every other folder gets a collapsible
   // header showing its tag count and a delete affordance.
-  List<Widget> _buildFolderSections() {
+  List<Widget> _buildFolderSections(
+      ({bool showPath, bool showQuality, bool showIo, double fillWidth}) fit) {
     final grouped = _tagsByFolder();
     final sections = <Widget>[];
     for (final key in _orderedFolderKeys(grouped)) {
       final folderTags = grouped[key]!;
       if (key.isEmpty) {
-        sections.add(_buildGroupBody(folderTags));
+        sections.add(_buildGroupBody(folderTags, fit));
         continue;
       }
       final collapsed = _collapsedFolders.contains(key);
       sections.add(_folderHeader(key, folderTags.length, collapsed));
       if (!collapsed) {
-        sections.add(_buildGroupBody(folderTags));
+        sections.add(_buildGroupBody(folderTags, fit));
       }
       sections.add(const SizedBox(height: 12));
     }
@@ -780,35 +873,40 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
   // never-scrolled-away leading edge (they used to be the LAST column of an
   // invisible horizontal scroll — cut off entirely in small windows). Second,
   // the informational columns (I/O Classification, Browse Path, Quality) drop
-  // progressively as the pane narrows (the pane, not the window — so an open
-  // Tag Inspector counts), which usually avoids scrolling altogether; any
-  // residual overflow scrolls with an always-visible scrollbar.
-  Widget _buildGroupBody(List<PlcTag> folderTopLevelTags) {
+  // when the MEASURED content genuinely doesn't fit the pane (see
+  // `_computeColumnFit`), and the table stretches to fill the pane so there is
+  // no dead space beside it; any residual overflow scrolls with an
+  // always-visible scrollbar.
+  Widget _buildGroupBody(List<PlcTag> folderTopLevelTags,
+      ({bool showPath, bool showQuality, bool showIo, double fillWidth}) fit) {
     final data = _buildRowData(topLevelTags: folderTopLevelTags);
     if (context.isExpanded) {
-      return LayoutBuilder(builder: (context, constraints) {
-        final w = constraints.maxWidth;
-        final showIo = w >= 1170;
-        final showPath = w >= 1350;
-        final showQuality = w >= 1430;
-        // (label, sort-field id) per visible column; the id matches the stable
-        // 0-5 field mapping in `_sortTags`, independent of column POSITION —
-        // required because hidden columns shift positions. Actions (-1) has no
-        // sort. The DataTable's display index is looked up per build so a sort
-        // on a now-hidden column simply shows no arrow instead of crashing.
-        final specs = <({String label, int fieldId})>[
-          (label: 'Tag / Member Name', fieldId: 0),
-          (label: 'Actions', fieldId: -1),
-          if (showPath) (label: 'Browse Path', fieldId: 1),
-          (label: 'Data Type', fieldId: 2),
-          (label: 'Live Value', fieldId: 3),
-          if (showQuality) (label: 'Quality', fieldId: 4),
-          if (showIo) (label: 'I/O Classification', fieldId: 5),
-        ];
-        final displaySortIndex = specs.indexWhere((s) => s.fieldId == _sortColumnIndex);
-        return Card(
-          color: const Color(0xFF1E293B),
-          child: _HorizontalScrollWithBar(
+      final showPath = fit.showPath;
+      final showQuality = fit.showQuality;
+      final showIo = fit.showIo;
+      // (label, sort-field id) per visible column; the id matches the stable
+      // 0-5 field mapping in `_sortTags`, independent of column POSITION —
+      // required because hidden columns shift positions. Actions (-1) has no
+      // sort. The DataTable's display index is looked up per build so a sort
+      // on a now-hidden column simply shows no arrow instead of crashing.
+      final specs = <({String label, int fieldId})>[
+        (label: 'Tag / Member Name', fieldId: 0),
+        (label: 'Actions', fieldId: -1),
+        if (showPath) (label: 'Browse Path', fieldId: 1),
+        (label: 'Data Type', fieldId: 2),
+        (label: 'Live Value', fieldId: 3),
+        if (showQuality) (label: 'Quality', fieldId: 4),
+        if (showIo) (label: 'I/O Classification', fieldId: 5),
+      ];
+      final displaySortIndex = specs.indexWhere((s) => s.fieldId == _sortColumnIndex);
+      return Card(
+        color: const Color(0xFF1E293B),
+        margin: EdgeInsets.zero,
+        child: _HorizontalScrollWithBar(
+          child: ConstrainedBox(
+            // Stretch the table to at least the pane width so rows span the
+            // full card and no dead space sits beside the columns.
+            constraints: BoxConstraints(minWidth: fit.fillWidth),
             child: DataTable(
               sortColumnIndex: displaySortIndex < 0 ? null : displaySortIndex,
               sortAscending: _isAscending,
@@ -825,8 +923,8 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                   showPath: showPath, showQuality: showQuality, showIo: showIo),
             ),
           ),
-        );
-      });
+        ),
+      );
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

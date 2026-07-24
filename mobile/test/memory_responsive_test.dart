@@ -139,5 +139,41 @@ void main() {
       expect(tester.getRect(edit).right, lessThanOrEqualTo(900));
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets('fit is content-measured: columns reappear as the pane grows',
+        (tester) async {
+      // (The test font renders every glyph a full em wide, so absolute widths
+      // here are ~1.7x real rendering — assert the BEHAVIOR, not exact
+      // breakpoints: mid width already readmits I/O Classification, and a
+      // clearly-wide pane shows the full column set with actions intact.)
+      final mimo = DefaultProjects.all().firstWhere((p) => p.id == 'proj_mimo_two_zone');
+      await setSurface(tester, const Size(1300, 709));
+      await tester.pumpWidget(app(mimo));
+      await tester.pumpAndSettle();
+      expect(find.text('I/O Classification'), findsOneWidget);
+      expect(find.byKey(const Key('edit_tag_Heater_A')), findsOneWidget);
+
+      await setSurface(tester, const Size(1800, 709));
+      await tester.pumpWidget(app(mimo));
+      await tester.pumpAndSettle();
+      expect(find.text('Browse Path'), findsOneWidget);
+      expect(find.text('Quality'), findsOneWidget);
+      expect(find.text('I/O Classification'), findsOneWidget);
+      expect(find.byKey(const Key('edit_tag_Heater_A')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('table stretches to fill the pane (no dead space beside it)',
+        (tester) async {
+      final mimo = DefaultProjects.all().firstWhere((p) => p.id == 'proj_mimo_two_zone');
+      await setSurface(tester, const Size(1300, 709));
+      await tester.pumpWidget(app(mimo));
+      await tester.pumpAndSettle();
+
+      // Pane = window − 16px padding either side.
+      final table = tester.getSize(find.byType(DataTable).first);
+      expect(table.width, greaterThanOrEqualTo(1300 - 32 - 1));
+      expect(tester.takeException(), isNull);
+    });
   });
 }
