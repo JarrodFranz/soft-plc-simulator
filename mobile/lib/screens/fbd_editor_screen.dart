@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderAbstractViewport;
 import '../models/fb_instance.dart';
 import '../models/fbd_monitor.dart';
 import '../models/fbd_pins.dart';
@@ -73,11 +74,20 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
   static const Color _kEnergized = Colors.greenAccent;
   static const Color _kDeEnergized = Color(0xFF475569); // slate-600
 
+  // Lane-list scrolling + the network navigator rail. One stable GlobalKey per
+  // lane (grown/trimmed in [_buildLaneList] to match the network count) lets the
+  // rail scroll a given lane into view; [_activeNet] tracks which lane is at the
+  // top so the rail can highlight it.
+  final ScrollController _laneScroll = ScrollController();
+  final List<GlobalKey> _laneKeys = [];
+  int _activeNet = 0;
+
   @override
   void initState() {
     super.initState();
     _ensureDefaultFbd();
     _ensureNetworks();
+    _laneScroll.addListener(_onLaneScroll);
   }
 
   @override
@@ -85,8 +95,81 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     for (final c in _commentControllers.values) {
       c.dispose();
     }
+    _laneScroll.removeListener(_onLaneScroll);
+    _laneScroll.dispose();
     _fallbackTick.dispose();
     super.dispose();
+  }
+
+  /// The scroll offset at which lane [i]'s leading edge aligns with the viewport
+  /// top, or null if the lane isn't laid out yet. Used both to detect the active
+  /// lane and to jump to it.
+  double? _laneRevealOffset(int i) {
+    if (i < 0 || i >= _laneKeys.length) {
+      return null;
+    }
+    final ctx = _laneKeys[i].currentContext;
+    final ro = ctx?.findRenderObject();
+    if (ro == null || !ro.attached) {
+      return null;
+    }
+    return RenderAbstractViewport.of(ro).getOffsetToReveal(ro, 0).offset;
+  }
+
+  /// Track which lane sits at the top of the viewport so the rail highlights it:
+  /// the last lane whose reveal offset has scrolled to (or above) the current
+  /// position. Defensive — never throws during layout churn.
+  void _onLaneScroll() {
+    if (!_laneScroll.hasClients) {
+      return;
+    }
+    final pos = _laneScroll.offset;
+    var active = 0;
+    for (var i = 0; i < _laneKeys.length; i++) {
+      final reveal = _laneRevealOffset(i);
+      if (reveal != null && reveal <= pos + 8) {
+        active = i;
+      }
+    }
+    if (active != _activeNet && mounted) {
+      setState(() => _activeNet = active);
+    }
+  }
+
+  // Approximate fixed chrome around each lane's canvas (network header row +
+  // bottom margin + border), used to compute a lane's scroll offset without
+  // needing the (possibly not-yet-built) off-screen lane's render box.
+  static const double _kLaneHeaderChrome = 40; // header row
+  static const double _kLaneOuterChrome = 12 + 2; // bottom margin + border
+
+  double _laneOuterHeight(int net) =>
+      _kLaneHeaderChrome + _laneCanvasHeight(net) + _kLaneOuterChrome;
+
+  /// The scroll offset that brings lane [net]'s top to the viewport top,
+  /// computed from cumulative lane heights (works even when the target lane is
+  /// off-screen and hence not built — a lazy ListView won't have its context).
+  double _laneTopOffset(int net) {
+    var y = 8.0; // ListView top padding
+    for (var k = 0; k < net && k < _laneKeys.length; k++) {
+      y += _laneOuterHeight(k);
+    }
+    return y;
+  }
+
+  /// Scroll lane [net] to the top of the viewport (rail tap target).
+  void _scrollToNetwork(int net) {
+    if (!_laneScroll.hasClients || net < 0) {
+      return;
+    }
+    final target = _laneTopOffset(net).clamp(0.0, _laneScroll.position.maxScrollExtent);
+    _laneScroll.animateTo(
+      target,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeInOut,
+    );
+    if (mounted) {
+      setState(() => _activeNet = net);
+    }
   }
 
   // -----------------------------------------------------------------
@@ -434,12 +517,20 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
   /// desktop).
   Widget _buildLaneList(bool expanded) {
     final nets = widget.program.fbdNetworks;
-    return Container(
+    // Keep one stable GlobalKey per lane so the rail can scroll each into view.
+    while (_laneKeys.length < nets.length) {
+      _laneKeys.add(GlobalKey());
+    }
+    if (_laneKeys.length > nets.length) {
+      _laneKeys.removeRange(nets.length, _laneKeys.length);
+    }
+    final list = Container(
       color: const Color(0xFF0F172A),
       child: ListView(
+        controller: _laneScroll,
         padding: const EdgeInsets.all(8),
         children: [
-          for (var i = 0; i < nets.length; i++) _buildLane(i, expanded),
+          for (var i = 0; i < nets.length; i++) _buildLane(i, expanded, _laneKeys[i]),
           const SizedBox(height: 4),
           Align(
             alignment: Alignment.centerLeft,
@@ -454,9 +545,70 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
         ],
       ),
     );
+    // The network navigator rail is only useful with more than one network.
+    if (nets.length < 2) {
+      return list;
+    }
+    return Row(
+      children: [
+        _buildNetworkRail(nets.length),
+        const VerticalDivider(width: 1, color: Colors.white12),
+        Expanded(child: list),
+      ],
+    );
   }
 
-  Widget _buildLane(int net, bool expanded) {
+  /// A slim vertical rail of network numbers; tapping one scrolls that network's
+  /// lane to the top. The current (topmost) lane is highlighted. Itself
+  /// scrollable so it copes with many networks.
+  Widget _buildNetworkRail(int count) {
+    return Container(
+      key: const Key('fbd_network_rail'),
+      width: 46,
+      color: const Color(0xFF162032),
+      child: ListView.builder(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        itemCount: count,
+        itemBuilder: (_, i) {
+          final active = i == _activeNet;
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(6, 4, 6, 4),
+            child: Tooltip(
+              message: 'Go to Network ${i + 1}',
+              child: InkWell(
+                key: Key('fbd_rail_$i'),
+                onTap: () => _scrollToNetwork(i),
+                borderRadius: BorderRadius.circular(6),
+                child: Container(
+                  height: 32,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: active
+                        ? Colors.tealAccent.withValues(alpha: 0.18)
+                        : Colors.transparent,
+                    border: Border.all(
+                      color: active ? Colors.tealAccent : Colors.white24,
+                    ),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    '${i + 1}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: active ? Colors.tealAccent : Colors.white70,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildLane(int net, bool expanded, [Key? key]) {
     // While online, rebuild just this lane's canvas on each LiveTick pulse so
     // its wire/pin values track the scan — the header (name/comment/arrange
     // buttons) never needs to repaint per-tick, so only the canvas child is
@@ -472,6 +624,7 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
       );
     }
     return Container(
+      key: key,
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         border: Border.all(color: Colors.white12),
@@ -494,8 +647,8 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
 
   /// A bounded viewport height sized to comfortably contain this network's
   /// blocks (so nothing important sits clipped off-stage), clamped to a sane
-  /// range. Panning still reaches the full content canvas (see [fbdContentSize])
-  /// and beyond via the unbounded pan margin.
+  /// range. Panning still reaches the full content canvas (see
+  /// [fbdCanvasGeometry]) and beyond via the unbounded pan margin.
   double _laneCanvasHeight(int net) {
     var maxY = 0.0;
     for (final b in fbdBlocksInNetwork(widget.program, net)) {
@@ -577,16 +730,24 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
 
   Widget _buildLaneCanvas(int net, bool expanded) {
     // Local anchor cache for THIS lane only: 'blockId|IN|pin' / 'blockId|OUT|pin'
-    // -> offset within the lane's canvas content (see [fbdContentSize]). Kept
-    // local (not a shared field) so sibling lanes never clobber each other's
-    // anchors.
+    // -> offset within the lane's canvas content. Kept local (not a shared
+    // field) so sibling lanes never clobber each other's anchors.
     final anchors = <String, Offset>{};
     final blocks = fbdBlocksInNetwork(widget.program, net);
 
+    // Canvas geometry: an offset that pulls blocks placed at negative
+    // coordinates back inside the positive, hit-testable, gridded box (so an
+    // off-grid block can still be dragged rather than panning the page), plus
+    // the box size. Block/anchor render positions add this offset; the stored
+    // block coordinates are untouched.
+    final geo = fbdCanvasGeometry(widget.program, net);
+    final ox = geo.offsetX;
+    final oy = geo.offsetY;
+
     final blockWidgets = blocks.map((block) {
       return Positioned(
-        left: block.x,
-        top: block.y,
+        left: block.x + ox,
+        top: block.y + oy,
         child: GestureDetector(
           onPanUpdate: expanded
               ? (details) {
@@ -605,16 +766,18 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
 
     // Pre-compute pin anchors for the painter (after blocks are laid out with
     // known positions/sizes, purely arithmetic — no need to wait for a frame).
+    // Anchors are in canvas space, so they include the render offset too.
     for (final block in blocks) {
       final inputs = fbdInputPinsFor(widget.currentProject, block);
       final outputs = fbdOutputPinsFor(widget.currentProject, block);
       for (var i = 0; i < inputs.length; i++) {
         final dy = _kHeaderHeight + i * _kPinRowHeight + _kPinRowHeight / 2;
-        anchors['${block.id}|IN|${inputs[i]}'] = Offset(block.x, block.y + dy);
+        anchors['${block.id}|IN|${inputs[i]}'] = Offset(block.x + ox, block.y + oy + dy);
       }
       for (var i = 0; i < outputs.length; i++) {
         final dy = _kHeaderHeight + i * _kPinRowHeight + _kPinRowHeight / 2;
-        anchors['${block.id}|OUT|${outputs[i]}'] = Offset(block.x + _kBlockWidth, block.y + dy);
+        anchors['${block.id}|OUT|${outputs[i]}'] =
+            Offset(block.x + ox + _kBlockWidth, block.y + oy + dy);
       }
     }
 
@@ -680,11 +843,11 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     // Size the logical canvas to actually contain this network's blocks (plus
     // breathing room), floored at a comfortable default. Auto-arrange or hand
     // placement can push blocks well past the old fixed 1600×1200 area; sizing
-    // to content means they're never clipped off-stage.
-    final size = fbdContentSize(widget.program, net);
+    // to content (with the negative-side offset above) means every block is
+    // inside the box and never clipped off-stage or un-draggable.
     final content = SizedBox(
-      width: size.width,
-      height: size.height,
+      width: geo.width,
+      height: geo.height,
       child: stack,
     );
 

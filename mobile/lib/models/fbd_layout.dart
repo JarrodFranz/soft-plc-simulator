@@ -47,25 +47,42 @@ Map<String, ({double x, double y})> autoArrangeFbdNetwork(
   return _arrange(blocks, wires);
 }
 
-/// The logical content size needed to display network [net]'s blocks without
-/// clipping: the farthest block's right/bottom edge plus [pad] of breathing
-/// room, floored at [minW]×[minH]. Pure; never throws. The editor sizes its
-/// pannable canvas to this so an auto-arranged (or hand-placed) diagram that
-/// runs wider/taller than the default area is never cut off. Blocks placed at
-/// negative coordinates are handled by the editor's non-clipping stack + pan
-/// margin, so only the positive extent needs sizing here.
-({double width, double height}) fbdContentSize(
+/// The canvas geometry for network [net]: a render [offsetX]/[offsetY] to add to
+/// every block's stored (x, y) so the whole diagram — including blocks placed at
+/// NEGATIVE coordinates (above/left of the origin) — sits inside a positive
+/// [width]×[height] box, floored at [minW]×[minH]. Pure; never throws.
+///
+/// The editor translates block cards, wire anchors, and the grid by this offset
+/// so every block lands inside the sized (hit-testable, gridded) area — a block
+/// outside that box paints but can't receive drags, which is why an off-grid
+/// block used to pan the page instead of moving. Block coordinates themselves
+/// are untouched (wiring/serialization unchanged); only rendering is shifted.
+///
+/// The offset extends into the negative side only as far as the most negative
+/// block requires (plus [pad]); a purely positive diagram keeps a fixed [pad]
+/// margin, so ordinary positive dragging never re-normalizes the canvas.
+({double offsetX, double offsetY, double width, double height}) fbdCanvasGeometry(
   PlcProgram program,
   int net, {
   double minW = 1600,
   double minH = 1200,
   double pad = 240,
 }) {
+  // min* start at 0 so a purely positive diagram yields offset == pad (a fixed
+  // margin), and only genuinely negative blocks push the origin further out.
+  var minX = 0.0;
+  var minY = 0.0;
   var maxRight = 0.0;
   var maxBottom = 0.0;
   for (final b in program.fbdBlocks) {
     if (b.network != net) {
       continue;
+    }
+    if (b.x < minX) {
+      minX = b.x;
+    }
+    if (b.y < minY) {
+      minY = b.y;
     }
     final right = b.x + _kBlockWidth;
     final bottom = b.y + _blockHeight(b);
@@ -76,9 +93,19 @@ Map<String, ({double x, double y})> autoArrangeFbdNetwork(
       maxBottom = bottom;
     }
   }
-  final w = maxRight + pad;
-  final h = maxBottom + pad;
-  return (width: w < minW ? minW : w, height: h < minH ? minH : h);
+  // A purely positive diagram gets offset 0 (blocks render at their stored
+  // coordinates, unchanged); only genuinely negative blocks introduce an offset
+  // that pulls them back inside the box, with [pad] of breathing room.
+  final offsetX = minX < 0 ? pad - minX : 0.0;
+  final offsetY = minY < 0 ? pad - minY : 0.0;
+  final w = maxRight + offsetX + pad;
+  final h = maxBottom + offsetY + pad;
+  return (
+    offsetX: offsetX,
+    offsetY: offsetY,
+    width: w < minW ? minW : w,
+    height: h < minH ? minH : h,
+  );
 }
 
 /// Shared dependency-depth layout over an arbitrary [blocks]/[wires] slice.
