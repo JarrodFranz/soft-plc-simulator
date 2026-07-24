@@ -73,3 +73,8 @@ gateway/pki/
 tool/py/.venv/
 __pycache__/
 *.pyc
+
+# Browser-testing tooling (Playwright MCP + scripts): committed config, but
+# never the installed browsers/deps or generated screenshots/artifacts.
+/node_modules/
+/.playwright-artifacts/
