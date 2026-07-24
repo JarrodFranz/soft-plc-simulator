@@ -47,6 +47,40 @@ Map<String, ({double x, double y})> autoArrangeFbdNetwork(
   return _arrange(blocks, wires);
 }
 
+/// The logical content size needed to display network [net]'s blocks without
+/// clipping: the farthest block's right/bottom edge plus [pad] of breathing
+/// room, floored at [minW]×[minH]. Pure; never throws. The editor sizes its
+/// pannable canvas to this so an auto-arranged (or hand-placed) diagram that
+/// runs wider/taller than the default area is never cut off. Blocks placed at
+/// negative coordinates are handled by the editor's non-clipping stack + pan
+/// margin, so only the positive extent needs sizing here.
+({double width, double height}) fbdContentSize(
+  PlcProgram program,
+  int net, {
+  double minW = 1600,
+  double minH = 1200,
+  double pad = 240,
+}) {
+  var maxRight = 0.0;
+  var maxBottom = 0.0;
+  for (final b in program.fbdBlocks) {
+    if (b.network != net) {
+      continue;
+    }
+    final right = b.x + _kBlockWidth;
+    final bottom = b.y + _blockHeight(b);
+    if (right > maxRight) {
+      maxRight = right;
+    }
+    if (bottom > maxBottom) {
+      maxBottom = bottom;
+    }
+  }
+  final w = maxRight + pad;
+  final h = maxBottom + pad;
+  return (width: w < minW ? minW : w, height: h < minH ? minH : h);
+}
+
 /// Shared dependency-depth layout over an arbitrary [blocks]/[wires] slice.
 Map<String, ({double x, double y})> _arrange(
     List<FbdBlock> blocks, List<FbdWire> wires) {

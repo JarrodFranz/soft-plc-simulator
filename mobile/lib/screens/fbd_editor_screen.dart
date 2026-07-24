@@ -494,7 +494,8 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
 
   /// A bounded viewport height sized to comfortably contain this network's
   /// blocks (so nothing important sits clipped off-stage), clamped to a sane
-  /// range. Panning still reaches the full 1600×1200 logical canvas.
+  /// range. Panning still reaches the full content canvas (see [fbdContentSize])
+  /// and beyond via the unbounded pan margin.
   double _laneCanvasHeight(int net) {
     var maxY = 0.0;
     for (final b in fbdBlocksInNetwork(widget.program, net)) {
@@ -576,8 +577,9 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
 
   Widget _buildLaneCanvas(int net, bool expanded) {
     // Local anchor cache for THIS lane only: 'blockId|IN|pin' / 'blockId|OUT|pin'
-    // -> offset within the lane's 1600×1200 canvas content. Kept local (not a
-    // shared field) so sibling lanes never clobber each other's anchors.
+    // -> offset within the lane's canvas content (see [fbdContentSize]). Kept
+    // local (not a shared field) so sibling lanes never clobber each other's
+    // anchors.
     final anchors = <String, Offset>{};
     final blocks = fbdBlocksInNetwork(widget.program, net);
 
@@ -617,6 +619,10 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     }
 
     final stack = Stack(
+      // Don't clip to the sized content area: a block dragged above/left of the
+      // origin (or beyond the sized extent) must still render, so the canvas
+      // feels unlimited in every direction.
+      clipBehavior: Clip.none,
       children: [
         // Grid Background Pattern
         const Positioned.fill(
@@ -671,24 +677,29 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
       ],
     );
 
-    // Give the canvas a generously large logical area so pan/zoom has room to
-    // explore blocks placed far from the origin.
+    // Size the logical canvas to actually contain this network's blocks (plus
+    // breathing room), floored at a comfortable default. Auto-arrange or hand
+    // placement can push blocks well past the old fixed 1600×1200 area; sizing
+    // to content means they're never clipped off-stage.
+    final size = fbdContentSize(widget.program, net);
     final content = SizedBox(
-      width: 1600,
-      height: 1200,
+      width: size.width,
+      height: size.height,
       child: stack,
     );
 
     // The lane pans/zooms on every platform. On desktop (expanded) individual
     // blocks stay draggable via their own pan handler — dragging a block moves
-    // the block, dragging the empty background pans the canvas.
+    // the block, dragging the empty background pans the canvas. An unbounded
+    // pan margin lets you scroll to blocks placed anywhere around the diagram,
+    // including above/left of the origin.
     return Container(
       color: const Color(0xFF0F172A),
       child: InteractiveViewer(
         constrained: false,
         minScale: 0.4,
         maxScale: 2.5,
-        boundaryMargin: const EdgeInsets.all(400),
+        boundaryMargin: const EdgeInsets.all(double.infinity),
         child: content,
       ),
     );
