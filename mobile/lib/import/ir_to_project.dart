@@ -1,6 +1,7 @@
 import '../models/project_model.dart';
 import '../models/system_tags.dart';
 import '../models/tag_resolver.dart';
+import 'fb_import.dart';
 import 'import_ir.dart';
 import 'ld_translate.dart';
 import 'type_normalize.dart';
@@ -16,6 +17,8 @@ class ImportReport {
   final int stubbedRungCount;
   final Set<String> unsupportedLdBlockTypes;
   final Map<String, int> ldStubReasons;
+  // Custom function-block import reporting (default-safe).
+  final int importedFbCount;
   ImportReport({
     required this.tagCount,
     required this.structCount,
@@ -26,6 +29,7 @@ class ImportReport {
     this.stubbedRungCount = 0,
     this.unsupportedLdBlockTypes = const {},
     this.ldStubReasons = const {},
+    this.importedFbCount = 0,
   });
 }
 
@@ -132,6 +136,10 @@ ImportResult mapImportedProject(ImportedProject ir,
     ));
   }
 
+  // functionBlock POUs -> FbDefinitions (registry + rename map feed the LD
+  // translator below so custom-FB calls route to the right definition).
+  final fbRes = mapImportedFbs(ir.pous, structs: structs, dutNames: dutNames, warnings: warnings);
+
   // POUs -> programs.
   var stCount = 0;
   var stubCount = 0;
@@ -141,6 +149,7 @@ ImportResult mapImportedProject(ImportedProject ir,
   final ldStubReasons = <String, int>{};
   final programs = <PlcProgram>[];
   for (final pou in ir.pous) {
+    if (pou.kind == PouKind.functionBlock) continue;
     final body = pou.body;
     if (body is TextBody) {
       if (pou.lang == PouLanguage.il) {
@@ -155,7 +164,8 @@ ImportResult mapImportedProject(ImportedProject ir,
       // LdRungs; rungs that don't degrade to a commented placeholder rung
       // inside the SAME program (see translateLdBody). The whole POU is
       // stubbed only when NOTHING in it translated.
-      final tr = translateLdBody(body, pouName: pou.name);
+      final tr = translateLdBody(body, pouName: pou.name,
+          fbRegistry: fbRes.registry, fbRenameMap: fbRes.renameMap);
       translatedRungCount += tr.translatedRungCount;
       stubbedRungCount += tr.stubbedRungCount;
       unsupportedLdBlockTypes.addAll(tr.unsupportedBlockTypes);
@@ -190,12 +200,13 @@ ImportResult mapImportedProject(ImportedProject ir,
           if (name != original) {
             for (final rung in tr.rungs) {
               for (final node in rung.nodes) {
-                // Restrict to instance-backed blocks (timers/counters): their
-                // `variable` is the instance name. MOVE/math blocks also use
-                // `variable`, but for their DESTINATION tag — a coincidental
-                // match there must NOT be retargeted (Finding 1).
+                // Restrict to instance-backed blocks (timers/counters/custom
+                // FB calls): their `variable` is the instance name. MOVE/math
+                // blocks also use `variable`, but for their DESTINATION tag —
+                // a coincidental match there must NOT be retargeted (Finding 1).
                 if (node.kind == LdKind.block &&
-                    isInstanceBackedLdBlock(node.blockType) &&
+                    (isInstanceBackedLdBlock(node.blockType) ||
+                        fbRes.registry.containsKey(node.blockType)) &&
                     node.variable == original) {
                   node.variable = name;
                 }
@@ -240,13 +251,15 @@ ImportResult mapImportedProject(ImportedProject ir,
   final project = PlcProject(
     id: projectId, name: projectName, controllerName: projectName,
     tags: tags, structDefs: structs, programs: programs, tasks: [], hmis: [],
+    fbDefinitions: fbRes.defs,
   );
   return ImportResult(
     project: project,
     report: ImportReport(tagCount: tags.length, structCount: structs.length,
         stProgramCount: stCount, graphicalStubCount: stubCount, warnings: warnings,
         translatedRungCount: translatedRungCount, stubbedRungCount: stubbedRungCount,
-        unsupportedLdBlockTypes: unsupportedLdBlockTypes, ldStubReasons: ldStubReasons),
+        unsupportedLdBlockTypes: unsupportedLdBlockTypes, ldStubReasons: ldStubReasons,
+        importedFbCount: fbRes.defs.length),
   );
 }
 

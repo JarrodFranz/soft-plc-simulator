@@ -419,5 +419,19 @@ void main() {
         returnsNormally,
       );
     });
+
+    test('import maps an ST functionBlock POU to an FbDefinition (not a program)', () {
+      final ir = ImportedProject(name: 'P', types: [], globalVars: [], warnings: [], pous: [
+        ImportedPou(name: 'Scaler', kind: PouKind.functionBlock, lang: PouLanguage.st,
+            localVars: [
+              ImportedVar(name: 'In', baseType: 'REAL', scope: VarScope.input),
+              ImportedVar(name: 'Out', baseType: 'REAL', scope: VarScope.output),
+            ], body: TextBody('Out := In;')),
+      ]);
+      final res = mapImportedProject(ir, projectName: 'P', projectId: 'p');
+      expect(res.project.fbDefinitions.map((f) => f.name), contains('Scaler'));
+      expect(res.project.programs.where((p) => p.name == 'Scaler'), isEmpty);
+      expect(res.report.importedFbCount, 1);
+    });
   });
 }
