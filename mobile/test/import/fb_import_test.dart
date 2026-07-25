@@ -73,6 +73,17 @@ void main() {
     expect(warnings.any((w) => w.message.contains('renamed')), isTrue);
   });
 
+  test('IL-bodied functionBlock POU imports its ST verbatim + an info warning', () {
+    final warnings = <ImportWarning>[];
+    final res = mapImportedFbs([
+      _fbPou('IlFb', [_v('q', 'BOOL', VarScope.output)], 'q := TRUE;',
+          lang: PouLanguage.il),
+    ], structs: [], dutNames: {}, warnings: warnings);
+    expect(res.defs.single.stSource, 'q := TRUE;');
+    expect(warnings.any((w) =>
+        w.severity == WarningSeverity.info && w.message.contains('IL')), isTrue);
+  });
+
   test('non-functionBlock POUs are ignored', () {
     final res = mapImportedFbs([
       ImportedPou(name: 'Main', kind: PouKind.program, lang: PouLanguage.st,

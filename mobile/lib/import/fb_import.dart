@@ -61,6 +61,11 @@ FbImportResult mapImportedFbs(
               '$n elements captured.'));
       continue;
     }
+    if (pou.lang == PouLanguage.il) {
+      warnings.add(ImportWarning(severity: WarningSeverity.info,
+          message: 'Function block "${pou.name}" imported from IL as Structured '
+              "Text — verify against the app's ST subset."));
+    }
 
     // Vars.
     final vars = <FbVar>[];

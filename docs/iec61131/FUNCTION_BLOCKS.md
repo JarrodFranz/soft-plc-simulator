@@ -63,7 +63,10 @@ Mapping an *imported* PLCopen `functionBlock` POU onto this same
 ST-bodied `functionBlock` POUs import as native FBs, and an LD `<block>` call
 site routes to a real FB instance (pin bindings + backing instance tag)
 instead of the unsupported-block stub — proven end-to-end (parse → map →
-translate → execute) in `mobile/test/import/import_fb_e2e_test.dart`. FBD
+translate → execute) in `mobile/test/import/import_fb_e2e_test.dart`. Call-site
+operands resolve via the parser's `<variable>` element convention (the same one
+all LD operand resolution uses); FB call operands bound with `<expression>`
+elements are a deferred parser follow-up (see `docs/DEFERRED.md`). FBD
 custom-FB call routing is still deferred until the FBD import translator
 ships. Graphical-bodied FBs, FB-calling-FB nesting, ST bodies beyond the
 app's subset, and IEC *functions* (stateless POUs) all remain out of scope —
