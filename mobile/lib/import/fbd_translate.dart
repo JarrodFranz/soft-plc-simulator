@@ -1,5 +1,6 @@
 import '../models/project_model.dart';
 import '../models/fbd_pins.dart';
+import '../models/tag_resolver.dart';
 import 'graph_segment.dart';
 import 'import_ir.dart';
 
@@ -265,7 +266,28 @@ FbdBlock _buildBlock(
 
   // block
   final typeName = node.attributes['typeName'] ?? '';
-  // (Task 4 inserts the custom-FB branch here, BEFORE the built-in check.)
+  // Custom-FB call: a block whose (renamed) type is a registered FB routes to a
+  // native FB-instance block (tagBinding = instance) + a struct-typed instance
+  // tag, checked BEFORE the built-in allowlist so a user FB is never mistaken
+  // for an unknown built-in.
+  final effective = fbRenameMap[typeName] ?? typeName;
+  final fb = fbRegistry[effective];
+  if (fb != null) {
+    final instance = _fbInstanceName(node, pouName, usedInstanceNames);
+    // Instance tag default resolved against an fb-aware scratch project so
+    // defaultValueFor -> lookupComposite -> fbDefinitionFor expands the FB into
+    // its struct-typed default (one field per FB var).
+    final scratch = PlcProject(
+        id: 'scratch', name: 'scratch', controllerName: 'PLC',
+        programs: [], tasks: [], hmis: [], structDefs: [], tags: [],
+        fbDefinitions: fbRegistry.values.toList());
+    instanceTags.add(PlcTag(
+      name: instance, path: instance, dataType: effective,
+      value: defaultValueFor(scratch, effective, 0), ioType: 'Internal',
+    ));
+    return FbdBlock(id: id, type: effective, title: effective,
+        tagBinding: instance, x: node.x, y: node.y);
+  }
   if (!kFbdBuiltinBlockTypes.contains(typeName)) {
     unsupported.add(typeName.isEmpty ? '?' : typeName);
     throw _FbdStub('unsupported-block', 'unsupported block "$typeName"');
@@ -286,4 +308,21 @@ FbdBlock _buildBlock(
     block.inputCount = maxPin;
   }
   return block;
+}
+
+/// Deterministic instance name for a custom-FB call block: the `instanceName`
+/// attribute when it is a valid identifier, else `'${pouName}_fb${localId}'`,
+/// de-duplicated within a translation via [used] by appending `_2`, `_3`, ...
+String _fbInstanceName(IrGraphNode node, String pouName, Set<String> used) {
+  final attr = node.attributes['instanceName'];
+  final safe = attr != null && RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$').hasMatch(attr);
+  final base = safe ? attr : '${pouName}_fb${node.localId}';
+  var name = base;
+  var i = 2;
+  while (used.contains(name)) {
+    name = '${base}_$i';
+    i++;
+  }
+  used.add(name);
+  return name;
 }

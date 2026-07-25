@@ -1,6 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/import/fbd_translate.dart';
 import 'package:soft_plc_mobile/import/import_ir.dart';
+import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/tag_resolver.dart';
 
 IrGraphNode _in(int id, String v, {double x = 0, double y = 0}) => IrGraphNode(
     localId: id, elementType: 'inVariable', x: x, y: y,
@@ -131,5 +133,76 @@ void main() {
     final tr = translateFbdBody(body, pouName: 'P');
     expect(tr.stubbedNetworkCount, 1);
     expect(tr.stubReasons['unresolved-pin'], 1);
+  });
+
+  FbDefinition scaler() => FbDefinition(name: 'Scaler', vars: [
+        FbVar(name: 'In', dataType: 'FLOAT64', direction: FbVarDir.input),
+        FbVar(name: 'Gain', dataType: 'FLOAT64', direction: FbVarDir.input),
+        FbVar(name: 'Out', dataType: 'FLOAT64', direction: FbVarDir.output),
+      ], stSource: 'Out := In * Gain;');
+
+  test('FBD custom-FB block routes to instance + struct-typed instance tag', () {
+    final body = GraphBody(nodes: [
+      _in(1, 'PV'), _in(2, '2.0', y: 40),
+      IrGraphNode(localId: 3, elementType: 'block', x: 60,
+          attributes: const {'typeName': 'Scaler', 'instanceName': 'S1'}),
+      _out(4, 'CV', x: 120),
+    ], connections: [
+      _c(1, 3, toPin: 'In'), _c(2, 3, toPin: 'Gain'),
+      _c(3, 4, fromPin: 'Out'),
+    ]);
+    final reg = {'Scaler': scaler()};
+    final tr = translateFbdBody(body, pouName: 'P', fbRegistry: reg);
+    expect(tr.translatedNetworkCount, 1);
+    final fb = tr.blocks.firstWhere((b) => b.type == 'Scaler');
+    expect(fb.tagBinding, 'S1');
+    final inst = tr.instanceTags.firstWhere((t) => t.name == 'S1');
+    expect(inst.dataType, 'Scaler');
+    expect(defaultValueFor(
+        PlcProject(id: 's', name: 's', controllerName: 'P', programs: [],
+            tasks: [], hmis: [], structDefs: [], tags: [],
+            fbDefinitions: reg.values.toList()),
+        'Scaler', 0) is Map, isTrue);
+  });
+
+  test('renamed FB routes via rename map', () {
+    final body = GraphBody(nodes: [
+      _in(1, 'PV'),
+      IrGraphNode(localId: 2, elementType: 'block', x: 60,
+          attributes: const {'typeName': 'AND', 'instanceName': 'I1'}),
+      _out(3, 'CV', x: 120),
+    ], connections: [_c(1, 2, toPin: 'In'), _c(2, 3, fromPin: 'Out')]);
+    // Source calls it "AND" but it was renamed to "AND_1" on import.
+    final reg = {
+      'AND_1': FbDefinition(name: 'AND_1', vars: [
+        FbVar(name: 'In', dataType: 'FLOAT64', direction: FbVarDir.input),
+        FbVar(name: 'Out', dataType: 'FLOAT64', direction: FbVarDir.output),
+      ], stSource: 'Out := In;')
+    };
+    final tr = translateFbdBody(body, pouName: 'P',
+        fbRegistry: reg, fbRenameMap: {'AND': 'AND_1'});
+    expect(tr.translatedNetworkCount, 1);
+    expect(tr.blocks.any((b) => b.type == 'AND_1'), isTrue);
+  });
+
+  test('instance name dedup within a POU', () {
+    // Two FB blocks with no instanceName -> deterministic names, deduped.
+    final body = GraphBody(nodes: [
+      _in(1, 'A'),
+      IrGraphNode(localId: 2, elementType: 'block', x: 60,
+          attributes: const {'typeName': 'Scaler'}),
+      _out(3, 'B', x: 120),
+      _in(4, 'C', y: 200),
+      IrGraphNode(localId: 5, elementType: 'block', x: 60, y: 200,
+          attributes: const {'typeName': 'Scaler'}),
+      _out(6, 'D', x: 120, y: 200),
+    ], connections: [
+      _c(1, 2, toPin: 'In'), _c(2, 3, fromPin: 'Out'),
+      _c(4, 5, toPin: 'In'), _c(5, 6, fromPin: 'Out'),
+    ]);
+    final tr = translateFbdBody(body, pouName: 'P', fbRegistry: {'Scaler': scaler()});
+    final names = tr.instanceTags.map((t) => t.name).toSet();
+    expect(names, hasLength(2)); // unique
+    expect(tr.blocks.where((b) => b.type == 'Scaler'), hasLength(2));
   });
 }
