@@ -312,6 +312,65 @@ void main() {
     });
   });
 
+  group('mapImportedProject: FBD translation wiring (Task 5)', () {
+    test('FBD POU with a translatable network becomes a real FBD program', () {
+      final ir = ImportedProject(
+        name: 'FbdProj', types: const [], warnings: const [],
+        globalVars: [
+          ImportedVar(name: 'A', baseType: 'BOOL', scope: VarScope.global),
+          ImportedVar(name: 'Q', baseType: 'BOOL', scope: VarScope.global),
+        ],
+        pous: [
+          ImportedPou(
+            name: 'Logic', kind: PouKind.program, lang: PouLanguage.fbd,
+            localVars: const [],
+            body: GraphBody(nodes: [
+              IrGraphNode(localId: 1, elementType: 'inVariable',
+                  attributes: const {'variable': 'A'}),
+              IrGraphNode(localId: 2, elementType: 'block', x: 60,
+                  attributes: const {'typeName': 'NOT'}),
+              IrGraphNode(localId: 3, elementType: 'outVariable', x: 120,
+                  attributes: const {'variable': 'Q'}),
+            ], connections: [
+              IrConnection(fromLocalId: 1, toLocalId: 2, toPin: 'IN'),
+              IrConnection(fromLocalId: 2, toLocalId: 3, fromPin: 'OUT'),
+            ]),
+          ),
+        ],
+      );
+      final res = mapImportedProject(ir, projectName: 'FbdProj', projectId: 'x');
+      final prog = res.project.programs.firstWhere((p) => p.name == 'Logic');
+      expect(prog.language, 'FunctionBlockDiagram');
+      expect(prog.fbdBlocks.map((b) => b.type),
+          containsAll(['TAG_INPUT', 'NOT', 'TAG_OUTPUT']));
+      expect(prog.fbdNetworks, isNotEmpty);
+      expect(res.report.translatedFbdNetworkCount, 1);
+      expect(res.report.stubbedFbdNetworkCount, 0);
+    });
+
+    test('FBD POU with nothing translatable keeps the whole-POU stub', () {
+      final ir = ImportedProject(
+        name: 'FbdStub', types: const [], warnings: const [], globalVars: const [],
+        pous: [
+          ImportedPou(
+            name: 'Bad', kind: PouKind.program, lang: PouLanguage.fbd,
+            localVars: const [],
+            body: GraphBody(nodes: [
+              IrGraphNode(localId: 1, elementType: 'inOutVariable',
+                  attributes: const {'variable': 'X'}),
+            ], connections: const []),
+          ),
+        ],
+      );
+      final res = mapImportedProject(ir, projectName: 'FbdStub', projectId: 'y');
+      final prog = res.project.programs.firstWhere((p) => p.name == 'Bad');
+      expect(prog.language, 'FunctionBlockDiagram');
+      expect(prog.fbdBlocks, isEmpty); // stub program has no blocks
+      expect(res.report.translatedFbdNetworkCount, 0);
+      expect(res.report.stubbedFbdNetworkCount, 1);
+    });
+  });
+
   group('mapImportedProject: nested DUT defaults (incremental struct build)', () {
     test('struct-in-struct field defaults to a nested Map, not scalar 0', () {
       final result = mapImportedProject(_buildNestedIr(), projectName: 'P', projectId: 'p1');

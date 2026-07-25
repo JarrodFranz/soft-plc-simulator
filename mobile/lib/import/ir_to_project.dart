@@ -2,6 +2,7 @@ import '../models/project_model.dart';
 import '../models/system_tags.dart';
 import '../models/tag_resolver.dart';
 import 'fb_import.dart';
+import 'fbd_translate.dart';
 import 'import_ir.dart';
 import 'ld_translate.dart';
 import 'type_normalize.dart';
@@ -19,6 +20,11 @@ class ImportReport {
   final Map<String, int> ldStubReasons;
   // Custom function-block import reporting (default-safe).
   final int importedFbCount;
+  // FBD-translation reporting (default-safe so existing call sites compile).
+  final int translatedFbdNetworkCount;
+  final int stubbedFbdNetworkCount;
+  final Set<String> unsupportedFbdBlockTypes;
+  final Map<String, int> fbdStubReasons;
   ImportReport({
     required this.tagCount,
     required this.structCount,
@@ -30,6 +36,10 @@ class ImportReport {
     this.unsupportedLdBlockTypes = const {},
     this.ldStubReasons = const {},
     this.importedFbCount = 0,
+    this.translatedFbdNetworkCount = 0,
+    this.stubbedFbdNetworkCount = 0,
+    this.unsupportedFbdBlockTypes = const {},
+    this.fbdStubReasons = const {},
   });
 }
 
@@ -147,6 +157,10 @@ ImportResult mapImportedProject(ImportedProject ir,
   var stubbedRungCount = 0;
   final unsupportedLdBlockTypes = <String>{};
   final ldStubReasons = <String, int>{};
+  var translatedFbdNetworkCount = 0;
+  var stubbedFbdNetworkCount = 0;
+  final unsupportedFbdBlockTypes = <String>{};
+  final fbdStubReasons = <String, int>{};
   final programs = <PlcProgram>[];
   for (final pou in ir.pous) {
     if (pou.kind == PouKind.functionBlock) continue;
@@ -230,11 +244,70 @@ ImportResult mapImportedProject(ImportedProject ir,
             description: 'Graphical body not yet translated (${body.nodes.length} elements captured).'));
         stubCount++;
       }
+    } else if (body is GraphBody && pou.lang == PouLanguage.fbd) {
+      // FBD is translated per-network (Task 5): a network that translates
+      // becomes real FbdBlocks/FbdWires/FbdNetworks; a network that doesn't
+      // degrades to an empty commented network inside the SAME program (see
+      // translateFbdBody). The whole POU is stubbed only when NOTHING in it
+      // translated.
+      final tr = translateFbdBody(body, pouName: pou.name,
+          fbRegistry: fbRes.registry, fbRenameMap: fbRes.renameMap);
+      translatedFbdNetworkCount += tr.translatedNetworkCount;
+      stubbedFbdNetworkCount += tr.stubbedNetworkCount;
+      unsupportedFbdBlockTypes.addAll(tr.unsupportedBlockTypes);
+      tr.stubReasons.forEach((k, v) {
+        fbdStubReasons[k] = (fbdStubReasons[k] ?? 0) + v;
+      });
+      warnings.addAll(tr.warnings);
+      if (tr.translatedNetworkCount > 0) {
+        // Merge custom-FB instance tags with the SAME sanitize + dedup + node-
+        // retarget loop the LD arm uses, but retargeting FbdBlock.tagBinding.
+        // Only blocks whose type is a registered FB may be retargeted (a
+        // TAG_INPUT/CONST binding that coincidentally matches must NOT be).
+        for (final it in tr.instanceTags) {
+          final original = it.name;
+          var name = _sanitizeIdentifier(original);
+          if (name != original) {
+            warnings.add(ImportWarning(severity: WarningSeverity.info,
+                message: 'Variable "$original" renamed to "$name" (identifier rules).'));
+          }
+          if (name == kSystemTagName || used.contains(name)) {
+            var n = 1;
+            while (used.contains('${name}_$n') || '${name}_$n' == kSystemTagName) {
+              n++;
+            }
+            final renamed = '${name}_$n';
+            warnings.add(ImportWarning(severity: WarningSeverity.info,
+                message: 'Variable "$name" renamed to "$renamed" (name collision'
+                    '${name == kSystemTagName ? '/reserved' : ''}).'));
+            name = renamed;
+          }
+          if (name != original) {
+            for (final b in tr.blocks) {
+              if (fbRes.registry.containsKey(b.type) && b.tagBinding == original) {
+                b.tagBinding = name;
+              }
+            }
+          }
+          used.add(name);
+          it.name = name;
+          it.path = name;
+          tags.add(it);
+        }
+        programs.add(PlcProgram(name: pou.name, language: 'FunctionBlockDiagram',
+            fbdBlocks: tr.blocks, fbdWires: tr.wires, fbdNetworks: tr.networks));
+      } else {
+        warnings.add(ImportWarning(severity: WarningSeverity.warning,
+            message: 'POU "${pou.name}" (FunctionBlockDiagram): graphical body not yet '
+                'translated (${body.nodes.length} elements captured) — re-import once '
+                'graphical translation ships.'));
+        programs.add(PlcProgram(name: pou.name, language: 'FunctionBlockDiagram',
+            description: 'Graphical body not yet translated (${body.nodes.length} elements captured).'));
+        stubCount++;
+      }
     } else if (body is GraphBody) {
-      // FBD/SFC: unchanged whole-POU stub (graphical translation not yet
-      // implemented for these languages).
+      // SFC (and any other graphical): unchanged whole-POU stub.
       final lang = switch (pou.lang) {
-        PouLanguage.fbd => 'FunctionBlockDiagram',
         PouLanguage.sfc => 'SequentialFunctionChart',
         _ => 'StructuredText',
       };
@@ -259,7 +332,11 @@ ImportResult mapImportedProject(ImportedProject ir,
         stProgramCount: stCount, graphicalStubCount: stubCount, warnings: warnings,
         translatedRungCount: translatedRungCount, stubbedRungCount: stubbedRungCount,
         unsupportedLdBlockTypes: unsupportedLdBlockTypes, ldStubReasons: ldStubReasons,
-        importedFbCount: fbRes.defs.length),
+        importedFbCount: fbRes.defs.length,
+        translatedFbdNetworkCount: translatedFbdNetworkCount,
+        stubbedFbdNetworkCount: stubbedFbdNetworkCount,
+        unsupportedFbdBlockTypes: unsupportedFbdBlockTypes,
+        fbdStubReasons: fbdStubReasons),
   );
 }
 
