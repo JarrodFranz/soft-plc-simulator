@@ -1,6 +1,7 @@
 import '../models/project_model.dart';
 import '../models/ld_graph.dart';
 import '../models/tag_resolver.dart';
+import 'graph_segment.dart';
 import 'import_ir.dart';
 
 /// Throwaway empty project used only to reach `tag_resolver`'s canonical
@@ -904,19 +905,15 @@ bool _isRightRail(String t) => t == 'rightPowerRail';
 /// the remaining (undirected) graph. Components are ordered top-to-bottom:
 /// min `y`, then min `x`, then min `localId`.
 List<LdComponent> segmentRungs(GraphBody body) {
-  final byId = {for (final n in body.nodes) n.localId: n};
-  final railIds = <int>{
-    for (final n in body.nodes)
-      if (_isLeftRail(n.elementType) || _isRightRail(n.elementType)) n.localId
-  };
   final leftRailIds = {
     for (final n in body.nodes) if (_isLeftRail(n.elementType)) n.localId
   };
   final rightRailIds = {
     for (final n in body.nodes) if (_isRightRail(n.elementType)) n.localId
   };
+  final railIds = {...leftRailIds, ...rightRailIds};
 
-  // Record rail attachment before removing rails.
+  // Record rail attachment before the rails are excluded from segmentation.
   final touchesLeft = <int>{};
   final touchesRight = <int>{};
   for (final e in body.connections) {
@@ -926,57 +923,23 @@ List<LdComponent> segmentRungs(GraphBody body) {
     if (rightRailIds.contains(e.toLocalId)) touchesRight.add(e.fromLocalId);
   }
 
-  // Undirected adjacency over non-rail nodes.
-  final adj = <int, Set<int>>{
-    for (final n in body.nodes) if (!railIds.contains(n.localId)) n.localId: <int>{}
-  };
-  for (final e in body.connections) {
-    if (railIds.contains(e.fromLocalId) || railIds.contains(e.toLocalId)) continue;
-    if (adj.containsKey(e.fromLocalId) && adj.containsKey(e.toLocalId)) {
-      adj[e.fromLocalId]!.add(e.toLocalId);
-      adj[e.toLocalId]!.add(e.fromLocalId);
-    }
-  }
+  // Connected components of the non-rail graph, already layout-ordered.
+  final groups =
+      weaklyConnectedComponents(body.nodes, body.connections, excludeIds: railIds);
 
-  // Connected components (deterministic: iterate node ids in file order).
-  final seen = <int>{};
   final comps = <LdComponent>[];
-  for (final n in body.nodes) {
-    if (railIds.contains(n.localId) || seen.contains(n.localId)) continue;
-    final memberIds = <int>[];
-    final stack = [n.localId];
-    while (stack.isNotEmpty) {
-      final id = stack.removeLast();
-      if (!seen.add(id)) continue;
-      memberIds.add(id);
-      for (final m in adj[id] ?? const <int>{}) {
-        if (!seen.contains(m)) stack.add(m);
-      }
-    }
-    final memberSet = memberIds.toSet();
-    final compNodes = [for (final id in memberIds) byId[id]!];
+  for (final members in groups) {
+    final memberSet = members.map((n) => n.localId).toSet();
     final compEdges = [
       for (final e in body.connections)
         if (memberSet.contains(e.fromLocalId) && memberSet.contains(e.toLocalId)) e
     ];
     comps.add(LdComponent(
-      nodes: compNodes,
+      nodes: members,
       edges: compEdges,
       leftRailNodeIds: memberSet.intersection(touchesLeft),
       rightRailNodeIds: memberSet.intersection(touchesRight),
     ));
   }
-
-  // Order components top-to-bottom: min y, then min x, then min localId.
-  double minY(LdComponent c) => c.nodes.map((n) => n.y).reduce((a, b) => a < b ? a : b);
-  double minX(LdComponent c) => c.nodes.map((n) => n.x).reduce((a, b) => a < b ? a : b);
-  int minId(LdComponent c) => c.nodes.map((n) => n.localId).reduce((a, b) => a < b ? a : b);
-  comps.sort((a, b) {
-    final cy = minY(a).compareTo(minY(b));
-    if (cy != 0) return cy;
-    final cx = minX(a).compareTo(minX(b));
-    if (cx != 0) return cx;
-    return minId(a).compareTo(minId(b));
-  });
   return comps;
 }
