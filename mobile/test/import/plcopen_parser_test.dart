@@ -178,5 +178,92 @@ void main() {
           File('test/fixtures/plcopen/not_plcopen.xml').readAsStringSync();
       expect(() => parsePlcOpen(notPlcOpen), throwsFormatException);
     });
+
+    test('inVariable/outVariable <expression> populates attributes[variable]', () {
+      const xml = '''
+<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="Expr"/>
+  <types><dataTypes/><pous>
+    <pou name="P" pouType="program">
+      <interface><localVars/></interface>
+      <body><FBD>
+        <inVariable localId="1"><position x="0" y="0"/><expression>PV</expression>
+          <connectionPointOut/></inVariable>
+        <outVariable localId="2"><position x="100" y="0"/><expression>CV</expression>
+          <connectionPointIn><connection refLocalId="1"/></connectionPointIn></outVariable>
+      </FBD></body>
+    </pou>
+  </pous></types>
+  <instances><configurations><configuration name="C"><resource name="R">
+    <globalVars/></resource></configuration></configurations></instances>
+</project>''';
+      final ir = parsePlcOpen(xml);
+      final pou = ir.pous.single;
+      final body = pou.body as GraphBody;
+      final inV = body.nodes.firstWhere((n) => n.localId == 1);
+      final outV = body.nodes.firstWhere((n) => n.localId == 2);
+      expect(inV.attributes['variable'], 'PV');
+      expect(outV.attributes['variable'], 'CV');
+    });
+
+    test('<variable> still wins over <expression> when both present', () {
+      const xml = '''
+<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="Both"/>
+  <types><dataTypes/><pous>
+    <pou name="P" pouType="program">
+      <interface><localVars/></interface>
+      <body><FBD>
+        <inVariable localId="1"><position x="0" y="0"/>
+          <variable>WINS</variable><expression>LOSES</expression>
+          <connectionPointOut/></inVariable>
+      </FBD></body>
+    </pou>
+  </pous></types>
+  <instances><configurations><configuration name="C"><resource name="R">
+    <globalVars/></resource></configuration></configurations></instances>
+</project>''';
+      final ir = parsePlcOpen(xml);
+      final n = (ir.pous.single.body as GraphBody).nodes.single;
+      expect(n.attributes['variable'], 'WINS');
+    });
+
+    test('negated block input pin sets attributes[hasNegatedPin]', () {
+      const xml = '''
+<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="Neg"/>
+  <types><dataTypes/><pous>
+    <pou name="P" pouType="program">
+      <interface><localVars/></interface>
+      <body><FBD>
+        <inVariable localId="1"><position x="0" y="0"/><expression>A</expression>
+          <connectionPointOut/></inVariable>
+        <block localId="2" typeName="AND"><position x="60" y="0"/>
+          <inputVariables>
+            <variable formalParameter="IN1" negated="true">
+              <connectionPointIn><connection refLocalId="1"/></connectionPointIn>
+            </variable>
+          </inputVariables>
+          <outputVariables>
+            <variable formalParameter="OUT"><connectionPointOut/></variable>
+          </outputVariables>
+        </block>
+      </FBD></body>
+    </pou>
+  </pous></types>
+  <instances><configurations><configuration name="C"><resource name="R">
+    <globalVars/></resource></configuration></configurations></instances>
+</project>''';
+      final ir = parsePlcOpen(xml);
+      final blk = (ir.pous.single.body as GraphBody).nodes
+          .firstWhere((n) => n.localId == 2);
+      final inV = (ir.pous.single.body as GraphBody).nodes
+          .firstWhere((n) => n.localId == 1);
+      expect(blk.attributes['hasNegatedPin'], 'true');
+      expect(inV.attributes.containsKey('hasNegatedPin'), isFalse);
+    });
   });
 }
