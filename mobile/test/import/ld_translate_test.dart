@@ -5,8 +5,8 @@ import 'package:soft_plc_mobile/models/project_model.dart';
 
 IrGraphNode _n(int id, String type, {double x = 0, double y = 0, Map<String, String>? a}) =>
     IrGraphNode(localId: id, elementType: type, x: x, y: y, attributes: a ?? const {});
-IrConnection _c(int to, int from, {String? toPin}) =>
-    IrConnection(toLocalId: to, fromLocalId: from, toPin: toPin);
+IrConnection _c(int to, int from, {String? toPin, String? fromPin}) =>
+    IrConnection(toLocalId: to, fromLocalId: from, toPin: toPin, fromPin: fromPin);
 
 void mainTask2() {
   group('segmentRungs', () {
@@ -476,6 +476,95 @@ void mainLdPowerPinFix() {
   });
 }
 
+void mainFbCallRouting() {
+  group('translateLdBody custom-FB call routing', () {
+    test('LD custom-FB call block -> FB-call node with pinBindings + instance tag', () {
+      // A rung: leftRail -> FB(Scaler, instance 'S1') -> rightRail, In<-PV,
+      // Gain<-'2.0', Out->CV. Coil-less: the FB is a bare data block on the
+      // main line (like a coil-less MOVE terminal).
+      final fb = FbDefinition(name: 'Scaler', vars: [
+        FbVar(name: 'In', dataType: 'FLOAT64', direction: FbVarDir.input),
+        FbVar(name: 'Gain', dataType: 'FLOAT64', direction: FbVarDir.input),
+        FbVar(name: 'Out', dataType: 'FLOAT64', direction: FbVarDir.output),
+      ], stSource: 'Out := In * Gain;');
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        _n(1, 'block', a: {'typeName': 'Scaler', 'instanceName': 'S1'}),
+        _n(2, 'inVariable', a: {'variable': 'PV'}),
+        _n(3, 'inVariable', a: {'variable': '2.0'}),
+        _n(4, 'outVariable', a: {'variable': 'CV'}),
+      ], connections: [
+        _c(1, 100), // L -> Scaler (power in)
+        _c(200, 1), // Scaler -> R (power out)
+        _c(1, 2, toPin: 'In'), // PV -> Scaler.In (data)
+        _c(1, 3, toPin: 'Gain'), // 2.0 -> Scaler.Gain (data)
+        _c(4, 1, fromPin: 'Out'), // Scaler.Out -> outVar CV (destination)
+      ]);
+      final tr = translateLdBody(body, pouName: 'P', fbRegistry: {'Scaler': fb});
+
+      expect(tr.translatedRungCount, 1);
+      final block = tr.rungs.single.nodes.firstWhere((n) => n.kind == LdKind.block);
+      expect(block.blockType, 'Scaler');
+      expect(block.variable, 'S1');
+      expect(block.pinBindings['In'], 'PV');
+      expect(block.pinBindings['Gain'], '2.0');
+      expect(block.pinBindings['Out'], 'CV');
+      final inst = tr.instanceTags.firstWhere((t) => t.name == 'S1');
+      expect(inst.dataType, 'Scaler');
+      expect(inst.value, isA<Map>()); // struct default
+      expect(tr.unsupportedBlockTypes, isNot(contains('Scaler')));
+    });
+
+    test('unresolved FB input pin stubs the rung', () {
+      // Same shape as above, but the In pin's source (an inVariable with no
+      // `variable` attribute) fails to resolve to an operand.
+      final fb = FbDefinition(name: 'Scaler', vars: [
+        FbVar(name: 'In', dataType: 'FLOAT64', direction: FbVarDir.input),
+        FbVar(name: 'Out', dataType: 'FLOAT64', direction: FbVarDir.output),
+      ], stSource: 'Out := In;');
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        _n(1, 'block', a: {'typeName': 'Scaler', 'instanceName': 'S1'}),
+        _n(2, 'inVariable'), // no 'variable' attribute -> unresolved source
+        _n(3, 'outVariable', a: {'variable': 'CV'}),
+      ], connections: [
+        _c(1, 100), // L -> Scaler
+        _c(200, 1), // Scaler -> R
+        _c(1, 2, toPin: 'In'), // unresolved source -> Scaler.In
+        _c(3, 1, fromPin: 'Out'), // Scaler.Out -> outVar CV
+      ]);
+      final tr = translateLdBody(body, pouName: 'P', fbRegistry: {'Scaler': fb});
+      expect(tr.translatedRungCount, 0);
+      expect(tr.stubbedRungCount, 1);
+    });
+
+    test('renamed FB: block typeName routed through fbRenameMap', () {
+      // Block typeName='AND' (original, pre-rename), instanceName='I1';
+      // fbRegistry is keyed by the FINAL name 'AND_1'; fbRenameMap routes
+      // 'AND' -> 'AND_1'.
+      final fb = FbDefinition(name: 'AND_1', vars: [
+        FbVar(name: 'a', dataType: 'BOOL', direction: FbVarDir.input),
+        FbVar(name: 'q', dataType: 'BOOL', direction: FbVarDir.output),
+      ], stSource: 'q := a;');
+      final body = GraphBody(nodes: [
+        _n(100, 'leftPowerRail'), _n(200, 'rightPowerRail'),
+        _n(1, 'block', a: {'typeName': 'AND', 'instanceName': 'I1'}),
+        _n(2, 'inVariable', a: {'variable': 'X'}),
+        _n(3, 'outVariable', a: {'variable': 'Y'}),
+      ], connections: [
+        _c(1, 100), // L -> AND (power in)
+        _c(200, 1), // AND -> R (power out)
+        _c(1, 2, toPin: 'a'), // X -> AND.a (data)
+        _c(3, 1, fromPin: 'q'), // AND.q -> outVar Y (destination)
+      ]);
+      final tr = translateLdBody(body,
+          pouName: 'P', fbRegistry: {'AND_1': fb}, fbRenameMap: {'AND': 'AND_1'});
+      final block = tr.rungs.single.nodes.firstWhere((n) => n.kind == LdKind.block);
+      expect(block.blockType, 'AND_1');
+    });
+  });
+}
+
 void main() {
   group('parseIecDuration', () {
     test('parses seconds, ms, minutes, compound, and TIME# prefix', () {
@@ -498,4 +587,5 @@ void main() {
   mainTask3();
   mainTask4();
   mainLdPowerPinFix();
+  mainFbCallRouting();
 }
