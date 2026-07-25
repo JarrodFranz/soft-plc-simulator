@@ -57,9 +57,18 @@ two thresholds. See `test/hysteresis_fb_demo_test.dart`.
 ## What's deferred
 
 This is **native authoring** — defining and placing FBs by hand in-app.
+
 Mapping an *imported* PLCopen `functionBlock` POU onto this same
-`FbDefinition`/instance model is a separate, near-term follow-up (today's
-LD/FBD import translators stub unsupported custom blocks). Graphical-bodied
-FBs, FB-calling-FB nesting, ST bodies beyond the app's subset, and IEC
-*functions* (stateless POUs) all remain out of scope — tracked in
-`docs/DEFERRED.md`'s "Custom (user-defined) function blocks" section.
+`FbDefinition`/instance model has since shipped for the common case:
+ST-bodied `functionBlock` POUs import as native FBs, and an LD `<block>` call
+site routes to a real FB instance (pin bindings + backing instance tag)
+instead of the unsupported-block stub — proven end-to-end (parse → map →
+translate → execute) in `mobile/test/import/import_fb_e2e_test.dart`. Call-site
+operands resolve via the parser's `<variable>` element convention (the same one
+all LD operand resolution uses); FB call operands bound with `<expression>`
+elements are a deferred parser follow-up (see `docs/DEFERRED.md`). FBD
+custom-FB call routing is still deferred until the FBD import translator
+ships. Graphical-bodied FBs, FB-calling-FB nesting, ST bodies beyond the
+app's subset, and IEC *functions* (stateless POUs) all remain out of scope —
+tracked in `docs/DEFERRED.md`'s "Custom (user-defined) function blocks"
+section.

@@ -122,7 +122,12 @@ class _BranchPlan {
 /// a commented placeholder rung (2 rails + one L->R wire) plus a
 /// [WarningSeverity.warning] naming the POU, rung ordinal, and reason. This
 /// function never throws — every untranslatable component degrades to a stub.
-LdTranslation translateLdBody(GraphBody body, {required String pouName}) {
+LdTranslation translateLdBody(
+  GraphBody body, {
+  required String pouName,
+  Map<String, FbDefinition> fbRegistry = const {},
+  Map<String, String> fbRenameMap = const {},
+}) {
   final comps = segmentRungs(body);
   final rungs = <LdRung>[];
   final warnings = <ImportWarning>[];
@@ -135,8 +140,8 @@ LdTranslation translateLdBody(GraphBody body, {required String pouName}) {
 
   for (var i = 0; i < comps.length; i++) {
     try {
-      rungs.add(_translateComponent(
-          comps[i], i, instanceTags, unsupportedBlocks, usedInstanceNames, pouName));
+      rungs.add(_translateComponent(comps[i], i, instanceTags, unsupportedBlocks,
+          usedInstanceNames, pouName, fbRegistry, fbRenameMap));
       translated++;
     } on _StubException catch (e) {
       reasons[e.reason] = (reasons[e.reason] ?? 0) + 1;
@@ -194,6 +199,19 @@ const Set<String> _kSupportedBlocks = {
 bool isInstanceBackedLdBlock(String blockType) =>
     _kTimerBlocks.contains(blockType) || _kCounterBlocks.contains(blockType);
 
+/// A block's effective type after custom-FB renaming: the import pipeline may
+/// rename a POU on ingest (name-collision resolution), so a call site's
+/// `typeName` may be the ORIGINAL name while [fbRegistry] is keyed by the
+/// final (possibly renamed) name. `fbRenameMap` maps original -> final.
+String _effectiveBlockType(String typeName, Map<String, String> fbRenameMap) =>
+    fbRenameMap[typeName] ?? typeName;
+
+/// True when [typeName] (after [fbRenameMap]) names a custom function block in
+/// [fbRegistry] — i.e. this block is a custom-FB call, not a built-in LD block.
+bool _isFbCall(String typeName, Map<String, FbDefinition> fbRegistry,
+        Map<String, String> fbRenameMap) =>
+    fbRegistry.containsKey(_effectiveBlockType(typeName, fbRenameMap));
+
 /// The operand slot a block *data* pin routes into, or null if [pin] is a
 /// *power* pin (`IN`/`EN`/`CU`/`CD`/`R`/`LD`, or an implicit contact/coil pin).
 /// Data pins fold into operands/preset and are excluded from the power wiring;
@@ -234,6 +252,8 @@ LdRung _translateComponent(
   Set<String> unsupportedBlocks,
   Set<String> usedInstanceNames,
   String pouName,
+  Map<String, FbDefinition> fbRegistry,
+  Map<String, String> fbRenameMap,
 ) {
   // 1. Reject unsupported element types up front (blocks + in/out variables are
   // now accepted; in/out variables must fold away into the reduced view).
@@ -270,6 +290,22 @@ LdRung _translateComponent(
     for (final n in comp.nodes) if (n.elementType == 'block') n.localId: n
   };
   bool isFoldedEdge(IrConnection e) {
+    // A custom-FB call folds ALL its pin wiring out of the power view — every
+    // input edge is a data binding and its output edge(s) into an outVariable
+    // are destination writes, so the FB sits as a bare data block on the
+    // power line (like a coil-less MOVE terminal; power/rail attachment is
+    // carried structurally via leftRailNodeIds/rightRailNodeIds, not an edge).
+    final tgtFbBlock = blockByLocalId[e.toLocalId];
+    if (tgtFbBlock != null &&
+        _isFbCall(tgtFbBlock.attributes['typeName'] ?? '', fbRegistry, fbRenameMap)) {
+      return true;
+    }
+    final srcFbBlock = blockByLocalId[e.fromLocalId];
+    if (srcFbBlock != null &&
+        _isFbCall(srcFbBlock.attributes['typeName'] ?? '', fbRegistry, fbRenameMap) &&
+        varTypeByLocalId[e.toLocalId] == 'outVariable') {
+      return true;
+    }
     // A block DATA-pin edge (operand/preset) folds regardless of its source.
     final tgtBlock = blockByLocalId[e.toLocalId];
     if (tgtBlock != null &&
@@ -338,7 +374,7 @@ LdRung _translateComponent(
   final localUsedInstanceNames = <String>{...usedInstanceNames};
   LdNode mapNode(IrGraphNode n) => n.elementType == 'block'
       ? _buildBlockNode(comp, n, byIdAll, localInstanceTags, unsupportedBlocks,
-          localUsedInstanceNames, pouName)
+          localUsedInstanceNames, pouName, fbRegistry, fbRenameMap)
       : _toLdNode(n);
   final mainNodes = [for (final id in mainIds) mapNode(byId[id]!)];
   final mainIndex = {for (var i = 0; i < mainIds.length; i++) mainIds[i]: i};
@@ -369,9 +405,11 @@ LdRung _translateComponent(
   return buildRung(index: index, main: mainNodes, branches: specs);
 }
 
-/// Builds the [LdNode] for a function [block], folding its data inputs
-/// (`IN1`/`IN2`/`PT`/`PV`, `MOVE.IN`) into operands/preset and its output
-/// `outVariable` into the destination `variable`. Timers/counters get a
+/// Builds the [LdNode] for a function [block]. A block whose (renamed) type
+/// is in [fbRegistry] is a custom-FB call and delegates to [_buildFbCallNode]
+/// before any of the built-in-block handling below applies. Otherwise, folds
+/// data inputs (`IN1`/`IN2`/`PT`/`PV`, `MOVE.IN`) into operands/preset and its
+/// output `outVariable` into the destination `variable`. Timers/counters get a
 /// deterministic instance name and a backing `TIMER`/`COUNTER` [PlcTag] appended
 /// to [instanceTags] so `ld_exec` has structured state to read/write. Throws
 /// [_StubException] on an unsupported type or an unresolvable data input.
@@ -383,8 +421,22 @@ LdNode _buildBlockNode(
   Set<String> unsupportedBlocks,
   Set<String> usedInstanceNames,
   String pouName,
+  Map<String, FbDefinition> fbRegistry,
+  Map<String, String> fbRenameMap,
 ) {
   final typeName = node.attributes['typeName'] ?? '';
+
+  // Custom-FB call: routed to a native FB-instance node (pinBindings + backing
+  // struct-typed instance tag) instead of the unsupported-block stub. Checked
+  // BEFORE the supported-block allowlist and the timer/counter power-pin gate
+  // below, since neither applies to a user-defined FB.
+  final effective = _effectiveBlockType(typeName, fbRenameMap);
+  final fb = fbRegistry[effective];
+  if (fb != null) {
+    return _buildFbCallNode(comp, node, byId, fb, effective, instanceTags,
+        usedInstanceNames, pouName, fbRegistry);
+  }
+
   if (!_kSupportedBlocks.contains(typeName)) {
     unsupportedBlocks.add(typeName.isEmpty ? '?' : typeName);
     throw _StubException('unsupported-block', 'unsupported block "$typeName"');
@@ -488,6 +540,93 @@ LdNode _buildBlockNode(
     ));
   }
   return ld;
+}
+
+/// Builds the [LdNode] for a custom-FB call: every pin edge into/out of
+/// [node] is folded into `pinBindings` (`formalParameter` name -> bound
+/// tag/literal for inputs; -> destination `variable` for outputs) instead of
+/// operands/preset, and a struct-typed instance tag backing [fb]'s fields is
+/// appended to [instanceTags]. An FB input pin that fails to resolve to a
+/// source `variable` stubs the whole rung (unrepresentable, same
+/// faithful-or-stub policy as every other block); an unbound output pin is
+/// allowed (the call just doesn't publish that output anywhere).
+LdNode _buildFbCallNode(
+  LdComponent comp,
+  IrGraphNode node,
+  Map<int, IrGraphNode> byId,
+  FbDefinition fb,
+  String fbName,
+  List<PlcTag> instanceTags,
+  Set<String> usedInstanceNames,
+  String pouName,
+  Map<String, FbDefinition> fbRegistry,
+) {
+  final inputNames = {
+    for (final v in fb.vars)
+      if (v.direction == FbVarDir.input) v.name
+  };
+  final outputNames = {
+    for (final v in fb.vars)
+      if (v.direction == FbVarDir.output) v.name
+  };
+  final pinBindings = <String, String>{};
+
+  // Inputs: each incoming edge's toPin (formalParameter) is an input var name;
+  // its source must resolve to a variable/literal (an inVariable's `variable`,
+  // or any other node exposing one).
+  for (final e in comp.edges) {
+    if (e.toLocalId != node.localId) continue;
+    final pin = e.toPin;
+    if (pin == null || !inputNames.contains(pin)) {
+      throw _StubException('unresolved-operand',
+          'FB "$fbName" input pin "${pin ?? '?'}" not on its interface');
+    }
+    final src = byId[e.fromLocalId]?.attributes['variable'];
+    if (src == null || src.isEmpty) {
+      throw _StubException('unresolved-operand', 'unresolved FB input on $pin');
+    }
+    pinBindings[pin] = src;
+  }
+
+  // Outputs: each outgoing edge's fromPin is an output var name; the consumer
+  // (an outVariable) supplies the destination tag. Unbound outputs are allowed.
+  for (final e in comp.edges) {
+    if (e.fromLocalId != node.localId) continue;
+    final pin = e.fromPin;
+    if (pin == null || !outputNames.contains(pin)) continue;
+    final dest = byId[e.toLocalId]?.attributes['variable'];
+    if (dest != null && dest.isNotEmpty) pinBindings[pin] = dest;
+  }
+
+  final instance = _instanceName(node, pouName, usedInstanceNames);
+  // Instance tag default resolved against a scratch project that knows this
+  // FB registry, so `defaultValueFor` -> `lookupComposite` -> `fbDefinitionFor`
+  // can expand [fbName] into its struct-typed default (one field per FB var).
+  final scratch = PlcProject(
+    id: 'scratch',
+    name: 'scratch',
+    controllerName: 'PLC',
+    programs: [],
+    tasks: [],
+    hmis: [],
+    structDefs: [],
+    tags: [],
+    fbDefinitions: fbRegistry.values.toList(),
+  );
+  instanceTags.add(PlcTag(
+    name: instance,
+    path: instance,
+    dataType: fbName,
+    value: defaultValueFor(scratch, fbName, 0),
+    ioType: 'Internal',
+  ));
+
+  return LdNode(
+      id: '',
+      kind: LdKind.block,
+      blockType: fbName,
+      variable: instance,
+      pinBindings: pinBindings);
 }
 
 /// Deterministic instance name for a timer/counter block: the `instanceName`

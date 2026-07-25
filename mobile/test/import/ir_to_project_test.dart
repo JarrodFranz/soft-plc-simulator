@@ -172,7 +172,75 @@ ImportedProject _buildRenameCollisionIr() {
   );
 }
 
+/// An IR proving the instance-rename-sync path ALSO covers custom-FB call
+/// instances (Task 4 of the FB-mapping feature), not just TIMER/COUNTER: a
+/// global var `S1` collides with an LD POU's custom-FB call instance also
+/// named `S1` (forcing the instance tag to be renamed to `S1_1`). The rename
+/// must reach the FB-call block's `variable` — the same rename-sync loop that
+/// already handles TIMER/COUNTER checks `fbRes.registry.containsKey(node.blockType)`
+/// as an alternate match, which this test is the first to actually exercise.
+ImportedProject _buildFbInstanceCollisionIr() {
+  final scalerFbPou = ImportedPou(
+    name: 'Scaler',
+    kind: PouKind.functionBlock,
+    lang: PouLanguage.st,
+    localVars: [
+      ImportedVar(name: 'In', baseType: 'REAL', scope: VarScope.input),
+      ImportedVar(name: 'Out', baseType: 'REAL', scope: VarScope.output),
+    ],
+    body: TextBody('Out := In;'),
+  );
+  final s1Var = ImportedVar(name: 'S1', baseType: 'BOOL', scope: VarScope.global);
+  final callPou = ImportedPou(
+    name: 'CallScaler',
+    kind: PouKind.program,
+    lang: PouLanguage.ld,
+    localVars: const [],
+    body: GraphBody(nodes: [
+      _ldNode(100, 'leftPowerRail'), _ldNode(200, 'rightPowerRail'),
+      _ldNode(1, 'block', a: {'typeName': 'Scaler', 'instanceName': 'S1'}),
+      _ldNode(2, 'inVariable', a: {'variable': 'Src'}),
+      _ldNode(3, 'outVariable', a: {'variable': 'Dest'}),
+    ], connections: [
+      _ldConn(1, 100), // L -> Scaler (power in)
+      _ldConn(200, 1), // Scaler -> R (power out)
+      _ldConn(1, 2, toPin: 'In'), // Src -> Scaler.In (data)
+      IrConnection(toLocalId: 3, fromLocalId: 1, fromPin: 'Out'), // Scaler.Out -> Dest
+    ]),
+  );
+
+  return ImportedProject(
+    name: 'FbInstanceCollision',
+    types: const [],
+    globalVars: [s1Var],
+    pous: [scalerFbPou, callPou],
+    warnings: const [],
+  );
+}
+
 void main() {
+  group('mapImportedProject: custom-FB instance collides with an existing tag', () {
+    test('the FB instance tag is renamed away from the collision, and the '
+        'FB-call node is retargeted to the renamed instance', () {
+      final result =
+          mapImportedProject(_buildFbInstanceCollisionIr(), projectName: 'P', projectId: 'p1');
+
+      final fbTags = result.project.tags.where((t) => t.dataType == 'Scaler').toList();
+      expect(fbTags, hasLength(1));
+      final renamedName = fbTags.single.name;
+      expect(renamedName, 'S1_1'); // renamed away from the colliding global 'S1'
+
+      final program = result.project.programs.singleWhere((p) => p.name == 'CallScaler');
+      final fbNode = program.rungs
+          .expand((r) => r.nodes)
+          .singleWhere((n) => n.kind == LdKind.block && n.blockType == 'Scaler');
+      expect(fbNode.variable, renamedName);
+      // The original 'S1' global var tag is untouched (still present, unrenamed).
+      expect(result.project.tags.where((t) => t.name == 'S1' && t.dataType == 'BOOL'),
+          hasLength(1));
+    });
+  });
+
   group('mapImportedProject: instance-rename sync (renamed timer + MOVE non-corruption)', () {
     test('a TON instance colliding with an existing tag gets renamed, and the '
         'rename is synced onto its own block node', () {
@@ -418,6 +486,20 @@ void main() {
         () => mapImportedProject(empty, projectName: '', projectId: ''),
         returnsNormally,
       );
+    });
+
+    test('import maps an ST functionBlock POU to an FbDefinition (not a program)', () {
+      final ir = ImportedProject(name: 'P', types: [], globalVars: [], warnings: [], pous: [
+        ImportedPou(name: 'Scaler', kind: PouKind.functionBlock, lang: PouLanguage.st,
+            localVars: [
+              ImportedVar(name: 'In', baseType: 'REAL', scope: VarScope.input),
+              ImportedVar(name: 'Out', baseType: 'REAL', scope: VarScope.output),
+            ], body: TextBody('Out := In;')),
+      ]);
+      final res = mapImportedProject(ir, projectName: 'P', projectId: 'p');
+      expect(res.project.fbDefinitions.map((f) => f.name), contains('Scaler'));
+      expect(res.project.programs.where((p) => p.name == 'Scaler'), isEmpty);
+      expect(res.report.importedFbCount, 1);
     });
   });
 }
