@@ -374,7 +374,24 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
               if (v.direction == FbVarDir.input) {
                 final tag = n.pinBindings[v.name];
                 if (tag != null && tag.isNotEmpty) {
-                  inputs[v.name] = readPath(p, tag);
+                  // Most pin bindings name a tag path, but the import
+                  // translator (custom-FB call routing) folds a literal
+                  // operand (e.g. an inVariable wired to `2.0`) into
+                  // pinBindings exactly like a tag name — there is no
+                  // separate "literal" representation upstream (mirrors how
+                  // compare/math `operandA`/`operandB` already accept either).
+                  // An unresolved tag path (not found -> null) falls back to
+                  // a numeric-literal parse instead of silently dropping the
+                  // input; a tag that resolves normally is never affected.
+                  final resolved = readPath(p, tag);
+                  if (resolved != null) {
+                    inputs[v.name] = resolved;
+                  } else {
+                    final lit = num.tryParse(tag);
+                    if (lit != null) {
+                      inputs[v.name] = lit;
+                    }
+                  }
                 }
               }
             }

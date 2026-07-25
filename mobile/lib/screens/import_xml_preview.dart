@@ -89,6 +89,13 @@ class _ImportXmlPreviewState extends State<ImportXmlPreview> {
                   style: const TextStyle(color: Colors.amber, fontSize: 12),
                 ),
               ],
+              if (report.importedFbCount > 0) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'Function blocks: ${report.importedFbCount}',
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+              ],
               const SizedBox(height: 16),
               const Text('WARNINGS',
                   style: TextStyle(
