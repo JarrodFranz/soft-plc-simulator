@@ -6,16 +6,18 @@
 // (CI, fresh clone). When present — the developer's machine — it proves,
 // against real vendor exports, that:
 //   * every PLCopen-TC6 file imports through detect -> parse -> map without
-//     throwing (the whole point of the importer), and
-//   * every non-PLCopen vendor file (Rockwell L5X, Beckhoff TwinCAT, CODESYS
-//     native .export, Siemens SCL) is cleanly rejected by detectDialect,
-//     i.e. routed to the friendly "unrecognized format" path — never
-//     mis-parsed as PLCopen.
+//     throwing (the whole point of the importer),
+//   * every Rockwell L5X file is detected and imports through
+//     detect -> parseL5x -> map without throwing, and
+//   * every still-unsupported vendor file (Beckhoff TwinCAT, CODESYS native
+//     .export, Siemens TIA/SCL) is cleanly rejected by detectDialect, i.e.
+//     routed to the friendly "unrecognized format" path — never mis-parsed.
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/import/dialect_detect.dart';
 import 'package:soft_plc_mobile/import/ir_to_project.dart';
+import 'package:soft_plc_mobile/import/l5x_parser.dart';
 import 'package:soft_plc_mobile/import/plcopen_parser.dart';
 
 /// Locates `Resources/Project Exports/` by walking up from the test's working
@@ -58,8 +60,8 @@ void main() {
     }
 
     final plcopen = _filesIn(corpus, 'PLCopen-TC6');
-    final others = <File>[
-      ..._filesIn(corpus, 'Rockwell-L5X'),
+    final l5x = _filesIn(corpus, 'Rockwell-L5X');
+    final unsupported = <File>[
       ..._filesIn(corpus, 'Beckhoff-TwinCAT'),
       ..._filesIn(corpus, 'CODESYS'),
       ..._filesIn(corpus, 'Siemens-TIA'),
@@ -96,13 +98,27 @@ void main() {
       });
     }
 
-    for (final f in others) {
+    for (final f in l5x) {
       final name = f.uri.pathSegments.last;
-      test('non-PLCopen rejected: $name', () {
+      test('L5X import: $name', () {
+        final xml = f.readAsStringSync();
+        expect(detectDialect(xml), ImportDialect.l5x,
+            reason: '$name should be detected as Rockwell L5X');
+        final ir = parseL5x(xml);
+        final result = mapImportedProject(ir,
+            projectName: ir.name.isEmpty ? 'Imported' : ir.name,
+            projectId: 'corpus_test');
+        expect(result.project, isNotNull);
+      });
+    }
+
+    for (final f in unsupported) {
+      final name = f.uri.pathSegments.last;
+      test('unsupported vendor rejected: $name', () {
         final text = f.readAsStringSync();
         expect(detectDialect(text), isNull,
-            reason: '$name is not PLCopen and must route to the '
-                '"unrecognized format" path, not be mis-detected');
+            reason: '$name is not yet supported and must route to the '
+                '"unrecognized format" path');
       });
     }
   });

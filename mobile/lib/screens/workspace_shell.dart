@@ -1552,11 +1552,12 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       final id = 'proj_new_${DateTime.now().millisecondsSinceEpoch}';
       result = mapImportedProject(ir, projectName: ir.name, projectId: id);
     } on FormatException catch (e) {
-      _logger.log(kLogSourceProject, LogLevel.warn, 'Import XML: not a valid PLCopen document',
+      final docKind = dialect == ImportDialect.l5x ? 'L5X' : 'PLCopen';
+      _logger.log(kLogSourceProject, LogLevel.warn, 'Import XML: not a valid $docKind document',
           detail: e.toString());
       if (!mounted) return;
       messenger.showSnackBar(
-        const SnackBar(content: Text("Couldn't import: not a valid PLCopen document")),
+        SnackBar(content: Text("Couldn't import: not a valid $docKind document")),
       );
       return;
     }
