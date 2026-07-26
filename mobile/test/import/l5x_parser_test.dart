@@ -151,4 +151,31 @@ void main() {
     expect(byName['Local1']!.initialValue, 7);      // program-scoped -> flat global
     expect(byName['Speed']!.scope, VarScope.global);
   });
+
+  test('routines -> program POUs (ST body; RLL/FBD/SFC stubbed)', () {
+    const xml = '''
+<RSLogix5000Content TargetType="Controller"><Controller Name="C">
+  <Programs><Program Name="Main">
+    <Tags/>
+    <Routines>
+      <Routine Name="Calc" Type="ST"><STContent>
+        <Line Number="0"><![CDATA[X := 1;]]></Line>
+        <Line Number="1"><![CDATA[Y := 2;]]></Line></STContent></Routine>
+      <Routine Name="Ladder" Type="RLL"><RLLContent>
+        <Rung Number="0"><Text><![CDATA[XIC(A)OTE(B);]]></Text></Rung>
+        <Rung Number="1"><Text><![CDATA[NOP();]]></Text></Rung></RLLContent></Routine>
+    </Routines>
+  </Program></Programs>
+</Controller></RSLogix5000Content>''';
+    final ir = parseL5x(xml);
+    final calc = ir.pous.firstWhere((p) => p.name == 'Main_Calc');
+    expect(calc.kind, PouKind.program);
+    expect(calc.lang, PouLanguage.st);
+    expect((calc.body as TextBody).source, 'X := 1;\nY := 2;');
+
+    final ladder = ir.pous.firstWhere((p) => p.name == 'Main_Ladder');
+    expect(ladder.lang, PouLanguage.ld);
+    expect((ladder.body as GraphBody).nodes, isEmpty); // stubbed
+    expect(ir.warnings.any((w) => w.message.contains('Main_Ladder') && w.message.contains('2 rungs')), isTrue);
+  });
 }

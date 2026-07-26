@@ -30,8 +30,7 @@ ImportedProject parseL5x(String xml) {
   final globalVars = _l5xTags(controller, warnings);
 
   pous.addAll(_l5xAois(controller, warnings));
-
-  // Task 5 fills pous from `controller`.
+  pous.addAll(_l5xRoutines(controller, warnings));
 
   return ImportedProject(
       name: name, types: types, globalVars: globalVars, pous: pous,
@@ -208,6 +207,64 @@ List<ImportedPou> _l5xAois(XmlElement? controller, List<ImportWarning> warnings)
       }
       out.add(ImportedPou(name: name, kind: PouKind.functionBlock,
           lang: PouLanguage.st, localVars: vars, body: TextBody(body)));
+    }
+  }
+  return out;
+}
+
+/// Maps each `<Routine>` in each `<Program>` to a program POU named
+/// `Program_Routine`. ST inlines its lines; RLL/FBD/SFC become empty graphical
+/// bodies (the mapper's existing whole-POU stub) + a count-carrying warning.
+List<ImportedPou> _l5xRoutines(XmlElement? controller, List<ImportWarning> warnings) {
+  final out = <ImportedPou>[];
+  if (controller == null) return out;
+  for (final progs in _children(controller, 'Programs')) {
+    for (final prog in _children(progs, 'Program')) {
+      final progName = prog.getAttribute('Name') ?? 'Program';
+      for (final rs in _children(prog, 'Routines')) {
+        for (final r in _children(rs, 'Routine')) {
+          final rName = r.getAttribute('Name') ?? 'Routine';
+          final name = '${progName}_$rName';
+          final type = r.getAttribute('Type');
+          switch (type) {
+            case 'ST':
+              out.add(ImportedPou(name: name, kind: PouKind.program,
+                  lang: PouLanguage.st, localVars: const [],
+                  body: TextBody(_stLines(r))));
+              break;
+            case 'RLL':
+              final rungs = _children(r, 'RLLContent')
+                  .expand((e) => _children(e, 'Rung')).length;
+              warnings.add(ImportWarning(severity: WarningSeverity.warning,
+                  message: 'Routine "$name" (Ladder): $rungs rungs not yet '
+                      'translated — neutral-text ladder import ships in a later '
+                      'update.'));
+              out.add(ImportedPou(name: name, kind: PouKind.program,
+                  lang: PouLanguage.ld, localVars: const [],
+                  body: GraphBody(nodes: const [], connections: const [])));
+              break;
+            case 'FBD':
+              warnings.add(ImportWarning(severity: WarningSeverity.warning,
+                  message: 'Routine "$name" (FBD): graphical body not yet '
+                      'translated.'));
+              out.add(ImportedPou(name: name, kind: PouKind.program,
+                  lang: PouLanguage.fbd, localVars: const [],
+                  body: GraphBody(nodes: const [], connections: const [])));
+              break;
+            case 'SFC':
+              warnings.add(ImportWarning(severity: WarningSeverity.warning,
+                  message: 'Routine "$name" (SFC): graphical body not yet '
+                      'translated.'));
+              out.add(ImportedPou(name: name, kind: PouKind.program,
+                  lang: PouLanguage.sfc, localVars: const [],
+                  body: SfcBody(nodes: const [], edges: const [], actions: const [])));
+              break;
+            default:
+              warnings.add(ImportWarning(severity: WarningSeverity.info,
+                  message: 'Routine "$name": unsupported type "${type ?? '?'}" — skipped.'));
+          }
+        }
+      }
     }
   }
   return out;
