@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/import/import_ir.dart';
 import 'package:soft_plc_mobile/import/ir_to_project.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/tag_resolver.dart';
 
 /// Builds a representative [ImportedProject] in-code so this test exercises
 /// the mapper in isolation, independent of the parser/fixture.
@@ -219,6 +220,47 @@ ImportedProject _buildFbInstanceCollisionIr() {
 }
 
 void main() {
+  group('mapImportedProject: FB-typed global var resolves to its composite type '
+      '(hermetic guard for the fbRes-hoist fix)', () {
+    test('a global var whose baseType names a custom FB/AOI POU resolves to that '
+        "FB's composite type, not a scalar INT16 fallback", () {
+      final myFbPou = ImportedPou(
+        name: 'MyFb',
+        kind: PouKind.functionBlock,
+        lang: PouLanguage.st,
+        localVars: [
+          ImportedVar(name: 'In', baseType: 'BOOL', scope: VarScope.input),
+          ImportedVar(name: 'Out', baseType: 'BOOL', scope: VarScope.output),
+        ],
+        body: TextBody('Out := In;'),
+      );
+      final instVar =
+          ImportedVar(name: 'Inst', baseType: 'MyFb', scope: VarScope.global);
+      final ir = ImportedProject(
+        name: 'FbTypedGlobal',
+        types: const [],
+        globalVars: [instVar],
+        pous: [myFbPou],
+        warnings: const [],
+      );
+
+      final result = mapImportedProject(ir, projectName: 'P', projectId: 'p1');
+
+      expect(result.report.importedFbCount, 1);
+
+      final tag = result.project.tags.singleWhere((t) => t.name == 'Inst');
+      expect(tag.dataType, 'MyFb');
+      expect(tag.dataType, isNot('INT16')); // the exact fallback the fix corrects
+      expect(tag.value, isA<Map>());
+
+      // Cross-check via the shared resolver too: resolving 'MyFb' directly
+      // against the mapped project also yields a composite default, proving
+      // the FB registration + tag's dataType are consistent.
+      final resolved = defaultValueFor(result.project, tag.dataType, 0);
+      expect(resolved, isA<Map>());
+    });
+  });
+
   group('mapImportedProject: custom-FB instance collides with an existing tag', () {
     test('the FB instance tag is renamed away from the collision, and the '
         'FB-call node is retargeted to the renamed instance', () {
