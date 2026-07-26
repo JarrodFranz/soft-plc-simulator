@@ -371,6 +371,68 @@ void main() {
     });
   });
 
+  group('mapImportedProject: SFC translation wiring (Task 4)', () {
+    test('SFC POU with a translatable chart becomes a real SFC program', () {
+      final ir = ImportedProject(
+        name: 'SfcProj', types: const [], warnings: const [],
+        globalVars: [
+          ImportedVar(name: 'Start', baseType: 'BOOL', scope: VarScope.global),
+          ImportedVar(name: 'Motor', baseType: 'BOOL', scope: VarScope.global),
+        ],
+        pous: [
+          ImportedPou(
+            name: 'Chart', kind: PouKind.program, lang: PouLanguage.sfc,
+            localVars: const [],
+            body: SfcBody(nodes: [
+              SfcNode(localId: 1, kind: SfcNodeKind.step, name: 'Idle', initial: true),
+              SfcNode(localId: 2, kind: SfcNodeKind.transition, condition: SfcCondInline('Start')),
+              SfcNode(localId: 3, kind: SfcNodeKind.step, name: 'Run'),
+            ], edges: [
+              SfcEdge(fromLocalId: 1, toLocalId: 2),
+              SfcEdge(fromLocalId: 2, toLocalId: 3),
+            ], actions: [
+              SfcActionAssoc(stepLocalId: 3, qualifier: 'N', source: SfcActInline('Motor := TRUE;')),
+            ]),
+          ),
+        ],
+      );
+      final res = mapImportedProject(ir, projectName: 'SfcProj', projectId: 'x');
+      final prog = res.project.programs.firstWhere((p) => p.name == 'Chart');
+      expect(prog.language, 'SequentialFunctionChart');
+      expect(prog.sfcSteps.map((s) => s.name), containsAll(['Idle', 'Run']));
+      expect(prog.sfcTransitions, isNotEmpty);
+      expect(res.report.translatedSfcCount, 1);
+      expect(res.report.stubbedSfcCount, 0);
+    });
+
+    test('SFC POU with a wired condition keeps the whole-POU stub', () {
+      final ir = ImportedProject(
+        name: 'SfcStub', types: const [], warnings: const [], globalVars: const [],
+        pous: [
+          ImportedPou(
+            name: 'Bad', kind: PouKind.program, lang: PouLanguage.sfc,
+            localVars: const [],
+            body: SfcBody(nodes: [
+              SfcNode(localId: 1, kind: SfcNodeKind.step, name: 'Idle', initial: true),
+              SfcNode(localId: 2, kind: SfcNodeKind.transition, condition: SfcCondWired()),
+              SfcNode(localId: 3, kind: SfcNodeKind.step, name: 'Run'),
+            ], edges: [
+              SfcEdge(fromLocalId: 1, toLocalId: 2),
+              SfcEdge(fromLocalId: 2, toLocalId: 3),
+            ], actions: const []),
+          ),
+        ],
+      );
+      final res = mapImportedProject(ir, projectName: 'SfcStub', projectId: 'y');
+      final prog = res.project.programs.firstWhere((p) => p.name == 'Bad');
+      expect(prog.language, 'SequentialFunctionChart');
+      expect(prog.sfcSteps, isEmpty); // stub program has no steps
+      expect(res.report.translatedSfcCount, 0);
+      expect(res.report.stubbedSfcCount, 1);
+      expect(res.report.sfcStubReasons['wired-condition'], 1);
+    });
+  });
+
   group('mapImportedProject: nested DUT defaults (incremental struct build)', () {
     test('struct-in-struct field defaults to a nested Map, not scalar 0', () {
       final result = mapImportedProject(_buildNestedIr(), projectName: 'P', projectId: 'p1');

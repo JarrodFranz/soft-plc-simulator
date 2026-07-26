@@ -137,7 +137,18 @@ ImportedPou _pou(
       }
     }
   }
-  final body = _findElement(p, 'body');
+  // A direct-child search, NOT the recursive _findElement: a POU's <actions>/
+  // <transitions> sibling sections each contain their own <action>/
+  // <transition><body>...</body></action> elements, and a descendant-based
+  // search could match one of those instead of the POU's own <body> when
+  // <actions>/<transitions> precede <body> in document order.
+  XmlElement? body;
+  for (final e in p.childElements) {
+    if (e.name.local == 'body') {
+      body = e;
+      break;
+    }
+  }
   XmlElement? langEl;
   if (body != null) {
     for (final e in body.childElements) {
@@ -168,6 +179,9 @@ ImportedPou _pou(
   } else if (lang == PouLanguage.st || lang == PouLanguage.il) {
     resolvedLang = lang;
     pouBody = TextBody((langEl?.innerText ?? '').trim());
+  } else if (lang == PouLanguage.sfc) {
+    resolvedLang = lang;
+    pouBody = _sfcBody(langEl, p, warnings, name);
   } else {
     resolvedLang = lang;
     pouBody = _graphBody(langEl, warnings, name);
@@ -269,6 +283,128 @@ GraphBody _graphBody(
         message: 'POU "$pouName": graphical body had no recognizable elements.'));
   }
   return GraphBody(nodes: nodes, connections: conns);
+}
+
+SfcBody _sfcBody(XmlElement? langEl, XmlElement pouEl,
+    List<ImportWarning> warnings, String pouName) {
+  final nodes = <SfcNode>[];
+  final edges = <SfcEdge>[];
+  final actions = <SfcActionAssoc>[];
+
+  if (langEl != null) {
+    for (final el in langEl.childElements) {
+      if (el.name.local == 'actionBlock') {
+        _collectSfcActions(el, actions);
+        continue; // not a topology node
+      }
+      final kind = switch (el.name.local) {
+        'step' => SfcNodeKind.step,
+        'transition' => SfcNodeKind.transition,
+        'selectionDivergence' => SfcNodeKind.selDiv,
+        'selectionConvergence' => SfcNodeKind.selConv,
+        'simultaneousDivergence' => SfcNodeKind.simDiv,
+        'simultaneousConvergence' => SfcNodeKind.simConv,
+        'jumpStep' => SfcNodeKind.jump,
+        'jump' => SfcNodeKind.jump,
+        _ => null,
+      };
+      if (kind == null) continue;
+      final localId = int.tryParse(el.getAttribute('localId') ?? '');
+      if (localId == null) continue;
+      final pos = _findElement(el, 'position');
+      final x = double.tryParse(pos?.getAttribute('x') ?? '') ?? 0;
+      final y = double.tryParse(pos?.getAttribute('y') ?? '') ?? 0;
+      final name = el.getAttribute('name') ?? el.getAttribute('targetName') ?? '';
+      final initial =
+          (el.getAttribute('initialStep') ?? 'false').toLowerCase() == 'true';
+      final cond =
+          kind == SfcNodeKind.transition ? _parseSfcCondition(el) : null;
+      nodes.add(SfcNode(localId: localId, kind: kind, x: x, y: y, name: name,
+          initial: initial, condition: cond));
+      // Topology edges: a step/transition/connector's DIRECT connectionPointIn
+      // (not descendants — a wired condition's own connectionPointIn must not
+      // be read as a topology edge).
+      for (final cpi
+          in el.childElements.where((e) => e.name.local == 'connectionPointIn')) {
+        for (final c in cpi.findElements('connection')) {
+          final from = int.tryParse(c.getAttribute('refLocalId') ?? '');
+          if (from != null) {
+            edges.add(SfcEdge(fromLocalId: from, toLocalId: localId));
+          }
+        }
+      }
+    }
+  }
+
+  // Referenced local action/transition bodies (siblings of <body> under <pou>).
+  final refBodies = <String, String>{};
+  final graphicalRefs = <String>{};
+  for (final section in pouEl.childElements.where(
+      (e) => e.name.local == 'transitions' || e.name.local == 'actions')) {
+    final childName =
+        section.name.local == 'transitions' ? 'transition' : 'action';
+    for (final item
+        in section.childElements.where((e) => e.name.local == childName)) {
+      final nm = item.getAttribute('name');
+      if (nm == null || nm.isEmpty) continue;
+      final st = _findElement(item, 'ST') ?? _findElement(item, 'IL');
+      if (st != null) {
+        refBodies[nm] = st.innerText.trim();
+      } else if (_findElement(item, 'LD') != null ||
+          _findElement(item, 'FBD') != null ||
+          _findElement(item, 'SFC') != null) {
+        graphicalRefs.add(nm);
+      } else {
+        // A named transition may hold its condition inline under <condition>.
+        final cond = _findElement(item, 'condition');
+        final text = cond?.innerText.trim() ?? '';
+        if (text.isNotEmpty) refBodies[nm] = text;
+      }
+    }
+  }
+
+  return SfcBody(nodes: nodes, edges: edges, actions: actions,
+      refBodies: refBodies, graphicalRefs: graphicalRefs);
+}
+
+/// Parses a `<transition>`'s `<condition>` into an [SfcCond].
+SfcCond _parseSfcCondition(XmlElement transEl) {
+  final cond = _findElement(transEl, 'condition');
+  if (cond == null) return SfcCondNone();
+  final ref = _findElement(cond, 'reference');
+  final refName = ref?.getAttribute('name');
+  if (refName != null && refName.isNotEmpty) return SfcCondRef(refName);
+  // A wired condition carries its own connectionPointIn INSIDE <condition>.
+  if (_findElement(cond, 'connectionPointIn') != null) return SfcCondWired();
+  final inline = _findElement(cond, 'ST') ?? _findElement(cond, 'inline');
+  final text = (inline?.innerText ?? cond.innerText).trim();
+  return text.isEmpty ? SfcCondNone() : SfcCondInline(text);
+}
+
+/// Collects the `<action>`s of an `<actionBlock>` and associates them with the
+/// step referenced by the block's direct `connectionPointIn`.
+void _collectSfcActions(XmlElement ab, List<SfcActionAssoc> out) {
+  int? stepLocalId;
+  for (final cpi
+      in ab.childElements.where((e) => e.name.local == 'connectionPointIn')) {
+    for (final c in cpi.findElements('connection')) {
+      stepLocalId = int.tryParse(c.getAttribute('refLocalId') ?? '') ?? stepLocalId;
+    }
+  }
+  if (stepLocalId == null) return; // can't associate -> drop
+  for (final act in ab.findElements('action')) {
+    final qual = act.getAttribute('qualifier') ?? 'N';
+    final ref = _findElement(act, 'reference');
+    final refName = ref?.getAttribute('name');
+    final SfcActSource source;
+    if (refName != null && refName.isNotEmpty) {
+      source = SfcActRef(refName);
+    } else {
+      final st = _findElement(act, 'ST') ?? _findElement(act, 'inline');
+      source = SfcActInline((st?.innerText ?? act.innerText).trim());
+    }
+    out.add(SfcActionAssoc(stepLocalId: stepLocalId, qualifier: qual, source: source));
+  }
 }
 
 // --- small helpers ---
