@@ -187,12 +187,21 @@ GraphBody _graphBody(
   if (langEl == null) {
     return GraphBody(nodes: nodes, connections: conns);
   }
+  // Nodes whose `localId` attribute is present but not a parseable integer
+  // (malformed input) each get a unique synthetic negative id instead of a
+  // shared `-1` sentinel. A shared sentinel would make two distinct malformed
+  // nodes collide under the same key in localId-keyed maps downstream (e.g.
+  // `weaklyConnectedComponents`'s `byId`), silently merging two unrelated
+  // source networks and dropping one node entirely. Staying negative keeps
+  // the FBD translator's `localId < 0` stub guard effective; being distinct
+  // per node prevents the collision/merge.
+  var malformedId = -1;
   for (final el in langEl.childElements) {
     final localIdStr = el.getAttribute('localId');
     if (localIdStr == null) {
       continue; // non-element children without a localId aren't graph nodes
     }
-    final localId = int.tryParse(localIdStr) ?? -1;
+    final localId = int.tryParse(localIdStr) ?? malformedId--;
     final pos = _findElement(el, 'position');
     final attrs = <String, String>{};
     for (final a in el.attributes) {
@@ -201,6 +210,24 @@ GraphBody _graphBody(
     final varEl = _findElement(el, 'variable');
     if (varEl != null) {
       attrs['variable'] = varEl.innerText.trim();
+    } else {
+      // Real TC6 FBD carries an inVariable/outVariable's bound tag or literal
+      // inside <expression> (LD contacts/coils use <variable>). Fall back to it
+      // so FBD operands resolve; <variable> still wins when both are present.
+      final exprEl = _findElement(el, 'expression');
+      if (exprEl != null) {
+        attrs['variable'] = exprEl.innerText.trim();
+      }
+    }
+    // FBD block pins may be negated on their <inputVariables>/<outputVariables>
+    // <variable> wrapper. The app FBD model has no negated-pin concept, so the
+    // translator must be able to detect (and stub) it — flag any descendant
+    // <variable negated="true">. (A negated <contact>/<coil> carries `negated`
+    // on its own element, captured generically above, not here.)
+    final hasNegatedPin = el.descendantElements.any(
+        (d) => d.name.local == 'variable' && d.getAttribute('negated') == 'true');
+    if (hasNegatedPin) {
+      attrs['hasNegatedPin'] = 'true';
     }
     nodes.add(IrGraphNode(
       localId: localId,

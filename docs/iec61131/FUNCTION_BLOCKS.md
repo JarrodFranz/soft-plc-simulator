@@ -65,10 +65,11 @@ site routes to a real FB instance (pin bindings + backing instance tag)
 instead of the unsupported-block stub — proven end-to-end (parse → map →
 translate → execute) in `mobile/test/import/import_fb_e2e_test.dart`. Call-site
 operands resolve via the parser's `<variable>` element convention (the same one
-all LD operand resolution uses); FB call operands bound with `<expression>`
-elements are a deferred parser follow-up (see `docs/DEFERRED.md`). FBD
-custom-FB call routing is still deferred until the FBD import translator
-ships. Graphical-bodied FBs, FB-calling-FB nesting, ST bodies beyond the
-app's subset, and IEC *functions* (stateless POUs) all remain out of scope —
-tracked in `docs/DEFERRED.md`'s "Custom (user-defined) function blocks"
-section.
+all LD operand resolution uses) with an `<expression>` fallback for either
+dialect. The FBD import translator (see `docs/iec61131/FUNCTION_BLOCK_DIAGRAM.md`)
+routes an FBD `<block>` calling a custom FB to a real instance the same way the
+LD translator does, proven end-to-end in
+`mobile/test/import/import_fbd_e2e_test.dart`. Graphical-bodied FBs,
+FB-calling-FB nesting, ST bodies beyond the app's subset, and IEC *functions*
+(stateless POUs) all remain out of scope — tracked in `docs/DEFERRED.md`'s
+"Custom (user-defined) function blocks" section.

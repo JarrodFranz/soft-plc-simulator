@@ -89,6 +89,16 @@ class _ImportXmlPreviewState extends State<ImportXmlPreview> {
                   style: const TextStyle(color: Colors.amber, fontSize: 12),
                 ),
               ],
+              if (report.translatedFbdNetworkCount > 0 ||
+                  report.stubbedFbdNetworkCount > 0) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'FBD: ${report.translatedFbdNetworkCount} network(s) translated'
+                  '${report.stubbedFbdNetworkCount > 0 ? ', ${report.stubbedFbdNetworkCount} stubbed' : ''}'
+                  '${report.unsupportedFbdBlockTypes.isNotEmpty ? ' — unsupported blocks: ${report.unsupportedFbdBlockTypes.join(', ')}' : ''}',
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+              ],
               if (report.importedFbCount > 0) ...[
                 const SizedBox(height: 4),
                 Text(
