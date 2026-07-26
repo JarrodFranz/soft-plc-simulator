@@ -91,6 +91,53 @@ class GraphBody extends PouBody {
   GraphBody({required this.nodes, required this.connections});
 }
 
+enum SfcNodeKind { step, transition, selDiv, selConv, simDiv, simConv, jump }
+
+/// A transition's condition source.
+sealed class SfcCond {}
+class SfcCondInline extends SfcCond { final String text; SfcCondInline(this.text); }
+class SfcCondRef extends SfcCond { final String name; SfcCondRef(this.name); }
+class SfcCondWired extends SfcCond {}
+class SfcCondNone extends SfcCond {}
+
+/// A step action's source.
+sealed class SfcActSource {}
+class SfcActInline extends SfcActSource { final String text; SfcActInline(this.text); }
+class SfcActRef extends SfcActSource { final String name; SfcActRef(this.name); }
+
+class SfcActionAssoc {
+  final int stepLocalId;
+  final String qualifier; // 'N','S','R','P','L','D',...
+  final SfcActSource source;
+  SfcActionAssoc({required this.stepLocalId, required this.qualifier, required this.source});
+}
+
+class SfcNode {
+  final int localId;
+  final SfcNodeKind kind;
+  final double x, y;
+  final String name;      // step name / jump targetName / '' otherwise
+  final bool initial;     // step only
+  final SfcCond? condition; // transition only
+  SfcNode({required this.localId, required this.kind, this.x = 0, this.y = 0,
+      this.name = '', this.initial = false, this.condition});
+}
+
+class SfcEdge {
+  final int fromLocalId, toLocalId;
+  SfcEdge({required this.fromLocalId, required this.toLocalId});
+}
+
+class SfcBody extends PouBody {
+  final List<SfcNode> nodes;
+  final List<SfcEdge> edges;
+  final List<SfcActionAssoc> actions;
+  final Map<String, String> refBodies;  // name -> ST source
+  final Set<String> graphicalRefs;       // names of referenced graphical (non-ST) bodies
+  SfcBody({required this.nodes, required this.edges, required this.actions,
+      this.refBodies = const {}, this.graphicalRefs = const {}});
+}
+
 class ImportedPou {
   final String name;
   final PouKind kind;

@@ -305,6 +305,16 @@ ImportResult mapImportedProject(ImportedProject ir,
             description: 'Graphical body not yet translated (${body.nodes.length} elements captured).'));
         stubCount++;
       }
+    } else if (body is SfcBody) {
+      // SFC whole-POU stub (translator wired in a later task). Unchanged
+      // behaviour: an SFC POU imports as a stub SequentialFunctionChart program.
+      warnings.add(ImportWarning(severity: WarningSeverity.warning,
+          message: 'POU "${pou.name}" (SequentialFunctionChart): graphical body not '
+              'yet translated (${body.nodes.length} elements captured) — re-import '
+              'once graphical translation ships.'));
+      programs.add(PlcProgram(name: pou.name, language: 'SequentialFunctionChart',
+          description: 'Graphical body not yet translated (${body.nodes.length} elements captured).'));
+      stubCount++;
     } else if (body is GraphBody) {
       // SFC (and any other graphical): unchanged whole-POU stub.
       final lang = switch (pou.lang) {
