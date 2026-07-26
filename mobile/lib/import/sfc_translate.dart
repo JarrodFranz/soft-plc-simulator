@@ -43,6 +43,17 @@ SfcTranslation translateSfcBody(SfcBody body, {required String pouName}) {
   if (stepNodes.isEmpty) throw _SfcStub('no-initial', 'chart has no steps');
 
   final byId = {for (final n in body.nodes) n.localId: n};
+
+  // A direct step->step edge means a transition is missing from the source
+  // — a structural error, not something we can represent faithfully as a
+  // partial chart. Whole-POU stub rather than silently drop the path.
+  for (final e in body.edges) {
+    if (byId[e.fromLocalId]?.kind == SfcNodeKind.step &&
+        byId[e.toLocalId]?.kind == SfcNodeKind.step) {
+      throw _SfcStub('complex-topology', 'step directly wired to step (missing transition)');
+    }
+  }
+
   final succ = <int, List<int>>{for (final n in body.nodes) n.localId: []};
   final pred = <int, List<int>>{for (final n in body.nodes) n.localId: []};
   for (final e in body.edges) {
@@ -58,9 +69,19 @@ SfcTranslation translateSfcBody(SfcBody body, {required String pouName}) {
     return null;
   }
 
-  // Actions grouped by step.
+  // Actions grouped by step. An action whose stepLocalId does not resolve to
+  // a real step (dangling reference, typo'd id, or association with a
+  // transition/connector) is unassociatable: it degrades to no-op, but must
+  // still surface a warning rather than silently vanish.
+  final stepLocalIds = {for (final s in stepNodes) s.localId};
   final actionsByStep = <int, List<SfcActionAssoc>>{};
   for (final a in body.actions) {
+    if (!stepLocalIds.contains(a.stepLocalId)) {
+      warnings.add(ImportWarning(severity: WarningSeverity.info,
+          message: 'SFC POU "$pouName": action associated with unknown step '
+              '(id ${a.stepLocalId}) — skipped.'));
+      continue;
+    }
     (actionsByStep[a.stepLocalId] ??= []).add(a);
   }
 

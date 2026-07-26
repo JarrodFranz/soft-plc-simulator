@@ -188,4 +188,36 @@ void main() {
     expect(join.toStepId, 'P_s8');
     expect(join.conditionSt, 'Done');
   });
+
+  test('orphan action (unknown step id) is dropped with an info warning', () {
+    final body = SfcBody(nodes: [
+      _step(1, 'Idle', initial: true),
+      _trans(2, SfcCondInline('Go')),
+      _step(3, 'Run'),
+    ], edges: [_e(1, 2), _e(2, 3)], actions: [
+      SfcActionAssoc(stepLocalId: 999, qualifier: 'N', source: SfcActInline('Motor := TRUE;')),
+    ]);
+    final tr = translateSfcBody(body, pouName: 'P');
+    expect(tr.translated, isTrue);
+    expect(tr.steps.firstWhere((s) => s.name == 'Idle').actionSt, '');
+    expect(tr.steps.firstWhere((s) => s.name == 'Run').actionSt, '');
+    expect(
+      tr.warnings.any((w) =>
+          w.severity == WarningSeverity.info &&
+          w.message.contains('unknown step')),
+      isTrue,
+    );
+  });
+
+  test('direct step-to-step edge (missing transition) stubs the whole POU', () {
+    final body = SfcBody(nodes: [
+      _step(1, 'Idle', initial: true),
+      _step(2, 'Run'),
+    ], edges: [
+      _e(1, 2),
+    ], actions: const []);
+    final tr = translateSfcBody(body, pouName: 'P');
+    expect(tr.translated, isFalse);
+    expect(tr.stubReason, 'complex-topology');
+  });
 }
