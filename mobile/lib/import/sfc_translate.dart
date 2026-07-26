@@ -30,6 +30,8 @@ SfcTranslation translateSfcBody(SfcBody body, {required String pouName}) {
     return SfcTranslation(steps: built.$1, transitions: built.$2,
         translated: true, stubReason: null, warnings: warnings);
   } on _SfcStub catch (e) {
+    warnings.add(ImportWarning(severity: WarningSeverity.warning,
+        message: 'SFC POU "$pouName": not translated (${e.detail}).'));
     return SfcTranslation(steps: const [], transitions: const [],
         translated: false, stubReason: e.reason, warnings: warnings);
   }

@@ -114,6 +114,24 @@ void main() {
     expect(tr.stubReason, 'wired-condition');
   });
 
+  test('stub emits a warning with pou name and stub detail', () {
+    final body = SfcBody(nodes: [
+      _step(1, 'Idle', initial: true),
+      _trans(2, SfcCondWired()),
+      _step(3, 'Run'),
+    ], edges: [_e(1, 2), _e(2, 3)], actions: const []);
+    final tr = translateSfcBody(body, pouName: 'P');
+    expect(tr.translated, isFalse);
+    expect(
+      tr.warnings.any((w) =>
+          w.severity == WarningSeverity.warning &&
+          w.message.contains('P') &&
+          w.message.contains('not translated') &&
+          w.message.contains('graphical transition condition')),
+      isTrue,
+    );
+  });
+
   test('referenced-but-graphical condition stubs the whole POU', () {
     final body = SfcBody(nodes: [
       _step(1, 'Idle', initial: true),
