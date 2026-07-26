@@ -71,4 +71,41 @@ void main() {
     // placeholder rungs preserve numbering
     expect(tr.rungs, hasLength(3));
   });
+
+  FbDefinition scalerFb() => FbDefinition(name: 'Scaler', vars: [
+        FbVar(name: 'In', dataType: 'FLOAT64', direction: FbVarDir.input),
+        FbVar(name: 'Gain', dataType: 'FLOAT64', direction: FbVarDir.input),
+        FbVar(name: 'Out', dataType: 'FLOAT64', direction: FbVarDir.output),
+      ], stSource: 'Out := In * Gain;');
+
+  test('AOI call with matching arity -> FB-call node with positional pinBindings', () {
+    final tr = compileRllRungs(_body(['Scaler(Inst1,PV,2.0,CV);']),
+        pouName: 'P', fbRegistry: {'Scaler': scalerFb()});
+    expect(tr.translatedRungCount, 1);
+    final fb = tr.rungs.single.nodes.firstWhere((n) => n.blockType == 'Scaler');
+    expect(fb.variable, 'Inst1');
+    expect(fb.pinBindings['In'], 'PV');
+    expect(fb.pinBindings['Gain'], '2.0');
+    expect(fb.pinBindings['Out'], 'CV');
+  });
+
+  test('renamed AOI routes via fbRenameMap', () {
+    final tr = compileRllRungs(_body(['AND(I1,X);']), pouName: 'P',
+        fbRegistry: {
+          'AND_1': FbDefinition(name: 'AND_1', vars: [
+            FbVar(name: 'X', dataType: 'BOOL', direction: FbVarDir.input),
+          ], stSource: '')
+        },
+        fbRenameMap: {'AND': 'AND_1'});
+    expect(tr.translatedRungCount, 1);
+    expect(tr.rungs.single.nodes.any((n) => n.blockType == 'AND_1'), isTrue);
+  });
+
+  test('AOI arity mismatch stubs the rung', () {
+    final tr = compileRllRungs(_body(['Scaler(Inst1,PV);']),
+        pouName: 'P', fbRegistry: {'Scaler': scalerFb()});
+    expect(tr.translatedRungCount, 0);
+    expect(tr.stubReasons['aoi-mismatch'], 1);
+    expect(tr.unsupportedInstructions, contains('Scaler'));
+  });
 }

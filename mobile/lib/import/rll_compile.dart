@@ -289,7 +289,25 @@ LdNode _instrToNode(
   Map<String, String> fbRenameMap,
   List<ImportWarning> warnings,
 ) {
-  // (Task 4 inserts the custom-AOI-call branch here, BEFORE the switch.)
+  // Custom-AOI call: a mnemonic that (after fbRenameMap) names an imported AOI
+  // routes to an FB-call node. Strict: the arg count must match the interface.
+  final effective = fbRenameMap[instr.mnemonic] ?? instr.mnemonic;
+  final fb = fbRegistry[effective];
+  if (fb != null) {
+    final ops = instr.operands;
+    if (ops.isEmpty || ops.length - 1 != fb.vars.length) {
+      unsupported.add(instr.mnemonic);
+      throw _RllStub('aoi-mismatch',
+          'AOI "$effective" arg count ${ops.isEmpty ? 0 : ops.length - 1} != ${fb.vars.length}');
+    }
+    final pin = <String, String>{};
+    for (var k = 0; k < fb.vars.length; k++) {
+      pin[fb.vars[k].name] = ops[k + 1];
+    }
+    return LdNode(id: '', kind: LdKind.block, blockType: effective,
+        variable: ops[0], pinBindings: pin);
+  }
+
   final m = instr.mnemonic.toUpperCase();
   final ops = instr.operands;
   switch (m) {
