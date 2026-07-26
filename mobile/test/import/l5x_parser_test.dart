@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:soft_plc_mobile/import/import_ir.dart';
 import 'package:soft_plc_mobile/import/l5x_parser.dart';
 
 void main() {
@@ -79,5 +80,49 @@ void main() {
     final byName = {for (final f in ir.types.single.fields) f.name: f};
     expect(byName['Bad']!.initialValue, isNull);
     expect(byName['Good']!.initialValue, 0xffff); // regression check
+  });
+
+  test('AOI -> functionBlock POU with params, skipped EnableIn/Out, ST body', () {
+    const xml = '''
+<RSLogix5000Content TargetType="Controller"><Controller Name="C">
+  <AddOnInstructionDefinitions>
+    <AddOnInstructionDefinition Name="Scaler">
+      <Parameters>
+        <Parameter Name="EnableIn" DataType="BOOL" Usage="Input" Visible="false"/>
+        <Parameter Name="EnableOut" DataType="BOOL" Usage="Output" Visible="false"/>
+        <Parameter Name="In" DataType="REAL" Usage="Input" Visible="true"/>
+        <Parameter Name="Gain" DataType="REAL" Usage="Input" Visible="true">
+          <DefaultData Format="Decorated"><DataValue Value="2.0" Radix="Float"/></DefaultData>
+        </Parameter>
+        <Parameter Name="Out" DataType="REAL" Usage="Output" Visible="true"/>
+      </Parameters>
+      <LocalTags><LocalTag Name="Tmp" DataType="REAL"/></LocalTags>
+      <Routines>
+        <Routine Name="Logic" Type="ST"><STContent>
+          <Line Number="0"><![CDATA[Out := In * Gain;]]></Line>
+        </STContent></Routine>
+      </Routines>
+    </AddOnInstructionDefinition>
+    <AddOnInstructionDefinition Name="LadderAoi">
+      <Parameters><Parameter Name="X" DataType="BOOL" Usage="Input" Visible="true"/></Parameters>
+      <Routines><Routine Name="Logic" Type="RLL"><RLLContent><Rung Number="0"><Text><![CDATA[NOP();]]></Text></Rung></RLLContent></Routine></Routines>
+    </AddOnInstructionDefinition>
+  </AddOnInstructionDefinitions>
+</Controller></RSLogix5000Content>''';
+    final ir = parseL5x(xml);
+    final scaler = ir.pous.firstWhere((p) => p.name == 'Scaler');
+    expect(scaler.kind, PouKind.functionBlock);
+    expect(scaler.lang, PouLanguage.st);
+    expect(scaler.localVars.map((v) => v.name), ['In', 'Gain', 'Out', 'Tmp']); // EnableIn/Out skipped
+    expect(scaler.localVars.firstWhere((v) => v.name == 'In').scope, VarScope.input);
+    expect(scaler.localVars.firstWhere((v) => v.name == 'Out').scope, VarScope.output);
+    expect(scaler.localVars.firstWhere((v) => v.name == 'Tmp').scope, VarScope.local);
+    expect(scaler.localVars.firstWhere((v) => v.name == 'Gain').initialValue, 2.0);
+    expect((scaler.body as TextBody).source, 'Out := In * Gain;');
+
+    // RLL-bodied AOI: interface imported, empty body + warning.
+    final ladder = ir.pous.firstWhere((p) => p.name == 'LadderAoi');
+    expect((ladder.body as TextBody).source, '');
+    expect(ir.warnings.any((w) => w.message.contains('LadderAoi') && w.message.contains('logic')), isTrue);
   });
 }

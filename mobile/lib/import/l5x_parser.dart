@@ -29,7 +29,9 @@ ImportedProject parseL5x(String xml) {
   final pous = <ImportedPou>[];
   final globalVars = <ImportedVar>[];
 
-  // Tasks 3–5 fill pous/globalVars from `controller`.
+  pous.addAll(_l5xAois(controller, warnings));
+
+  // Tasks 4–5 fill pous/globalVars from `controller`.
 
   return ImportedProject(
       name: name, types: types, globalVars: globalVars, pous: pous,
@@ -126,6 +128,86 @@ List<ImportedType> _l5xTypes(XmlElement? controller, List<ImportWarning> warning
         }
       }
       out.add(ImportedType(name: tname, fields: fields));
+    }
+  }
+  return out;
+}
+
+/// Concatenated CDATA of a routine's `<STContent><Line>`s (in document order).
+String _stLines(XmlElement routine) {
+  final lines = <String>[];
+  for (final st in _children(routine, 'STContent')) {
+    for (final ln in _children(st, 'Line')) {
+      lines.add(ln.innerText.trim());
+    }
+  }
+  return lines.join('\n');
+}
+
+VarScope _usageScope(String? usage) => switch (usage) {
+      'Input' => VarScope.input,
+      'Output' => VarScope.output,
+      'InOut' => VarScope.inOut,
+      _ => VarScope.local,
+    };
+
+/// Maps `<AddOnInstructionDefinition>`s to functionBlock POUs. The existing
+/// `mapImportedFbs` turns these into FbDefinitions (AOI-typed tags then resolve).
+List<ImportedPou> _l5xAois(XmlElement? controller, List<ImportWarning> warnings) {
+  final out = <ImportedPou>[];
+  if (controller == null) return out;
+  for (final defs in _children(controller, 'AddOnInstructionDefinitions')) {
+    for (final aoi in _children(defs, 'AddOnInstructionDefinition')) {
+      final name = aoi.getAttribute('Name') ?? '';
+      if (name.isEmpty) continue;
+      final vars = <ImportedVar>[];
+      for (final params in _children(aoi, 'Parameters')) {
+        for (final p in _children(params, 'Parameter')) {
+          final pn = p.getAttribute('Name') ?? '';
+          if (pn.isEmpty || pn == 'EnableIn' || pn == 'EnableOut') continue;
+          vars.add(ImportedVar(
+            name: pn,
+            baseType: p.getAttribute('DataType') ?? 'DINT',
+            arrayLength: int.tryParse(p.getAttribute('Dimensions') ?? '0') ?? 0,
+            scope: _usageScope(p.getAttribute('Usage')),
+            initialValue: _defaultDataScalar(p),
+          ));
+        }
+      }
+      for (final lts in _children(aoi, 'LocalTags')) {
+        for (final lt in _children(lts, 'LocalTag')) {
+          final ln = lt.getAttribute('Name') ?? '';
+          if (ln.isEmpty) continue;
+          vars.add(ImportedVar(
+            name: ln,
+            baseType: lt.getAttribute('DataType') ?? 'DINT',
+            arrayLength: int.tryParse(lt.getAttribute('Dimensions') ?? '0') ?? 0,
+            scope: VarScope.local,
+            initialValue: _defaultDataScalar(lt),
+          ));
+        }
+      }
+      // Logic routine: named "Logic" else the first routine.
+      XmlElement? logic;
+      for (final rs in _children(aoi, 'Routines')) {
+        for (final r in _children(rs, 'Routine')) {
+          logic ??= r;
+          if (r.getAttribute('Name') == 'Logic') logic = r;
+        }
+      }
+      String body = '';
+      if (logic != null) {
+        final type = logic.getAttribute('Type');
+        if (type == 'ST') {
+          body = _stLines(logic);
+        } else {
+          warnings.add(ImportWarning(severity: WarningSeverity.info,
+              message: 'AOI "$name" logic is ${type ?? '?'} — interface '
+                  'imported, logic not yet translated.'));
+        }
+      }
+      out.add(ImportedPou(name: name, kind: PouKind.functionBlock,
+          lang: PouLanguage.st, localVars: vars, body: TextBody(body)));
     }
   }
   return out;
