@@ -108,16 +108,31 @@ ImportResult mapImportedProject(ImportedProject ir,
     ));
   }
 
-  // scratch2 knows every struct (including nested ones), so composite-typed
-  // vars resolve fully.
+  // functionBlock POUs -> FbDefinitions. Computed BEFORE the vars/tags loop
+  // below so a global tag instantiating a custom FB/AOI (as Rockwell L5X
+  // controller tags commonly do) can resolve to its (possibly renamed) FB
+  // name instead of silently falling back to a scalar default. The registry
+  // + rename map also feed the LD translator further down so custom-FB calls
+  // route to the right definition.
+  final fbRes = mapImportedFbs(ir.pous, structs: structs, dutNames: dutNames, warnings: warnings);
+  final fbTypeNames = fbRes.renameMap.values.toSet();
+
+  // scratch2 knows every struct (including nested ones) and FB definition, so
+  // composite-typed vars (including AOI-instance tags) resolve fully.
   final scratch2 = PlcProject(id: 'scratch', name: 'scratch', controllerName: 'PLC',
-      programs: [], tasks: [], hmis: [], structDefs: structs, tags: []);
+      programs: [], tasks: [], hmis: [], structDefs: structs, tags: [],
+      fbDefinitions: fbRes.defs);
 
   // Vars -> tags (with name sanitization + within-import dedup).
   final used = <String>{};
   final tags = <PlcTag>[];
   for (final v in ir.globalVars) {
-    final appType = normalizeType(v.baseType, knownDutNames: dutNames);
+    // A var whose baseType names an imported FB/AOI POU (by its ORIGINAL
+    // name) resolves to that FB's final (possibly rename-collision-resolved)
+    // name, so the tag ends up correctly composite-typed.
+    final resolvedBaseType = fbRes.renameMap[v.baseType] ?? v.baseType;
+    final appType = normalizeType(resolvedBaseType,
+        knownDutNames: {...dutNames, ...fbTypeNames});
     var name = _sanitizeIdentifier(v.name);
     if (name != v.name) {
       warnings.add(ImportWarning(severity: WarningSeverity.info,
@@ -153,10 +168,6 @@ ImportResult mapImportedProject(ImportedProject ir,
       retentive: v.retain,
     ));
   }
-
-  // functionBlock POUs -> FbDefinitions (registry + rename map feed the LD
-  // translator below so custom-FB calls route to the right definition).
-  final fbRes = mapImportedFbs(ir.pous, structs: structs, dutNames: dutNames, warnings: warnings);
 
   // POUs -> programs.
   var stCount = 0;

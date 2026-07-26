@@ -34,9 +34,10 @@ import '../support/responsive_test_utils.dart';
 const String _malformedButRecognizedXml =
     '<project xmlns="http://www.plcopen.org/xml/tc6_0201"><contentHeader name="Broken"><unclosed></project>';
 
-/// Not PLCopen at all (no `<project` root, no plcopen/tc6 marker) — the
-/// "unrecognized dialect" case, handled before `parsePlcOpen` is ever called.
-const String _unrecognizedXml = '<RSLogix5000Content><Controller/></RSLogix5000Content>';
+/// Not PLCopen, not L5X — no `<project` root, no plcopen/tc6 marker, no
+/// `<RSLogix5000Content>` root — the "unrecognized dialect" case, handled
+/// before either `parsePlcOpen` or `parseL5x` is ever called.
+const String _unrecognizedXml = '<SomeOtherVendor><Controller/></SomeOtherVendor>';
 
 ImportResult _fakeResult({
   List<ImportWarning>? warnings,

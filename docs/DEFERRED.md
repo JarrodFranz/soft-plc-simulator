@@ -84,10 +84,31 @@ plan that defers something records it here (and links back here from its own
 |---|---|---|
 | Import-fidelity warnings | near-term | Bundle: unknown type → `INT16` silently (N2); multidimensional arrays collapse to first dimension (N3); case-insensitive DUT-name match (T2a); duplicate DUT names collapse silently (T4b); a DUT named `TIMER`/`COUNTER`/`SYSTEM` shadows a builtin (T4c). |
 | POU local variables not surfaced | later | `ImportedPou.localVars` are captured in the IR but the mapper only creates timer/counter instance tags, not general locals. |
-| Other vendor dialects (Rockwell L5X, Siemens TIA) | later | Only PLCopen TC6 is autodetected; the IR is vendor-neutral so parsers can be added. |
+| ~~Other vendor dialects (Rockwell L5X, Siemens TIA)~~ | ~~later~~ | **Rockwell L5X shipped** (2026-07-26, L5X import foundation — see "L5X import" section below); Siemens TIA (and Beckhoff TwinCAT, CODESYS native) remain unsupported — only PLCopen TC6 and Rockwell L5X are autodetected today. |
 | Merge-into-existing-project import | later | Import always creates a NEW project; no merge mode. |
 | Export to PLCopen XML | later | Import-only today; no export path. |
 | `detectDialect` tightening | later | Matches on the `plcopen`/`tc6` substring in the first 4 KB; a mis-detect self-corrects to a clear FormatException. |
+
+## L5X import (Rockwell Logix → app)
+
+Foundation delivered (2026-07-26, L5X import foundation program): user
+DataTypes → structs, AOIs → function blocks (interface + ST logic), controller
++ program tags → tags (flat namespace, scalar values incl. Hex/Binary/Octal
+radices), ST routines → ST programs. Proven end-to-end against real Rockwell
+exports in `mobile/test/import/import_l5x_e2e_test.dart` (an AOI-typed tag
+resolves to its composite/FbDefinition type; an ST-bodied AOI's logic
+imports). See `docs/import/L5X.md` for the full support matrix.
+
+| Item | Priority | Notes |
+|---|---|---|
+| RLL (ladder) routine translation | near-term | Sub-project 2: a per-rung translator for L5X ladder routines, mirroring the PLCopen `ld_translate.dart` translator. Today RLL routines capture rung count and become a whole-POU stub. |
+| Non-ST AOI logic translation | later | An AOI whose `Logic` routine is RLL/FBD/SFC imports its interface (parameters + local tags) as a real `FbDefinition`, but the logic body itself is not translated (warning only). |
+| L5X FBD routine translation | later | Sub-project 3: mirrors the PLCopen `fbd_translate.dart` translator for L5X FBD routines. |
+| L5X SFC routine translation | later | Sub-project 4: mirrors the PLCopen `sfc_translate.dart` translator for L5X SFC routines. |
+| BIT-overlay member aliasing | later | A UDT member that overlays a bit of another member (`Target`/`BitNumber`) imports as a plain `BOOL`, not a live alias of that bit. |
+| Per-instance composite tag values | later | A `<Structure>`/`<ArrayMember>` tag's per-instance member values are not read; the tag gets its type's structural default instead. |
+| Predefined AB/CIP module datatypes | later | Module-defined I/O datatypes (e.g. `AB:1756_MODULE:...`) fall back to `INT16` like any other unresolved type name, rather than being specially modeled. |
+| Multi-dimensional arrays | later | Only the first dimension of a multi-dimensional `Dimensions` attribute is imported; the rest are flattened away (info warning). |
 
 ## Housekeeping
 

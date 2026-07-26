@@ -17,6 +17,7 @@ import '../data/project_repository.dart';
 import '../data/project_transfer.dart';
 import '../import/dialect_detect.dart';
 import '../import/ir_to_project.dart';
+import '../import/l5x_parser.dart';
 import '../import/plcopen_parser.dart';
 import '../services/app_logger.dart';
 import '../services/bacnet_host.dart';
@@ -1540,22 +1541,23 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     if (dialect == null) {
       messenger.showSnackBar(const SnackBar(
         content: Text("Couldn't recognize this as a supported PLC export "
-            '(only PLCopen TC6 XML is supported so far)'),
+            '(PLCopen TC6 XML and Rockwell L5X are supported)'),
       ));
       return;
     }
 
     final ImportResult result;
     try {
-      final ir = parsePlcOpen(text);
+      final ir = dialect == ImportDialect.l5x ? parseL5x(text) : parsePlcOpen(text);
       final id = 'proj_new_${DateTime.now().millisecondsSinceEpoch}';
       result = mapImportedProject(ir, projectName: ir.name, projectId: id);
     } on FormatException catch (e) {
-      _logger.log(kLogSourceProject, LogLevel.warn, 'Import XML: not a valid PLCopen document',
+      final docKind = dialect == ImportDialect.l5x ? 'L5X' : 'PLCopen';
+      _logger.log(kLogSourceProject, LogLevel.warn, 'Import XML: not a valid $docKind document',
           detail: e.toString());
       if (!mounted) return;
       messenger.showSnackBar(
-        const SnackBar(content: Text("Couldn't import: not a valid PLCopen document")),
+        SnackBar(content: Text("Couldn't import: not a valid $docKind document")),
       );
       return;
     }
