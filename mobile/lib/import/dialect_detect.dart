@@ -8,6 +8,9 @@ export 'import_ir.dart' show ImportDialect;
 ImportDialect? detectDialect(String xml) {
   final head = xml.length > 4096 ? xml.substring(0, 4096) : xml;
   final lower = head.toLowerCase();
+  if (lower.contains('<rslogix5000content')) {
+    return ImportDialect.l5x;
+  }
   final rootIdx = lower.indexOf('<project');
   if (rootIdx < 0) {
     return null;

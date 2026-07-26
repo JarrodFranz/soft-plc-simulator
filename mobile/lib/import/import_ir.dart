@@ -9,7 +9,7 @@ enum VarScope { global, input, output, inOut, local, temp, external }
 enum PouKind { program, functionBlock, function }
 enum PouLanguage { st, il, ld, fbd, sfc }
 enum WarningSeverity { info, warning }
-enum ImportDialect { plcOpen }
+enum ImportDialect { plcOpen, l5x }
 
 class ImportWarning {
   final WarningSeverity severity;
