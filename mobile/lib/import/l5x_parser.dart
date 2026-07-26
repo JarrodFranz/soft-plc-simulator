@@ -2,6 +2,35 @@ import 'package:xml/xml.dart';
 
 import 'import_ir.dart';
 
+/// Upper bound on a parsed array dimension. L5X files are free to declare
+/// arbitrarily large `Dimension`/`Dimensions` values, but the mapper
+/// eagerly allocates a default-value list of that length (`List.generate`).
+/// An unbounded (or hostile/typo'd) dimension would exhaust memory and throw
+/// an uncatchable OutOfMemoryError-class `Error` — bypassing the UI's
+/// `on FormatException` guard. Dimensions beyond this cap are clamped and an
+/// [ImportWarning] is recorded instead. (Matches plcopen_parser.dart's
+/// `_kMaxArrayLen`; not shared across files to keep each parser independent.)
+const _kMaxL5xArrayLen = 65535;
+
+/// Parses a single L5X array-dimension token (already isolated from any
+/// multi-dimensional `Dimensions` string by the caller), clamping to
+/// [_kMaxL5xArrayLen] and recording an info [ImportWarning] naming
+/// [ownerLabel] when clamped. Negative/unparseable values become 0.
+int _l5xArrayLen(
+    String? raw, List<ImportWarning> warnings, String ownerLabel) {
+  final n = int.tryParse(raw ?? '0') ?? 0;
+  if (n <= 0) return 0;
+  if (n > _kMaxL5xArrayLen) {
+    warnings.add(ImportWarning(
+        severity: WarningSeverity.info,
+        message: '$ownerLabel: array dimension $n exceeds the supported '
+            'maximum ($_kMaxL5xArrayLen) and was clamped; verify the '
+            'imported size.'));
+    return _kMaxL5xArrayLen;
+  }
+  return n;
+}
+
 /// Parses a Rockwell L5X (Studio 5000 / Logix Designer export) document into
 /// the vendor-neutral IR. Throws [FormatException] ONLY when [xml] is not
 /// well-formed or its root is not `<RSLogix5000Content>`. Valid-but-unsupported
@@ -121,7 +150,8 @@ List<ImportedType> _l5xTypes(XmlElement? controller, List<ImportWarning> warning
           fields.add(ImportedField(
             name: mn,
             baseType: m.getAttribute('DataType') ?? 'DINT',
-            arrayLength: int.tryParse(m.getAttribute('Dimension') ?? '0') ?? 0,
+            arrayLength: _l5xArrayLen(m.getAttribute('Dimension'), warnings,
+                'DataType "$tname" member "$mn"'),
             initialValue: _defaultDataScalar(m),
           ));
         }
@@ -167,7 +197,8 @@ List<ImportedPou> _l5xAois(XmlElement? controller, List<ImportWarning> warnings)
           vars.add(ImportedVar(
             name: pn,
             baseType: p.getAttribute('DataType') ?? 'DINT',
-            arrayLength: int.tryParse(p.getAttribute('Dimensions') ?? '0') ?? 0,
+            arrayLength: _l5xArrayLen(p.getAttribute('Dimensions'), warnings,
+                'AOI "$name" parameter "$pn"'),
             scope: _usageScope(p.getAttribute('Usage')),
             initialValue: _defaultDataScalar(p),
           ));
@@ -180,7 +211,8 @@ List<ImportedPou> _l5xAois(XmlElement? controller, List<ImportWarning> warnings)
           vars.add(ImportedVar(
             name: ln,
             baseType: lt.getAttribute('DataType') ?? 'DINT',
-            arrayLength: int.tryParse(lt.getAttribute('Dimensions') ?? '0') ?? 0,
+            arrayLength: _l5xArrayLen(lt.getAttribute('Dimensions'), warnings,
+                'AOI "$name" local tag "$ln"'),
             scope: VarScope.local,
             initialValue: _defaultDataScalar(lt),
           ));
@@ -282,10 +314,11 @@ List<ImportedVar> _l5xTags(XmlElement? controller, List<ImportWarning> warnings)
     final tn = tag.getAttribute('Name') ?? '';
     if (tn.isEmpty) return null;
     final dims = tag.getAttribute('Dimensions') ?? '';
-    final firstDim = dims.trim().isEmpty
-        ? 0
-        : (int.tryParse(dims.trim().split(RegExp(r'\s+')).first) ?? 0);
-    if (dims.trim().split(RegExp(r'\s+')).length > 1) {
+    final dimTokens =
+        dims.trim().isEmpty ? const <String>[] : dims.trim().split(RegExp(r'\s+'));
+    final firstDim = _l5xArrayLen(
+        dimTokens.isEmpty ? null : dimTokens.first, warnings, 'Tag "$tn"');
+    if (dimTokens.length > 1) {
       warnings.add(ImportWarning(severity: WarningSeverity.info,
           message: 'Tag "$tn": multi-dimensional array flattened to $firstDim.'));
     }

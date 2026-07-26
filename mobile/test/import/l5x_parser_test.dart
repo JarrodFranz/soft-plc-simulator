@@ -46,6 +46,29 @@ void main() {
     expect(ir.warnings.any((w) => w.message.contains('bit overlay')), isTrue);
   });
 
+  test('clamps an oversized Dimension on a UDT member (guards OOM)', () {
+    // A hostile/typo'd Dimension near 2 billion would make the mapper's
+    // eager `List.generate(length)` default-value builder throw an
+    // uncatchable OutOfMemoryError-class Error. parseL5x itself must not
+    // throw, and the resulting arrayLength must be clamped to the supported
+    // maximum (65535), with a warning recorded.
+    const xml = '''
+<RSLogix5000Content TargetType="Controller"><Controller Name="C">
+  <DataTypes>
+    <DataType Name="MyUdt" Class="User">
+      <Members>
+        <Member Name="Huge" DataType="INT" Dimension="2000000000" Radix="Decimal"/>
+      </Members>
+    </DataType>
+  </DataTypes>
+</Controller></RSLogix5000Content>''';
+    late final dynamic ir;
+    expect(() => ir = parseL5x(xml), returnsNormally);
+    final field = ir.types.single.fields.single;
+    expect(field.arrayLength, 65535);
+    expect(ir.warnings.any((w) => w.message.contains('Huge') && w.message.contains('clamp')), isTrue);
+  });
+
   test('_l5xScalar parses radices', () {
     // Exercised indirectly here via a hex member default.
     const xml = '''
