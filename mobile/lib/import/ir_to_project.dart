@@ -327,6 +327,15 @@ ImportResult mapImportedProject(ImportedProject ir,
             description: 'Graphical body not yet translated (${body.nodes.length} elements captured).'));
         stubCount++;
       }
+    } else if (body is NeutralLadderBody) {
+      // RLL whole-POU stub (compiler wired in a later task). Unchanged
+      // behaviour: an RLL routine imports as a stub LadderLogic program.
+      warnings.add(ImportWarning(severity: WarningSeverity.warning,
+          message: 'POU "${pou.name}" (Ladder): ${body.rungs.length} rungs not yet '
+              'compiled — neutral-text ladder import ships in a later update.'));
+      programs.add(PlcProgram(name: pou.name, language: 'LadderLogic',
+          description: 'Neutral-text ladder not yet compiled (${body.rungs.length} rungs captured).'));
+      stubCount++;
     } else if (body is SfcBody) {
       // SFC is translated whole-POU (Task 4): a chart that resolves fully
       // becomes a real SequentialFunctionChart program; anything unsupported

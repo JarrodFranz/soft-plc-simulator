@@ -198,7 +198,29 @@ void main() {
 
     final ladder = ir.pous.firstWhere((p) => p.name == 'Main_Ladder');
     expect(ladder.lang, PouLanguage.ld);
-    expect((ladder.body as GraphBody).nodes, isEmpty); // stubbed
-    expect(ir.warnings.any((w) => w.message.contains('Main_Ladder') && w.message.contains('2 rungs')), isTrue);
+    expect((ladder.body as NeutralLadderBody).rungs, hasLength(2)); // captured, not stubbed at parse time
+  });
+
+  test('RLL routine parses into a NeutralLadderBody with rung text + comments', () {
+    const xml = '''
+<RSLogix5000Content TargetType="Controller"><Controller Name="C">
+  <Programs><Program Name="Main">
+    <Tags/>
+    <Routines>
+      <Routine Name="Logic" Type="RLL"><RLLContent>
+        <Rung Number="0" Type="N"><Comment><![CDATA[start it]]></Comment><Text><![CDATA[XIC(Start)OTE(Motor);]]></Text></Rung>
+        <Rung Number="1" Type="N"><Text><![CDATA[NOP();]]></Text></Rung>
+      </RLLContent></Routine>
+    </Routines>
+  </Program></Programs>
+</Controller></RSLogix5000Content>''';
+    final ir = parseL5x(xml);
+    final pou = ir.pous.firstWhere((p) => p.name == 'Main_Logic');
+    expect(pou.lang, PouLanguage.ld);
+    final body = pou.body as NeutralLadderBody;
+    expect(body.rungs, hasLength(2));
+    expect(body.rungs[0].text, 'XIC(Start)OTE(Motor);');
+    expect(body.rungs[0].comment, 'start it');
+    expect(body.rungs[1].text, 'NOP();');
   });
 }

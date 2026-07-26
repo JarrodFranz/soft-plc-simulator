@@ -245,8 +245,11 @@ List<ImportedPou> _l5xAois(XmlElement? controller, List<ImportWarning> warnings)
 }
 
 /// Maps each `<Routine>` in each `<Program>` to a program POU named
-/// `Program_Routine`. ST inlines its lines; RLL/FBD/SFC become empty graphical
-/// bodies (the mapper's existing whole-POU stub) + a count-carrying warning.
+/// `Program_Routine`. ST inlines its lines; RLL captures each rung's neutral
+/// text + comment into a `NeutralLadderBody` (the mapper still emits the
+/// existing whole-POU LD stub — a compiler consumes this body in a later
+/// task); FBD/SFC become empty graphical bodies (the mapper's existing
+/// whole-POU stub) + a count-carrying warning.
 List<ImportedPou> _l5xRoutines(XmlElement? controller, List<ImportWarning> warnings) {
   final out = <ImportedPou>[];
   if (controller == null) return out;
@@ -265,15 +268,18 @@ List<ImportedPou> _l5xRoutines(XmlElement? controller, List<ImportWarning> warni
                   body: TextBody(_stLines(r))));
               break;
             case 'RLL':
-              final rungs = _children(r, 'RLLContent')
-                  .expand((e) => _children(e, 'Rung')).length;
-              warnings.add(ImportWarning(severity: WarningSeverity.warning,
-                  message: 'Routine "$name" (Ladder): $rungs rungs not yet '
-                      'translated — neutral-text ladder import ships in a later '
-                      'update.'));
+              final rungs = <RllRung>[];
+              for (final content in _children(r, 'RLLContent')) {
+                for (final rung in _children(content, 'Rung')) {
+                  final num = int.tryParse(rung.getAttribute('Number') ?? '') ?? rungs.length;
+                  final text = (_firstChild(rung, 'Text')?.innerText ?? '').trim();
+                  final comment = _firstChild(rung, 'Comment')?.innerText.trim() ?? '';
+                  rungs.add(RllRung(number: num, text: text, comment: comment));
+                }
+              }
               out.add(ImportedPou(name: name, kind: PouKind.program,
                   lang: PouLanguage.ld, localVars: const [],
-                  body: GraphBody(nodes: const [], connections: const [])));
+                  body: NeutralLadderBody(rungs: rungs)));
               break;
             case 'FBD':
               warnings.add(ImportWarning(severity: WarningSeverity.warning,
