@@ -265,5 +265,51 @@ void main() {
       expect(blk.attributes['hasNegatedPin'], 'true');
       expect(inV.attributes.containsKey('hasNegatedPin'), isFalse);
     });
+
+    test(
+        'two nodes with distinct unparseable localIds get distinct synthetic '
+        'ids (no collision/merge of unrelated malformed networks)', () {
+      const xml = '''
+<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0201">
+  <contentHeader name="TwoMalformed"/>
+  <types><dataTypes/><pous>
+    <pou name="P" pouType="program">
+      <interface><localVars/></interface>
+      <body><FBD>
+        <inVariable localId="oops"><position x="0" y="0"/><expression>A</expression>
+          <connectionPointOut/></inVariable>
+        <outVariable localId="2"><position x="100" y="0"/><expression>QA</expression>
+          <connectionPointIn><connection refLocalId="oops"/></connectionPointIn></outVariable>
+        <inVariable localId="bad"><position x="200" y="0"/><expression>B</expression>
+          <connectionPointOut/></inVariable>
+        <outVariable localId="4"><position x="300" y="0"/><expression>QB</expression>
+          <connectionPointIn><connection refLocalId="bad"/></connectionPointIn></outVariable>
+      </FBD></body>
+    </pou>
+  </pous></types>
+  <instances><configurations><configuration name="C"><resource name="R">
+    <globalVars/></resource></configuration></configurations></instances>
+</project>''';
+      final ir = parsePlcOpen(xml);
+      final body = ir.pous.single.body as GraphBody;
+      expect(body.nodes, hasLength(4));
+
+      final malformedNodes = body.nodes
+          .where((n) => n.attributes['variable'] == 'A' ||
+              n.attributes['variable'] == 'B')
+          .toList();
+      expect(malformedNodes, hasLength(2));
+
+      // Both unparseable localIds must be negative (so the FBD translator's
+      // `localId < 0` guard still stubs them) but DISTINCT from each other
+      // (so they don't collide in localId-keyed maps like
+      // weaklyConnectedComponents' `byId`, which would silently merge these
+      // two unrelated networks and drop a node).
+      final ids = malformedNodes.map((n) => n.localId).toList();
+      expect(ids[0], lessThan(0));
+      expect(ids[1], lessThan(0));
+      expect(ids[0], isNot(equals(ids[1])));
+    });
   });
 }

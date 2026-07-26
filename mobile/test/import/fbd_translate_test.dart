@@ -250,7 +250,7 @@ void main() {
       _out(2, 'Q', x: 60),
     ], connections: [_c(-1, 2)]);
     final tr = translateFbdBody(body, pouName: 'P');
-    expect(tr.stubbedNetworkCount, greaterThanOrEqualTo(1));
+    expect(tr.stubbedNetworkCount, equals(1));
   });
 
   test('instance name dedup within a POU', () {

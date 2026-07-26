@@ -157,10 +157,12 @@ _BuiltComponent _translateComponent(
 
   // 1. Reject unsupported element types + negated pins + malformed ids up front.
   for (final n in nodes) {
-    // A parser-side unparseable `localId` collapses to -1; multiple such
-    // nodes would silently collide (overwrite) in the localId-keyed maps
-    // below (blockByLocalId) and in weaklyConnectedComponents' component
-    // grouping. Stub rather than risk a silently-dropped/merged node.
+    // A parser-side unparseable `localId` is assigned a unique negative
+    // synthetic id (distinct per malformed node, so it can't collide with
+    // another malformed node's id in weaklyConnectedComponents' `byId` or in
+    // blockByLocalId below — that distinctness is what the parser guarantees).
+    // This guard's job is narrower: stub any component that still contains a
+    // malformed node, since a malformed id has no real semantics to translate.
     if (n.localId < 0) {
       throw _FbdStub('unsupported-element', 'malformed element id');
     }
