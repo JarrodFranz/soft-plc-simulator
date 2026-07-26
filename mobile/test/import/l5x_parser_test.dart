@@ -125,4 +125,30 @@ void main() {
     expect((ladder.body as TextBody).source, '');
     expect(ir.warnings.any((w) => w.message.contains('LadderAoi') && w.message.contains('logic')), isTrue);
   });
+
+  test('controller + program tags -> ImportedVar with scalar values', () {
+    const xml = '''
+<RSLogix5000Content TargetType="Controller"><Controller Name="C">
+  <Tags>
+    <Tag Name="Speed" DataType="DINT" Usage="Public">
+      <Data Format="Decorated"><DataValue DataType="DINT" Radix="Decimal" Value="42"/></Data></Tag>
+    <Tag Name="Mask" DataType="DINT">
+      <Data Format="Decorated"><DataValue Radix="Hex" Value="16#0000_ffff"/></Data></Tag>
+    <Tag Name="Inst" DataType="Scaler">
+      <Data Format="Decorated"><Structure DataType="Scaler"><DataValueMember Name="Gain" Value="2.0"/></Structure></Data></Tag>
+  </Tags>
+  <Programs><Program Name="Main">
+    <Tags><Tag Name="Local1" DataType="INT"><Data Format="Decorated"><DataValue Value="7"/></Data></Tag></Tags>
+    <Routines/></Program></Programs>
+</Controller></RSLogix5000Content>''';
+    final ir = parseL5x(xml);
+    final byName = {for (final v in ir.globalVars) v.name: v};
+    expect(byName.keys, containsAll(['Speed', 'Mask', 'Inst', 'Local1']));
+    expect(byName['Speed']!.initialValue, 42);
+    expect(byName['Mask']!.initialValue, 0xffff);
+    expect(byName['Inst']!.baseType, 'Scaler');     // composite
+    expect(byName['Inst']!.initialValue, isNull);   // type default used
+    expect(byName['Local1']!.initialValue, 7);      // program-scoped -> flat global
+    expect(byName['Speed']!.scope, VarScope.global);
+  });
 }

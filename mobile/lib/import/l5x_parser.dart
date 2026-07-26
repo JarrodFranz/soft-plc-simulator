@@ -27,11 +27,11 @@ ImportedProject parseL5x(String xml) {
 
   final types = _l5xTypes(controller, warnings);
   final pous = <ImportedPou>[];
-  final globalVars = <ImportedVar>[];
+  final globalVars = _l5xTags(controller, warnings);
 
   pous.addAll(_l5xAois(controller, warnings));
 
-  // Tasks 4–5 fill pous/globalVars from `controller`.
+  // Task 5 fills pous from `controller`.
 
   return ImportedProject(
       name: name, types: types, globalVars: globalVars, pous: pous,
@@ -208,6 +208,65 @@ List<ImportedPou> _l5xAois(XmlElement? controller, List<ImportWarning> warnings)
       }
       out.add(ImportedPou(name: name, kind: PouKind.functionBlock,
           lang: PouLanguage.st, localVars: vars, body: TextBody(body)));
+    }
+  }
+  return out;
+}
+
+/// Maps controller-scoped and program-scoped `<Tag>`s to global `ImportedVar`s.
+/// Scalar tags hydrate their value from Decorated `<DataValue>`; composite/array
+/// tags default to the type default (initialValue null). The mapper's existing
+/// sanitize+dedup handles cross-program name collisions.
+List<ImportedVar> _l5xTags(XmlElement? controller, List<ImportWarning> warnings) {
+  final out = <ImportedVar>[];
+  if (controller == null) return out;
+
+  ImportedVar? tagToVar(XmlElement tag) {
+    final tn = tag.getAttribute('Name') ?? '';
+    if (tn.isEmpty) return null;
+    final dims = tag.getAttribute('Dimensions') ?? '';
+    final firstDim = dims.trim().isEmpty
+        ? 0
+        : (int.tryParse(dims.trim().split(RegExp(r'\s+')).first) ?? 0);
+    if (dims.trim().split(RegExp(r'\s+')).length > 1) {
+      warnings.add(ImportWarning(severity: WarningSeverity.info,
+          message: 'Tag "$tn": multi-dimensional array flattened to $firstDim.'));
+    }
+    // Scalar value from a Decorated <DataValue> directly under <Data>.
+    dynamic initial;
+    for (final data in _children(tag, 'Data')) {
+      if (data.getAttribute('Format') != 'Decorated') continue;
+      final dv = _firstChild(data, 'DataValue');
+      if (dv != null && dv.getAttribute('Value') != null) {
+        initial = _l5xScalar(dv.getAttribute('Value')!, dv.getAttribute('Radix'));
+      }
+      // A <Structure>/<ArrayMember> tag stays null -> type default (foundation).
+    }
+    return ImportedVar(
+      name: tn,
+      baseType: tag.getAttribute('DataType') ?? 'DINT',
+      arrayLength: firstDim,
+      scope: VarScope.global,
+      initialValue: initial,
+    );
+  }
+
+  // Controller-scoped tags.
+  for (final tags in _children(controller, 'Tags')) {
+    for (final tag in _children(tags, 'Tag')) {
+      final v = tagToVar(tag);
+      if (v != null) out.add(v);
+    }
+  }
+  // Program-scoped tags (flat).
+  for (final progs in _children(controller, 'Programs')) {
+    for (final prog in _children(progs, 'Program')) {
+      for (final tags in _children(prog, 'Tags')) {
+        for (final tag in _children(tags, 'Tag')) {
+          final v = tagToVar(tag);
+          if (v != null) out.add(v);
+        }
+      }
     }
   }
   return out;
