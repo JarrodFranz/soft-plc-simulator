@@ -58,4 +58,26 @@ void main() {
     final ir = parseL5x(xml);
     expect(ir.types.single.fields.single.initialValue, 0xffff);
   });
+
+  test('_l5xScalar never throws on an out-of-range radix-prefix base', () {
+    // Malformed/hand-edited L5X: base 99 is outside int.parse's 2..36 range.
+    // Dart's int.tryParse(..., radix:) THROWS RangeError for out-of-range
+    // bases instead of returning null — parseL5x must not propagate that.
+    const xml = '''
+<RSLogix5000Content TargetType="Controller"><Controller Name="C">
+  <DataTypes><DataType Name="U" Class="User"><Members>
+    <Member Name="Bad" DataType="DINT" Dimension="0" Radix="Decimal">
+      <DefaultData Format="Decorated"><DataValue Value="99#5"/></DefaultData>
+    </Member>
+    <Member Name="Good" DataType="DINT" Dimension="0" Radix="Hex">
+      <DefaultData Format="Decorated"><DataValue Value="16#0000_ffff" Radix="Hex"/></DefaultData>
+    </Member>
+  </Members></DataType></DataTypes>
+</Controller></RSLogix5000Content>''';
+    late final dynamic ir;
+    expect(() => ir = parseL5x(xml), returnsNormally);
+    final byName = {for (final f in ir.types.single.fields) f.name: f};
+    expect(byName['Bad']!.initialValue, isNull);
+    expect(byName['Good']!.initialValue, 0xffff); // regression check
+  });
 }

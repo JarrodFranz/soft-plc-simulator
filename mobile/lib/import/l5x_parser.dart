@@ -60,7 +60,7 @@ dynamic _l5xScalar(String raw, String? radix) {
   if (hash > 0) {
     final base = int.tryParse(t.substring(0, hash));
     final digits = t.substring(hash + 1).replaceAll('_', '');
-    if (base != null) {
+    if (base != null && base >= 2 && base <= 36) {
       final v = int.tryParse(digits, radix: base);
       if (v != null) return v;
     }
