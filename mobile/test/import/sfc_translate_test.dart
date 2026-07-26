@@ -162,17 +162,30 @@ void main() {
     expect(tr.warnings.any((w) => w.message.contains('no initial step')), isTrue);
   });
 
-  test('simultaneous divergence stubs in Task 2 (parallel not yet supported)', () {
-    // Idle -(t2)-> simDiv -> {A, B}
+  test('simultaneous divergence + convergence -> parallelFork + parallelJoin', () {
+    // Idle -(t2:Go)-> simDiv -> {A, B} ; {A, B} -> simConv -(t7:Done)-> End
     final body = SfcBody(nodes: [
       _step(1, 'Idle', initial: true),
       _trans(2, SfcCondInline('Go')),
       _conn(3, SfcNodeKind.simDiv),
       _step(4, 'A'),
       _step(5, 'B'),
-    ], edges: [_e(1, 2), _e(2, 3), _e(3, 4), _e(3, 5)], actions: const []);
+      _conn(6, SfcNodeKind.simConv),
+      _trans(7, SfcCondInline('Done')),
+      _step(8, 'End'),
+    ], edges: [
+      _e(1, 2), _e(2, 3), _e(3, 4), _e(3, 5),
+      _e(4, 6), _e(5, 6), _e(6, 7), _e(7, 8),
+    ], actions: const []);
     final tr = translateSfcBody(body, pouName: 'P');
-    expect(tr.translated, isFalse);
-    expect(tr.stubReason, 'complex-topology');
+    expect(tr.translated, isTrue);
+    final fork = tr.transitions.firstWhere((t) => t.kind == 'parallelFork');
+    expect(fork.fromStepId, 'P_s1');
+    expect(fork.toStepIds.toSet(), {'P_s4', 'P_s5'});
+    expect(fork.conditionSt, 'Go');
+    final join = tr.transitions.firstWhere((t) => t.kind == 'parallelJoin');
+    expect(join.fromStepIds.toSet(), {'P_s4', 'P_s5'});
+    expect(join.toStepId, 'P_s8');
+    expect(join.conditionSt, 'Done');
   });
 }

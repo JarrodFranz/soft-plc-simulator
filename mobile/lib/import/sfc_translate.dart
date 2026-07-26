@@ -84,9 +84,9 @@ SfcTranslation translateSfcBody(SfcBody body, {required String pouName}) {
   }
 
   // Upstream/downstream step resolution across transparent connectors.
-  // Task 2: step, selDiv (→ its single step source), selConv (→ its single step
-  // target), jump (→ named step). simDiv/simConv are parallel branching and
-  // stub here (Task 3 adds them).
+  // step, selDiv (→ its single step source), selConv (→ its single step
+  // target), jump (→ named step), simConv (→ its branch-tail steps, upstream),
+  // simDiv (→ its branch-head steps, downstream).
   List<int> upstreamSteps(int transId) {
     final out = <int>[];
     for (final p in pred[transId] ?? const []) {
@@ -100,6 +100,14 @@ SfcTranslation translateSfcBody(SfcBody body, {required String pouName}) {
           for (final pp in pred[p] ?? const []) {
             if (byId[pp]?.kind != SfcNodeKind.step) {
               throw _SfcStub('complex-topology', 'selDiv upstream not a step');
+            }
+            out.add(pp);
+          }
+          break;
+        case SfcNodeKind.simConv:
+          for (final pp in pred[p] ?? const []) {
+            if (byId[pp]?.kind != SfcNodeKind.step) {
+              throw _SfcStub('complex-topology', 'simConv upstream not a step');
             }
             out.add(pp);
           }
@@ -135,6 +143,14 @@ SfcTranslation translateSfcBody(SfcBody body, {required String pouName}) {
           }
           out.add(target.localId);
           break;
+        case SfcNodeKind.simDiv:
+          for (final ss in succ[s] ?? const []) {
+            if (byId[ss]?.kind != SfcNodeKind.step) {
+              throw _SfcStub('complex-topology', 'simDiv downstream not a step');
+            }
+            out.add(ss);
+          }
+          break;
         default:
           throw _SfcStub('complex-topology', 'unsupported transition target');
       }
@@ -157,8 +173,26 @@ SfcTranslation translateSfcBody(SfcBody body, {required String pouName}) {
         conditionSt: cond,
         kind: 'single',
       ));
+    } else if (src.length == 1 && tgt.length > 1) {
+      transitions.add(SfcTransition(
+        id: '${pouName}_t${t.localId}',
+        fromStepId: stepId(src.first),
+        toStepId: '',
+        conditionSt: cond,
+        kind: 'parallelFork',
+        toStepIds: [for (final s in tgt) stepId(s)],
+      ));
+    } else if (src.length > 1 && tgt.length == 1) {
+      transitions.add(SfcTransition(
+        id: '${pouName}_t${t.localId}',
+        fromStepId: '',
+        toStepId: stepId(tgt.first),
+        conditionSt: cond,
+        kind: 'parallelJoin',
+        fromStepIds: [for (final s in src) stepId(s)],
+      ));
     } else {
-      throw _SfcStub('complex-topology', 'parallel branching not yet supported');
+      throw _SfcStub('complex-topology', 'unsupported transition fan-in/out');
     }
   }
 
