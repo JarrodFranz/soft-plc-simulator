@@ -155,8 +155,15 @@ _BuiltComponent _translateComponent(
 ) {
   final memberIds = nodes.map((n) => n.localId).toSet();
 
-  // 1. Reject unsupported element types + negated pins up front.
+  // 1. Reject unsupported element types + negated pins + malformed ids up front.
   for (final n in nodes) {
+    // A parser-side unparseable `localId` collapses to -1; multiple such
+    // nodes would silently collide (overwrite) in the localId-keyed maps
+    // below (blockByLocalId) and in weaklyConnectedComponents' component
+    // grouping. Stub rather than risk a silently-dropped/merged node.
+    if (n.localId < 0) {
+      throw _FbdStub('unsupported-element', 'malformed element id');
+    }
     switch (n.elementType) {
       case 'block':
       case 'inVariable':
@@ -187,6 +194,15 @@ _BuiltComponent _translateComponent(
 
   // 3. Build wires + pin-faithfulness gate.
   final wires = <FbdWire>[];
+  // Tracks the resolved target input slot ("blockId|pin") each wire claims,
+  // so two DISTINCT wires that resolve to the SAME slot are caught here
+  // instead of silently colliding in the executor's `inputWireFor[block][idx]`
+  // (later wire overwrites the earlier operand -> wrong logic, a
+  // faithful-or-stub breach). Mirrors the executor's own resolution: an
+  // explicit toPin wins, else the block's single input pin (when it has
+  // exactly one) is the implicit target; anything else is left unresolved
+  // (already gated by `_assertPin`'s ambiguous-pin check above).
+  final claimedInputSlots = <String>{};
   for (final e in edges) {
     final from = blockByLocalId[e.fromLocalId]!;
     final to = blockByLocalId[e.toLocalId]!;
@@ -194,6 +210,16 @@ _BuiltComponent _translateComponent(
     final fromPin = e.fromPin ?? '';
     _assertPin(scratch, to, toPin, isInput: true);
     _assertPin(scratch, from, fromPin, isInput: false);
+    final toPins = fbdInputPinsFor(scratch, to);
+    final resolvedToPin =
+        toPin.isNotEmpty ? toPin : (toPins.length == 1 ? toPins.first : null);
+    if (resolvedToPin != null) {
+      final slot = '${to.id}|$resolvedToPin';
+      if (!claimedInputSlots.add(slot)) {
+        throw _FbdStub('unresolved-pin',
+            'multiple wires target the same input pin "$resolvedToPin" on ${to.type}');
+      }
+    }
     wires.add(FbdWire(
         fromBlockId: from.id, fromPin: fromPin, toBlockId: to.id, toPin: toPin));
   }
@@ -238,6 +264,10 @@ FbdBlock _buildBlock(
 ) {
   final id = _blockId(pouName, node.localId);
   if (node.elementType == 'inVariable') {
+    if (node.attributes['negated'] == 'true') {
+      throw _FbdStub('negated-pin',
+          'inVariable "${node.attributes['variable'] ?? '?'}" is negated');
+    }
     final text = node.attributes['variable']?.trim() ?? '';
     if (_isLiteral(text)) {
       return FbdBlock(id: id, type: 'CONST', title: 'CONST', tagBinding: text,
@@ -253,6 +283,10 @@ FbdBlock _buildBlock(
     throw _FbdStub('complex-expression', 'compound inVariable "$text"');
   }
   if (node.elementType == 'outVariable') {
+    if (node.attributes['negated'] == 'true') {
+      throw _FbdStub('negated-pin',
+          'outVariable "${node.attributes['variable'] ?? '?'}" is negated');
+    }
     final text = node.attributes['variable']?.trim() ?? '';
     if (_isIdentifier(text)) {
       return FbdBlock(id: id, type: 'TAG_OUTPUT', title: text, tagBinding: text,
@@ -301,7 +335,11 @@ FbdBlock _buildBlock(
       if (e.toLocalId != node.localId) continue;
       final m = RegExp(r'^IN(\d+)$').firstMatch(e.toPin ?? '');
       if (m != null) {
-        final n = int.parse(m.group(1)!);
+        // tryParse guards against a pin suffix that overflows 64-bit int
+        // (int.parse would throw a FormatException, escaping the
+        // never-throws contract); fall back to 1 (no widening) for such a
+        // malformed/absurd pin name.
+        final n = int.tryParse(m.group(1)!) ?? 1;
         if (n > maxPin) maxPin = n;
       }
     }

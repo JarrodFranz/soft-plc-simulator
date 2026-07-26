@@ -185,6 +185,74 @@ void main() {
     expect(tr.blocks.any((b) => b.type == 'AND_1'), isTrue);
   });
 
+  test('extensible operator IN<n> pin overflow does not throw (never-throws)', () {
+    // 20+ digit pin suffix overflows int.parse's 64-bit range; must not escape
+    // translateFbdBody as a FormatException.
+    final body = GraphBody(nodes: [
+      _in(1, 'A'), _blk(2, 'AND', x: 60), _out(3, 'Q', x: 120),
+    ], connections: [
+      _c(1, 2, toPin: 'IN99999999999999999999'),
+      _c(2, 3, fromPin: 'OUT'),
+    ]);
+    expect(() => translateFbdBody(body, pouName: 'P'), returnsNormally);
+  });
+
+  test('two empty-toPin wires colliding on a bare 2-input AND stub as unresolved-pin', () {
+    // Neither wire names a pin, so inputCount stays 1 (no IN<n> match) and both
+    // wires would collapse onto index 0 in the executor without the guard.
+    final body = GraphBody(nodes: [
+      _in(1, 'A'), _in(2, 'B', y: 40), _blk(3, 'AND', x: 60), _out(4, 'Q', x: 120),
+    ], connections: [
+      _c(1, 3), _c(2, 3), _c(3, 4, fromPin: 'OUT'),
+    ]);
+    final tr = translateFbdBody(body, pouName: 'P');
+    expect(tr.stubbedNetworkCount, 1);
+    expect(tr.stubReasons['unresolved-pin'], 1);
+  });
+
+  test('two wires both targeting IN1 on the same block stub as unresolved-pin', () {
+    final body = GraphBody(nodes: [
+      _in(1, 'A'), _in(2, 'B', y: 40), _blk(3, 'AND', x: 60), _out(4, 'Q', x: 120),
+    ], connections: [
+      _c(1, 3, toPin: 'IN1'), _c(2, 3, toPin: 'IN1'), _c(3, 4, fromPin: 'OUT'),
+    ]);
+    final tr = translateFbdBody(body, pouName: 'P');
+    expect(tr.stubbedNetworkCount, 1);
+    expect(tr.stubReasons['unresolved-pin'], 1);
+  });
+
+  test('normal 2-input AND with distinct IN1/IN2 still translates (regression guard)', () {
+    final body = GraphBody(nodes: [
+      _in(1, 'A'), _in(2, 'B', y: 40), _blk(3, 'AND', x: 60), _out(4, 'Q', x: 120),
+    ], connections: [
+      _c(1, 3, toPin: 'IN1'), _c(2, 3, toPin: 'IN2'), _c(3, 4, fromPin: 'OUT'),
+    ]);
+    final tr = translateFbdBody(body, pouName: 'P');
+    expect(tr.translatedNetworkCount, 1);
+    expect(tr.stubbedNetworkCount, 0);
+  });
+
+  test('negated inVariable/outVariable attribute stubs its network', () {
+    final body = GraphBody(nodes: [
+      IrGraphNode(localId: 1, elementType: 'inVariable',
+          attributes: const {'variable': 'A', 'negated': 'true'}),
+      _out(2, 'Q', x: 60),
+    ], connections: [_c(1, 2)]);
+    final tr = translateFbdBody(body, pouName: 'P');
+    expect(tr.stubbedNetworkCount, 1);
+    expect(tr.stubReasons['negated-pin'], 1);
+  });
+
+  test('malformed (negative) localId stubs its component', () {
+    final body = GraphBody(nodes: [
+      IrGraphNode(localId: -1, elementType: 'inVariable',
+          attributes: const {'variable': 'A'}),
+      _out(2, 'Q', x: 60),
+    ], connections: [_c(-1, 2)]);
+    final tr = translateFbdBody(body, pouName: 'P');
+    expect(tr.stubbedNetworkCount, greaterThanOrEqualTo(1));
+  });
+
   test('instance name dedup within a POU', () {
     // Two FB blocks with no instanceName -> deterministic names, deduped.
     final body = GraphBody(nodes: [
