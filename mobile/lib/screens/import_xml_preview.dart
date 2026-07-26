@@ -99,6 +99,16 @@ class _ImportXmlPreviewState extends State<ImportXmlPreview> {
                   style: const TextStyle(color: Colors.white70, fontSize: 12),
                 ),
               ],
+              if (report.translatedSfcCount > 0 ||
+                  report.stubbedSfcCount > 0) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'SFC: ${report.translatedSfcCount} chart(s) translated'
+                  '${report.stubbedSfcCount > 0 ? ', ${report.stubbedSfcCount} stubbed' : ''}'
+                  '${report.sfcStubReasons.isNotEmpty ? ' — reasons: ${report.sfcStubReasons.keys.join(', ')}' : ''}',
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+              ],
               if (report.importedFbCount > 0) ...[
                 const SizedBox(height: 4),
                 Text(

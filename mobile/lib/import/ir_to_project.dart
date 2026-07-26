@@ -5,6 +5,7 @@ import 'fb_import.dart';
 import 'fbd_translate.dart';
 import 'import_ir.dart';
 import 'ld_translate.dart';
+import 'sfc_translate.dart';
 import 'type_normalize.dart';
 
 class ImportReport {
@@ -25,6 +26,10 @@ class ImportReport {
   final int stubbedFbdNetworkCount;
   final Set<String> unsupportedFbdBlockTypes;
   final Map<String, int> fbdStubReasons;
+  // SFC-translation reporting (default-safe so existing call sites compile).
+  final int translatedSfcCount;
+  final int stubbedSfcCount;
+  final Map<String, int> sfcStubReasons;
   ImportReport({
     required this.tagCount,
     required this.structCount,
@@ -40,6 +45,9 @@ class ImportReport {
     this.stubbedFbdNetworkCount = 0,
     this.unsupportedFbdBlockTypes = const {},
     this.fbdStubReasons = const {},
+    this.translatedSfcCount = 0,
+    this.stubbedSfcCount = 0,
+    this.sfcStubReasons = const {},
   });
 }
 
@@ -161,6 +169,9 @@ ImportResult mapImportedProject(ImportedProject ir,
   var stubbedFbdNetworkCount = 0;
   final unsupportedFbdBlockTypes = <String>{};
   final fbdStubReasons = <String, int>{};
+  var translatedSfcCount = 0;
+  var stubbedSfcCount = 0;
+  final sfcStubReasons = <String, int>{};
   final programs = <PlcProgram>[];
   for (final pou in ir.pous) {
     if (pou.kind == PouKind.functionBlock) continue;
@@ -306,15 +317,27 @@ ImportResult mapImportedProject(ImportedProject ir,
         stubCount++;
       }
     } else if (body is SfcBody) {
-      // SFC whole-POU stub (translator wired in a later task). Unchanged
-      // behaviour: an SFC POU imports as a stub SequentialFunctionChart program.
-      warnings.add(ImportWarning(severity: WarningSeverity.warning,
-          message: 'POU "${pou.name}" (SequentialFunctionChart): graphical body not '
-              'yet translated (${body.nodes.length} elements captured) — re-import '
-              'once graphical translation ships.'));
-      programs.add(PlcProgram(name: pou.name, language: 'SequentialFunctionChart',
-          description: 'Graphical body not yet translated (${body.nodes.length} elements captured).'));
-      stubCount++;
+      // SFC is translated whole-POU (Task 4): a chart that resolves fully
+      // becomes a real SequentialFunctionChart program; anything unsupported
+      // keeps the whole-POU stub (unchanged behaviour).
+      final tr = translateSfcBody(body, pouName: pou.name);
+      warnings.addAll(tr.warnings);
+      if (tr.translated) {
+        programs.add(PlcProgram(name: pou.name, language: 'SequentialFunctionChart',
+            sfcSteps: tr.steps, sfcTransitions: tr.transitions));
+        translatedSfcCount++;
+      } else {
+        final reason = tr.stubReason ?? 'complex-topology';
+        sfcStubReasons[reason] = (sfcStubReasons[reason] ?? 0) + 1;
+        warnings.add(ImportWarning(severity: WarningSeverity.warning,
+            message: 'POU "${pou.name}" (SequentialFunctionChart): graphical body not '
+                'yet translated (${body.nodes.length} elements captured) — re-import '
+                'once graphical translation ships.'));
+        programs.add(PlcProgram(name: pou.name, language: 'SequentialFunctionChart',
+            description: 'Graphical body not yet translated (${body.nodes.length} elements captured).'));
+        stubbedSfcCount++;
+        stubCount++; // also feeds graphicalStubCount
+      }
     } else if (body is GraphBody) {
       // SFC (and any other graphical): unchanged whole-POU stub.
       final lang = switch (pou.lang) {
@@ -346,7 +369,10 @@ ImportResult mapImportedProject(ImportedProject ir,
         translatedFbdNetworkCount: translatedFbdNetworkCount,
         stubbedFbdNetworkCount: stubbedFbdNetworkCount,
         unsupportedFbdBlockTypes: unsupportedFbdBlockTypes,
-        fbdStubReasons: fbdStubReasons),
+        fbdStubReasons: fbdStubReasons,
+        translatedSfcCount: translatedSfcCount,
+        stubbedSfcCount: stubbedSfcCount,
+        sfcStubReasons: sfcStubReasons),
   );
 }
 
