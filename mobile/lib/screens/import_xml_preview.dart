@@ -109,6 +109,16 @@ class _ImportXmlPreviewState extends State<ImportXmlPreview> {
                   style: const TextStyle(color: Colors.white70, fontSize: 12),
                 ),
               ],
+              if (report.translatedRllRungCount > 0 ||
+                  report.stubbedRllRungCount > 0) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'RLL ladder: ${report.translatedRllRungCount} rung(s) compiled'
+                  '${report.stubbedRllRungCount > 0 ? ', ${report.stubbedRllRungCount} stubbed' : ''}'
+                  '${report.unsupportedRllInstructions.isNotEmpty ? ' — unsupported: ${report.unsupportedRllInstructions.join(', ')}' : ''}',
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+              ],
               if (report.importedFbCount > 0) ...[
                 const SizedBox(height: 4),
                 Text(
