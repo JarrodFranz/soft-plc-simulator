@@ -91,6 +91,18 @@ class GraphBody extends PouBody {
   GraphBody({required this.nodes, required this.connections});
 }
 
+class RllRung {
+  final int number;
+  final String text;     // neutral-text ladder, e.g. 'XIC(Start)OTE(Motor)'
+  final String comment;
+  RllRung({required this.number, required this.text, this.comment = ''});
+}
+
+class NeutralLadderBody extends PouBody {
+  final List<RllRung> rungs;
+  NeutralLadderBody({required this.rungs});
+}
+
 enum SfcNodeKind { step, transition, selDiv, selConv, simDiv, simConv, jump }
 
 /// A transition's condition source.

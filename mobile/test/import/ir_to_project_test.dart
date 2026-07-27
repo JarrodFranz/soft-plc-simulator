@@ -664,5 +664,30 @@ void main() {
       expect(res.project.programs.where((p) => p.name == 'Scaler'), isEmpty);
       expect(res.report.importedFbCount, 1);
     });
+
+    test('RLL POU compiles to a real LadderLogic program', () {
+      final ir = ImportedProject(
+        name: 'RllProj', types: const [], warnings: const [],
+        globalVars: [
+          ImportedVar(name: 'A', baseType: 'BOOL', scope: VarScope.global),
+          ImportedVar(name: 'B', baseType: 'BOOL', scope: VarScope.global),
+        ],
+        pous: [
+          ImportedPou(name: 'Main_Logic', kind: PouKind.program, lang: PouLanguage.ld,
+              localVars: const [],
+              body: NeutralLadderBody(rungs: [
+                RllRung(number: 0, text: 'XIC(A)OTE(B);'),
+                RllRung(number: 1, text: 'FOO(A);'), // unsupported -> placeholder
+              ])),
+        ],
+      );
+      final res = mapImportedProject(ir, projectName: 'RllProj', projectId: 'x');
+      final prog = res.project.programs.firstWhere((p) => p.name == 'Main_Logic');
+      expect(prog.language, 'LadderLogic');
+      expect(prog.rungs, hasLength(2)); // compiled + placeholder (numbering preserved)
+      expect(res.report.translatedRllRungCount, 1);
+      expect(res.report.stubbedRllRungCount, 1);
+      expect(res.report.unsupportedRllInstructions, contains('FOO'));
+    });
   });
 }

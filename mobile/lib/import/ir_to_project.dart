@@ -5,6 +5,7 @@ import 'fb_import.dart';
 import 'fbd_translate.dart';
 import 'import_ir.dart';
 import 'ld_translate.dart';
+import 'rll_compile.dart';
 import 'sfc_translate.dart';
 import 'type_normalize.dart';
 
@@ -30,6 +31,11 @@ class ImportReport {
   final int translatedSfcCount;
   final int stubbedSfcCount;
   final Map<String, int> sfcStubReasons;
+  // RLL (L5X ladder) reporting (default-safe).
+  final int translatedRllRungCount;
+  final int stubbedRllRungCount;
+  final Set<String> unsupportedRllInstructions;
+  final Map<String, int> rllStubReasons;
   ImportReport({
     required this.tagCount,
     required this.structCount,
@@ -48,6 +54,10 @@ class ImportReport {
     this.translatedSfcCount = 0,
     this.stubbedSfcCount = 0,
     this.sfcStubReasons = const {},
+    this.translatedRllRungCount = 0,
+    this.stubbedRllRungCount = 0,
+    this.unsupportedRllInstructions = const {},
+    this.rllStubReasons = const {},
   });
 }
 
@@ -183,6 +193,10 @@ ImportResult mapImportedProject(ImportedProject ir,
   var translatedSfcCount = 0;
   var stubbedSfcCount = 0;
   final sfcStubReasons = <String, int>{};
+  var translatedRllRungCount = 0;
+  var stubbedRllRungCount = 0;
+  final unsupportedRllInstructions = <String>{};
+  final rllStubReasons = <String, int>{};
   final programs = <PlcProgram>[];
   for (final pou in ir.pous) {
     if (pou.kind == PouKind.functionBlock) continue;
@@ -327,6 +341,30 @@ ImportResult mapImportedProject(ImportedProject ir,
             description: 'Graphical body not yet translated (${body.nodes.length} elements captured).'));
         stubCount++;
       }
+    } else if (body is NeutralLadderBody) {
+      // RLL is compiled per-rung (Task 5): a rung that compiles becomes a
+      // real LdRung; a rung that doesn't degrades to a commented placeholder
+      // rung inside the SAME program (see compileRllRungs). RLL rungs
+      // reference existing tags by name — no instance-tag merge (unlike the
+      // PLCopen LD arm). The whole POU is stubbed only when NOTHING in it
+      // translated.
+      final tr = compileRllRungs(body, pouName: pou.name,
+          fbRegistry: fbRes.registry, fbRenameMap: fbRes.renameMap);
+      warnings.addAll(tr.warnings);
+      translatedRllRungCount += tr.translatedRungCount;
+      stubbedRllRungCount += tr.stubbedRungCount;
+      unsupportedRllInstructions.addAll(tr.unsupportedInstructions);
+      tr.stubReasons.forEach((k, v) => rllStubReasons[k] = (rllStubReasons[k] ?? 0) + v);
+      if (tr.translatedRungCount > 0) {
+        programs.add(PlcProgram(name: pou.name, language: 'LadderLogic', rungs: tr.rungs));
+      } else {
+        warnings.add(ImportWarning(severity: WarningSeverity.warning,
+            message: 'POU "${pou.name}" (Ladder): ${body.rungs.length} rungs not compiled '
+                '— neutral-text ladder not yet supported for these instructions.'));
+        programs.add(PlcProgram(name: pou.name, language: 'LadderLogic',
+            description: 'Neutral-text ladder not compiled (${body.rungs.length} rungs captured).'));
+        stubCount++;
+      }
     } else if (body is SfcBody) {
       // SFC is translated whole-POU (Task 4): a chart that resolves fully
       // becomes a real SequentialFunctionChart program; anything unsupported
@@ -383,7 +421,11 @@ ImportResult mapImportedProject(ImportedProject ir,
         fbdStubReasons: fbdStubReasons,
         translatedSfcCount: translatedSfcCount,
         stubbedSfcCount: stubbedSfcCount,
-        sfcStubReasons: sfcStubReasons),
+        sfcStubReasons: sfcStubReasons,
+        translatedRllRungCount: translatedRllRungCount,
+        stubbedRllRungCount: stubbedRllRungCount,
+        unsupportedRllInstructions: unsupportedRllInstructions,
+        rllStubReasons: rllStubReasons),
   );
 }
 
