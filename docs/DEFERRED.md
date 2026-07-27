@@ -97,18 +97,25 @@ DataTypes → structs, AOIs → function blocks (interface + ST logic), controll
 radices), ST routines → ST programs. Proven end-to-end against real Rockwell
 exports in `mobile/test/import/import_l5x_e2e_test.dart` (an AOI-typed tag
 resolves to its composite/FbDefinition type; an ST-bodied AOI's logic
-imports). See `docs/import/L5X.md` for the full support matrix.
+imports). RLL (ladder) routine translation shipped separately (2026-07-27,
+L5X RLL ladder compiler program; see the row below). See `docs/import/L5X.md`
+for the full support matrix.
 
 | Item | Priority | Notes |
 |---|---|---|
-| RLL (ladder) routine translation | near-term | Sub-project 2: a per-rung translator for L5X ladder routines, mirroring the PLCopen `ld_translate.dart` translator. Today RLL routines capture rung count and become a whole-POU stub. |
-| Non-ST AOI logic translation | later | An AOI whose `Logic` routine is RLL/FBD/SFC imports its interface (parameters + local tags) as a real `FbDefinition`, but the logic body itself is not translated (warning only). |
-| L5X FBD routine translation | later | Sub-project 3: mirrors the PLCopen `fbd_translate.dart` translator for L5X FBD routines. |
-| L5X SFC routine translation | later | Sub-project 4: mirrors the PLCopen `sfc_translate.dart` translator for L5X SFC routines. |
+| ~~RLL (ladder) routine translation~~ | ~~near-term~~ | **Shipped** (2026-07-27, L5X RLL ladder compiler): sub-project 2 of 5; imported RLL routines compile per-rung into real, executing `LadderLogic` programs — contacts (`XIC`/`XIO`/`ONS`), coils (`OTE`/`OTL`/`OTU`), compares, math, `MOV`, `TON`/`TOF` timers, `CTU`/`CTD`/`CTUD` counters (preset best-effort), strict AOI-call routing, and single-level `[…]` branches — faithful-or-stub. Proven end-to-end in `mobile/test/import/import_l5x_rll_e2e_test.dart` (handcrafted `XIC`/`OTE` proof + a real-corpus smoke test over `logixlibraries_Numeric_Program.L5X`). See `docs/import/L5X.md`'s "RLL (ladder) compile" section for the full support matrix. |
+| Non-ST AOI logic translation | later | Sub-project 3: an AOI whose `Logic` routine is RLL/FBD/SFC imports its interface (parameters + local tags) as a real `FbDefinition`, but the logic body itself is not translated (warning only). |
+| L5X FBD routine translation | later | Sub-project 4: mirrors the PLCopen `fbd_translate.dart` translator for L5X FBD routines. |
+| L5X SFC routine translation | later | Sub-project 5: mirrors the PLCopen `sfc_translate.dart` translator for L5X SFC routines. |
 | BIT-overlay member aliasing | later | A UDT member that overlays a bit of another member (`Target`/`BitNumber`) imports as a plain `BOOL`, not a live alias of that bit. |
 | Per-instance composite tag values | later | A `<Structure>`/`<ArrayMember>` tag's per-instance member values are not read; the tag gets its type's structural default instead. |
 | Predefined AB/CIP module datatypes | later | Module-defined I/O datatypes (e.g. `AB:1756_MODULE:...`) fall back to `INT16` like any other unresolved type name, rather than being specially modeled. |
 | Multi-dimensional arrays | later | Only the first dimension of a multi-dimensional `Dimensions` attribute is imported; the rest are flattened away (info warning). |
+| Nested `[…]` branches (RLL) | later | The RLL compiler assembles single-level parallel branches only; a rung with a branch nested inside another branch leg stubs (`complex-topology`). |
+| Empty (bypass) branch legs (RLL) | later | An `[…]` branch leg with no instructions (a bare power-through wire) is not modeled; such a rung stubs rather than wiring a direct rail-to-junction pass-through. |
+| `RTO` / retentive timers (RLL) | later | Only `TON`/`TOF` map to the app's timer block; `RTO` (retentive-on) has no native equivalent and stubs (`unsupported-instruction`). |
+| Exact timer/counter preset fidelity (RLL) | later | A literal preset operand imports exactly; a tag-referenced or expression preset defaults + warns. Full fidelity needs Rockwell predefined `TIMER`/`COUNTER` UDT mapping (reading `.PRE` off the backing structure) rather than the operand text alone. |
+| Unmapped RLL instructions | later | `CPT`, `JSR`, `PID`, `SQO`, `COP`, `MSG`, and other instructions outside the supported set have no translation and stub the rung (`unsupported-instruction`), recorded in `ImportReport.unsupportedRllInstructions`. |
 
 ## Housekeeping
 

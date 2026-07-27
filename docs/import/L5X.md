@@ -41,12 +41,25 @@ Rockwell L5X .L5X file  --detect--> parseL5x --> map -->  preview  -->  NEW proj
   `<Program>` becomes a `PlcProgram` named `ProgramName_RoutineName` with its
   `<STContent>` lines concatenated as the program's Structured Text source.
 
+## RLL (ladder) compile
+
+Imported RLL routines compile to native ladder, per rung. Supported: contacts
+`XIC`/`XIO`/`ONS`; coils `OTE`/`OTL`/`OTU`; compares `EQU`/`NEQ`/`LEQ`/`GEQ`/`LES`/
+`GRT`; math `ADD`/`SUB`/`MUL`/`DIV`; `MOV`; timers `TON`/`TOF` + counters
+`CTU`/`CTD`/`CTUD` (preset best-effort — exact when a literal, else defaulted +
+warning); AOI calls (positional binding to the AOI interface, strict); single-
+level `[…]` branches. A rung with an unsupported instruction, an AOI arity
+mismatch, a nested branch, or malformed text degrades to a commented placeholder
+rung + an unsupported-instruction inventory. Deferred: nested branches, `RTO`
+retentive timers, exact timer/counter preset fidelity, and unmapped instructions
+(`CPT`/`JSR`/`PID`/`SQO`/file-array/…).
+
 ## What's captured but not yet translated
 
-- **RLL (ladder), FBD, and SFC routines** are captured as a whole-POU stub
-  (same shape as the PLCopen importer's graphical-POU stub) with a warning
-  naming the routine and, for RLL, the rung count. Re-importing once each
-  L5X-specific graphical translator ships will turn these into real programs.
+- **FBD and SFC routines** are captured as a whole-POU stub (same shape as
+  the PLCopen importer's graphical-POU stub) with a warning naming the
+  routine. Re-importing once each L5X-specific graphical translator ships
+  will turn these into real programs.
 - **Non-ST AOI logic** (an AOI whose `Logic` routine is RLL/FBD/SFC rather
   than ST) imports the AOI's *interface* (parameters + local tags) as a real
   `FbDefinition`, but the logic itself is not translated — a warning names the
@@ -77,12 +90,10 @@ currently open project is never modified.
 
 Tracked in `docs/DEFERRED.md`'s **L5X import** section:
 
-- **RLL (ladder) routine translation** — sub-project 2: a per-rung translator
-  for L5X ladder, mirroring the PLCopen LD translator.
-- **Non-ST AOI logic translation** — translating an AOI's RLL/FBD/SFC `Logic`
-  routine body (interface-only import ships today).
-- **L5X FBD routine translation** — sub-project 3.
-- **L5X SFC routine translation** — sub-project 4.
+- **Non-ST AOI logic translation** — sub-project 3: translating an AOI's
+  RLL/FBD/SFC `Logic` routine body (interface-only import ships today).
+- **L5X FBD routine translation** — sub-project 4.
+- **L5X SFC routine translation** — sub-project 5.
 - **BIT-overlay member aliasing** — a UDT member that overlays a bit of
   another member (`Target`/`BitNumber`) imports as a plain `BOOL`, not a live
   alias of that bit.
