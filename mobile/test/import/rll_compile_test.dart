@@ -108,4 +108,14 @@ void main() {
     expect(tr.stubReasons['aoi-mismatch'], 1);
     expect(tr.unsupportedInstructions, contains('Scaler'));
   });
+
+  test('adversarial deeply-nested branch text degrades to a placeholder rung '
+      'instead of crashing the whole import (never-throws invariant)', () {
+    final deep = '${'[' * 5000}XIC(A)${']' * 5000}';
+    final tr = compileRllRungs(_body([deep]), pouName: 'P');
+    expect(tr.translatedRungCount, 0);
+    expect(tr.stubbedRungCount, 1);
+    expect(tr.stubReasons['parse-error'], 1);
+    expect(tr.rungs, hasLength(1));
+  });
 }

@@ -39,4 +39,17 @@ void main() {
     expect(() => parseRllText('XIC(A'), throwsA(isA<RllParseException>()));
     expect(() => parseRllText('[XIC(A)'), throwsA(isA<RllParseException>()));
   });
+
+  test('deeply nested branches throw RllParseException, not StackOverflowError', () {
+    final deep = '${'[' * 5000}XIC(A)${']' * 5000}';
+    expect(() => parseRllText(deep), throwsA(isA<RllParseException>()));
+  });
+
+  test('a normal single branch still parses (regression)', () {
+    final els = parseRllText('[XIC(A),XIC(B)]');
+    final br = els.single as RllBranch;
+    expect(br.legs, hasLength(2));
+    expect((br.legs[0].single as RllInstruction).operands, ['A']);
+    expect((br.legs[1].single as RllInstruction).operands, ['B']);
+  });
 }

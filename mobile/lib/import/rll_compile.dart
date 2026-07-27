@@ -42,14 +42,23 @@ void _skipWs(_Cursor c) {
   }
 }
 
+/// Maximum branch-nesting depth the recursive-descent tokenizer will follow.
+/// Legitimate exports never nest branches (branch legs are single-level-only
+/// and stub past depth 1 in [_assembleRung] anyway); this cap exists purely to
+/// bound recursion depth so adversarial/malformed text (thousands of nested
+/// `[`) throws a catchable [RllParseException] instead of overflowing the
+/// Dart call stack with an uncatchable `StackOverflowError`.
+const _kMaxBranchDepth = 32;
+
 /// Tokenizes a rung's neutral text into a top-level element sequence. A trailing
 /// `;` and inter-instruction whitespace are tolerated. Throws
-/// [RllParseException] on unbalanced brackets or a missing/empty instruction.
+/// [RllParseException] on unbalanced brackets, excessive branch nesting, or a
+/// missing/empty instruction.
 List<RllElement> parseRllText(String text) {
   var t = text.trim();
   if (t.endsWith(';')) t = t.substring(0, t.length - 1);
   final c = _Cursor(t);
-  final els = _parseSeq(c);
+  final els = _parseSeq(c, 0);
   _skipWs(c);
   if (c.i != c.s.length) {
     throw RllParseException('unexpected "${c.s[c.i]}" at ${c.i}');
@@ -58,7 +67,8 @@ List<RllElement> parseRllText(String text) {
 }
 
 /// Parses a sequence of elements, stopping at a top-level ',' or ']'.
-List<RllElement> _parseSeq(_Cursor c) {
+/// [depth] tracks how many enclosing `[` brackets we're inside.
+List<RllElement> _parseSeq(_Cursor c, int depth) {
   final out = <RllElement>[];
   while (c.i < c.s.length) {
     _skipWs(c);
@@ -66,7 +76,7 @@ List<RllElement> _parseSeq(_Cursor c) {
     final ch = c.s[c.i];
     if (ch == ',' || ch == ']') break;
     if (ch == '[') {
-      out.add(_parseBranch(c));
+      out.add(_parseBranch(c, depth));
     } else {
       out.add(_parseInstr(c));
     }
@@ -74,12 +84,15 @@ List<RllElement> _parseSeq(_Cursor c) {
   return out;
 }
 
-RllBranch _parseBranch(_Cursor c) {
+RllBranch _parseBranch(_Cursor c, int depth) {
+  if (depth >= _kMaxBranchDepth) {
+    throw RllParseException('branch nesting too deep');
+  }
   c.i++; // consume '['
-  final legs = <List<RllElement>>[_parseSeq(c)];
+  final legs = <List<RllElement>>[_parseSeq(c, depth + 1)];
   while (c.i < c.s.length && c.s[c.i] == ',') {
     c.i++; // consume ','
-    legs.add(_parseSeq(c));
+    legs.add(_parseSeq(c, depth + 1));
   }
   if (c.i >= c.s.length || c.s[c.i] != ']') {
     throw RllParseException('unclosed branch "["');
