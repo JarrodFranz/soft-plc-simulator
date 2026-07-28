@@ -1500,63 +1500,90 @@ class _GatewayScreenState extends State<GatewayScreen> {
             const _ProtocolTabSelector(tabs: _protocolTabs),
             const Divider(height: 1, color: Colors.white12),
             Expanded(
-              child: TabBarView(
-                children: [
-                  _KeepAliveTabBody(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.all(12),
-                      child: _buildOpcUaCard(context, tagOptions),
+              // Make `context.isCompact` inside the protocol cards key off the
+              // PANE width, not the window. In the desktop shell this screen
+              // can render in a pane far narrower than the window (e.g.
+              // squeezed by the ~340px tag-inspector dock), and the cards' wide
+              // Row layouts — whose fixed-width columns can total ~500px —
+              // overflow a narrow pane if the layout decision reads the window
+              // width. Every responsive read in this screen goes through
+              // `context.isCompact` (a MediaQuery-width test), so overriding
+              // MediaQuery's width with the width this body actually gets makes
+              // them all pane-relative in one place. Same window-vs-pane trap
+              // ld_editor_screen documents.
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final mq = MediaQuery.of(context);
+                  return MediaQuery(
+                    data: mq.copyWith(
+                      size: Size(constraints.maxWidth, mq.size.height),
                     ),
-                  ),
-                  _KeepAliveTabBody(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.all(12),
-                      child: _buildModbusCard(context, tagOptions),
+                    // Build the cards from a context BELOW this MediaQuery so
+                    // their `context.isCompact` reads the overridden (pane)
+                    // width. The card methods capture whatever `context` is in
+                    // scope, so this one Builder makes all nine pane-relative.
+                    child: Builder(
+                      builder: (context) => TabBarView(
+                        children: [
+                          _KeepAliveTabBody(
+                            child: SingleChildScrollView(
+                              padding: const EdgeInsets.all(12),
+                              child: _buildOpcUaCard(context, tagOptions),
+                            ),
+                          ),
+                          _KeepAliveTabBody(
+                            child: SingleChildScrollView(
+                              padding: const EdgeInsets.all(12),
+                              child: _buildModbusCard(context, tagOptions),
+                            ),
+                          ),
+                          _KeepAliveTabBody(
+                            child: SingleChildScrollView(
+                              padding: const EdgeInsets.all(12),
+                              child: _buildMqttCard(context, tagOptions),
+                            ),
+                          ),
+                          _KeepAliveTabBody(
+                            child: SingleChildScrollView(
+                              padding: const EdgeInsets.all(12),
+                              child: _buildDnpCard(context, tagOptions),
+                            ),
+                          ),
+                          _KeepAliveTabBody(
+                            child: SingleChildScrollView(
+                              padding: const EdgeInsets.all(12),
+                              child: _buildEnipCard(context, tagOptions),
+                            ),
+                          ),
+                          _KeepAliveTabBody(
+                            child: SingleChildScrollView(
+                              padding: const EdgeInsets.all(12),
+                              child: _buildS7Card(context, tagOptions),
+                            ),
+                          ),
+                          _KeepAliveTabBody(
+                            child: SingleChildScrollView(
+                              padding: const EdgeInsets.all(12),
+                              child: _buildFinsCard(context, tagOptions),
+                            ),
+                          ),
+                          _KeepAliveTabBody(
+                            child: SingleChildScrollView(
+                              padding: const EdgeInsets.all(12),
+                              child: _buildSlmpCard(context, tagOptions),
+                            ),
+                          ),
+                          _KeepAliveTabBody(
+                            child: SingleChildScrollView(
+                              padding: const EdgeInsets.all(12),
+                              child: _buildBacnetCard(context, tagOptions),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                  _KeepAliveTabBody(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.all(12),
-                      child: _buildMqttCard(context, tagOptions),
-                    ),
-                  ),
-                  _KeepAliveTabBody(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.all(12),
-                      child: _buildDnpCard(context, tagOptions),
-                    ),
-                  ),
-                  _KeepAliveTabBody(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.all(12),
-                      child: _buildEnipCard(context, tagOptions),
-                    ),
-                  ),
-                  _KeepAliveTabBody(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.all(12),
-                      child: _buildS7Card(context, tagOptions),
-                    ),
-                  ),
-                  _KeepAliveTabBody(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.all(12),
-                      child: _buildFinsCard(context, tagOptions),
-                    ),
-                  ),
-                  _KeepAliveTabBody(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.all(12),
-                      child: _buildSlmpCard(context, tagOptions),
-                    ),
-                  ),
-                  _KeepAliveTabBody(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.all(12),
-                      child: _buildBacnetCard(context, tagOptions),
-                    ),
-                  ),
-                ],
+                  );
+                },
               ),
             ),
           ],
