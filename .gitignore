@@ -21,6 +21,9 @@ Cargo.lock
 *.class
 *.jar
 
+# Built deployment binaries (Windows .exe bundle + Android .apk)
+/Deployments/
+
 # IDE
 .idea/
 .vscode/
