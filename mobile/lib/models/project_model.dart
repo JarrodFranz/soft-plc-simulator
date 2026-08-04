@@ -207,6 +207,11 @@ class FbDefinition {
   /// and `ld_exec.dart`'s `runScopedLdBody`). Empty (the default) => the
   /// existing ST path, byte-identical. `LdRung` is declared further down this
   /// file and already round-trips (it backs `PlcProgram.rungs`).
+  ///
+  /// NOTE: these rungs are a SECOND `LdNode` root in the project graph
+  /// (`PlcProgram.rungs` is the first). Any project-wide traversal over ladder
+  /// nodes — renames, reference scans, validation — must visit BOTH roots; see
+  /// `renameFbDefinition` in `tag_resolver.dart`.
   List<LdRung> ladderRungs;
 
   FbDefinition({

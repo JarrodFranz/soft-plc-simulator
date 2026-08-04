@@ -1,5 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:soft_plc_mobile/models/ld_graph.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/tag_resolver.dart';
 
 void main() {
   test('FbDefinition + FbVar round-trip', () {
@@ -83,5 +85,46 @@ void main() {
     expect(rt.ladderRungs, isEmpty);
     expect(rt.stSource, 'Out := In;');
     expect(rt.vars.single.name, 'In');
+  });
+
+  test('renameFbDefinition retargets ladder-body calls and FB-typed vars inside other FBs', () {
+    final inner = FbDefinition(name: 'Inner', vars: [
+      FbVar(name: 'In', dataType: 'BOOL', direction: FbVarDir.input),
+      FbVar(name: 'Out', dataType: 'BOOL', direction: FbVarDir.output),
+    ], ladderRungs: [
+      buildRung(index: 0, main: [
+        LdNode(id: '', kind: LdKind.contact, variable: 'In'),
+        LdNode(id: '', kind: LdKind.coil, variable: 'Out'),
+      ]),
+    ]);
+    final outer = FbDefinition(name: 'Outer', vars: [
+      FbVar(name: 'Nest', dataType: 'Inner', direction: FbVarDir.internal),
+      FbVar(name: 'Drive', dataType: 'BOOL', direction: FbVarDir.input),
+    ], ladderRungs: [
+      buildRung(index: 0, main: [
+        LdNode(id: '', kind: LdKind.block, blockType: 'Inner', variable: 'Nest',
+            pinBindings: {'In': 'Drive'}),
+      ]),
+    ]);
+    final p = PlcProject(
+        id: 'p', name: 'p', controllerName: 'c',
+        tags: [], structDefs: [], programs: [], tasks: [], hmis: [],
+        fbDefinitions: [inner, outer]);
+
+    renameFbDefinition(p, 'Inner', 'Inner2');
+
+    // The definition itself, the calling FB's ladder-body node, and the
+    // FB-typed var all move together. A missed blockType would fall into
+    // executeRung's TON/TOF fallback and silently become a timer.
+    expect(inner.name, 'Inner2');
+    expect(
+        outer.ladderRungs.single.nodes
+            .firstWhere((n) => n.kind == LdKind.block)
+            .blockType,
+        'Inner2');
+    expect(outer.vars.firstWhere((v) => v.name == 'Nest').dataType, 'Inner2');
+    // Unrelated vars/nodes are untouched.
+    expect(outer.vars.firstWhere((v) => v.name == 'Drive').dataType, 'BOOL');
+    expect(inner.ladderRungs.single.nodes.any((n) => n.kind == LdKind.coil), isTrue);
   });
 }

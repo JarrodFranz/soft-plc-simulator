@@ -101,8 +101,11 @@ void renameStructDef(PlcProject p, String oldName, String newName) {
 
 /// Renames function block definition [oldName] to [newName] everywhere it is
 /// referenced: the FB's own name, every FBD block of that type
-/// (`FbdBlock.type`), every LD block instance of that type (`LdNode.blockType`),
-/// and every instance tag's data type (`PlcTag.dataType`) — mirroring
+/// (`FbdBlock.type`), every LD block instance of that type (`LdNode.blockType`)
+/// in a PROGRAM's rungs AND in another FB's ladder body
+/// (`FbDefinition.ladderRungs` — the second `LdNode` root), every instance tag's
+/// data type (`PlcTag.dataType`), and every FB-typed FB var
+/// (`FbVar.dataType`, i.e. a nested instance member) — mirroring
 /// [renameStructDef]'s exact traversal/immutability idiom (in-place field
 /// mutation, not copyWith, so autosave/serialization sees the same object
 /// graph). No-op if the names are equal or no such FB definition exists.
@@ -134,6 +137,25 @@ void renameFbDefinition(PlcProject p, String oldName, String newName) {
         if (n.blockType == oldName) {
           n.blockType = newName;
         }
+      }
+    }
+  }
+  // FB bodies are a SECOND LdNode root (programs are the first). A missed
+  // ladder-body call node would stop matching an FB definition and fall
+  // through executeRung's unconditional TON/TOF fallback, silently turning a
+  // renamed-away nested AOI call into a timer. A missed FbVar.dataType would
+  // leave the nested instance member typed as a now-nonexistent composite.
+  for (final def in p.fbDefinitions) {
+    for (final rung in def.ladderRungs) {
+      for (final n in rung.nodes) {
+        if (n.blockType == oldName) {
+          n.blockType = newName;
+        }
+      }
+    }
+    for (final v in def.vars) {
+      if (v.dataType == oldName) {
+        v.dataType = newName;
       }
     }
   }
