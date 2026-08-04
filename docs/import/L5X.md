@@ -70,7 +70,12 @@ only (`EnableIn` defaults `true`, `EnableOut` `false`): Rockwell RLL AOI logic
 commonly does `XIC(EnableIn)`, and since the body only runs when the call
 executes, `EnableIn = true` during execution is the faithful mapping. Keeping
 them as vars makes those references resolve per instance instead of falling
-through to absent globals. ST-Logic AOIs keep the historic skip. Call sites are
+through to absent globals. `EnableIn` is **re-asserted `true` on every call**,
+just before the body's rungs run — Rockwell re-evaluates it per call, so a body
+containing `OTU(EnableIn)` must not latch the instance off forever. The
+re-assert is data-driven (an *internal* `BOOL` var named `EnableIn` on a
+**ladder** body) and never touches an `EnableIn` that is a real interface pin,
+nor an ST body. ST-Logic AOIs keep the historic skip. Call sites are
 unaffected — neutral text passes the instance tag plus the AOI's *interface*
 parameters, so internal vars (LocalTags, `EnableIn`/`EnableOut`) take no part
 in AOI-call arity or binding.

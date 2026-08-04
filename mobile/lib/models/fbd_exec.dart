@@ -200,8 +200,11 @@ Map<String, dynamic> _evalBlock(
       inputMap[inNames[i]] = v;
     }
     // A ladder-bodied FB needs the scan's dtMs (timers) and a persistent
-    // LdExecRuntime (edge/pulse). An ST-bodied FB ignores both.
-    return executeFbInstance(p, fb, b.tagBinding, inputMap, dtMs: dtMs, ldRt: ldRt);
+    // LdExecRuntime (edge/pulse). An ST-bodied FB ignores both. `readOnly`
+    // gates the ladder body's coils on globals, matching the gate this
+    // function's own TAG_OUTPUT branch already applies.
+    return executeFbInstance(p, fb, b.tagBinding, inputMap,
+        dtMs: dtMs, ldRt: ldRt, readOnly: readOnly);
   }
   switch (b.type) {
     case 'TAG_INPUT':

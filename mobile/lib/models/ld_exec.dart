@@ -104,7 +104,7 @@ void executeLdPrograms(PlcProject p, int dtMs, LdExecRuntime rt,
         if (readOnly == null || !readOnly.contains(path)) {
           _forceAwareWrite(p, path, v);
         }
-      }, monitor: monitor);
+      }, monitor: monitor, readOnly: readOnly);
     }
   }
 }
@@ -112,9 +112,12 @@ void executeLdPrograms(PlcProject p, int dtMs, LdExecRuntime rt,
 /// Power-flow evaluation of one rung: nodes in column (topological) order;
 /// a node's input power is the OR of its inbound wires' source powers, so
 /// series chains AND and parallel convergences OR.
+/// [readOnly] is NOT applied to this rung's own writes (that stays the caller's
+/// [write] closure's job, unchanged) — it exists solely to be handed down to a
+/// custom-FB call's body so an FB coil is gated exactly like a program coil.
 void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
     LdExecRuntime rt, void Function(String path, dynamic value) write,
-    {LdMonitor? monitor, LdScope? scope}) {
+    {LdMonitor? monitor, LdScope? scope, Set<String>? readOnly}) {
   // EVERY tag path this rung touches goes through `sp`. With no scope it is
   // the identity, so program-rung execution is byte-identical to before this
   // feature; inside an FB body it maps the FB's own var names into the
@@ -443,7 +446,7 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
             // collide with this program's rung keys). Nested AOI-in-AOI
             // recursion reuses the same runtime for the same reason.
             final outputs = executeFbInstance(p, fb, sp(n.variable), inputs,
-                dtMs: dtMs, ldRt: rt);
+                dtMs: dtMs, ldRt: rt, readOnly: readOnly);
             outputs.forEach((name, value) {
               final tag = n.pinBindings[name];
               if (tag != null && tag.isNotEmpty && value != null) {
@@ -518,14 +521,22 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
 /// one theoretical way to alias these keys; the consequence is limited to
 /// shared edge/pulse state (a spurious or missed one-scan pulse) — tag
 /// resolution is unaffected, because that goes through [scope], not the key.
-/// Writes are force-aware, exactly like program-rung execution. Placeholder
-/// rungs (rails + one wire) execute as harmless no-ops. Never throws.
-/// (The ladder analog of `runScopedStBody` in st_exec.dart.)
+/// Writes are force-aware AND [readOnly]-gated, exactly like program-rung
+/// execution: an FB body's coil targeting a read-only global (a
+/// signal-generator/simulated test tag) is dropped rather than clobbering it.
+/// Instance-member writes are unaffected — [scope] has already rewritten those
+/// paths into `<instance>.<var>`, which no readOnly entry names. Passing no
+/// [readOnly] keeps the pre-existing ungated behaviour for ad-hoc callers.
+/// Placeholder rungs (rails + one wire) execute as harmless no-ops. Never
+/// throws. (The ladder analog of `runScopedStBody` in st_exec.dart.)
 void runScopedLdBody(PlcProject p, List<LdRung> rungs, LdScope scope, int dtMs,
-    LdExecRuntime rt) {
+    LdExecRuntime rt, {Set<String>? readOnly}) {
   final progKey = 'fb:${scope.instancePath}';
   for (final rung in rungs) {
-    executeRung(p, progKey, rung, dtMs, rt,
-        (path, v) => _forceAwareWrite(p, path, v), scope: scope);
+    executeRung(p, progKey, rung, dtMs, rt, (path, v) {
+      if (readOnly == null || !readOnly.contains(path)) {
+        _forceAwareWrite(p, path, v);
+      }
+    }, scope: scope, readOnly: readOnly); // inherited by nested FB calls
   }
 }

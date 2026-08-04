@@ -26,11 +26,18 @@ int _fbCallDepth = 0;
 /// edge detection (never throws). Otherwise the existing scoped-ST path runs,
 /// unchanged.
 ///
-/// `readOnly` is deliberately not threaded into FB bodies — parity with the ST
-/// path. Pure/deterministic; never throws.
+/// [readOnly] is the engine's read-only tag set (signal-generator/simulated
+/// test tags). It is threaded into a LADDER body so an FB coil targeting one of
+/// those globals is dropped, exactly as a program coil would be. Instance
+/// members are never affected — those paths are `<instance>.<var>`, which no
+/// readOnly entry names. The ST path still ignores it (unchanged). Omitting it
+/// keeps the pre-existing ungated behaviour, so every existing caller compiles
+/// and behaves identically.
+///
+/// Pure/deterministic; never throws.
 Map<String, dynamic> executeFbInstance(
     PlcProject p, FbDefinition fb, String instanceName, Map<String, dynamic> inputs,
-    {int dtMs = 0, LdExecRuntime? ldRt}) {
+    {int dtMs = 0, LdExecRuntime? ldRt, Set<String>? readOnly}) {
   // An empty instance name has no struct to scope into: paths like `.In` would
   // strip to bare `In` and alias onto same-named GLOBAL tags. Refuse to run
   // rather than read/write unrelated globals (dangling/unbound binding).
@@ -47,8 +54,24 @@ Map<String, dynamic> executeFbInstance(
     // 2. Run the scoped body.
     final varNames = {for (final v in fb.vars) v.name};
     if (fb.ladderRungs.isNotEmpty) {
+      // Rockwell re-evaluates an AOI's implicit EnableIn on EVERY call, so a
+      // body containing `OTU(EnableIn)` must not permanently self-disable. The
+      // import path retains EnableIn as an INTERNAL BOOL var for RLL-Logic
+      // AOIs (see l5x_parser.dart), so that shape — and only that shape — is
+      // re-asserted true here, just before the rungs run. Data-driven on the
+      // var list rather than a per-definition flag, so old JSON needs no new
+      // field. An EnableIn that is a real interface pin (input/output) is
+      // caller-driven and left alone; the ST path is untouched.
+      for (final v in fb.vars) {
+        if (v.name == 'EnableIn' &&
+            v.direction == FbVarDir.internal &&
+            v.dataType == 'BOOL') {
+          writePath(p, '$instanceName.EnableIn', true);
+          break;
+        }
+      }
       runScopedLdBody(p, fb.ladderRungs, LdScope(instanceName, varNames), dtMs,
-          ldRt ?? LdExecRuntime());
+          ldRt ?? LdExecRuntime(), readOnly: readOnly);
     } else {
       runScopedStBody(p, fb.stSource, StScope(instanceName, varNames));
     }
