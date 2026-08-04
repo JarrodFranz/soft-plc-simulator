@@ -18,10 +18,13 @@ int _fbCallDepth = 0;
 ///
 /// Body dispatch: a non-empty [FbDefinition.ladderRungs] runs the native
 /// ladder body via `runScopedLdBody` — [dtMs] drives its timers and [ldRt]
-/// carries its edge/pulse state (both engine call sites pass their real
-/// runtime; the `LdExecRuntime()` fallback is unreachable in the scan and only
-/// degrades edge detection if ever hit). Otherwise the existing scoped-ST path
-/// runs, unchanged.
+/// carries its edge/pulse state. Both engine call sites thread their real scan
+/// `dtMs` and `LdExecRuntime` down to here (the LD engine its own; the FBD
+/// engine the one `executeFbdPrograms(ldRt:)` was handed, which `runScanTick`
+/// always supplies), so the ephemeral `LdExecRuntime()` fallback is unreachable
+/// in the scan — it only catches direct/ad-hoc callers, where it degrades
+/// edge detection (never throws). Otherwise the existing scoped-ST path runs,
+/// unchanged.
 ///
 /// `readOnly` is deliberately not threaded into FB bodies — parity with the ST
 /// path. Pure/deterministic; never throws.

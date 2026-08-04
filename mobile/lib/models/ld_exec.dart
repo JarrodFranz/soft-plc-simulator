@@ -437,7 +437,13 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
             // The instance name is scoped too: a nested call's instance var
             // lives inside the outer instance ('Inner' -> 'A1.Inner'), which
             // also keeps its 'fb:<path>' runtime keys disjoint.
-            final outputs = executeFbInstance(p, fb, sp(n.variable), inputs);
+            // This rung's own dtMs + runtime flow into the FB body: a ladder
+            // body's timers advance with the scan and its edge/pulse state
+            // persists (keys are 'fb:<instance>'-prefixed, so they can never
+            // collide with this program's rung keys). Nested AOI-in-AOI
+            // recursion reuses the same runtime for the same reason.
+            final outputs = executeFbInstance(p, fb, sp(n.variable), inputs,
+                dtMs: dtMs, ldRt: rt);
             outputs.forEach((name, value) {
               final tag = n.pinBindings[name];
               if (tag != null && tag.isNotEmpty && value != null) {

@@ -139,6 +139,18 @@ void main() {
           pinBindings: {'X': 'X'}),
     ]));
     final p = _proj(fb, ['L1']);
-    expect(() => executeFbInstance(p, fb, 'L1', {'X': true}), returnsNormally);
+    // Repeated well past the cap: the depth counter must BALANCE back to 0
+    // after EVERY capped call, because the cap is a re-armable guard, not a
+    // one-shot fuse. Were the ++/-- unbalanced by even 1 per capped call
+    // (e.g. the depth check reordered after the increment, so the early
+    // return skips the `finally`), the counter would creep past the cap and
+    // every later FB call in the session would silently no-op — with the rest
+    // of the suite still green.
+    for (var i = 0; i < 20; i++) { // > fb_exec's private cap of 16
+      expect(() => executeFbInstance(p, fb, 'L1', {'X': true}), returnsNormally);
+    }
+    final thresh = _threshFb();
+    final p2 = _proj(thresh, ['A1']);
+    expect(executeFbInstance(p2, thresh, 'A1', {'In': 12.0})['Out'], isTrue);
   });
 }

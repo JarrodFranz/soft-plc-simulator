@@ -3,6 +3,7 @@ import 'fbd_pins.dart';
 import 'tag_resolver.dart';
 import 'fbd_monitor.dart';
 import 'fb_exec.dart';
+import 'ld_exec.dart';
 
 /// Per-block timer state for stateful FBD blocks (TON/TOF), keyed by block id
 /// (block ids are unique within a project's FBD programs). Cleared on project
@@ -171,6 +172,7 @@ Map<String, dynamic> _evalBlock(
   int dtMs,
   FbdRuntime rt,
   Set<String>? readOnly,
+  LdExecRuntime? ldRt,
 ) {
   // Custom function block instance: `inputs` is aligned with
   // `fbdInputPinsFor(p, b)` (the FB's INPUT-var names, in order). Pair them
@@ -194,7 +196,9 @@ Map<String, dynamic> _evalBlock(
       }
       inputMap[inNames[i]] = v;
     }
-    return executeFbInstance(p, fb, b.tagBinding, inputMap);
+    // A ladder-bodied FB needs the scan's dtMs (timers) and a persistent
+    // LdExecRuntime (edge/pulse). An ST-bodied FB ignores both.
+    return executeFbInstance(p, fb, b.tagBinding, inputMap, dtMs: dtMs, ldRt: ldRt);
   }
   switch (b.type) {
     case 'TAG_INPUT':
@@ -525,7 +529,7 @@ String _resolvedToPin(PlcProject p, FbdWire w, FbdBlock? toBlock) {
 /// Cycles terminate deterministically without hanging. Never throws. When
 /// [monitor] is supplied, every evaluated block's output-pin values are
 /// recorded into it, keyed by `monitor.keyFor(prog.name, block.id, pin)`.
-void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? only, Set<String>? readOnly, FbdMonitor? monitor}) {
+void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? only, Set<String>? readOnly, FbdMonitor? monitor, LdExecRuntime? ldRt}) {
   for (final prog in p.programs) {
     if (prog.language != 'FunctionBlockDiagram' || prog.fbdBlocks.isEmpty) {
       continue;
@@ -634,7 +638,7 @@ void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? onl
           if (!deps.every(done.contains)) {
             continue;
           }
-          cache[b.id] = _evalBlock(p, b, orderedInputs(b), dtMs, rt, readOnly);
+          cache[b.id] = _evalBlock(p, b, orderedInputs(b), dtMs, rt, readOnly, ldRt);
           recordMonitor(b);
           done.add(b.id);
           progressed = true;
@@ -646,7 +650,7 @@ void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? onl
         if (done.contains(b.id)) {
           continue;
         }
-        cache[b.id] = _evalBlock(p, b, orderedInputs(b), dtMs, rt, readOnly);
+        cache[b.id] = _evalBlock(p, b, orderedInputs(b), dtMs, rt, readOnly, ldRt);
         recordMonitor(b);
         done.add(b.id);
       }
