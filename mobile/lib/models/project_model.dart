@@ -202,24 +202,41 @@ class FbDefinition {
   List<FbVar> vars;
   String stSource;
 
+  /// Native ladder body. Non-empty => this FB is LADDER-bodied: [stSource] is
+  /// ignored and these rungs run scoped to the instance (see `fb_exec.dart`
+  /// and `ld_exec.dart`'s `runScopedLdBody`). Empty (the default) => the
+  /// existing ST path, byte-identical. `LdRung` is declared further down this
+  /// file and already round-trips (it backs `PlcProgram.rungs`).
+  List<LdRung> ladderRungs;
+
   FbDefinition({
     required this.name,
     List<FbVar>? vars,
     this.stSource = '',
-  }) : vars = vars ?? [];
+    List<LdRung>? ladderRungs,
+  })  : vars = vars ?? [],
+        ladderRungs = ladderRungs ?? [];
 
   factory FbDefinition.fromJson(Map<String, dynamic> json) {
     return FbDefinition(
       name: json['name'] ?? '',
       vars: (json['vars'] as List? ?? []).map((v) => FbVar.fromJson(v)).toList(),
       stSource: json['st_source'] ?? '',
+      ladderRungs: (json['ladder_rungs'] as List? ?? [])
+          .map((r) => LdRung.fromJson(r))
+          .toList(),
     );
   }
 
+  // `ladder_rungs` is emitted ONLY when non-empty so an ST-bodied FB's JSON is
+  // byte-identical to what shipped before this feature (old projects reload
+  // unchanged, and diffs of existing projects stay clean).
   Map<String, dynamic> toJson() => {
     'name': name,
     'vars': vars.map((v) => v.toJson()).toList(),
     'st_source': stSource,
+    if (ladderRungs.isNotEmpty)
+      'ladder_rungs': ladderRungs.map((r) => r.toJson()).toList(),
   };
 }
 
