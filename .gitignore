@@ -81,3 +81,4 @@ __pycache__/
 # never the installed browsers/deps or generated screenshots/artifacts.
 /node_modules/
 /.playwright-artifacts/
+/Deployments.zip

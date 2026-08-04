@@ -189,11 +189,35 @@ List<ImportedPou> _l5xAois(XmlElement? controller, List<ImportWarning> warnings)
     for (final aoi in _children(defs, 'AddOnInstructionDefinition')) {
       final name = aoi.getAttribute('Name') ?? '';
       if (name.isEmpty) continue;
+      // Logic routine: named "Logic" else the first routine. Resolved BEFORE
+      // the parameter loop because an RLL-logic AOI keeps EnableIn/EnableOut
+      // while every other logic language keeps the historic skip.
+      XmlElement? logic;
+      for (final rs in _children(aoi, 'Routines')) {
+        for (final r in _children(rs, 'Routine')) {
+          logic ??= r;
+          if (r.getAttribute('Name') == 'Logic') logic = r;
+        }
+      }
+      final logicType = logic?.getAttribute('Type');
+      final isRll = logicType == 'RLL';
+
       final vars = <ImportedVar>[];
       for (final params in _children(aoi, 'Parameters')) {
         for (final p in _children(params, 'Parameter')) {
           final pn = p.getAttribute('Name') ?? '';
-          if (pn.isEmpty || pn == 'EnableIn' || pn == 'EnableOut') continue;
+          if (pn.isEmpty) continue;
+          if (pn == 'EnableIn' || pn == 'EnableOut') {
+            if (!isRll) continue; // ST/FBD/SFC AOIs: historic skip, unchanged
+            // Rockwell RLL AOI logic commonly does XIC(EnableIn)/OTE(EnableOut).
+            // Retained as INTERNAL vars so those references resolve per
+            // instance via LdScope instead of falling through to absent
+            // globals. The body only runs when the call executes, so
+            // EnableIn = true during execution is the faithful mapping.
+            vars.add(ImportedVar(name: pn, baseType: 'BOOL',
+                scope: VarScope.local, initialValue: pn == 'EnableIn'));
+            continue;
+          }
           vars.add(ImportedVar(
             name: pn,
             baseType: p.getAttribute('DataType') ?? 'DINT',
@@ -218,27 +242,34 @@ List<ImportedPou> _l5xAois(XmlElement? controller, List<ImportWarning> warnings)
           ));
         }
       }
-      // Logic routine: named "Logic" else the first routine.
-      XmlElement? logic;
-      for (final rs in _children(aoi, 'Routines')) {
-        for (final r in _children(rs, 'Routine')) {
-          logic ??= r;
-          if (r.getAttribute('Name') == 'Logic') logic = r;
-        }
-      }
-      String body = '';
+
+      PouBody body = TextBody('');
+      var lang = PouLanguage.st;
       if (logic != null) {
-        final type = logic.getAttribute('Type');
-        if (type == 'ST') {
-          body = _stLines(logic);
+        if (logicType == 'ST') {
+          body = TextBody(_stLines(logic));
+        } else if (isRll) {
+          // Same rung capture _l5xRoutines uses; the mapper compiles it via
+          // compileRllRungs into the FB's native ladder body.
+          final rungs = <RllRung>[];
+          for (final content in _children(logic, 'RLLContent')) {
+            for (final rung in _children(content, 'Rung')) {
+              final num = int.tryParse(rung.getAttribute('Number') ?? '') ?? rungs.length;
+              final text = (_firstChild(rung, 'Text')?.innerText ?? '').trim();
+              final comment = _firstChild(rung, 'Comment')?.innerText.trim() ?? '';
+              rungs.add(RllRung(number: num, text: text, comment: comment));
+            }
+          }
+          body = NeutralLadderBody(rungs: rungs);
+          lang = PouLanguage.ld;
         } else {
           warnings.add(ImportWarning(severity: WarningSeverity.info,
-              message: 'AOI "$name" logic is ${type ?? '?'} — interface '
+              message: 'AOI "$name" logic is ${logicType ?? '?'} — interface '
                   'imported, logic not yet translated.'));
         }
       }
       out.add(ImportedPou(name: name, kind: PouKind.functionBlock,
-          lang: PouLanguage.st, localVars: vars, body: TextBody(body)));
+          lang: lang, localVars: vars, body: body));
     }
   }
   return out;

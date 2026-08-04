@@ -304,18 +304,28 @@ LdNode _instrToNode(
 ) {
   // Custom-AOI call: a mnemonic that (after fbRenameMap) names an imported AOI
   // routes to an FB-call node. Strict: the arg count must match the interface.
+  //
+  // Neutral text passes the INSTANCE tag then the AOI's INTERFACE parameters,
+  // in declaration order. Internal vars — AOI LocalTags, and the EnableIn/
+  // EnableOut an RLL-logic AOI retains — are never passed, so they take part
+  // in neither the arity check nor the positional binding. (An FB with no
+  // internal vars binds exactly as before: same count, same order.)
   final effective = fbRenameMap[instr.mnemonic] ?? instr.mnemonic;
   final fb = fbRegistry[effective];
   if (fb != null) {
+    final iface = [
+      for (final v in fb.vars)
+        if (v.direction != FbVarDir.internal) v,
+    ];
     final ops = instr.operands;
-    if (ops.isEmpty || ops.length - 1 != fb.vars.length) {
+    if (ops.isEmpty || ops.length - 1 != iface.length) {
       unsupported.add(instr.mnemonic);
       throw _RllStub('aoi-mismatch',
-          'AOI "$effective" arg count ${ops.isEmpty ? 0 : ops.length - 1} != ${fb.vars.length}');
+          'AOI "$effective" arg count ${ops.isEmpty ? 0 : ops.length - 1} != ${iface.length}');
     }
     final pin = <String, String>{};
-    for (var k = 0; k < fb.vars.length; k++) {
-      pin[fb.vars[k].name] = ops[k + 1];
+    for (var k = 0; k < iface.length; k++) {
+      pin[iface[k].name] = ops[k + 1];
     }
     return LdNode(id: '', kind: LdKind.block, blockType: effective,
         variable: ops[0], pinBindings: pin);

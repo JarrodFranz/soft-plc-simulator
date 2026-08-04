@@ -74,7 +74,12 @@ ScanTickResult runScanTick(PlcProject p, int dtMs, ScanTickRuntime rt) {
     final only = task.programs.toSet();
     final sw = Stopwatch()..start();
     executeLdPrograms(p, dtMs, rt.ld, only: only, readOnly: readOnly, monitor: rt.ldMonitor);
-    executeFbdPrograms(p, dtMs, rt.fbd, only: only, readOnly: readOnly, monitor: rt.fbdMonitor);
+    // The SAME LdExecRuntime the LD engine uses: a ladder-bodied FB called
+    // from FBD keeps its edge/pulse state across scans. Instance-prefixed
+    // ('fb:<instance>') keys keep FB-body state disjoint from program-rung
+    // state, so sharing one runtime is safe.
+    executeFbdPrograms(p, dtMs, rt.fbd, only: only, readOnly: readOnly,
+        monitor: rt.fbdMonitor, ldRt: rt.ld);
     executeSfcPrograms(p, dtMs, rt.sfc, only: only, readOnly: readOnly);
     executeStPrograms(p, dtMs, rt.st, only: only, readOnly: readOnly);
     sw.stop();

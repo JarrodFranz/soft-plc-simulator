@@ -54,16 +54,50 @@ rung + an unsupported-instruction inventory. Deferred: nested branches, `RTO`
 retentive timers, exact timer/counter preset fidelity, and unmapped instructions
 (`CPT`/`JSR`/`PID`/`SQO`/file-array/…).
 
+## RLL-Logic AOIs execute
+
+An `<AddOnInstructionDefinition>` whose `Logic` routine is `Type="RLL"` now
+imports as a **ladder-bodied function block**: its rungs go through the same
+`compileRllRungs` compiler as program routines and land in
+`FbDefinition.ladderRungs`, so every AOI-typed tag actually runs the AOI's
+logic — per instance, with independent timers, counters, and edge state (see
+`docs/iec61131/FUNCTION_BLOCKS.md`). Its rung counts, unsupported-instruction
+inventory, and stub reasons fold into the same RLL fields of the import
+preview as program rungs.
+
+`EnableIn`/`EnableOut` are **retained as internal vars** for RLL-Logic AOIs
+only (`EnableIn` defaults `true`, `EnableOut` `false`): Rockwell RLL AOI logic
+commonly does `XIC(EnableIn)`, and since the body only runs when the call
+executes, `EnableIn = true` during execution is the faithful mapping. Keeping
+them as vars makes those references resolve per instance instead of falling
+through to absent globals. `EnableIn` is **re-asserted `true` on every call**,
+just before the body's rungs run — Rockwell re-evaluates it per call, so a body
+containing `OTU(EnableIn)` must not latch the instance off forever. The
+re-assert is data-driven (an *internal* `BOOL` var named `EnableIn` on a
+**ladder** body) and never touches an `EnableIn` that is a real interface pin,
+nor an ST body. ST-Logic AOIs keep the historic skip. Call sites are
+unaffected — neutral text passes the instance tag plus the AOI's *interface*
+parameters, so internal vars (LocalTags, `EnableIn`/`EnableOut`) take no part
+in AOI-call arity or binding.
+
+If **no** rung of an AOI's ladder compiles, the FB falls back to the previous
+interface-only no-op plus a warning naming the AOI. An AOI ladder that calls an
+AOI defined *later* in the same file stubs that rung (unknown mnemonic,
+inventoried) — Rockwell exports list dependencies first, so this is rare.
+Only the `Logic` routine runs; `Prescan`/`Postscan`/`EnableInFalse` are not
+executed. Proven end-to-end in
+`mobile/test/import/import_l5x_aoi_ladder_e2e_test.dart`.
+
 ## What's captured but not yet translated
 
 - **FBD and SFC routines** are captured as a whole-POU stub (same shape as
   the PLCopen importer's graphical-POU stub) with a warning naming the
   routine. Re-importing once each L5X-specific graphical translator ships
   will turn these into real programs.
-- **Non-ST AOI logic** (an AOI whose `Logic` routine is RLL/FBD/SFC rather
-  than ST) imports the AOI's *interface* (parameters + local tags) as a real
-  `FbDefinition`, but the logic itself is not translated — a warning names the
-  AOI and its logic language.
+- **FBD/SFC AOI logic** (an AOI whose `Logic` routine is FBD or SFC) imports
+  the AOI's *interface* (parameters + local tags) as a real `FbDefinition`,
+  but the logic itself is not translated — a warning names the AOI and its
+  logic language. (RLL AOI logic now executes — see below.)
 
 ## Autodetect (no format picker)
 
@@ -90,8 +124,13 @@ currently open project is never modified.
 
 Tracked in `docs/DEFERRED.md`'s **L5X import** section:
 
-- **Non-ST AOI logic translation** — sub-project 3: translating an AOI's
-  RLL/FBD/SFC `Logic` routine body (interface-only import ships today).
+- **FBD-bodied AOI logic** — blocked on the L5X FBD front-end (sub-project 4);
+  it will reuse the same scoped-FB infrastructure with a scoped FBD executor.
+  (The RLL half shipped — see "RLL-Logic AOIs execute" above.)
+- **AOI auxiliary routines** — only the main `Logic` routine executes;
+  `Prescan`/`Postscan`/`EnableInFalse` are ignored.
+- **AOI-in-AOI forward references** — the callee must precede the caller in
+  the file.
 - **L5X FBD routine translation** — sub-project 4.
 - **L5X SFC routine translation** — sub-project 5.
 - **BIT-overlay member aliasing** — a UDT member that overlays a bit of

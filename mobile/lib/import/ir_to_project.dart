@@ -193,10 +193,13 @@ ImportResult mapImportedProject(ImportedProject ir,
   var translatedSfcCount = 0;
   var stubbedSfcCount = 0;
   final sfcStubReasons = <String, int>{};
-  var translatedRllRungCount = 0;
-  var stubbedRllRungCount = 0;
-  final unsupportedRllInstructions = <String>{};
-  final rllStubReasons = <String, int>{};
+  // AOI ladder bodies compiled by `mapImportedFbs` are RLL rungs too — seed
+  // the RLL counters with them so the preview's EXISTING RLL fields cover both
+  // program routines and AOI bodies (no new report fields, no new preview UI).
+  var translatedRllRungCount = fbRes.translatedRllRungCount;
+  var stubbedRllRungCount = fbRes.stubbedRllRungCount;
+  final unsupportedRllInstructions = <String>{...fbRes.unsupportedRllInstructions};
+  final rllStubReasons = <String, int>{...fbRes.rllStubReasons};
   final programs = <PlcProgram>[];
   for (final pou in ir.pous) {
     if (pou.kind == PouKind.functionBlock) continue;

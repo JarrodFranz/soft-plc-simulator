@@ -118,4 +118,21 @@ void main() {
     expect(tr.stubReasons['parse-error'], 1);
     expect(tr.rungs, hasLength(1));
   });
+
+  test('AOI arity/binding ignores INTERNAL vars (LocalTags, EnableIn/EnableOut)', () {
+    // Neutral text passes the instance tag + the AOI's interface params only.
+    final aoi = FbDefinition(name: 'Latch', vars: [
+      FbVar(name: 'EnableIn', dataType: 'BOOL', direction: FbVarDir.internal, initialValue: true),
+      FbVar(name: 'EnableOut', dataType: 'BOOL', direction: FbVarDir.internal, initialValue: false),
+      FbVar(name: 'In', dataType: 'BOOL', direction: FbVarDir.input),
+      FbVar(name: 'Out', dataType: 'BOOL', direction: FbVarDir.output),
+      FbVar(name: 'Tmp', dataType: 'BOOL', direction: FbVarDir.internal),
+    ]);
+    final tr = compileRllRungs(_body(['Latch(A1,Src,Dst);']),
+        pouName: 'P', fbRegistry: {'Latch': aoi});
+    expect(tr.translatedRungCount, 1);
+    final node = tr.rungs.single.nodes.firstWhere((n) => n.blockType == 'Latch');
+    expect(node.variable, 'A1');
+    expect(node.pinBindings, {'In': 'Src', 'Out': 'Dst'});
+  });
 }

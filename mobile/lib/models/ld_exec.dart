@@ -16,6 +16,25 @@ class LdExecRuntime {
   void clear() => prevBool.clear();
 }
 
+/// Scopes ladder execution to one FB instance: bare references to the FB's own
+/// vars resolve/write against `<instancePath>.<var>` instead of a global tag
+/// path. Mirrors `StScope` (st_exec.dart) exactly — same root-segment test,
+/// same "anything else falls through global" rule.
+class LdScope {
+  final String instancePath; // e.g. 'A1' (or 'A1.Inner' for a nested FB call)
+  final Set<String> localVars; // the FB's var names
+
+  LdScope(this.instancePath, this.localVars);
+
+  /// Rewrites a tag path into the instance's namespace when its root segment
+  /// is one of this scope's local vars (handles `x`, `x.y`, and `x[i]`);
+  /// otherwise the path is left untouched (falls through global).
+  String rewrite(String path) {
+    final root = path.split('.').first.split('[').first;
+    return localVars.contains(root) ? '$instancePath.$path' : path;
+  }
+}
+
 PlcTag? _rootTagOf(PlcProject p, String path) {
   final rootName = path.split('.').first.split('[').first;
   for (final t in p.tags) {
@@ -35,14 +54,15 @@ void _forceAwareWrite(PlcProject p, String path, dynamic value) {
 }
 
 /// Resolves a compare/math operand: a numeric literal parses directly,
-/// otherwise it is treated as a tag path. Never throws — a non-numeric or
-/// absent tag resolves to 0.
-double _operandValue(PlcProject p, String s) {
+/// otherwise it is treated as a tag path (scoped through [scope] when one is
+/// supplied — a LITERAL is parsed first and is therefore never rewritten).
+/// Never throws — a non-numeric or absent tag resolves to 0.
+double _operandValue(PlcProject p, String s, [LdScope? scope]) {
   final lit = num.tryParse(s);
   if (lit != null) {
     return lit.toDouble();
   }
-  final v = readPath(p, s);
+  final v = readPath(p, scope == null ? s : scope.rewrite(s));
   if (v is bool) {
     return v ? 1 : 0;
   }
@@ -84,7 +104,7 @@ void executeLdPrograms(PlcProject p, int dtMs, LdExecRuntime rt,
         if (readOnly == null || !readOnly.contains(path)) {
           _forceAwareWrite(p, path, v);
         }
-      }, monitor: monitor);
+      }, monitor: monitor, readOnly: readOnly);
     }
   }
 }
@@ -92,9 +112,18 @@ void executeLdPrograms(PlcProject p, int dtMs, LdExecRuntime rt,
 /// Power-flow evaluation of one rung: nodes in column (topological) order;
 /// a node's input power is the OR of its inbound wires' source powers, so
 /// series chains AND and parallel convergences OR.
+/// [readOnly] is NOT applied to this rung's own writes (that stays the caller's
+/// [write] closure's job, unchanged) — it exists solely to be handed down to a
+/// custom-FB call's body so an FB coil is gated exactly like a program coil.
 void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
     LdExecRuntime rt, void Function(String path, dynamic value) write,
-    {LdMonitor? monitor}) {
+    {LdMonitor? monitor, LdScope? scope, Set<String>? readOnly}) {
+  // EVERY tag path this rung touches goes through `sp`. With no scope it is
+  // the identity, so program-rung execution is byte-identical to before this
+  // feature; inside an FB body it maps the FB's own var names into the
+  // instance struct. Runtime/monitor state keys are NOT scoped here — the
+  // caller supplies a per-instance `progName` (see `runScopedLdBody`).
+  String sp(String path) => scope == null ? path : scope.rewrite(path);
   final col = colAssignment(rung);
   final ordered = [...rung.nodes]
     ..sort((a, b) => (col[a.id] ?? 0).compareTo(col[b.id] ?? 0));
@@ -127,7 +156,7 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
         break;
       case LdKind.contact:
         final inP = inputPower(n);
-        final val = readPath(p, n.variable) == true;
+        final val = readPath(p, sp(n.variable)) == true;
         final key = '$progName|${rung.rungIndex}|${n.id}';
         final prev = rt.prevBool[key] ?? val; // no spurious edge on first scan
         rt.prevBool[key] = val;
@@ -155,33 +184,36 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
         final key = '$progName|${rung.rungIndex}|${n.id}';
         final prevP = rt.prevBool[key] ?? inP;
         rt.prevBool[key] = inP;
+        final target = sp(n.variable);
         switch (n.modifier) {
           case 'negated':
-            write(n.variable, !inP);
+            write(target, !inP);
             break;
           case 'set':
             if (inP) {
-              write(n.variable, true);
+              write(target, true);
             }
             break;
           case 'reset':
             if (inP) {
-              write(n.variable, false);
+              write(target, false);
             }
             break;
           case 'rising':
-            write(n.variable, inP && !prevP); // one-scan pulse on power edge
+            write(target, inP && !prevP); // one-scan pulse on power edge
             break;
           case 'falling':
-            write(n.variable, !inP && prevP);
+            write(target, !inP && prevP);
             break;
           default:
-            write(n.variable, inP); // OTE
+            write(target, inP); // OTE
         }
         break;
       case LdKind.block:
         final inP = inputPower(n);
-        final base = n.variable;
+        // Scoping `base` is what moves an FB-local timer/counter's `.ACC`/
+        // `.PRE`/`.CV` members inside the instance (`T` -> `A1.T`).
+        final base = sp(n.variable);
         final pre = n.presetMs;
         final key = '$progName|${rung.rungIndex}|${n.id}';
 
@@ -189,8 +221,8 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
         const mathOps = {'ADD', 'SUB', 'MUL', 'DIV', 'MOVE'};
 
         if (compareOps.contains(n.blockType)) {
-          final a = _operandValue(p, n.operandA);
-          final b = _operandValue(p, n.operandB);
+          final a = _operandValue(p, n.operandA, scope);
+          final b = _operandValue(p, n.operandB, scope);
           bool res;
           switch (n.blockType) {
             case 'GT':
@@ -218,8 +250,8 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
 
         if (mathOps.contains(n.blockType)) {
           if (inP) {
-            final a = _operandValue(p, n.operandA);
-            final b = _operandValue(p, n.operandB);
+            final a = _operandValue(p, n.operandA, scope);
+            final b = _operandValue(p, n.operandB, scope);
             double r;
             switch (n.blockType) {
               case 'ADD':
@@ -237,10 +269,16 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
               default: // MOVE
                 r = a;
             }
-            final outRoot = _rootTagOf(p, n.variable);
+            // NOTE: the integer-truncation probe stays a ROOT-tag lookup (not
+            // a per-member type walk) so global behaviour is unchanged — a
+            // dotted destination (`Struct.Member`, and now `A1.Var`) already
+            // did not truncate before this feature. Tracked in
+            // docs/DEFERRED.md.
+            final dest = sp(n.variable);
+            final outRoot = _rootTagOf(p, dest);
             final dynamic outVal =
                 outRoot != null && isIntegerType(outRoot.dataType) ? r.truncate() : r;
-            write(n.variable, outVal);
+            write(dest, outVal);
           }
           power[n.id] = inP;
           elemTrue[n.id] = inP; // glow while the math block executes
@@ -332,7 +370,7 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
           int cv = (readPath(p, '$base.CV') as num?)?.toInt() ?? 0;
           final prevUp = rt.prevBool[key] ?? inP;
           rt.prevBool[key] = inP;
-          final downIn = readPath(p, n.operandA) == true;
+          final downIn = readPath(p, sp(n.operandA)) == true;
           final downKey = '$key|dn';
           final prevDown = rt.prevBool[downKey] ?? downIn;
           rt.prevBool[downKey] = downIn;
@@ -372,8 +410,12 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
             final inputs = <String, dynamic>{};
             for (final v in fb.vars) {
               if (v.direction == FbVarDir.input) {
-                final tag = n.pinBindings[v.name];
-                if (tag != null && tag.isNotEmpty) {
+                final raw = n.pinBindings[v.name];
+                if (raw != null && raw.isNotEmpty) {
+                  // Scoped so a nested FB call inside an FB body binds the
+                  // OUTER FB's own vars. A literal binding is unaffected: its
+                  // root segment can never match a var name.
+                  final tag = sp(raw);
                   // Most pin bindings name a tag path, but the import
                   // translator (custom-FB call routing) folds a literal
                   // operand (e.g. an inVariable wired to `2.0`) into
@@ -395,11 +437,20 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
                 }
               }
             }
-            final outputs = executeFbInstance(p, fb, n.variable, inputs);
+            // The instance name is scoped too: a nested call's instance var
+            // lives inside the outer instance ('Inner' -> 'A1.Inner'), which
+            // also keeps its 'fb:<path>' runtime keys disjoint.
+            // This rung's own dtMs + runtime flow into the FB body: a ladder
+            // body's timers advance with the scan and its edge/pulse state
+            // persists (keys are 'fb:<instance>'-prefixed, so they can never
+            // collide with this program's rung keys). Nested AOI-in-AOI
+            // recursion reuses the same runtime for the same reason.
+            final outputs = executeFbInstance(p, fb, sp(n.variable), inputs,
+                dtMs: dtMs, ldRt: rt, readOnly: readOnly);
             outputs.forEach((name, value) {
               final tag = n.pinBindings[name];
               if (tag != null && tag.isNotEmpty && value != null) {
-                write(tag, value);
+                write(sp(tag), value);
               }
             });
           }
@@ -457,5 +508,35 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
       monitor.nodePower[k] = power[n.id] ?? false;
       monitor.nodeTrue[k] = elemTrue[n.id] ?? (power[n.id] ?? false);
     }
+  }
+}
+
+/// Runs a ladder FB body scoped to one instance: every rung executes through
+/// [executeRung] with [scope] applied to every tag path, under the synthetic
+/// program key `'fb:<instancePath>'`, which gives two instances of the same FB
+/// disjoint edge/pulse state for free. That key is also disjoint from every
+/// IMPORT-produced program name, since the importer's identifier sanitizer
+/// (`ir_to_project.dart`) reduces a name to `[A-Za-z0-9_]` and so can never
+/// emit a `:`. A hand-typed program literally named `fb:<something>` is the
+/// one theoretical way to alias these keys; the consequence is limited to
+/// shared edge/pulse state (a spurious or missed one-scan pulse) — tag
+/// resolution is unaffected, because that goes through [scope], not the key.
+/// Writes are force-aware AND [readOnly]-gated, exactly like program-rung
+/// execution: an FB body's coil targeting a read-only global (a
+/// signal-generator/simulated test tag) is dropped rather than clobbering it.
+/// Instance-member writes are unaffected — [scope] has already rewritten those
+/// paths into `<instance>.<var>`, which no readOnly entry names. Passing no
+/// [readOnly] keeps the pre-existing ungated behaviour for ad-hoc callers.
+/// Placeholder rungs (rails + one wire) execute as harmless no-ops. Never
+/// throws. (The ladder analog of `runScopedStBody` in st_exec.dart.)
+void runScopedLdBody(PlcProject p, List<LdRung> rungs, LdScope scope, int dtMs,
+    LdExecRuntime rt, {Set<String>? readOnly}) {
+  final progKey = 'fb:${scope.instancePath}';
+  for (final rung in rungs) {
+    executeRung(p, progKey, rung, dtMs, rt, (path, v) {
+      if (readOnly == null || !readOnly.contains(path)) {
+        _forceAwareWrite(p, path, v);
+      }
+    }, scope: scope, readOnly: readOnly); // inherited by nested FB calls
   }
 }

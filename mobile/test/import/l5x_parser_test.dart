@@ -127,7 +127,7 @@ void main() {
       </Routines>
     </AddOnInstructionDefinition>
     <AddOnInstructionDefinition Name="LadderAoi">
-      <Parameters><Parameter Name="X" DataType="BOOL" Usage="Input" Visible="true"/></Parameters>
+      <Parameters><Parameter Name="EnableIn" DataType="BOOL" Usage="Input" Visible="false"/><Parameter Name="EnableOut" DataType="BOOL" Usage="Output" Visible="false"/><Parameter Name="X" DataType="BOOL" Usage="Input" Visible="true"/></Parameters>
       <Routines><Routine Name="Logic" Type="RLL"><RLLContent><Rung Number="0"><Text><![CDATA[NOP();]]></Text></Rung></RLLContent></Routine></Routines>
     </AddOnInstructionDefinition>
   </AddOnInstructionDefinitions>
@@ -143,10 +143,44 @@ void main() {
     expect(scaler.localVars.firstWhere((v) => v.name == 'Gain').initialValue, 2.0);
     expect((scaler.body as TextBody).source, 'Out := In * Gain;');
 
-    // RLL-bodied AOI: interface imported, empty body + warning.
+    // RLL-bodied AOI: rungs captured as a NeutralLadderBody, EnableIn/Out
+    // RETAINED as internal (local) vars so the ladder's XIC(EnableIn)
+    // resolves per-instance. No "not translated" warning any more.
     final ladder = ir.pous.firstWhere((p) => p.name == 'LadderAoi');
-    expect((ladder.body as TextBody).source, '');
-    expect(ir.warnings.any((w) => w.message.contains('LadderAoi') && w.message.contains('logic')), isTrue);
+    expect(ladder.lang, PouLanguage.ld);
+    final body = ladder.body as NeutralLadderBody;
+    expect(body.rungs, hasLength(1));
+    expect(body.rungs.single.text, 'NOP();');
+    expect(ladder.localVars.map((v) => v.name), ['EnableIn', 'EnableOut', 'X']);
+    expect(ladder.localVars[0].scope, VarScope.local);
+    expect(ladder.localVars[0].baseType, 'BOOL');
+    expect(ladder.localVars[0].initialValue, true);
+    expect(ladder.localVars[1].initialValue, false);
+    expect(ir.warnings.any((w) =>
+        w.message.contains('LadderAoi') && w.message.contains('not yet translated')), isFalse);
+  });
+
+  test('an FBD-logic AOI still imports interface-only with a warning (unchanged)', () {
+    const xml = '''
+<RSLogix5000Content TargetType="Controller"><Controller Name="C">
+  <AddOnInstructionDefinitions>
+    <AddOnInstructionDefinition Name="GraphAoi">
+      <Parameters>
+        <Parameter Name="EnableIn" DataType="BOOL" Usage="Input" Visible="false"/>
+        <Parameter Name="EnableOut" DataType="BOOL" Usage="Output" Visible="false"/>
+        <Parameter Name="X" DataType="BOOL" Usage="Input" Visible="true"/>
+      </Parameters>
+      <Routines><Routine Name="Logic" Type="FBD"/></Routines>
+    </AddOnInstructionDefinition>
+  </AddOnInstructionDefinitions>
+</Controller></RSLogix5000Content>''';
+    final ir = parseL5x(xml);
+    final pou = ir.pous.single;
+    expect(pou.lang, PouLanguage.st);
+    expect((pou.body as TextBody).source, '');
+    expect(pou.localVars.map((v) => v.name), ['X']); // EnableIn/Out still skipped
+    expect(ir.warnings.any((w) =>
+        w.message.contains('GraphAoi') && w.message.contains('not yet translated')), isTrue);
   });
 
   test('controller + program tags -> ImportedVar with scalar values', () {

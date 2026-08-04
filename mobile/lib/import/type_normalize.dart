@@ -11,6 +11,13 @@ const Map<String, String> _elementary = {
   'REAL': 'FLOAT64', 'LREAL': 'FLOAT64',
   'STRING': 'STRING', 'WSTRING': 'STRING', 'CHAR': 'STRING', 'WCHAR': 'STRING',
   'TIME': 'TIMER', 'TON': 'TIMER', 'TOF': 'TIMER', 'TP': 'TIMER',
+  // Rockwell's predefined TIMER/COUNTER structures. Both are builtin
+  // composites in `tag_resolver.dart` with matching member names
+  // (.PRE/.ACC/.DN, .PV/.CV/.QU/...), so a `DataType="TIMER"` tag/LocalTag
+  // maps straight onto one and a compiled TON/CTU actually drives it. The L5X
+  // parser drops non-`User` `<DataType>`s, so without these entries the name
+  // fell through to the INT16 default and every member write vanished.
+  'TIMER': 'TIMER', 'COUNTER': 'COUNTER',
 };
 
 /// Maps an IEC/PLCopen type name to the app's data-type set. A name in
