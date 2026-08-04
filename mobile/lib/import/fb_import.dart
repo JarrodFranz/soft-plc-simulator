@@ -99,7 +99,16 @@ FbImportResult mapImportedFbs(
             message: 'VAR_IN_OUT "${v.name}" on FB "${pou.name}" imported as an '
                 'input (by-reference semantics unsupported).'));
       }
-      final appType = normalizeType(v.baseType, knownDutNames: dutNames);
+      // A var whose baseType names an EARLIER-imported FB/AOI POU (by its
+      // ORIGINAL name) resolves to that FB's final name, so an AOI LocalTag
+      // typed as another AOI ends up composite instead of falling back to the
+      // INT16 scalar (which would make every nested read/write a silent
+      // no-op). `registry`/`renameMap` hold only FBs defined BEFORE this one —
+      // the same documented forward-reference limit the body compiler has.
+      // Mirrors the global-tag resolution in `ir_to_project.dart`.
+      final resolvedBaseType = renameMap[v.baseType] ?? v.baseType;
+      final appType = normalizeType(resolvedBaseType,
+          knownDutNames: {...dutNames, ...registry.keys});
       vars.add(FbVar(
         name: v.name,
         dataType: appType,

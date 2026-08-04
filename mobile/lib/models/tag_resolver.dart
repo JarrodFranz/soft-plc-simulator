@@ -224,7 +224,9 @@ dynamic _defaultValueFor(PlcProject p, String base, int arrayLength, Set<String>
     final nextVisiting = {...visiting, base};
     final m = <String, dynamic>{};
     for (final f in comp.fields) {
-      m[f.name] = f.defaultValue ?? _defaultValueFor(p, f.dataType, f.arrayLength, nextVisiting);
+      m[f.name] = f.defaultValue == null
+          ? _defaultValueFor(p, f.dataType, f.arrayLength, nextVisiting)
+          : _cloneDefault(f.defaultValue);
     }
     return m;
   }
@@ -238,6 +240,27 @@ dynamic _defaultValueFor(PlcProject p, String base, int arrayLength, Set<String>
     default:
       return 0; // integer types
   }
+}
+
+/// Deep-copies a declared default so every instance built from it owns its own
+/// containers. A `StructFieldDef.defaultValue` (or the `FbVar.initialValue`
+/// backing one) can itself be a Map/List — the importer builds exactly that for
+/// a composite-typed field/var (an AOI LocalTag of type `TIMER`, or of another
+/// AOI). Since [writePath] mutates containers IN PLACE, handing the same object
+/// to every instance would alias their state: two instances of the same FB
+/// would share one nested timer/struct. Scalars are immutable, so they are
+/// returned as-is and the byte-identical defaults of scalar fields are
+/// unchanged.
+dynamic _cloneDefault(dynamic v) {
+  if (v is Map) {
+    return <String, dynamic>{
+      for (final e in v.entries) '${e.key}': _cloneDefault(e.value),
+    };
+  }
+  if (v is List) {
+    return <dynamic>[for (final e in v) _cloneDefault(e)];
+  }
+  return v;
 }
 
 /// Parses a user-typed [input] string into the runtime type a scalar tag of
