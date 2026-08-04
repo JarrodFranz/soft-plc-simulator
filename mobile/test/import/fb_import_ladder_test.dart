@@ -126,6 +126,19 @@ void main() {
     expect(res.translatedRllRungCount, 0);
   });
 
+  test('a NeutralLadderBody AOI with NO rungs maps to empty ladderRungs, no warning', () {
+    final warnings = <ImportWarning>[];
+    final res = mapImportedFbs([
+      _ladderAoi('Empty', _latchVars(), []),
+    ], structs: [], dutNames: {}, warnings: warnings);
+
+    final fb = res.defs.single;
+    expect(fb.name, 'Empty');
+    expect(fb.ladderRungs, isEmpty);
+    expect(fb.stSource, '');
+    expect(warnings, isEmpty);
+  });
+
   test('AOI-body rungs fold into the report\'s existing RLL fields', () {
     final ir = ImportedProject(name: 'P', types: const [], globalVars: const [],
         warnings: const [],

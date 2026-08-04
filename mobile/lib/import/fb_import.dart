@@ -134,7 +134,7 @@ FbImportResult mapImportedFbs(
       // calling an AOI defined EARLIER in the file routes to a real FB-call
       // node; one defined later stubs as an unknown mnemonic (documented
       // ordering limitation — Rockwell exports list dependencies first).
-      final tr = compileRllRungs(body, pouName: name,
+      final tr = compileRllRungs(body, pouName: 'AOI $name',
           fbRegistry: registry, fbRenameMap: renameMap);
       warnings.addAll(tr.warnings);
       translatedRllRungCount += tr.translatedRungCount;

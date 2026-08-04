@@ -164,6 +164,9 @@ dynamic _compare(String op, List<dynamic> inputs) {
 /// CTU/CTD/CTUD are stateful, edge-triggered counters (clock-independent,
 /// `dtMs` unused): CTU/CTD yield `{'Q': bool, 'CV': int}`, CTUD yields
 /// `{'QU': bool, 'QD': bool, 'CV': int}`.
+/// [ldRt] flows through to the custom-FB branch (`executeFbInstance`), so a
+/// ladder-bodied FB instance's timers/counters/edges share the caller's
+/// runtime instead of an ephemeral per-call one.
 /// Never throws.
 Map<String, dynamic> _evalBlock(
   PlcProject p,

@@ -1,10 +1,10 @@
 # Custom (User-Defined) Function Blocks
 
 A **function block (FB)** definition is a reusable, project-level type: a
-typed interface (input/output/internal vars) plus a Structured Text body.
-Instantiating one creates a struct-typed tag that holds the instance's
-state — so **every instance has independent state**, the same way two
-`TON` timers never share a preset/elapsed.
+typed interface (input/output/internal vars) plus a body — either Structured
+Text or a native **ladder** body. Instantiating one creates a struct-typed tag
+that holds the instance's state — so **every instance has independent state**,
+the same way two `TON` timers never share a preset/elapsed.
 
 Implementation: `mobile/lib/models/project_model.dart` (`FbDefinition`,
 `FbVar`, `FbVarDir`, `PlcProject.fbDefinitions`), `mobile/lib/models/
@@ -53,6 +53,34 @@ level. Its `IF PV > High THEN Q := TRUE; ELSIF PV < Low THEN Q := FALSE;
 END_IF; Out := Q;` body only writes `Q` at the edges — the deadband holds
 because `Q` is read back unchanged on every scan where `PV` is between the
 two thresholds. See `test/hysteresis_fb_demo_test.dart`.
+
+## Ladder-bodied FBs
+
+An FB can carry a native **ladder body** instead of ST: `FbDefinition.
+ladderRungs` (JSON key `ladder_rungs`, absent when empty) holds real `LdRung`s.
+A non-empty `ladderRungs` is the discriminator — that FB runs its ladder and
+its `stSource` is ignored; an empty one is the ST path, unchanged.
+
+Ladder bodies exist because a Rockwell **RLL-bodied AOI** cannot be honestly
+transpiled to the app's ST subset (IF + assignment only — no timers, no
+`OTL`/`OTU` latches, no edge instructions). They are produced by the L5X
+importer (see `docs/import/L5X.md`); the FB editor does not create them.
+
+Execution mirrors the ST path exactly. `executeFbInstance` writes the wired
+inputs into the instance struct, then runs `runScopedLdBody` (`models/
+ld_exec.dart`), which executes every rung through `executeRung` with an
+`LdScope`: a tag path whose **root segment** names one of the FB's vars
+resolves against `<instance>.<var>`, anything else falls through to the global
+namespace. So an FB-local `TON` on var `T` accumulates in `A1.T.ACC`, and two
+instances never share it. Edge/pulse state (rising contacts, pulse coils) is
+keyed under the synthetic program name `'fb:<instance>'` — a sanitized program
+name can never contain `:`, so those keys can never collide with a real
+program's, and per-instance edge detection is disjoint for free. Writes are
+force-aware, and the scan's `dtMs` + `LdExecRuntime` are threaded in from
+whichever engine made the call (LD block, FBD block, or `scan_tick`).
+
+The FB editor does **not** view or edit ladder bodies yet — a ladder-bodied FB
+shows its (empty) ST source. Tracked in `docs/DEFERRED.md`.
 
 ## What's deferred
 
