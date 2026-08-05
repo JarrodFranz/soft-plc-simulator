@@ -16,7 +16,7 @@ void main() {
     Widget app(PlcProject project) => MaterialApp(
           home: StEditorScreen(
             currentProject: project,
-            onSaveProgram: (_) {},
+            onSaveProgram: (_, {bool notifyHost = true}) {},
           ),
         );
 

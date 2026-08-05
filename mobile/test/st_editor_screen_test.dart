@@ -31,7 +31,7 @@ PlcProject _buildProject({required PlcProgram program}) {
 /// does when the user switches the active view and switches back.
 class _NavHarness extends StatefulWidget {
   final PlcProject project;
-  final void Function(PlcProgram) onSaveProgram;
+  final StProgramSaveCallback onSaveProgram;
 
   const _NavHarness({super.key, required this.project, required this.onSaveProgram});
 
@@ -59,11 +59,14 @@ class _NavHarnessState extends State<_NavHarness> {
 
 void main() {
   const codeFieldKey = Key('stCodeEditorField');
+  // The header fields carry no keys; find them via their floating labels.
+  final nameField = find.ancestor(of: find.text('Program Name'), matching: find.byType(TextField));
+  final descriptionField = find.ancestor(of: find.text('Description'), matching: find.byType(TextField));
 
   /// Applies a received `PlcProgram` back into `project.programs` the same
   /// way `workspace_shell.dart`'s real `onSaveProgram` callback does.
-  void Function(PlcProgram) applyingSaver(PlcProject project, List<PlcProgram> received) {
-    return (updated) {
+  StProgramSaveCallback applyingSaver(PlcProject project, List<PlcProgram> received) {
+    return (updated, {bool notifyHost = true}) {
       received.add(updated);
       final idx = project.programs.indexWhere((p) => p.name == updated.name);
       if (idx != -1) {
@@ -127,6 +130,68 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('NewCode := 42;'), findsOneWidget);
+  });
+
+  // ── Final-review F7: auto-persist must not clobber baseline fields ──
+  // The debounced persist built a brand-new PlcProgram from three fields, so
+  // everything else the program carried (notably `enabled`) silently reverted
+  // to its constructor default, and header (name/description) edits were
+  // never auto-persisted at all.
+  testWidgets('auto-persist preserves PlcProgram.enabled (a disabled program stays disabled)',
+      (tester) async {
+    final program = PlcProgram(
+        name: 'Prog1',
+        language: 'StructuredText',
+        description: 'desc',
+        stSource: 'OldCode;',
+        enabled: false);
+    final project = _buildProject(program: program);
+    final received = <PlcProgram>[];
+
+    await tester.pumpWidget(_NavHarness(project: project, onSaveProgram: applyingSaver(project, received)));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byKey(codeFieldKey), 'NewCode := 42;');
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(project.programs.first.stSource, 'NewCode := 42;');
+    expect(project.programs.first.enabled, isFalse,
+        reason: 'typing ST must not silently re-enable a disabled program');
+  });
+
+  testWidgets('description edits auto-persist on a pause in typing', (tester) async {
+    final program = PlcProgram(name: 'Prog1', language: 'StructuredText', description: 'desc', stSource: 'OldCode;');
+    final project = _buildProject(program: program);
+    final received = <PlcProgram>[];
+
+    await tester.pumpWidget(_NavHarness(project: project, onSaveProgram: applyingSaver(project, received)));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(descriptionField, 'Reactor deadband control');
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(project.programs.first.description, 'Reactor deadband control');
+  });
+
+  testWidgets('program-name edits survive navigating away', (tester) async {
+    final program = PlcProgram(name: 'Prog1', language: 'StructuredText', description: 'desc', stSource: 'OldCode;');
+    final project = _buildProject(program: program);
+    final received = <PlcProgram>[];
+    final harnessKey = GlobalKey<_NavHarnessState>();
+
+    await tester.pumpWidget(
+        _NavHarness(key: harnessKey, project: project, onSaveProgram: applyingSaver(project, received)));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(nameField, 'Prog1_Renamed');
+    await tester.pump();
+
+    harnessKey.currentState!.toggle();
+    await tester.pump();
+
+    expect(project.programs.first.name, 'Prog1_Renamed',
+        reason: 'a header edit must not be dropped on navigate-away');
+    expect(project.programs.first.stSource, 'OldCode;');
   });
 
   testWidgets('merely opening the editor does not mark the project dirty (no spurious persist on load)',

@@ -225,6 +225,16 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// reset/restored.
   bool _pendingHistoryCapture = false;
 
+  /// The live [StEditorScreenState] in the centre pane, if the active view is
+  /// an ST program (registered/unregistered by the editor itself).
+  ///
+  /// The ST editor is the one editor that buffers edits (a 350ms persist
+  /// debounce over a `TextEditingController`) instead of mutating the model
+  /// on every keystroke, so the shell must give it a chance to write that
+  /// buffer out BEFORE swapping the active project/view or restoring a
+  /// snapshot — see [_flushActiveEditor].
+  StEditorScreenState? _stEditor;
+
   /// Serializes the active project for undo/redo + autosave-dirty
   /// comparison. The reserved `System` tag's value is neutralized to a fixed
   /// placeholder first: it carries continuously-changing per-scan telemetry
@@ -492,7 +502,10 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// real `BuildContext` and drawer state) — used to put the shell in a
   /// known view (e.g. `'LOGS'`) before exercising a project switch.
   @visibleForTesting
-  void debugSetActiveViewId(String id) => setState(() => _activeViewId = id);
+  void debugSetActiveViewId(String id) {
+    _flushActiveEditor(); // mirrors `_selectView`
+    setState(() => _activeViewId = id);
+  }
 
   /// Test-only hook: the shell's current UI refresh rate (Hz), so a widget
   /// test can assert on it directly instead of poking at `_repaintThrottle`'s
@@ -1047,10 +1060,25 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     }
   }
 
+  /// Pushes any edit still buffered inside the centre-pane editor into the
+  /// model, while the project it was typed into is still the active one and
+  /// while `setState` is still legal.
+  ///
+  /// Must be called BEFORE any `setState` that replaces the active project,
+  /// the active view, or bumps `_editorRevision` — all of which re-key the
+  /// centre pane and dispose the editor mid-frame. Leaving the write to the
+  /// editor's `dispose()` instead meant it landed in the wrong project, threw
+  /// on `setState` during the tree lock, and re-armed the pending-history
+  /// flag right after an undo had cleared it.
+  void _flushActiveEditor() => _stEditor?.flushPendingEdits();
+
   /// If a debounced autosave is pending, run it immediately instead of
   /// waiting out the timer (used before switching/closing a project so an
-  /// edit made just before the switch isn't lost).
+  /// edit made just before the switch isn't lost). Also flushes the centre
+  /// pane's buffered editor state first, so an edit that hasn't even reached
+  /// the model yet is part of what gets saved.
   void _flushPendingAutosave() {
+    _flushActiveEditor();
     if (_autosaveTimer == null || !_autosaveTimer!.isActive) return;
     _autosaveTimer!.cancel();
     unawaited(_runAutosave());
@@ -1065,6 +1093,12 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// while a snapshot that differs only by scan-loop live-value drift is
   /// never recorded as a step of its own (see [_pendingHistoryCapture]).
   void _undo() {
+    // Before anything else: the ST editor may still be holding typed text
+    // that hasn't reached the model. Flushing it here folds it into the
+    // pre-undo state (so it becomes its own undo step, like any other
+    // editor's edit) instead of leaking out of the editor's `dispose` after
+    // the restore has already happened.
+    _flushActiveEditor();
     _autosaveTimer?.cancel();
     _captureHistoryIfDirty();
     final snap = _history.undo();
@@ -1075,6 +1109,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
 
   /// Moves one step forward in the project history and applies it, if any.
   void _redo() {
+    _flushActiveEditor(); // see [_undo]
     _autosaveTimer?.cancel();
     _captureHistoryIfDirty();
     final snap = _history.redo();
@@ -2346,6 +2381,9 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     if (!context.isExpanded) {
       Navigator.pop(context);
     }
+    // Changing the view re-keys (and disposes) the centre pane — flush its
+    // buffered edits first, while this is still a plain event-handler call.
+    _flushActiveEditor();
     setState(() => _activeViewId = viewId);
   }
 
@@ -3249,15 +3287,35 @@ class WorkspaceShellState extends State<WorkspaceShell> {
           scanRunning: isRunning && !_faulted,
         );
       } else {
+        // `proj` is captured at BUILD time on purpose. This callback can
+        // still run after the shell has swapped `_activeProject` (the ST
+        // editor flushes in-flight text from `dispose()`, which happens
+        // during the rebuild that replaced it) — resolving the target
+        // project at CALL time meant those keystrokes were written into
+        // whichever project had just become active, so switching projects
+        // lost the text from the one being left AND clobbered a same-named
+        // program in the one being opened.
+        final proj = _activeProject;
         return StEditorScreen(
-          currentProject: _activeProject,
-          onSaveProgram: (updated) {
-            setState(() {
-              final idx = _activeProject.programs.indexWhere((p) => p.name == updated.name);
-              if (idx != -1) {
-                _activeProject.programs[idx] = updated;
-              }
-            });
+          currentProject: proj,
+          onEditorAttached: (s) => _stEditor = s,
+          onEditorDetached: (s) {
+            // A replaced editor's dispose runs after its replacement's
+            // initState, so only clear the handle if it's still this one.
+            if (identical(_stEditor, s)) _stEditor = null;
+          },
+          onSaveProgram: (updated, {bool notifyHost = true}) {
+            final idx = proj.programs.indexWhere((p) => p.name == updated.name);
+            if (idx != -1) {
+              proj.programs[idx] = updated;
+            }
+            // `notifyHost: false` is the editor's dispose-time call: apply
+            // the model write, but never `setState` — the widget tree is
+            // locked at that point. Nor may a write aimed at a no-longer-
+            // active project mark the CURRENT one dirty: that's what used to
+            // re-arm `_pendingHistoryCapture` immediately after an undo and
+            // wipe the redo stack on the next autosave.
+            if (!notifyHost || !mounted || !identical(proj, _activeProject)) return;
             _markDirtyAndAutosave();
           },
         );
