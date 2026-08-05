@@ -7,6 +7,7 @@ import '../models/ld_graph.dart';
 import '../models/ld_layout.dart';
 import '../models/ld_monitor.dart';
 import '../models/tag_resolver.dart';
+import '../ui/delete_feedback.dart';
 import '../ui/responsive.dart';
 import '../widgets/live_tick.dart';
 import '../widgets/tag_autocomplete_field.dart';
@@ -596,26 +597,15 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     widget.onProgramUpdated();
   }
 
-  Future<void> _confirmDeleteRung(int index) async {
-    final confirmed = await showAdaptiveWidthDialog<bool>(
-      context,
-      child: AlertDialog(
-        title: const Text('Delete Rung'),
-        content: Text('Delete RUNG $index? This cannot be undone.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed ?? false) {
-      setState(() => deleteRung(widget.program, index));
-      widget.onProgramUpdated();
-    }
+  /// Rungs live inside `PlcProject`, so the shell's undo restores a deleted
+  /// one — per the delete policy (`lib/ui/delete_feedback.dart`) this fires
+  /// immediately and offers UNDO on a SnackBar rather than blocking first.
+  void _deleteRung(int index) {
+    final count = widget.program.rungs[index].nodes.length;
+    setState(() => deleteRung(widget.program, index));
+    widget.onProgramUpdated();
+    showDeleteUndoSnackBar(
+        context, 'RUNG $index ($count ${count == 1 ? 'element' : 'elements'})');
   }
 
   void _addRung() {
@@ -681,7 +671,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 _rungActionButton(
                   icon: Icons.delete_outline,
                   color: Colors.redAccent,
-                  onPressed: () => _confirmDeleteRung(index),
+                  onPressed: () => _deleteRung(index),
                 ),
               ],
             ),
@@ -1219,6 +1209,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 });
                 widget.onProgramUpdated();
                 Navigator.pop(context);
+                showDeleteUndoSnackBar(context, 'branch');
               },
               child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
             ),
@@ -1395,6 +1386,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 });
                 widget.onProgramUpdated();
                 Navigator.pop(context);
+                showDeleteUndoSnackBar(context, 'rung element "${n.variable}"');
               },
               child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
             ),

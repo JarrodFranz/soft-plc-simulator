@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/fb_name_validation.dart';
 import '../models/project_model.dart';
 import '../models/tag_resolver.dart';
+import '../ui/delete_feedback.dart';
 import '../ui/responsive.dart';
 import '../widgets/scalar_value_field.dart';
 
@@ -188,6 +189,7 @@ class _FbEditorScreenState extends State<FbEditorScreen> {
     });
     _varNameControllers.remove(v)?.dispose();
     widget.onProjectUpdated();
+    showDeleteUndoSnackBar(context, 'variable "${v.name}"');
   }
 
   Widget _buildVarRow(int i, FbVar v) {

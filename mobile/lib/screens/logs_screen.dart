@@ -57,6 +57,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/app_log.dart';
+import '../ui/delete_feedback.dart';
 import '../services/app_logger.dart';
 import '../widgets/live_tick.dart';
 
@@ -166,6 +167,29 @@ class _LogsScreenState extends State<LogsScreen> {
     });
   }
 
+  /// The log ring buffer lives in [AppLogger], NOT in `PlcProject`, so the
+  /// shell's undo history cannot bring cleared entries back. Per the app-wide
+  /// delete policy (`lib/ui/delete_feedback.dart`) an unrecoverable delete
+  /// must confirm first.
+  Future<void> _confirmClear() async {
+    final confirmed = await confirmUnrecoverableDelete(
+      context,
+      title: 'Clear Log',
+      message: 'Discard all captured log entries? '
+          'The log is not part of the project, so this cannot be undone.',
+      confirmLabel: 'Clear',
+    );
+    if (!confirmed || !mounted) return;
+    setState(() {
+      widget.logger.clear();
+      _expandedSeqs.clear();
+      _pageIndex = 0;
+      if (!_liveTail) {
+        _frozenRaw = <LogEntry>[];
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -198,14 +222,7 @@ class _LogsScreenState extends State<LogsScreen> {
           ),
           TextButton(
             key: const Key('logs_clear_button'),
-            onPressed: () => setState(() {
-              widget.logger.clear();
-              _expandedSeqs.clear();
-              _pageIndex = 0;
-              if (!_liveTail) {
-                _frozenRaw = <LogEntry>[];
-              }
-            }),
+            onPressed: _confirmClear,
             child: const Text('Clear'),
           ),
           const SizedBox(width: 4),

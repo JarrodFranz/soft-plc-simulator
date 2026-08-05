@@ -6,6 +6,7 @@ import '../models/fbd_pins.dart';
 import '../models/fbd_layout.dart';
 import '../models/fbd_networks.dart';
 import '../models/project_model.dart';
+import '../ui/delete_feedback.dart';
 import '../ui/responsive.dart';
 import '../widgets/live_tick.dart';
 import '../widgets/tag_autocomplete_field.dart';
@@ -345,41 +346,27 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
     widget.onProgramUpdated();
   }
 
-  void _confirmDeleteNetwork(int net) {
-    showAdaptiveWidthDialog(
-      context,
-      desiredWidth: 360,
-      child: AlertDialog(
-        title: Text('Delete Network ${net + 1}?'),
-        content: const Text(
-            'This removes the network and every block and wire inside it. '
-            'This cannot be undone.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          ElevatedButton(
-            key: const Key('fbd_net_del_confirm'),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            onPressed: () {
-              Navigator.pop(context);
-              final removedNetwork = widget.program.fbdNetworks[net];
-              setState(() {
-                deleteFbdNetwork(widget.program, net);
-                _selectedWireIndex = null;
-                _armedBlockId = null;
-                _armedPin = null;
-              });
-              // The deleted network's comment controller is no longer bound to
-              // any TextField — dispose it now instead of leaving it to linger
-              // (keyed by instance) until the whole screen is disposed.
-              _commentControllers.remove(removedNetwork)?.dispose();
-              _ensureNetworks();
-              widget.onProgramUpdated();
-            },
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
+  /// Networks (and the blocks/wires inside them) live in `PlcProject`, so the
+  /// shell's undo restores the whole lane in one step — per the delete policy
+  /// (`lib/ui/delete_feedback.dart`) this fires immediately and offers UNDO on
+  /// a SnackBar instead of blocking on a confirmation.
+  void _deleteNetwork(int net) {
+    final blockCount = fbdBlocksInNetwork(widget.program, net).length;
+    final removedNetwork = widget.program.fbdNetworks[net];
+    setState(() {
+      deleteFbdNetwork(widget.program, net);
+      _selectedWireIndex = null;
+      _armedBlockId = null;
+      _armedPin = null;
+    });
+    // The deleted network's comment controller is no longer bound to any
+    // TextField — dispose it now instead of leaving it to linger (keyed by
+    // instance) until the whole screen is disposed.
+    _commentControllers.remove(removedNetwork)?.dispose();
+    _ensureNetworks();
+    widget.onProgramUpdated();
+    showDeleteUndoSnackBar(context,
+        'network ${net + 1} ($blockCount ${blockCount == 1 ? 'block' : 'blocks'})');
   }
 
   // -----------------------------------------------------------------
@@ -471,6 +458,7 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
       _selectedWireIndex = null;
     });
     widget.onProgramUpdated();
+    showDeleteUndoSnackBar(context, 'wire');
   }
 
   void _deleteBlock(FbdBlock block) {
@@ -484,6 +472,7 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
       _selectedWireIndex = null;
     });
     widget.onProgramUpdated();
+    showDeleteUndoSnackBar(context, 'block "${block.title}"');
   }
 
   void _changeInputCount(FbdBlock block, int delta) {
@@ -722,7 +711,7 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
           iconBtn('down', Icons.arrow_downward, 'Move network down',
               net < n - 1 ? () => _moveNetwork(net, net + 1) : null),
           iconBtn('del', Icons.delete_outline, 'Delete network',
-              () => _confirmDeleteNetwork(net)),
+              () => _deleteNetwork(net)),
         ],
       ),
     );

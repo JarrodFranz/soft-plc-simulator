@@ -6,6 +6,7 @@ import '../models/system_tags.dart';
 import '../models/tag_resolver.dart';
 import '../models/test_tag_set.dart';
 import '../services/tag_historian.dart';
+import '../ui/delete_feedback.dart';
 import '../ui/responsive.dart';
 import '../ui/value_format.dart';
 import '../widgets/live_tick.dart';
@@ -251,27 +252,18 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
     widget.onProjectUpdated();
   }
 
-  void _confirmDeleteFolder(String folder) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Delete Folder'),
-        content: Text(
-          'Delete folder "$folder" and all its tags? This removes their signal generators '
-          'and any protocol-map entries too. This cannot be undone.',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () {
-              debugDeleteFolder(folder);
-              Navigator.pop(ctx);
-            },
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
+  /// Folder deletes are wholly inside `PlcProject` (tags + their signal
+  /// generators + their protocol-map rows), so the shell's undo restores them
+  /// in one step. Per the delete policy they complete immediately and report
+  /// their blast radius in the SnackBar instead of blocking on a dialog.
+  void _deleteFolder(String folder) {
+    final count = widget.currentProject.tags.where((t) => t.folder == folder).length;
+    if (count == 0) {
+      return;
+    }
+    debugDeleteFolder(folder);
+    showDeleteUndoSnackBar(
+        context, 'folder "$folder" ($count ${count == 1 ? 'tag' : 'tags'})');
   }
 
   void _showGenerateTestSetDialog() {
@@ -937,7 +929,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                 const SizedBox(width: 8),
                 touchable(
                   const Icon(Icons.delete_forever, color: Colors.redAccent, size: 18),
-                  onTap: () => _confirmDeleteFolder(folder),
+                  onTap: () => _deleteFolder(folder),
                 ),
               ],
             ),
@@ -1076,7 +1068,8 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                     ),
                   if (row.isDeletable)
                     touchable(
-                      const Icon(Icons.delete, color: Colors.redAccent, size: 18),
+                      Icon(Icons.delete,
+                          color: Colors.redAccent, size: 18, key: Key('delete_tag_${row.name}')),
                       onTap: () => _deleteTag(row.name),
                     ),
                 ],
@@ -1361,6 +1354,8 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
       widget.currentProject.tags.removeWhere((t) => t.name == name || t.name.startsWith('$name.'));
     });
     widget.onProjectUpdated();
+    // Undoable (tags are part of PlcProject) -> SnackBar + UNDO, no dialog.
+    showDeleteUndoSnackBar(context, 'tag "$name"');
   }
 
   void _toggleBoolValue(_TagRowData row) {
@@ -1433,6 +1428,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
             ),
           if (row.isDeletable)
             IconButton(
+              key: Key('delete_tag_${row.name}'),
               icon: const Icon(Icons.delete, color: Colors.redAccent, size: 16),
               onPressed: () => _deleteTag(row.name),
             ),
@@ -1527,7 +1523,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                         IconButton(
                           icon: const Icon(Icons.delete, color: Colors.redAccent, size: 20),
                           tooltip: 'Delete DUT',
-                          onPressed: () => _confirmDeleteStruct(s),
+                          onPressed: () => _deleteStruct(s),
                         ),
                       ],
                     ),
@@ -1592,7 +1588,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
     );
   }
 
-  void _confirmDeleteStruct(PlcStructDef s) {
+  void _deleteStruct(PlcStructDef s) {
     if (structDefInUse(widget.currentProject, s.name)) {
       final referencedByTags = widget.currentProject.tags
           .where((t) => t.dataType == s.name)
@@ -1618,26 +1614,12 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
       );
       return;
     }
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Delete DUT'),
-        content: Text('Delete struct definition "${s.name}"? This cannot be undone.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () {
-              setState(() {
-                widget.currentProject.structDefs.remove(s);
-              });
-              widget.onProjectUpdated();
-              Navigator.pop(ctx);
-            },
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
+    // Undoable (structDefs are part of PlcProject) -> no confirmation dialog.
+    setState(() {
+      widget.currentProject.structDefs.remove(s);
+    });
+    widget.onProjectUpdated();
+    showDeleteUndoSnackBar(context, 'struct definition "${s.name}"');
   }
 
   void _showEditStructDialog(PlcStructDef s) {
@@ -1842,6 +1824,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                   setState(() => widget.currentProject.trends.remove(p));
                   widget.historian.syncPens(widget.currentProject.trends);
                   widget.onProjectUpdated();
+                  showDeleteUndoSnackBar(context, 'trend pen "${p.tagPath}"');
                 }),
               ]),
             ),

@@ -3,6 +3,7 @@ import '../models/noise_model.dart';
 import '../models/project_model.dart';
 import '../models/tag_resolver.dart';
 import '../models/valve_curve.dart';
+import '../ui/delete_feedback.dart';
 import '../ui/responsive.dart';
 import '../widgets/tag_autocomplete_field.dart';
 
@@ -146,6 +147,7 @@ class _SimulatedIoScreenState extends State<SimulatedIoScreen> {
             onPressed: () {
               setState(() => widget.currentProject.simRules.removeAt(index));
               widget.onProjectUpdated();
+              showDeleteUndoSnackBar(context, 'simulation rule "${r.name}"');
             },
           ),
         ]),

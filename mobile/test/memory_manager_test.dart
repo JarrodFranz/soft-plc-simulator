@@ -109,10 +109,8 @@ void main() {
       final deleteIcon = find.descendant(of: spareCard, matching: find.byIcon(Icons.delete));
       await tester.tap(deleteIcon);
       await tester.pumpAndSettle();
-
-      // Confirm the delete dialog.
-      await tester.tap(find.text('Delete'));
-      await tester.pumpAndSettle();
+      // No confirmation dialog: DUT deletes are undoable, so the policy
+      // (`lib/ui/delete_feedback.dart`) puts the recovery on a SnackBar.
 
       expect(project.structDefs.any((s) => s.name == 'SpareDUT'), isFalse);
       expect(updates, greaterThan(0));

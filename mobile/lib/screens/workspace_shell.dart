@@ -50,6 +50,7 @@ import 'pid_autotune_screen.dart';
 import 'interaction_analysis_screen.dart';
 import 'gateway_screen.dart';
 import 'softplc_settings_dialog.dart';
+import '../ui/delete_feedback.dart';
 
 /// Debounce window between the last project mutation and the autosave write.
 const Duration _autosaveDebounce = Duration(milliseconds: 800);
@@ -651,6 +652,13 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   @visibleForTesting
   void debugAddProject(PlcProject proj) => setState(() => _allProjects.add(proj));
 
+  /// Test-only hook: re-baselines the undo history onto the project's current
+  /// state, exactly as every project-replacing path does. Lets a test seed
+  /// fixture data straight into `debugActiveProject` and still have undo treat
+  /// that seeded state (rather than the boot state) as the step to return to.
+  @visibleForTesting
+  void debugResetHistory() => setState(_resetHistory);
+
   /// Test-only hook: drives the same project-replacement path as picking
   /// [proj] from the project switcher UI. Used by widget tests to exercise
   /// `_switchActiveProject` (and therefore `_beginProjectSession`) without
@@ -1220,29 +1228,18 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     );
   }
 
+  /// Blocking confirmation for the two shell actions the undo history cannot
+  /// reverse (project delete, reset-to-defaults) — see the delete policy in
+  /// `lib/ui/delete_feedback.dart`. Every *undoable* delete uses
+  /// [showDeleteUndoSnackBar] instead of a dialog.
   Future<bool> _confirm(
     BuildContext context, {
     required String title,
     required String message,
     String confirmLabel = 'Confirm',
-  }) async {
-    final result = await showAdaptiveWidthDialog<bool>(
-      context,
-      child: AlertDialog(
-        title: Text(title),
-        content: Text(message),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(confirmLabel),
-          ),
-        ],
-      ),
-    );
-    return result ?? false;
-  }
+  }) =>
+      confirmUnrecoverableDelete(context,
+          title: title, message: message, confirmLabel: confirmLabel);
 
   Future<void> _createNewProject() async {
     final repo = _repo;
@@ -1848,7 +1845,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       }
     });
     _markDirtyAndAutosave();
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Program "$progName" deleted')));
+    showDeleteUndoSnackBar(context, 'program "$progName"');
   }
 
   /// Delete [task], unless doing so would leave any of its programs in no
@@ -1869,6 +1866,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// SnackBar naming the program that would be left with no task.
   void _confirmDeleteTask(PlcTask task) {
     if (_deleteTask(task)) {
+      showDeleteUndoSnackBar(context, 'task "${task.name}"');
       return;
     }
     final orphan = task.programNames.firstWhere(
@@ -1961,8 +1959,14 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         },
         child: Focus(
           autofocus: true,
-          child: _buildScaffold(context,
-              expanded: expanded, compact: compact, short: short, showScanBar: showScanBar),
+          // Publishes the shell's undo to every descendant screen, so an
+          // undoable delete performed deep inside an editor can offer UNDO on
+          // its confirmation SnackBar (see `lib/ui/delete_feedback.dart`).
+          child: UndoScope(
+            onUndo: _undo,
+            child: _buildScaffold(context,
+                expanded: expanded, compact: compact, short: short, showScanBar: showScanBar),
+          ),
         ),
       ),
     );

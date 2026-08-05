@@ -4,6 +4,7 @@ import '../models/sfc_edit.dart';
 import '../models/sfc_exec.dart';
 import '../models/sfc_region.dart';
 import '../models/sfc_layout2.dart';
+import '../ui/delete_feedback.dart';
 import '../ui/responsive.dart';
 import '../widgets/live_tick.dart';
 import '../widgets/tag_autocomplete_field.dart';
@@ -351,6 +352,7 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
             onPressed: () {
               _applyStructure(() => deleteSfcTransition(widget.program, t.id));
               Navigator.pop(context);
+              showDeleteUndoSnackBar(context, 'transition');
             },
             child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
           ),
@@ -562,6 +564,7 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
               setState(() => deleteSfcStepStructured(widget.program, step.id));
               widget.onProgramUpdated();
               Navigator.pop(context);
+              showDeleteUndoSnackBar(context, 'step "${step.name}"');
             },
             child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
           ),
