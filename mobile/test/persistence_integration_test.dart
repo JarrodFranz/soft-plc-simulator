@@ -12,6 +12,7 @@ import 'package:shared_preferences_platform_interface/shared_preferences_platfor
 import 'package:shared_preferences_platform_interface/types.dart';
 import 'package:soft_plc_mobile/data/default_projects.dart';
 import 'package:soft_plc_mobile/data/project_repository.dart';
+import 'package:soft_plc_mobile/data/project_transfer.dart';
 import 'package:soft_plc_mobile/screens/workspace_shell.dart';
 import 'package:soft_plc_mobile/widgets/tag_inspector_dock.dart';
 import 'support/responsive_test_utils.dart';
@@ -234,6 +235,49 @@ void main() {
     expect(ids.contains(missing.id), isTrue);
     expect(ids.length, all.length);
   });
+
+  testWidgets(
+    'QA bug 5: re-importing an exported .splc.json file yields two projects with '
+    'distinct ids and distinct names (no silent overwrite/collision)',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final repo = ProjectRepository(prefs);
+
+      await setSurface(tester, desktopSize);
+      await tester.pumpWidget(_app(repo));
+      await tester.pumpAndSettle();
+
+      final state = tester.state<WorkspaceShellState>(find.byType(WorkspaceShell));
+      final source = state.debugActiveProject;
+      final exported = ProjectTransfer.encodeProject(source);
+
+      // Mirror `_importProject`'s real flow exactly: decode -> reassign the
+      // id if it collides with an already-known project -> apply. Doing
+      // this twice from the SAME exported text is exactly the reported
+      // repro (export, then import the same file twice/re-import it).
+      Future<void> importOnce() async {
+        var imported = ProjectTransfer.decodeProject(exported);
+        imported = ProjectTransfer.reassignIdIfColliding(
+            imported, state.debugAllProjects.map((p) => p.id).toSet());
+        await state.debugImportProject(imported);
+        await tester.pump();
+      }
+
+      await importOnce();
+      await importOnce();
+
+      final matches =
+          state.debugAllProjects.where((p) => p.name.startsWith(source.name)).toList();
+      // The original plus two re-imports.
+      expect(matches, hasLength(3));
+      expect(matches.map((p) => p.id).toSet().length, 3,
+          reason: 're-importing must never reuse/collide an existing project id');
+      expect(matches.map((p) => p.name).toSet().length, 3,
+          reason: 're-importing the same file twice must never leave two projects '
+              'with the same display name');
+    },
+  );
 
   testWidgets(
     'shows a visible "not saved" indicator (no overflow) when persistence is genuinely unavailable',

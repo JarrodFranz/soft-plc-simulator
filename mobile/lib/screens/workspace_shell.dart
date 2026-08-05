@@ -1520,8 +1520,18 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _bacnetHost.stop();
     final repo = _repo;
     if (repo != null) {
+      // `saveProject` is the shared name-dedup seam (see
+      // `ProjectRepository.uniqueProjectName`) — it mutates `imported.name`
+      // in place when it collides with an already-stored project's name.
       await repo.saveProject(imported);
       await repo.setActiveProjectId(imported.id);
+    } else {
+      // Persistence is genuinely unavailable this session — `saveProject`
+      // (the usual dedup seam) never runs, so dedupe directly against the
+      // in-memory catalog instead. Every add-project path must stay
+      // collision-free regardless of whether storage is available.
+      imported.name = ProjectRepository.uniqueProjectName(
+          _allProjects.map((p) => p.name), imported.name);
     }
     // Import into the in-memory session either way (also covers the
     // non-persistent fallback where `_repo` is null).
