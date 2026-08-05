@@ -713,10 +713,19 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   }
 
   /// Reset all per-run-session runtime state when the active project is
-  /// replaced (switch / undo-redo / create / duplicate / delete / reset /
-  /// import): scheduler, watchdog fault, scan-time stats, and timers. A
-  /// replaced project must never inherit another project's fault or telemetry.
-  void _beginProjectSession() {
+  /// replaced (switch / create / duplicate / delete / reset / import), or
+  /// when an undo/redo restore lands on a genuinely *different* project id:
+  /// scheduler, watchdog fault, scan-time stats, and timers. A replaced
+  /// project must never inherit another project's fault or telemetry.
+  ///
+  /// [preserveScanCount] is set by `_applySnapshot` when the restored
+  /// snapshot is for the *same* project (i.e. an ordinary undo/redo of an
+  /// edit, not a project switch/reset). Editing a project's logic shouldn't
+  /// reset its runtime telemetry — the scan loop never actually stopped —
+  /// so `_sessionScans`/`_lastScanMs`/`_maxScanMs`/`_minScanMs` are left
+  /// untouched in that case. Every other call site restores a genuinely new
+  /// project and always wants the reset (the default).
+  void _beginProjectSession({bool preserveScanCount = false}) {
     _scan.resetSession();
     _logger.log(kLogSourceSim, LogLevel.info,
         'Sim engine state reset (new project session: "${_activeProject.name}")');
@@ -725,10 +734,12 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     _faulted = false;
     _faultTaskName = '';
     _faultCode = 0;
-    _sessionScans = 0;
-    _lastScanMs = 0;
-    _maxScanMs = 0;
-    _minScanMs = 0;
+    if (!preserveScanCount) {
+      _sessionScans = 0;
+      _lastScanMs = 0;
+      _maxScanMs = 0;
+      _minScanMs = 0;
+    }
     _uptime
       ..reset()
       ..start();
@@ -737,14 +748,19 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       ..start();
   }
 
-  /// (Re)starts a run session: resets the scheduler/engine runtimes and the
-  /// per-session scan-time stats, and (re)starts the uptime/free-run clocks.
-  /// Called on boot and on every stopped -> running transition.
+  /// (Re)starts a run session: resets the scheduler/engine runtime and
+  /// (re)starts the uptime/free-run clocks. Called on boot and on every
+  /// stopped -> running transition (the run/pause toolbar toggle).
+  ///
+  /// Deliberately does NOT reset `_sessionScans`/`_lastScanMs`/`_maxScanMs`/
+  /// `_minScanMs`: a pause is not a PLC mode change or a new project session
+  /// — the scan loop merely stopped ticking for a while — so `System.
+  /// ScanCount` must keep counting across a pause -> resume within the same
+  /// project. At boot these fields already hold their initial zero values,
+  /// so leaving them alone here is a no-op for that call site.
   void _startRunSession() {
     _scan.resetSession();
     _logger.log(kLogSourceScan, LogLevel.info, 'Scan engine started');
-    _sessionScans = 0;
-    _lastScanMs = _maxScanMs = _minScanMs = 0;
     _uptime
       ..reset()
       ..start();
@@ -1030,20 +1046,28 @@ class WorkspaceShellState extends State<WorkspaceShell> {
 
   /// Restores [json] (a `PlcProject.toJson()` snapshot) as the active
   /// project: swaps it into `_allProjects` (by id) and `_activeProject`,
-  /// bumps `_editorRevision` so the center editor rebuilds fresh, clears all
-  /// runtimes (their internal state no longer matches the restored
-  /// project), and re-validates the active view. Schedules a debounced
-  /// persist afterward; that autosave must NOT capture history — a restore
-  /// is not a user edit, and by the time it runs the live values have
+  /// bumps `_editorRevision` so the center editor rebuilds fresh, clears
+  /// scheduler/fault runtimes (their internal state no longer matches the
+  /// restored project), and re-validates the active view. Schedules a
+  /// debounced persist afterward; that autosave must NOT capture history — a
+  /// restore is not a user edit, and by the time it runs the live values have
   /// already drifted off the restored baseline, so capturing would push a
   /// drift-only entry and wipe the redo stack (hence
   /// `_pendingHistoryCapture = false` below).
+  ///
+  /// A genuine undo/redo always restores the *same* project (history is
+  /// reset on every project switch/CRUD op, so the stack only ever holds
+  /// snapshots of the current active project) — so `Scan Count` must keep
+  /// counting through it, same as a pause -> resume. `preserveScanCount` is
+  /// still computed from an explicit id comparison (rather than assumed)
+  /// so this stays correct if that invariant ever changes.
   void _applySnapshot(String json) {
     final proj = PlcProject.fromJson(jsonDecode(json) as Map<String, dynamic>);
     // The stored snapshot has the System tag's value neutralized (see
     // `_snapshot`) — restore it to well-formed defaults; the running scan
     // loop repopulates the live status fields on the next tick.
     ensureSystemTag(proj);
+    final samePrj = proj.id == _activeProject.id;
     setState(() {
       final i = _allProjects.indexWhere((p) => p.id == proj.id);
       if (i != -1) {
@@ -1052,7 +1076,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _activeProject = proj;
       _resyncHistorian();
       _editorRevision++;
-      _beginProjectSession();
+      _beginProjectSession(preserveScanCount: samePrj);
       _ensureValidView();
     });
     _pendingHistoryCapture = false;
