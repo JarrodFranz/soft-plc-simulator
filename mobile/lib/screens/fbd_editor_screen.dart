@@ -1526,7 +1526,18 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
 
     Widget dotWidget = touchable(dot, onTap: onTap);
 
-    // Desktop: also support drag-from-output to input, alongside tap-tap.
+    // Wiring has two equivalent interactions, both landing in the same
+    // arm/complete state machine (`_onOutputTap` / `_onInputTap` /
+    // `_completeWire`):
+    //
+    //   * TAP-TAP, on every platform and width — tap an output dot to arm it
+    //     (it turns white with an orange ring), then tap an input dot to
+    //     complete the wire. Tapping the armed output again, or the canvas
+    //     background, cancels.
+    //   * DRAG-AND-DROP, added below on expanded widths only — press an output
+    //     dot and drop it on an input dot. Deliberately absent on touch widths,
+    //     where an immediate-drag recogniser on a 44px pin target would fight
+    //     canvas panning.
     if (context.isExpanded) {
       if (isInput) {
         dotWidget = DragTarget<Map<String, String>>(
@@ -1549,6 +1560,10 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
             _armedBlockId = block.id;
             _armedPin = pin;
           }),
+          // A drag dropped on nothing must leave no residue. Without this the
+          // pin stayed armed from `onDragStarted`, so the NEXT unrelated tap on
+          // any input pin silently completed a wire the user never drew.
+          onDraggableCanceled: (_, __) => _cancelArm(),
           child: touchable(dot, onTap: onTap),
         );
       }
