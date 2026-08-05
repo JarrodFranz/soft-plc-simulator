@@ -222,11 +222,14 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
                   ),
                   const SizedBox(width: 4),
                   Expanded(
-                    child: Text(
-                      step.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+                    child: Tooltip(
+                      message: step.name,
+                      child: Text(
+                        step.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+                      ),
                     ),
                   ),
                   const Icon(Icons.edit, size: 11, color: Colors.white38),
@@ -256,14 +259,17 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
               ],
               const SizedBox(height: 3),
               Expanded(
-                child: Text(
-                  step.actionSt.isEmpty ? '(no action)' : step.actionSt,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 9,
-                    color: step.actionSt.isEmpty ? Colors.white38 : Colors.cyanAccent,
+                child: Tooltip(
+                  message: step.actionSt.isEmpty ? '(no action)' : step.actionSt,
+                  child: Text(
+                    step.actionSt.isEmpty ? '(no action)' : step.actionSt,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 9,
+                      color: step.actionSt.isEmpty ? Colors.white38 : Colors.cyanAccent,
+                    ),
                   ),
                 ),
               ),
@@ -383,11 +389,14 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
         for (final s in steps)
           DropdownMenuItem(
             value: s.id,
-            child: Text(
-              s.name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12),
+            child: Tooltip(
+              message: s.name,
+              child: Text(
+                s.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12),
+              ),
             ),
           ),
       ],
@@ -418,11 +427,14 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
           const Icon(Icons.replay, size: 14, color: Colors.amberAccent),
           const SizedBox(width: 6),
           Flexible(
-            child: Text(
-              'GOTO $targetName',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.amberAccent, fontSize: 11, fontFamily: 'monospace'),
+            child: Tooltip(
+              message: 'GOTO $targetName',
+              child: Text(
+                'GOTO $targetName',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.amberAccent, fontSize: 11, fontFamily: 'monospace'),
+              ),
             ),
           ),
         ],
