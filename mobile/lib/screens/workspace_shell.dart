@@ -1247,6 +1247,14 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   Future<void> _createNewProject() async {
     final repo = _repo;
     if (repo == null) return;
+    // Flush any pending edit on the project we're leaving BEFORE anything
+    // else — mirrors `_duplicateActiveProject`/`_switchActiveProject`/
+    // `_applyImportedProject`. Without this, an edit still sitting inside
+    // the 800ms autosave debounce when `_activeProject` gets swapped to the
+    // new blank project below is never written to disk: the pending
+    // `_autosaveTimer`, if it ever fires, would by then save the NEW (blank)
+    // project instead of the one the edit was actually made in.
+    _flushPendingAutosave();
     final name = await _promptForName(
       context,
       title: 'New Project',
@@ -3304,10 +3312,30 @@ class WorkspaceShellState extends State<WorkspaceShell> {
             // initState, so only clear the handle if it's still this one.
             if (identical(_stEditor, s)) _stEditor = null;
           },
-          onSaveProgram: (updated, {bool notifyHost = true}) {
+          onSaveProgram: (updated, {bool notifyHost = true, String? previousName}) {
             final idx = proj.programs.indexWhere((p) => p.name == updated.name);
             if (idx != -1) {
               proj.programs[idx] = updated;
+            }
+            final isActiveProject = identical(proj, _activeProject);
+            // A flush that just applied a header rename leaves `_activeViewId`
+            // pointing at the OLD name (`'PROGRAM:<previousName>'`), which no
+            // longer resolves to anything in `proj.programs` —
+            // `_buildCenterWorkspace`'s `orElse: programs.first` fallback
+            // would then silently swap the centre pane to an arbitrary
+            // (possibly different-language) program on the very next
+            // rebuild. Rewrite it to track the rename. Guarded on
+            // `isActiveProject`: `proj` may no longer be the active project
+            // by the time this fires (see the comment above), in which case
+            // `_activeViewId` belongs to whatever project IS active and must
+            // not be touched. No `setState` is needed here — the value just
+            // needs to be correct before the next rebuild, which either
+            // `_markDirtyAndAutosave` below or some later `setState` provides.
+            if (isActiveProject &&
+                previousName != null &&
+                previousName != updated.name &&
+                _activeViewId == 'PROGRAM:$previousName') {
+              _activeViewId = 'PROGRAM:${updated.name}';
             }
             // `notifyHost: false` is the editor's dispose-time call: apply
             // the model write, but never `setState` — the widget tree is
@@ -3315,7 +3343,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
             // active project mark the CURRENT one dirty: that's what used to
             // re-arm `_pendingHistoryCapture` immediately after an undo and
             // wipe the redo stack on the next autosave.
-            if (!notifyHost || !mounted || !identical(proj, _activeProject)) return;
+            if (!notifyHost || !mounted || !isActiveProject) return;
             _markDirtyAndAutosave();
           },
         );

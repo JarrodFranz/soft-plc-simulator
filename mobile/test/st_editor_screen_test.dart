@@ -66,7 +66,7 @@ void main() {
   /// Applies a received `PlcProgram` back into `project.programs` the same
   /// way `workspace_shell.dart`'s real `onSaveProgram` callback does.
   StProgramSaveCallback applyingSaver(PlcProject project, List<PlcProgram> received) {
-    return (updated, {bool notifyHost = true}) {
+    return (updated, {bool notifyHost = true, String? previousName}) {
       received.add(updated);
       final idx = project.programs.indexWhere((p) => p.name == updated.name);
       if (idx != -1) {

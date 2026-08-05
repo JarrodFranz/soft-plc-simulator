@@ -14,7 +14,20 @@ import '../ui/responsive.dart';
 /// tree-lock window where that throws. The editor re-issues the same program
 /// with `notifyHost: true` from a post-frame callback so the host still gets
 /// its dirty/autosave notification, one frame later and safely.
-typedef StProgramSaveCallback = void Function(PlcProgram program, {bool notifyHost});
+///
+/// [previousName] is the program's name immediately before this call (null
+/// when there was no program in the model yet to rename). It is only
+/// informative when it differs from `program.name` — i.e. a flush just
+/// applied a header rename. The host needs it because [program] is mutated
+/// IN PLACE (see `_persistToModel`), so by the time this callback runs,
+/// looking the program up by its old name is no longer possible; without
+/// [previousName] the host has no way to notice that whatever view id it was
+/// tracking under the old name (e.g. `'PROGRAM:<old name>'`) just went stale.
+typedef StProgramSaveCallback = void Function(
+  PlcProgram program, {
+  bool notifyHost,
+  String? previousName,
+});
 
 class StEditorScreen extends StatefulWidget {
   final PlcProject currentProject;
@@ -274,13 +287,18 @@ END_FOR;''',
     final typedName = _programNameController.text.trim();
     final baseline = _selectedProgram;
     if (baseline != null) {
+      // Captured BEFORE any rename below — `baseline` is mutated in place
+      // (see the class doc comment on `_persistToModel`), so this is the
+      // host's only chance to learn what the program was called a moment
+      // ago (see `StProgramSaveCallback`'s doc comment).
+      final previousName = baseline.name;
       if (applyName && typedName.isNotEmpty) {
         baseline.name = typedName;
         _pendingNameEdit = false;
       }
       baseline.description = _descriptionController.text;
       baseline.stSource = _codeController.text;
-      widget.onSaveProgram(baseline, notifyHost: notifyHost);
+      widget.onSaveProgram(baseline, notifyHost: notifyHost, previousName: previousName);
       return baseline;
     }
     // No program selected yet (a template was loaded into an empty project):
@@ -293,7 +311,7 @@ END_FOR;''',
     );
     if (applyName) _pendingNameEdit = false;
     _selectedProgram = prog;
-    widget.onSaveProgram(prog, notifyHost: notifyHost);
+    widget.onSaveProgram(prog, notifyHost: notifyHost, previousName: null);
     return prog;
   }
 
