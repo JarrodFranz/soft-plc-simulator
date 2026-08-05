@@ -1498,8 +1498,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         fileNameOverrides: [fileName],
         subject: fileName,
       );
-      _logger.log(kLogSourceProject, LogLevel.info,
-          'Exported project "${_activeProject.name}" as $fileName');
+      _onExportSucceeded(fileName, messenger);
     } catch (e) {
       _logger.log(
         kLogSourceProject,
@@ -1513,6 +1512,30 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       );
     }
   }
+
+  /// Shared success tail for a project export: logs it and shows the same
+  /// style/duration completion snackbar every import path already ends with
+  /// (`Imported "<name>"`) — export previously gave no in-app feedback at
+  /// all, leaving only the OS's native share/download indicator as a signal
+  /// that anything happened. Split out of [_exportActiveProject] so a test
+  /// can exercise it directly via [debugExportSucceeded] without driving the
+  /// real plugin-touching share sheet (there is no reliable way to fake a
+  /// successful `Share.shareXFiles` call from a widget test — see
+  /// [debugImportProject]'s doc comment for the same constraint on import).
+  void _onExportSucceeded(String fileName, ScaffoldMessengerState messenger) {
+    _logger.log(kLogSourceProject, LogLevel.info,
+        'Exported project "${_activeProject.name}" as $fileName');
+    if (!mounted) return;
+    messenger.showSnackBar(SnackBar(content: Text('Exported "${_activeProject.name}"')));
+  }
+
+  /// Test-only hook: drives the same success feedback (log + snackbar)
+  /// `_exportActiveProject` shows once `Share.shareXFiles` resolves, without
+  /// actually invoking the real plugin. See [_onExportSucceeded]'s doc
+  /// comment for why the plugin call itself can't be exercised here.
+  @visibleForTesting
+  void debugExportSucceeded(String fileName) =>
+      _onExportSucceeded(fileName, ScaffoldMessenger.of(context));
 
   Future<void> _importProject() async {
     final messenger = ScaffoldMessenger.of(context);
