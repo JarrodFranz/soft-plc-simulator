@@ -6,6 +6,7 @@ import 'package:soft_plc_mobile/models/mqtt_map.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/protocol_settings.dart';
 import 'package:soft_plc_mobile/screens/gateway_screen.dart';
+import 'package:soft_plc_mobile/ui/delete_feedback.dart';
 import 'package:soft_plc_mobile/services/bacnet_host.dart';
 import 'package:soft_plc_mobile/services/dnp3_host.dart';
 import 'package:soft_plc_mobile/services/enip_host.dart';
@@ -341,12 +342,14 @@ void main() {
     // 'OPC UA' matches both the (always-present) tab label and the card's
     // own title — scope to the card (inside the TabBarView body) to check
     // the card specifically, not just the tab bar.
-    expect(find.descendant(of: find.byType(TabBarView), matching: find.text('OPC UA')), findsOneWidget);
+    expect(find.descendant(of: find.byType(TabBarView), matching: find.text('OPC UA')),
+        findsOneWidget);
     expect(find.byKey(const Key('opcua_enable_switch')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('OPC UA card starts disabled by default with config hidden and 0 exposed', (tester) async {
+  testWidgets('OPC UA card starts disabled by default with config hidden and 0 exposed',
+      (tester) async {
     final project = _project();
     final host = _CountingOpcUaHost();
     addTearDown(host.dispose);
@@ -362,7 +365,8 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('toggling the OPC UA switch ON reveals namespace, node map, and hosting controls', (tester) async {
+  testWidgets('toggling the OPC UA switch ON reveals namespace, node map, and hosting controls',
+      (tester) async {
     final project = _project();
     final host = _CountingOpcUaHost();
     addTearDown(host.dispose);
@@ -431,7 +435,8 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('hosting unsupported (web): Start hosting disabled + native-only note shown', (tester) async {
+  testWidgets('hosting unsupported (web): Start hosting disabled + native-only note shown',
+      (tester) async {
     final project = _project();
     final host = _CountingOpcUaHost();
     addTearDown(host.dispose);
@@ -546,7 +551,9 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('reusing the State across a project switch refreshes the port field (didUpdateWidget)', (tester) async {
+  testWidgets(
+      'reusing the State across a project switch refreshes the port field (didUpdateWidget)',
+      (tester) async {
     final projectA = _project(id: 'proj_a', port: 4840);
     final host = _CountingOpcUaHost();
     addTearDown(host.dispose);
@@ -622,7 +629,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('no overflow at 320 width while running with the counts line shown', (tester) async {
+    testWidgets('no overflow at 320 width while running with the counts line shown',
+        (tester) async {
       final project = _project();
       final host = _FakeCountsOpcUaHost();
       addTearDown(host.dispose);
@@ -638,7 +646,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('no overflow at 1400 width while running with the counts line shown', (tester) async {
+    testWidgets('no overflow at 1400 width while running with the counts line shown',
+        (tester) async {
       final project = _project();
       final host = _FakeCountsOpcUaHost();
       addTearDown(host.dispose);
@@ -739,7 +748,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('adding, editing, and deleting a credential row edits config.credentials', (tester) async {
+    testWidgets('adding, editing, and deleting a credential row edits config.credentials',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -781,7 +791,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('app-cert thumbprint shows a placeholder until an identity is loaded, '
+    testWidgets(
+        'app-cert thumbprint shows a placeholder until an identity is loaded, '
         'and the Regenerate button calls host.regenerateCertificate()', (tester) async {
       final project = _project();
       final host = _FakeCertOpcUaHost();
@@ -805,7 +816,9 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('no overflow at 320 width with security section, credentials, and cert section shown', (tester) async {
+    testWidgets(
+        'no overflow at 320 width with security section, credentials, and cert section shown',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -823,7 +836,9 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('no overflow at 1400 width with security section, credentials, and cert section shown', (tester) async {
+    testWidgets(
+        'no overflow at 1400 width with security section, credentials, and cert section shown',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -863,7 +878,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('toggling the Modbus switch ON reveals port, hosting controls, and map editor', (tester) async {
+    testWidgets('toggling the Modbus switch ON reveals port, hosting controls, and map editor',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -888,7 +904,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('renders the word-swap switch and unit-id field with their defaults', (tester) async {
+    testWidgets('renders the word-swap switch and unit-id field with their defaults',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -903,11 +920,13 @@ void main() {
       await tester.pump();
 
       expect(find.byKey(const Key('modbus_word_swap_switch')), findsOneWidget);
-      final wordSwapSwitch = tester.widget<Switch>(find.byKey(const Key('modbus_word_swap_switch')));
+      final wordSwapSwitch =
+          tester.widget<Switch>(find.byKey(const Key('modbus_word_swap_switch')));
       expect(wordSwapSwitch.value, false);
 
       expect(find.byKey(const Key('modbus_byte_swap_switch')), findsOneWidget);
-      final byteSwapSwitch = tester.widget<Switch>(find.byKey(const Key('modbus_byte_swap_switch')));
+      final byteSwapSwitch =
+          tester.widget<Switch>(find.byKey(const Key('modbus_byte_swap_switch')));
       expect(byteSwapSwitch.value, false);
 
       expect(find.byKey(const Key('modbus_unit_id_field')), findsOneWidget);
@@ -915,7 +934,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('toggling the word-swap switch updates ModbusProtocolConfig.wordSwap', (tester) async {
+    testWidgets('toggling the word-swap switch updates ModbusProtocolConfig.wordSwap',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -934,12 +954,14 @@ void main() {
       await tester.pump();
 
       expect(project.protocols?.modbus?.wordSwap, true);
-      final wordSwapSwitch = tester.widget<Switch>(find.byKey(const Key('modbus_word_swap_switch')));
+      final wordSwapSwitch =
+          tester.widget<Switch>(find.byKey(const Key('modbus_word_swap_switch')));
       expect(wordSwapSwitch.value, true);
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('toggling the byte-swap switch updates ModbusProtocolConfig.byteSwap', (tester) async {
+    testWidgets('toggling the byte-swap switch updates ModbusProtocolConfig.byteSwap',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -958,7 +980,8 @@ void main() {
       await tester.pump();
 
       expect(project.protocols?.modbus?.byteSwap, true);
-      final byteSwapSwitch = tester.widget<Switch>(find.byKey(const Key('modbus_byte_swap_switch')));
+      final byteSwapSwitch =
+          tester.widget<Switch>(find.byKey(const Key('modbus_byte_swap_switch')));
       expect(byteSwapSwitch.value, true);
       expect(tester.takeException(), isNull);
     });
@@ -984,7 +1007,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('an out-of-range unit id (>255) is ignored, keeping the last-valid value', (tester) async {
+    testWidgets('an out-of-range unit id (>255) is ignored, keeping the last-valid value',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -1005,7 +1029,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('word-swap switch and unit-id field are locked while hosting is running', (tester) async {
+    testWidgets('word-swap switch and unit-id field are locked while hosting is running',
+        (tester) async {
       final project = _project();
       project.protocols = ProtocolSettings.defaults(project);
       project.protocols!.modbus!.enabled = true;
@@ -1018,10 +1043,12 @@ void main() {
       await tester.pumpAndSettle();
       await _selectTab(tester, modbusTabKey);
 
-      final wordSwapSwitch = tester.widget<Switch>(find.byKey(const Key('modbus_word_swap_switch')));
+      final wordSwapSwitch =
+          tester.widget<Switch>(find.byKey(const Key('modbus_word_swap_switch')));
       expect(wordSwapSwitch.onChanged, isNull);
 
-      final byteSwapSwitch = tester.widget<Switch>(find.byKey(const Key('modbus_byte_swap_switch')));
+      final byteSwapSwitch =
+          tester.widget<Switch>(find.byKey(const Key('modbus_byte_swap_switch')));
       expect(byteSwapSwitch.onChanged, isNull);
 
       final unitIdField = tester.widget<TextField>(find.byKey(const Key('modbus_unit_id_field')));
@@ -1047,10 +1074,12 @@ void main() {
       final dropdownFinder = find.byKey(const Key('modbus_framing_dropdown'));
       final dropdown = tester.widget<DropdownButtonFormField<String>>(dropdownFinder);
       expect(dropdown.initialValue, 'tcp');
-      expect(find.descendant(of: dropdownFinder, matching: find.text('Modbus TCP')), findsOneWidget);
+      expect(
+          find.descendant(of: dropdownFinder, matching: find.text('Modbus TCP')), findsOneWidget);
     });
 
-    testWidgets('a project already set to rtuOverTcp displays RTU over TCP, not coerced to Modbus TCP',
+    testWidgets(
+        'a project already set to rtuOverTcp displays RTU over TCP, not coerced to Modbus TCP',
         (tester) async {
       final project = _project();
       project.protocols = ProtocolSettings.defaults(project);
@@ -1072,12 +1101,14 @@ void main() {
       // appears as the card's own title text elsewhere on screen, so a
       // whole-tree search for it would be a false positive either way.
       final dropdownFinder = find.byKey(const Key('modbus_framing_dropdown'));
-      expect(find.descendant(of: dropdownFinder, matching: find.text('RTU over TCP')), findsOneWidget);
+      expect(
+          find.descendant(of: dropdownFinder, matching: find.text('RTU over TCP')), findsOneWidget);
       // Guards the coercion-class bug: must NOT silently display as tcp.
       expect(find.descendant(of: dropdownFinder, matching: find.text('Modbus TCP')), findsNothing);
     });
 
-    testWidgets('changing the Framing dropdown updates ModbusProtocolConfig.framing', (tester) async {
+    testWidgets('changing the Framing dropdown updates ModbusProtocolConfig.framing',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -1161,7 +1192,8 @@ void main() {
       await tester.pumpWidget(_app(project, host, modbusHost: modbusHost));
       await tester.pumpAndSettle();
       await _selectTab(tester, modbusTabKey);
-      expect(find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
+      expect(
+          find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
           findsOneWidget);
 
       // The Framing dropdown + caption (Task 2) pushed the Regenerate button
@@ -1173,12 +1205,14 @@ void main() {
       await tester.pump();
 
       expect(project.protocols?.modbus?.map.entries, isNotEmpty);
-      expect(find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
+      expect(
+          find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
           findsNothing);
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('Start hosting calls the injected Modbus host and shows Running + endpoint', (tester) async {
+    testWidgets('Start hosting calls the injected Modbus host and shows Running + endpoint',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -1207,7 +1241,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('Stop hosting calls the injected Modbus host and returns to Stopped', (tester) async {
+    testWidgets('Stop hosting calls the injected Modbus host and returns to Stopped',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -1238,7 +1273,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('hosting unsupported (web): Modbus Start hosting disabled + native-only note shown', (tester) async {
+    testWidgets('hosting unsupported (web): Modbus Start hosting disabled + native-only note shown',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -1260,7 +1296,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('hosting supported (native): Modbus Start hosting enabled + no note', (tester) async {
+    testWidgets('hosting supported (native): Modbus Start hosting enabled + no note',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -1280,7 +1317,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('no overflow at 320 width with the Modbus and OPC UA cards expanded (each on its own tab)',
+    testWidgets(
+        'no overflow at 320 width with the Modbus and OPC UA cards expanded (each on its own tab)',
         (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
@@ -1306,7 +1344,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('no overflow at 1400 width with the Modbus and OPC UA cards expanded (each on its own tab)',
+    testWidgets(
+        'no overflow at 1400 width with the Modbus and OPC UA cards expanded (each on its own tab)',
         (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
@@ -1426,8 +1465,8 @@ void main() {
         find.ancestor(of: find.text('Base topic'), matching: find.byType(TextFormField)).first,
       );
       expect(baseTopicField.enabled, isTrue);
-      final formatDropdownBefore =
-          tester.widget<DropdownButtonFormField<String>>(find.byKey(const Key('mqtt_format_dropdown')));
+      final formatDropdownBefore = tester
+          .widget<DropdownButtonFormField<String>>(find.byKey(const Key('mqtt_format_dropdown')));
       expect(formatDropdownBefore.onChanged, isNotNull);
       final qosDropdownBefore =
           tester.widget<DropdownButtonFormField<int>>(find.byKey(const Key('mqtt_qos_dropdown')));
@@ -1439,14 +1478,15 @@ void main() {
       mqttHost.setConnected();
       await tester.pump();
 
-      final formatDropdown =
-          tester.widget<DropdownButtonFormField<String>>(find.byKey(const Key('mqtt_format_dropdown')));
+      final formatDropdown = tester
+          .widget<DropdownButtonFormField<String>>(find.byKey(const Key('mqtt_format_dropdown')));
       expect(formatDropdown.onChanged, isNull, reason: 'format must be locked while connected');
 
       final baseTopicFieldConnected = tester.widget<TextFormField>(
         find.ancestor(of: find.text('Base topic'), matching: find.byType(TextFormField)).first,
       );
-      expect(baseTopicFieldConnected.enabled, isFalse, reason: 'base topic must be locked while connected');
+      expect(baseTopicFieldConnected.enabled, isFalse,
+          reason: 'base topic must be locked while connected');
 
       final qosDropdown =
           tester.widget<DropdownButtonFormField<int>>(find.byKey(const Key('mqtt_qos_dropdown')));
@@ -1467,7 +1507,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('group/edge-node fields are disabled while connected (sparkplug format)', (tester) async {
+    testWidgets('group/edge-node fields are disabled while connected (sparkplug format)',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -1537,7 +1578,8 @@ void main() {
       await tester.pumpWidget(_app(project, host, mqttHost: mqttHost));
       await tester.pumpAndSettle();
       await _selectTab(tester, mqttTabKey);
-      expect(find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
+      expect(
+          find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
           findsOneWidget);
 
       final regenerateButton = find.widgetWithText(TextButton, 'Regenerate');
@@ -1550,12 +1592,14 @@ void main() {
       await tester.pump();
 
       expect(project.protocols?.mqtt?.map.entries, isNotEmpty);
-      expect(find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
+      expect(
+          find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
           findsNothing);
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('hosting unsupported (web): Connect disabled + native-only note shown', (tester) async {
+    testWidgets('hosting unsupported (web): Connect disabled + native-only note shown',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -1576,7 +1620,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('no overflow at 320 width with each of the four cards expanded on its own tab', (tester) async {
+    testWidgets('no overflow at 320 width with each of the four cards expanded on its own tab',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -1588,7 +1633,8 @@ void main() {
       addTearDown(dnpHost.dispose);
       await setSurface(tester, smallPhoneSize);
 
-      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost));
+      await tester.pumpWidget(
+          _app(project, host, modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost));
       await tester.pumpAndSettle();
       // Each protocol's card now lives in its own tab (never simultaneously
       // on-screen with another), so expanding "all four" means visiting each
@@ -1615,7 +1661,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('no overflow at 1400 width with each of the four cards expanded on its own tab', (tester) async {
+    testWidgets('no overflow at 1400 width with each of the four cards expanded on its own tab',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -1627,7 +1674,8 @@ void main() {
       addTearDown(dnpHost.dispose);
       await setSurface(tester, desktopSize);
 
-      await tester.pumpWidget(_app(project, host, modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost));
+      await tester.pumpWidget(
+          _app(project, host, modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost));
       await tester.pumpAndSettle();
       await _selectTab(tester, mqttTabKey);
       await tester.tap(find.byKey(const Key('mqtt_enable_switch')));
@@ -1672,7 +1720,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('Rebirth button is disabled when connected with JSON format (default)', (tester) async {
+    testWidgets('Rebirth button is disabled when connected with JSON format (default)',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -1689,11 +1738,13 @@ void main() {
       await tester.pump();
 
       final button = tester.widget<OutlinedButton>(find.byKey(const Key('mqtt_rebirth_button')));
-      expect(button.onPressed, isNull, reason: 'Rebirth is meaningless for JSON format (no rebirth concept)');
+      expect(button.onPressed, isNull,
+          reason: 'Rebirth is meaningless for JSON format (no rebirth concept)');
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('Rebirth button is enabled when connected with Sparkplug format, and tapping it calls the host',
+    testWidgets(
+        'Rebirth button is enabled when connected with Sparkplug format, and tapping it calls the host',
         (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
@@ -1731,7 +1782,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('the map editor (Add entry, per-row tag/metric/writable/delete) stays enabled while connected',
+    testWidgets(
+        'the map editor (Add entry, per-row tag/metric/writable/delete) stays enabled while connected',
         (tester) async {
       final project = _project();
       project.protocols = ProtocolSettings.defaults(project);
@@ -1768,7 +1820,8 @@ void main() {
       await tester.ensureVisible(rowSwitch);
       await tester.pumpAndSettle();
       final switchWidget = tester.widget<Switch>(rowSwitch);
-      expect(switchWidget.onChanged, isNotNull, reason: 'per-row writable switch must stay enabled while connected');
+      expect(switchWidget.onChanged, isNotNull,
+          reason: 'per-row writable switch must stay enabled while connected');
 
       // The connected hint nudging the user toward Rebirth should be visible
       // (Sparkplug format + connected).
@@ -1793,7 +1846,8 @@ void main() {
       // 'DNP3' matches both the tab label and the card's own title — scope
       // to the card (inside the TabBarView body) to check the card
       // specifically.
-      expect(find.descendant(of: find.byType(TabBarView), matching: find.text('DNP3')), findsOneWidget);
+      expect(find.descendant(of: find.byType(TabBarView), matching: find.text('DNP3')),
+          findsOneWidget);
       expect(find.byKey(const Key('dnp_enable_switch')), findsOneWidget);
       final sw = tester.widget<Switch>(find.byKey(const Key('dnp_enable_switch')));
       expect(sw.value, false);
@@ -1802,7 +1856,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('toggling the DNP3 switch ON reveals port, addresses, hosting controls, and map editor',
+    testWidgets(
+        'toggling the DNP3 switch ON reveals port, addresses, hosting controls, and map editor',
         (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
@@ -1863,7 +1918,8 @@ void main() {
       await tester.pumpWidget(_app(project, host, dnpHost: dnpHost));
       await tester.pumpAndSettle();
       await _selectTab(tester, dnpTabKey);
-      expect(find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
+      expect(
+          find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
           findsOneWidget);
 
       final regenerateButton = find.widgetWithText(TextButton, 'Regenerate').last;
@@ -1873,12 +1929,14 @@ void main() {
       await tester.pump();
 
       expect(project.protocols?.dnp3?.map.entries, isNotEmpty);
-      expect(find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
+      expect(
+          find.text('No entries yet. Tap Regenerate to build a default map from the project tags.'),
           findsNothing);
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('DNP3 card exposes an event-Class dropdown on input rows, and editing it sets eventClass',
+    testWidgets(
+        'DNP3 card exposes an event-Class dropdown on input rows, and editing it sets eventClass',
         (tester) async {
       final project = _project();
       project.protocols = ProtocolSettings.defaults(project);
@@ -1900,7 +1958,8 @@ void main() {
       // now (all four DNP3 point types support events), each defaulting to
       // Static. Row order follows map.entries order: input row first.
       final dropdownFinder = find.byKey(const Key('dnp_event_class_dropdown'));
-      expect(dropdownFinder, findsNWidgets(2), reason: 'both input and output rows get an event-Class dropdown');
+      expect(dropdownFinder, findsNWidgets(2),
+          reason: 'both input and output rows get an event-Class dropdown');
       expect(inputEntry.eventClass, 0);
       expect(outputEntry.eventClass, 0);
 
@@ -1910,11 +1969,13 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(inputEntry.eventClass, 2);
-      expect(outputEntry.eventClass, 0, reason: 'editing the input row dropdown leaves the output row untouched');
+      expect(outputEntry.eventClass, 0,
+          reason: 'editing the input row dropdown leaves the output row untouched');
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('DNP3 card exposes an event-Class dropdown on output rows too, and editing it sets eventClass',
+    testWidgets(
+        'DNP3 card exposes an event-Class dropdown on output rows too, and editing it sets eventClass',
         (tester) async {
       final project = _project();
       project.protocols = ProtocolSettings.defaults(project);
@@ -1932,7 +1993,8 @@ void main() {
       await _selectTab(tester, dnpTabKey);
 
       final dropdownFinder = find.byKey(const Key('dnp_event_class_dropdown'));
-      expect(dropdownFinder, findsOneWidget, reason: 'the binaryOutput row shows the event-Class dropdown');
+      expect(dropdownFinder, findsOneWidget,
+          reason: 'the binaryOutput row shows the event-Class dropdown');
       expect(outputEntry.eventClass, 0);
 
       await tester.tap(dropdownFinder);
@@ -1944,7 +2006,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('Start hosting calls the injected DNP3 host and shows Running + endpoint', (tester) async {
+    testWidgets('Start hosting calls the injected DNP3 host and shows Running + endpoint',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -2004,7 +2067,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('hosting unsupported (web): DNP3 Start hosting disabled + native-only note shown', (tester) async {
+    testWidgets('hosting unsupported (web): DNP3 Start hosting disabled + native-only note shown',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -2125,8 +2189,15 @@ void main() {
       await tester.pumpAndSettle();
 
       for (final tabKey in const [
-        opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey,
-        s7TabKey, finsTabKey, slmpTabKey, bacnetTabKey,
+        opcuaTabKey,
+        modbusTabKey,
+        mqttTabKey,
+        dnpTabKey,
+        enipTabKey,
+        s7TabKey,
+        finsTabKey,
+        slmpTabKey,
+        bacnetTabKey,
       ]) {
         expect(find.byKey(tabKey), findsOneWidget,
             reason: 'protocol chip $tabKey must be laid out (wrapped) at 320px');
@@ -2160,7 +2231,8 @@ void main() {
       // OPC UA selector chip (keyed opcuaTabKey) to check the tab label
       // specifically. The other four tabs' cards aren't built yet, so their
       // labels are unambiguous.
-      expect(find.descendant(of: find.byKey(opcuaTabKey), matching: find.text('OPC UA')), findsOneWidget);
+      expect(find.descendant(of: find.byKey(opcuaTabKey), matching: find.text('OPC UA')),
+          findsOneWidget);
       expect(find.text('Modbus'), findsOneWidget);
       expect(find.text('MQTT'), findsOneWidget);
       expect(find.text('DNP3'), findsOneWidget);
@@ -2168,7 +2240,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('tapping each tab shows that protocol\'s card and hides the others', (tester) async {
+    testWidgets('tapping each tab shows that protocol\'s card and hides the others',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -2207,7 +2280,8 @@ void main() {
                 reason: 'tab ${tabKeys[selected]} should show its own card');
           } else {
             expect(finder, findsNothing,
-                reason: 'tab ${tabKeys[selected]} should hide ${protocolSwitchKeys[other]}\'s card');
+                reason:
+                    'tab ${tabKeys[selected]} should hide ${protocolSwitchKeys[other]}\'s card');
           }
         }
       }
@@ -2232,7 +2306,17 @@ void main() {
           modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost, enipHost: enipHost));
       await tester.pumpAndSettle();
 
-      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey, s7TabKey, finsTabKey, slmpTabKey, bacnetTabKey]) {
+      for (final tabKey in const [
+        opcuaTabKey,
+        modbusTabKey,
+        mqttTabKey,
+        dnpTabKey,
+        enipTabKey,
+        s7TabKey,
+        finsTabKey,
+        slmpTabKey,
+        bacnetTabKey
+      ]) {
         await _selectTab(tester, tabKey);
         expect(tester.takeException(), isNull);
       }
@@ -2256,7 +2340,17 @@ void main() {
           modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost, enipHost: enipHost));
       await tester.pumpAndSettle();
 
-      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey, s7TabKey, finsTabKey, slmpTabKey, bacnetTabKey]) {
+      for (final tabKey in const [
+        opcuaTabKey,
+        modbusTabKey,
+        mqttTabKey,
+        dnpTabKey,
+        enipTabKey,
+        s7TabKey,
+        finsTabKey,
+        slmpTabKey,
+        bacnetTabKey
+      ]) {
         await _selectTab(tester, tabKey);
         expect(tester.takeException(), isNull);
       }
@@ -2280,7 +2374,17 @@ void main() {
           modbusHost: modbusHost, mqttHost: mqttHost, dnpHost: dnpHost, enipHost: enipHost));
       await tester.pumpAndSettle();
 
-      for (final tabKey in const [opcuaTabKey, modbusTabKey, mqttTabKey, dnpTabKey, enipTabKey, s7TabKey, finsTabKey, slmpTabKey, bacnetTabKey]) {
+      for (final tabKey in const [
+        opcuaTabKey,
+        modbusTabKey,
+        mqttTabKey,
+        dnpTabKey,
+        enipTabKey,
+        s7TabKey,
+        finsTabKey,
+        slmpTabKey,
+        bacnetTabKey
+      ]) {
         await _selectTab(tester, tabKey);
         expect(tester.takeException(), isNull);
       }
@@ -2325,7 +2429,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('Start hosting calls enipHost.start; Stop hosting calls enipHost.stop', (tester) async {
+    testWidgets('Start hosting calls enipHost.start; Stop hosting calls enipHost.stop',
+        (tester) async {
       final project = _project();
       final host = _CountingOpcUaHost();
       addTearDown(host.dispose);
@@ -2361,7 +2466,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('disabling while hosting tears the host down (auto-stop-on-disable)', (tester) async {
+    testWidgets('disabling while hosting tears the host down (auto-stop-on-disable)',
+        (tester) async {
       final project = _project();
       project.protocols = ProtocolSettings.defaults(project);
       project.protocols!.ethernetIp!.enabled = true;
@@ -2434,7 +2540,12 @@ void main() {
       expect(updates, greaterThan(0));
 
       await tester.tap(find.text('Regenerate'));
-      await tester.pump();
+      await tester.pumpAndSettle();
+      // Regenerating over a non-empty map now confirms first (QA batch C) —
+      // it replaces every hand-edited row.
+      expect(find.byKey(kDestructiveReplaceConfirmKey), findsOneWidget);
+      await tester.tap(find.byKey(kDestructiveReplaceConfirmKey));
+      await tester.pumpAndSettle();
       expect(project.protocols!.ethernetIp!.map.entries, isNotEmpty);
 
       final beforeDelete = project.protocols!.ethernetIp!.map.entries.length;
@@ -2525,7 +2636,8 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('a bind failure is surfaced as a labelled error block, not as a card that '
+    testWidgets(
+        'a bind failure is surfaced as a labelled error block, not as a card that '
         'merely failed to turn green', (tester) async {
       final project = _project();
       project.protocols = ProtocolSettings.defaults(project);
@@ -2603,7 +2715,12 @@ void main() {
       expect(updates, greaterThan(0));
 
       await tester.tap(find.text('Regenerate'));
-      await tester.pump();
+      await tester.pumpAndSettle();
+      // Regenerating over a non-empty map now confirms first (QA batch C) —
+      // it replaces every hand-edited row.
+      expect(find.byKey(kDestructiveReplaceConfirmKey), findsOneWidget);
+      await tester.tap(find.byKey(kDestructiveReplaceConfirmKey));
+      await tester.pumpAndSettle();
       expect(project.protocols!.s7!.map.entries, isNotEmpty);
 
       final beforeDelete = project.protocols!.s7!.map.entries.length;
@@ -2747,7 +2864,12 @@ void main() {
       expect(updates, greaterThan(0));
 
       await tester.tap(find.text('Regenerate'));
-      await tester.pump();
+      await tester.pumpAndSettle();
+      // Regenerating over a non-empty map now confirms first (QA batch C) —
+      // it replaces every hand-edited row.
+      expect(find.byKey(kDestructiveReplaceConfirmKey), findsOneWidget);
+      await tester.tap(find.byKey(kDestructiveReplaceConfirmKey));
+      await tester.pumpAndSettle();
       expect(project.protocols!.fins!.map.entries, isNotEmpty);
 
       final beforeDelete = project.protocols!.fins!.map.entries.length;
@@ -2888,7 +3010,12 @@ void main() {
       expect(updates, greaterThan(0));
 
       await tester.tap(find.text('Regenerate'));
-      await tester.pump();
+      await tester.pumpAndSettle();
+      // Regenerating over a non-empty map now confirms first (QA batch C) —
+      // it replaces every hand-edited row.
+      expect(find.byKey(kDestructiveReplaceConfirmKey), findsOneWidget);
+      await tester.tap(find.byKey(kDestructiveReplaceConfirmKey));
+      await tester.pumpAndSettle();
       expect(project.protocols!.slmp!.map.entries, isNotEmpty);
 
       final beforeDelete = project.protocols!.slmp!.map.entries.length;
@@ -3058,7 +3185,12 @@ void main() {
       expect(updates, greaterThan(0));
 
       await tester.tap(find.text('Regenerate'));
-      await tester.pump();
+      await tester.pumpAndSettle();
+      // Regenerating over a non-empty map now confirms first (QA batch C) —
+      // it replaces every hand-edited row.
+      expect(find.byKey(kDestructiveReplaceConfirmKey), findsOneWidget);
+      await tester.tap(find.byKey(kDestructiveReplaceConfirmKey));
+      await tester.pumpAndSettle();
       expect(project.protocols!.bacnet!.map.entries, isNotEmpty);
 
       final beforeDelete = project.protocols!.bacnet!.map.entries.length;

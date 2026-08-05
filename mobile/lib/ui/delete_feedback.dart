@@ -32,6 +32,31 @@
 ///
 /// When adding a new delete affordance, classify it with the question above
 /// and use [showDeleteUndoSnackBar] or a confirmation dialog accordingly.
+///
+/// ---
+///
+/// DESTRUCTIVE *REPLACE* (QA batch C, follow-up to the audit above).
+///
+/// The gateway's nine protocol-map "Regenerate" buttons are not deletes, but
+/// they were the most destructive unannounced action left in the app: one tap,
+/// sitting right beside "Add entry", silently threw away every hand-edited row
+/// and rebuilt the map from the project tags, with no confirmation and no
+/// feedback that anything had happened.
+///
+/// They ARE undoable — `protocols` is part of `PlcProject.toJson()` and the
+/// gateway reports through the shell's project-changed callback — so the policy
+/// above says "no blocking dialog". But a delete button announces its own
+/// destruction and Regenerate does not, and the empty-state prompt literally
+/// tells the user to press it. So the rule is split on whether anything is
+/// actually at risk:
+///
+/// * **Map already has entries** → [confirmDestructiveReplace] first, naming
+///   the count about to go.
+/// * **Map is empty** → straight through; there is nothing to lose, and the
+///   empty-state prompt would look absurd guarded by a dialog.
+///
+/// Either way it finishes with [showUndoSnackBar], reporting what was built and
+/// offering UNDO — the same safety net every delete now has.
 library;
 
 import 'package:flutter/material.dart';
@@ -75,16 +100,28 @@ const Key kDeleteUndoActionKey = Key('delete_undo_action');
 ///
 /// Call this AFTER the delete has been applied and the project-changed
 /// callback has fired.
-void showDeleteUndoSnackBar(BuildContext context, String what) {
+void showDeleteUndoSnackBar(BuildContext context, String what) =>
+    showUndoSnackBar(context, 'Deleted $what');
+
+/// The undoable-action SnackBar behind [showDeleteUndoSnackBar]: [message]
+/// verbatim, with an UNDO action wired to the shell's undo.
+///
+/// Use directly for an undoable action that is destructive but is not a delete
+/// (the gateway's map Regenerate); use [showDeleteUndoSnackBar] for deletes so
+/// the wording stays uniform.
+///
+/// Call this AFTER the change has been applied and the project-changed callback
+/// has fired.
+void showUndoSnackBar(BuildContext context, String message) {
   final scope = UndoScope.of(context);
   final messenger = ScaffoldMessenger.maybeOf(context);
   if (messenger == null) return;
-  // Only ever one delete SnackBar at a time — a stale one still queued would
-  // undo the wrong edit if tapped later.
+  // Only ever one of these at a time — a stale one still queued would undo the
+  // wrong edit if tapped later.
   messenger.hideCurrentSnackBar();
   messenger.showSnackBar(
     SnackBar(
-      content: Text('Deleted $what'),
+      content: Text(message),
       duration: const Duration(seconds: 5),
       action: scope == null
           ? null
@@ -122,6 +159,44 @@ Future<bool> confirmUnrecoverableDelete(
         ),
         ElevatedButton(
           style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+          onPressed: () => Navigator.pop(context, true),
+          child: Text(confirmLabel),
+        ),
+      ],
+    ),
+  );
+  return result ?? false;
+}
+
+/// Key on the confirm button of [confirmDestructiveReplace], for tests.
+const Key kDestructiveReplaceConfirmKey = Key('destructive_replace_confirm');
+
+/// Blocking confirmation for an action that REPLACES existing work wholesale
+/// rather than deleting a thing the user pointed at — see the library doc
+/// comment's "destructive replace" section.
+///
+/// Unlike [confirmUnrecoverableDelete] the copy does not promise irreversibility
+/// (the caller's change is undoable); it states the blast radius and says undo
+/// is available. Returns true only if the user explicitly confirms.
+Future<bool> confirmDestructiveReplace(
+  BuildContext context, {
+  required String title,
+  required String message,
+  String confirmLabel = 'Regenerate',
+}) async {
+  final result = await showAdaptiveWidthDialog<bool>(
+    context,
+    child: AlertDialog(
+      title: Text(title),
+      content: Text(message),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          key: kDestructiveReplaceConfirmKey,
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.orangeAccent),
           onPressed: () => Navigator.pop(context, true),
           child: Text(confirmLabel),
         ),
