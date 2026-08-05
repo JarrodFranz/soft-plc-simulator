@@ -2468,8 +2468,6 @@ class WorkspaceShellState extends State<WorkspaceShell> {
                     ),
                     PopupMenuButton<String>(
                       tooltip: 'Project actions',
-                      icon: const Icon(Icons.more_vert, size: 20, color: Colors.grey),
-                      padding: EdgeInsets.zero,
                       color: const Color(0xFF1E293B),
                       onSelected: (value) {
                         switch (value) {
@@ -2534,6 +2532,18 @@ class WorkspaceShellState extends State<WorkspaceShell> {
                           child: _ProjectMenuEntry(icon: Icons.upload_file, label: 'Import PLC Program (XML)'),
                         ),
                       ],
+                      // A5/#12: using `icon:` routes through IconButton's
+                      // forced-48x48 tap target box wrapped in a Padding of
+                      // EdgeInsets.zero, which on the web measured the
+                      // hit-testable region a few pixels below the painted
+                      // glyph at 390px width. `child:` instead wraps exactly
+                      // this Padding+Icon in the InkWell, at shrink-wrap tap
+                      // target size, so the visible glyph and the hit region
+                      // are the same rect.
+                      child: const Padding(
+                        padding: EdgeInsets.all(8),
+                        child: Icon(Icons.more_vert, size: 20, color: Colors.grey),
+                      ),
                     ),
                   ],
                 ),
