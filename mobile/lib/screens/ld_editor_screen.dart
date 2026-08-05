@@ -918,6 +918,11 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       width: 22,
       height: 22,
       child: GestureDetector(
+        // Opaque: without it the hit test defers to the child, which for a
+        // circle-decorated Container resolves to the painted CIRCLE — the
+        // corners of the declared 22x22 target were dead. Same whole-target
+        // treatment as the element cells (QA bug 4).
+        behavior: HitTestBehavior.opaque,
         onTap: active ? () => _onJunctionDotTap(rung, rungIndex, w) : null,
         child: Container(
           decoration: BoxDecoration(
@@ -963,6 +968,9 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       width: 22,
       height: 22,
       child: GestureDetector(
+        // Opaque for the same reason as the junction dots above: the whole
+        // declared 22x22 target must be tappable, not just the painted circle.
+        behavior: HitTestBehavior.opaque,
         onTap: () => _insertOnWire(rung, w),
         child: Container(
           decoration: BoxDecoration(

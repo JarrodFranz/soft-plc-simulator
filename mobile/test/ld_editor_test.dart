@@ -985,4 +985,71 @@ void main() {
       });
     }
   });
+
+  // QA final-review F9: the junction dots (Branch mode) and the wire-insert
+  // "+" targets are 22x22 `Positioned` hit areas whose GestureDetectors used
+  // the default `HitTestBehavior.deferToChild`. With a circle-decorated
+  // `Container` child that resolves to the painted CIRCLE (via
+  // `Decoration.hitTest`), so the box corners — a good chunk of a
+  // finger-sized target on a phone — were dead. `HitTestBehavior.opaque`
+  // makes the whole declared 22x22 box tappable (same treatment as QA bug 4's
+  // whole-cell hit target). These tests tap the box CORNER, which is inside
+  // the declared target but outside the painted circle.
+  group('Branch/insert targets have full 22x22 hit areas (QA final-review F9)', () {
+    Finder junctionDots() =>
+        find.byWidgetPredicate((w) => w is Icon && (w.icon == Icons.circle || w.icon == Icons.check));
+    Finder insertTargets() =>
+        find.byWidgetPredicate((w) => w is Icon && w.icon == Icons.add && w.size == 14);
+
+    /// The rect of the [GestureDetector] wrapping the [index]th matched icon.
+    Rect targetRect(WidgetTester tester, Finder icons, int index) => tester.getRect(
+          find.ancestor(of: icons.at(index), matching: find.byType(GestureDetector)).first,
+        );
+
+    testWidgets('tapping the CORNER of a junction dot picks it as the branch start', (tester) async {
+      await setSurface(tester, desktopSize);
+      final program = PlcProgram(
+        name: 'TestProgram',
+        language: 'LadderLogic',
+        rungs: [
+          buildRung(index: 0, comment: 'Rung 0', main: [contact('A'), contact('B'), coil('Q0')]),
+        ],
+      );
+      await tester.pumpWidget(_app(program));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Branch'));
+      await tester.pumpAndSettle();
+
+      final rect = targetRect(tester, junctionDots(), 0);
+      // Top-left corner of the declared 22x22 target: outside the painted
+      // circle, so only an opaque hit test catches it.
+      await tester.tapAt(rect.topLeft + const Offset(2, 2));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Tap an end point (tap the start again to cancel)'), findsOneWidget,
+          reason: 'the whole declared junction-dot target must be tappable');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('tapping the CORNER of a wire-insert "+" inserts there', (tester) async {
+      await setSurface(tester, desktopSize);
+      final program = _twoRungProgram();
+      await tester.pumpWidget(_app(program));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Block'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('GT'));
+      await tester.pumpAndSettle();
+
+      final rect = targetRect(tester, insertTargets(), 0);
+      await tester.tapAt(rect.topLeft + const Offset(2, 2));
+      await tester.pumpAndSettle();
+
+      expect(program.rungs[0].nodes.where((n) => n.kind == LdKind.block && n.blockType == 'GT').length, 1,
+          reason: 'the whole declared "+" target must be tappable');
+      expect(tester.takeException(), isNull);
+    });
+  });
 }
