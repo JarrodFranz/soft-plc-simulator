@@ -323,7 +323,7 @@ class _FbEditorScreenState extends State<FbEditorScreen> {
             child: OutlinedButton.icon(
               key: const Key('fb_new_button'),
               icon: const Icon(Icons.add, size: 16),
-              label: const Text('New FB'),
+              label: const Text('New Function Block'),
               onPressed: _showAddFbDialog,
             ),
           ),
@@ -415,11 +415,11 @@ class _FbEditorScreenState extends State<FbEditorScreen> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Text('No function blocks defined yet.', style: TextStyle(color: Colors.grey)),
+                        const Text('No function blocks yet.', style: TextStyle(color: Colors.grey)),
                         const SizedBox(height: 12),
                         OutlinedButton.icon(
                           icon: const Icon(Icons.add),
-                          label: const Text('Create Function Block'),
+                          label: const Text('New Function Block'),
                           onPressed: _showAddFbDialog,
                         ),
                       ],
