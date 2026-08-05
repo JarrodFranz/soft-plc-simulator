@@ -99,6 +99,58 @@ void main() {
     });
   });
 
+  group('Add Tag dialog — Browse Path sync (QA bug 6)', () {
+    testWidgets('typing a Tag Name auto-syncs the path leaf (folder preserved)', (tester) async {
+      final project = _project();
+      await tester.pumpWidget(app(project));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Add Tag'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('add_tag_name_field')), 'My_Tag');
+      await tester.pumpAndSettle();
+
+      final pathField = tester.widget<TextField>(find.byKey(const Key('add_tag_path_field')));
+      expect(pathField.controller!.text, equals('Inputs/My_Tag'));
+
+      await tester.tap(find.text('Add Tag').last);
+      await tester.pumpAndSettle();
+
+      final tag = project.tags.firstWhere((t) => t.name == 'My_Tag');
+      expect(tag.path, equals('Inputs/My_Tag'));
+    });
+
+    testWidgets('manually editing the path stops auto-sync on further name edits', (tester) async {
+      final project = _project();
+      await tester.pumpWidget(app(project));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Add Tag'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(const Key('add_tag_name_field')), 'My_Tag');
+      await tester.pumpAndSettle();
+
+      // The user takes over the path explicitly.
+      await tester.enterText(find.byKey(const Key('add_tag_path_field')), 'Custom/Path_Name');
+      await tester.pumpAndSettle();
+
+      // Further name edits must not clobber the manual path.
+      await tester.enterText(find.byKey(const Key('add_tag_name_field')), 'My_Tag_2');
+      await tester.pumpAndSettle();
+
+      final pathField = tester.widget<TextField>(find.byKey(const Key('add_tag_path_field')));
+      expect(pathField.controller!.text, equals('Custom/Path_Name'));
+
+      await tester.tap(find.text('Add Tag').last);
+      await tester.pumpAndSettle();
+
+      final tag = project.tags.firstWhere((t) => t.name == 'My_Tag_2');
+      expect(tag.path, equals('Custom/Path_Name'));
+    });
+  });
+
   group('Edit Tag Config dialog', () {
     testWidgets('changing default of an existing FLOAT64 tag to 80 saves, name/path unchanged', (tester) async {
       final project = _project();

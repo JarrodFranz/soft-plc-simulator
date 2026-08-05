@@ -402,6 +402,27 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
       builder: (ctx) {
         final nameCtrl = TextEditingController(text: 'New_Tag');
         final pathCtrl = TextEditingController(text: 'Inputs/New_Tag');
+        // While true, the path's leaf segment auto-follows the typed Tag
+        // Name (folder prefix preserved). The moment the user edits the
+        // path field directly, their explicit choice wins and auto-sync
+        // stops — mirrors the Edit Tag dialog's "explicit user edit wins"
+        // convention. `_syncingPath` guards against the auto-sync's own
+        // write to pathCtrl re-triggering its listener as a "manual edit".
+        bool pathManuallyEdited = false;
+        bool syncingPath = false;
+        nameCtrl.addListener(() {
+          if (pathManuallyEdited) return;
+          final current = pathCtrl.text;
+          final slash = current.lastIndexOf('/');
+          final folder = slash >= 0 ? current.substring(0, slash) : '';
+          syncingPath = true;
+          pathCtrl.text = folder.isEmpty ? nameCtrl.text : '$folder/${nameCtrl.text}';
+          syncingPath = false;
+        });
+        pathCtrl.addListener(() {
+          if (syncingPath) return;
+          pathManuallyEdited = true;
+        });
         String dataType = 'BOOL';
         String ioType = 'SimulatedInput';
         final arrayLenCtrl = TextEditingController(text: '0');
@@ -418,10 +439,15 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
               mainAxisSize: MainAxisSize.min,
               children: [
                 TextField(
+                  key: const Key('add_tag_name_field'),
                   controller: nameCtrl,
                   decoration: InputDecoration(labelText: 'Tag Name', errorText: errorText),
                 ),
-                TextField(controller: pathCtrl, decoration: const InputDecoration(labelText: 'Browse Path')),
+                TextField(
+                  key: const Key('add_tag_path_field'),
+                  controller: pathCtrl,
+                  decoration: const InputDecoration(labelText: 'Browse Path'),
+                ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
                   initialValue: dataType,
