@@ -97,6 +97,30 @@ void main() {
     expect((await repo.listProjects()).firstWhere((s) => s.id == id).name, 'Renamed');
   });
 
+  test('renameProject dedupes the new name against the OTHER stored projects', () async {
+    final repo = await freshRepo();
+    await repo.saveProject(makeProject('proj_a', 'Alpha'));
+    await repo.saveProject(makeProject('proj_b', 'Beta'));
+
+    final applied = await repo.renameProject('proj_b', 'Alpha');
+
+    expect(applied, 'Alpha (2)');
+    expect((await repo.loadProject('proj_b'))!.name, 'Alpha (2)');
+    expect((await repo.listProjects()).firstWhere((s) => s.id == 'proj_b').name, 'Alpha (2)');
+    expect((await repo.loadProject('proj_a'))!.name, 'Alpha',
+        reason: 'the colliding project itself must be left alone');
+  });
+
+  test('renameProject does not suffix a project renamed to its own current name', () async {
+    final repo = await freshRepo();
+    await repo.saveProject(makeProject('proj_a', 'Alpha'));
+
+    final applied = await repo.renameProject('proj_a', 'Alpha');
+
+    expect(applied, 'Alpha', reason: 'a project never collides with itself');
+    expect((await repo.loadProject('proj_a'))!.name, 'Alpha');
+  });
+
   test('resetToDefaults clears user projects and re-seeds defaults', () async {
     final repo = await freshRepo();
     await repo.seedDefaultsIfEmpty();

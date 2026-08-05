@@ -1266,10 +1266,13 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       confirmLabel: 'Rename',
     );
     if (name == null) return;
-    await repo.renameProject(_activeProject.id, name);
+    // `renameProject` dedupes against the other stored projects and returns
+    // the name it actually applied — mirror THAT into the in-memory project,
+    // or the session would disagree with what's on disk.
+    final applied = await repo.renameProject(_activeProject.id, name);
     if (!mounted) return;
     setState(() {
-      _activeProject.name = name;
+      _activeProject.name = applied;
       // Rename is a project-level operation (like the other CRUD paths): reset
       // the undo history to the renamed state so a later undo can't revert the
       // rename off a stale pre-rename baseline. The active content/view is
@@ -1277,7 +1280,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _resetHistory();
     });
     _logger.log(kLogSourceProject, LogLevel.info,
-        'Renamed project ${_activeProject.id} from "$oldName" to "$name"');
+        'Renamed project ${_activeProject.id} from "$oldName" to "$applied"');
   }
 
   Future<void> _deleteActiveProject() async {

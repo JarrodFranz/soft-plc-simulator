@@ -216,12 +216,23 @@ class ProjectRepository {
     return copy.id;
   }
 
-  /// Renames a project both in its own blob and in the catalog summary.
-  Future<void> renameProject(String id, String name) async {
+  /// Renames a project both in its own blob and in the catalog summary, and
+  /// returns the name actually applied.
+  ///
+  /// [name] is deduped against every OTHER stored project via
+  /// [uniqueProjectName] (the project being renamed is excluded, so renaming
+  /// it to its own current name is never suffixed) — [saveProject]'s dedup
+  /// seam deliberately only covers newly-added catalog entries, so without
+  /// this a rename was the one path that could produce two catalog entries
+  /// with the same display name. Callers should use the returned name rather
+  /// than the requested one when mirroring the rename into in-memory state.
+  Future<String> renameProject(String id, String name) async {
     final proj = await loadProject(id);
-    if (proj == null) return;
-    proj.name = name;
+    if (proj == null) return name;
+    final otherNames = _readCatalog().where((s) => s.id != id).map((s) => s.name);
+    proj.name = uniqueProjectName(otherNames, name);
     await saveProject(proj);
+    return proj.name;
   }
 
   // ── Active project ──────────────────────────────────────────────────
