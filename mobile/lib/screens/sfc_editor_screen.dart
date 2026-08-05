@@ -297,7 +297,13 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
         children: [
           Expanded(
             child: TagAutocompleteField(
-              key: ValueKey('sfccond_${t.id}'),
+              // The revision suffix is what keeps this field and the dialog in
+              // agreement. `TagAutocompleteField` seeds its controller ONCE
+              // (per key) so an in-flight edit survives sibling rebuilds; that
+              // also means a condition changed elsewhere would leave stale text
+              // here. Bumping the revision when the dialog commits forces a
+              // fresh field seeded from the model.
+              key: ValueKey('sfccond_${t.id}_${_condRevision[t.id] ?? 0}'),
               options: widget.currentProject.tags.map((tag) => tag.name).toList(),
               initialValue: t.conditionSt,
               onChanged: (val) {
@@ -319,66 +325,105 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
     );
   }
 
-  /// Transition block menu: set target (existing step / new step / GOTO) or
-  /// delete the transition. Only offered for ordinary `single` edges — fork /
-  /// join links are managed structurally through the step menu.
+  /// The transition editor (QA #5). This is the COMPLETE editing surface for a
+  /// transition — condition text *and* routing — reached from the block's
+  /// kebab. The inline condition field on the canvas is the same edit by a
+  /// shortcut: it stays, it writes to the same place with the same
+  /// write-through-on-keystroke semantics, but it is no longer the only way to
+  /// reach half of what a transition is.
+  ///
+  /// A `StatefulBuilder` wraps the dialog so retargeting refreshes the dropdown
+  /// in place instead of dismissing it — the point is that one visit edits
+  /// everything.
   void _showTransitionMenu(SfcTransition t) {
+    final conditionBefore = t.conditionSt;
     showAdaptiveWidthDialog(
       context,
       desiredWidth: 420,
-      child: AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
-        title: const Text('Transition'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'TARGET STEP:',
-              style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 6),
-            if (t.kind == 'single')
-              _targetDropdown(t)
-            else
+      child: StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1E293B),
+          title: const Text('Transition'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               const Text(
-                'Fork / join links are edited via the step menu.',
-                style: TextStyle(fontSize: 11, color: Colors.white54),
+                'CONDITION:',
+                style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold),
               ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              _applyStructure(() => deleteSfcTransition(widget.program, t.id));
-              Navigator.pop(context);
-              showDeleteUndoSnackBar(context, 'transition');
-            },
-            child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
+              const SizedBox(height: 6),
+              TagAutocompleteField(
+                key: ValueKey('sfcconddlg_${t.id}'),
+                options: widget.currentProject.tags.map((tag) => tag.name).toList(),
+                initialValue: t.conditionSt,
+                onChanged: (val) {
+                  // Identical semantics to the inline field: straight through
+                  // to the model on every keystroke, no OK/Cancel.
+                  t.conditionSt = val;
+                  widget.onProgramUpdated();
+                },
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'TARGET STEP:',
+                style: TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 6),
+              if (t.kind == 'single')
+                _targetDropdown(t, onRetargeted: () => setDialogState(() {}))
+              else
+                const Text(
+                  'Fork / join links are edited via the step menu.',
+                  style: TextStyle(fontSize: 11, color: Colors.white54),
+                ),
+            ],
           ),
-          if (t.kind == 'single')
+          actions: [
             TextButton(
               onPressed: () {
-                Navigator.pop(context);
-                _applyStructure(() {
-                  final s = addSfcStep(widget.program);
-                  t.toStepId = s.id;
-                });
+                _applyStructure(() => deleteSfcTransition(widget.program, t.id));
+                Navigator.pop(dialogContext);
+                showDeleteUndoSnackBar(context, 'transition');
               },
-              child: const Text('New step', style: TextStyle(color: Colors.purpleAccent)),
+              child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
             ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
+            if (t.kind == 'single')
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(dialogContext);
+                  _applyStructure(() {
+                    final s = addSfcStep(widget.program);
+                    t.toStepId = s.id;
+                  });
+                },
+                child: const Text('New step', style: TextStyle(color: Colors.purpleAccent)),
+              ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
       ),
-    );
+    ).then((_) {
+      // The canvas's inline field seeds its controller once per key, so it
+      // would still be showing the pre-dialog text. Re-key it (which also
+      // relayouts, since the condition drives block width) but only when the
+      // text actually moved.
+      if (!mounted || t.conditionSt == conditionBefore) {
+        return;
+      }
+      setState(() => _condRevision[t.id] = (_condRevision[t.id] ?? 0) + 1);
+    });
   }
 
   /// A dropdown of every step id — picking one retargets the `single` edge to an
   /// existing step (a forward edge, or a GOTO/back-edge when it points upstream).
-  Widget _targetDropdown(SfcTransition t) {
+  ///
+  /// [onRetargeted] lets the hosting dialog rebuild itself so the new value
+  /// shows, instead of having to close to reflect the change.
+  Widget _targetDropdown(SfcTransition t, {VoidCallback? onRetargeted}) {
     final steps = widget.program.sfcSteps;
     final valid = steps.any((s) => s.id == t.toStepId) ? t.toStepId : null;
     return DropdownButton<String>(
@@ -407,10 +452,14 @@ class _SfcEditorScreenState extends State<SfcEditorScreen> {
           return;
         }
         _applyStructure(() => t.toStepId = v);
-        Navigator.pop(context);
+        onRetargeted?.call();
       },
     );
   }
+
+  /// Per-transition bump counter for the canvas's inline condition field key —
+  /// see [_transBlock] and [_showTransitionMenu].
+  final Map<String, int> _condRevision = {};
 
   Widget _gotoChip(SfcTransition t) {
     final target = widget.program.sfcSteps.where((s) => s.id == t.toStepId);
