@@ -778,8 +778,15 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       width: kLdCellW,
       height: h,
       child: GestureDetector(
+        // Opaque, so the WHOLE cell is a tap target. With the default
+        // `deferToChild` only the painted glyph/caption `Text` boxes hit-test
+        // (a `Container`'s DecoratedBox does not), leaving most of the cell
+        // dead — taps there were silently swallowed.
+        behavior: HitTestBehavior.opaque,
+        // Single tap is the one edit affordance (no onDoubleTap: pairing the
+        // two recognizers makes every single tap wait out the ~300ms
+        // double-tap timeout before the dialog opens).
         onTap: () => _onNodeTap(rung, n),
-        onDoubleTap: () => _showEditNodeDialog(rung, n),
         child: n.kind == LdKind.block
             ? _buildBlock(n, live: _online, lit: _nodeLit(rung, n))
             : (n.kind == LdKind.link
@@ -791,15 +798,20 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
   /// In an element mode (contact/coil/block), tapping an empty `link` slot
   /// fills it in place (replaces, not inserts in series) and opens its edit
-  /// dialog — mirroring `_insertOnWire`'s "insert then edit" flow. In select
-  /// mode (or tapping a non-link node), this is a no-op for now — branches
-  /// are created via the guided junction-anchor dots in Branch mode, not
-  /// element taps.
+  /// dialog — mirroring `_insertOnWire`'s "insert then edit" flow.
+  ///
+  /// Every other tap on a placed element opens that element's edit dialog
+  /// (prefilled, with its Delete action) — the app's tap-to-configure
+  /// convention, mirroring the FBD editor's block cards. This is the ONLY
+  /// re-edit/delete route for an already-placed element, so it deliberately
+  /// works in every mode and needs no hover/right-click (phone-safe).
+  /// Branches are still created via the guided junction-anchor dots in Branch
+  /// mode, never by tapping an element.
   void _onNodeTap(LdRung rung, LdNode n) {
-    if (n.kind != LdKind.link) {
-      return;
-    }
-    if (_editMode != 'contact' && _editMode != 'coil' && _editMode != 'block') {
+    final fillingLink = n.kind == LdKind.link &&
+        (_editMode == 'contact' || _editMode == 'coil' || _editMode == 'block');
+    if (!fillingLink) {
+      _showEditNodeDialog(rung, n);
       return;
     }
     late final LdNode filled;

@@ -4,6 +4,7 @@ import 'package:soft_plc_mobile/models/ld_graph.dart';
 import 'package:soft_plc_mobile/models/ld_monitor.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/screens/ld_editor_screen.dart';
+import 'package:soft_plc_mobile/widgets/tag_autocomplete_field.dart';
 import 'support/responsive_test_utils.dart';
 
 LdNode contact(String v) => LdNode(id: '', kind: LdKind.contact, variable: v);
@@ -41,13 +42,13 @@ PlcProgram _twoRungProgram() {
   );
 }
 
-Widget _app(PlcProgram program) {
+Widget _app(PlcProgram program, {VoidCallback? onProgramUpdated}) {
   final project = _buildProject(program);
   return MaterialApp(
     home: LdEditorScreen(
       currentProject: project,
       program: program,
-      onProgramUpdated: () {},
+      onProgramUpdated: onProgramUpdated ?? () {},
       monitor: LdMonitor(),
       scanRunning: false,
     ),
@@ -175,8 +176,7 @@ void main() {
         await tester.pumpWidget(_app(program));
         await tester.pumpAndSettle();
 
-        await tester.tap(find.text('CTU'));
-        await tester.pump(const Duration(milliseconds: 50));
+        // Single tap on a placed element opens its edit dialog.
         await tester.tap(find.text('CTU'));
         await tester.pumpAndSettle();
 
@@ -199,8 +199,7 @@ void main() {
         await tester.pumpWidget(_app(program));
         await tester.pumpAndSettle();
 
-        await tester.tap(find.text('CTUD'));
-        await tester.pump(const Duration(milliseconds: 50));
+        // Single tap on a placed element opens its edit dialog.
         await tester.tap(find.text('CTUD'));
         await tester.pumpAndSettle();
 
@@ -303,8 +302,7 @@ void main() {
         await tester.pumpWidget(_app(program));
         await tester.pumpAndSettle();
 
-        await tester.tap(find.text('GT'));
-        await tester.pump(const Duration(milliseconds: 50));
+        // Single tap on a placed element opens its edit dialog.
         await tester.tap(find.text('GT'));
         await tester.pumpAndSettle();
 
@@ -333,8 +331,7 @@ void main() {
         await tester.pumpWidget(_app(program));
         await tester.pumpAndSettle();
 
-        await tester.tap(find.text('ADD'));
-        await tester.pump(const Duration(milliseconds: 50));
+        // Single tap on a placed element opens its edit dialog.
         await tester.tap(find.text('ADD'));
         await tester.pumpAndSettle();
 
@@ -404,8 +401,7 @@ void main() {
         await tester.pumpWidget(_app(program));
         await tester.pumpAndSettle();
 
-        await tester.tap(find.text('GT'));
-        await tester.pump(const Duration(milliseconds: 50));
+        // Single tap on a placed element opens its edit dialog.
         await tester.tap(find.text('GT'));
         await tester.pumpAndSettle();
 
@@ -686,7 +682,7 @@ void main() {
 
         final nodeText = find.text('New_Contact');
         expect(nodeText, findsOneWidget);
-        nodeGestureDetector(tester, nodeText).onDoubleTap!();
+        nodeGestureDetector(tester, nodeText).onTap!();
         await tester.pumpAndSettle();
         expect(find.text('Delete'), findsOneWidget);
         await tester.tap(find.text('Delete'));
@@ -713,7 +709,7 @@ void main() {
 
         final slot = linkSlot();
         expect(slot, findsOneWidget);
-        nodeGestureDetector(tester, slot).onDoubleTap!();
+        nodeGestureDetector(tester, slot).onTap!();
         await tester.pumpAndSettle();
         expect(find.text('Delete'), findsOneWidget);
         await tester.tap(find.text('Delete'));
@@ -739,7 +735,7 @@ void main() {
 
         final slot = linkSlot();
         expect(slot, findsOneWidget);
-        nodeGestureDetector(tester, slot).onDoubleTap!();
+        nodeGestureDetector(tester, slot).onTap!();
         await tester.pumpAndSettle();
 
         // An empty-branch placeholder has no logical content to edit — the
@@ -841,6 +837,149 @@ void main() {
         expect(checkIcons, findsOneWidget,
             reason: 'the branch-start key must be scoped per rung so a '
                 'structurally-identical rung does not share the highlighted dot');
+
+        expect(tester.takeException(), isNull);
+      });
+    }
+  });
+
+  // QA sweep bug 4: once an element was placed and its auto-popup dismissed,
+  // nothing reopened it. A single tap on a placed contact/coil/block was a
+  // no-op in every mode (`_onNodeTap` early-returned for anything that wasn't
+  // an open link), so the ONLY edit/delete surface was the dialog shown once,
+  // immediately after a fresh insert.
+  group('Re-edit / delete an already-placed element (QA bug 4)', () {
+    Finder nodeCell(Finder inner) =>
+        find.ancestor(of: inner, matching: find.byType(GestureDetector)).first;
+
+    GestureDetector nodeGesture(WidgetTester tester, Finder inner) =>
+        tester.widget<GestureDetector>(nodeCell(inner));
+
+    PlcProgram blockProgram() => PlcProgram(
+          name: 'TestProgram',
+          language: 'LadderLogic',
+          rungs: [
+            buildRung(index: 0, comment: 'Rung 0', main: [
+              contact('A'),
+              block('TON', 'T1'),
+              coil('Q0'),
+            ]),
+          ],
+        );
+
+    testWidgets('tapping a placed contact reopens its edit dialog, prefilled', (tester) async {
+      await setSurface(tester, desktopSize);
+      final program = _twoRungProgram();
+      await tester.pumpWidget(_app(program));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('A'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Edit Contact'), findsOneWidget);
+      final field = tester.widget<TextField>(find.descendant(
+        of: find.byType(TagAutocompleteField),
+        matching: find.byType(TextField),
+      ));
+      expect(field.controller!.text, 'A',
+          reason: 'the re-opened dialog must be prefilled from the placed node');
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('the whole element cell is tappable, not just its glyph text', (tester) async {
+      await setSurface(tester, desktopSize);
+      final program = _twoRungProgram();
+      await tester.pumpWidget(_app(program));
+      await tester.pumpAndSettle();
+
+      final cell = tester.getRect(nodeCell(find.text('A')));
+      // A point inside the cell but clear of BOTH painted texts (the tag
+      // caption strip at the top and the centred symbol glyph). With the
+      // default `deferToChild` hit-test behavior nothing was hit here and the
+      // tap was silently swallowed — the likely cause of the QA report's
+      // "clicking the element does nothing".
+      await tester.tapAt(Offset(cell.left + 5, cell.bottom - 5));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Edit Contact'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('deleting a placed contact from its dialog removes it and notifies the host',
+        (tester) async {
+      await setSurface(tester, desktopSize);
+      final program = _twoRungProgram();
+      int updates = 0;
+      await tester.pumpWidget(_app(program, onProgramUpdated: () => updates++));
+      await tester.pumpAndSettle();
+
+      final rung = program.rungs[0];
+      expect(rung.nodes.any((n) => n.variable == 'A'), isTrue);
+
+      await tester.tap(find.text('A'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete'));
+      await tester.pumpAndSettle();
+
+      expect(rung.nodes.any((n) => n.variable == 'A'), isFalse);
+      expect(find.text('A'), findsNothing);
+      // The edit is pushed through the host seam, so it lands in the project
+      // (and the shell's undo history), not just in the editor's local state.
+      expect(updates, greaterThan(0));
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('tapping a placed block reopens its dialog', (tester) async {
+      await setSurface(tester, desktopSize);
+      final program = blockProgram();
+      await tester.pumpWidget(_app(program));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('T1'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Edit TON'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    for (final size in [desktopSize, smallPhoneSize]) {
+      testWidgets('tapping a placed coil reopens its dialog (${size.width.toInt()}px)',
+          (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        // Invoked directly (not via a coordinate tap): at the compact width the
+        // canvas sits inside an InteractiveViewer, so the cell may be panned
+        // out of the viewport — same production callback either way.
+        nodeGesture(tester, find.text('Q0')).onTap!();
+        await tester.pumpAndSettle();
+
+        expect(find.text('Edit Coil'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets(
+          'a placed element still re-opens its dialog while a placement tool is active '
+          '(${size.width.toInt()}px)', (tester) async {
+        await setSurface(tester, size);
+        final program = _twoRungProgram();
+        await tester.pumpWidget(_app(program));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Contact'));
+        await tester.pumpAndSettle();
+
+        nodeGesture(tester, find.text('A')).onTap!();
+        await tester.pumpAndSettle();
+
+        // Tapping an existing element edits it; inserting a NEW contact stays
+        // on the wire "+" targets, so no element is created here.
+        expect(find.text('Edit Contact'), findsOneWidget);
+        expect(program.rungs[0].nodes.where((n) => n.kind == LdKind.contact).length, 1);
 
         expect(tester.takeException(), isNull);
       });
