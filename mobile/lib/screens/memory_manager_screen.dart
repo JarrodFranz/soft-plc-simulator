@@ -410,6 +410,12 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
         // write to pathCtrl re-triggering its listener as a "manual edit".
         bool pathManuallyEdited = false;
         bool syncingPath = false;
+        // A TextEditingController notifies on SELECTION changes too (tapping
+        // into the field to place the caret, or the field taking focus), not
+        // just on text edits — latching on any notification meant merely
+        // touching the path field silently killed auto-sync. Latch only when
+        // the TEXT actually changes.
+        String lastPathText = pathCtrl.text;
         nameCtrl.addListener(() {
           if (pathManuallyEdited) return;
           final current = pathCtrl.text;
@@ -420,6 +426,8 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
           syncingPath = false;
         });
         pathCtrl.addListener(() {
+          if (pathCtrl.text == lastPathText) return; // caret/selection only
+          lastPathText = pathCtrl.text;
           if (syncingPath) return;
           pathManuallyEdited = true;
         });

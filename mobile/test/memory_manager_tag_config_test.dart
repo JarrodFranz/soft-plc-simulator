@@ -149,6 +149,30 @@ void main() {
       final tag = project.tags.firstWhere((t) => t.name == 'My_Tag_2');
       expect(tag.path, equals('Custom/Path_Name'));
     });
+
+    testWidgets('merely moving the caret in the path field does not latch auto-sync', (tester) async {
+      final project = _project();
+      await tester.pumpWidget(app(project));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Add Tag'));
+      await tester.pumpAndSettle();
+
+      // A tap into the Browse Path field only moves the caret — the
+      // controller still notifies its listeners, but the TEXT is unchanged,
+      // so auto-sync must stay armed.
+      final pathCtrl =
+          tester.widget<TextField>(find.byKey(const Key('add_tag_path_field'))).controller!;
+      pathCtrl.selection = const TextSelection.collapsed(offset: 3);
+      await tester.pump();
+
+      await tester.enterText(find.byKey(const Key('add_tag_name_field')), 'My_Tag');
+      await tester.pumpAndSettle();
+
+      final pathField = tester.widget<TextField>(find.byKey(const Key('add_tag_path_field')));
+      expect(pathField.controller!.text, equals('Inputs/My_Tag'),
+          reason: 'a caret move is not a manual path edit');
+    });
   });
 
   group('Edit Tag Config dialog', () {
