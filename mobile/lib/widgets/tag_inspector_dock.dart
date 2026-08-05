@@ -4,6 +4,7 @@ import '../models/project_model.dart';
 import '../models/system_tags.dart';
 import '../models/tag_resolver.dart';
 import '../ui/responsive.dart';
+import '../ui/value_format.dart';
 import 'live_tick.dart';
 import 'scalar_value_field.dart';
 
@@ -357,7 +358,7 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                                               ),
                                             ),
                                             child: Text(
-                                              '$effectiveVal ${tag.engineeringUnits}',
+                                              '${tag.dataType == 'FLOAT64' && effectiveVal is num ? formatLiveValue(effectiveVal.toDouble()) : effectiveVal} ${tag.engineeringUnits}',
                                               overflow: TextOverflow.ellipsis,
                                               maxLines: 1,
                                               style: TextStyle(
@@ -548,9 +549,12 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                       },
                     );
                   }
+                  final displayValue = (child.dataType == 'FLOAT64' && value is num)
+                      ? formatLiveValue(value.toDouble())
+                      : '$value';
                   return Flexible(
                     child: Text(
-                      '$value',
+                      displayValue,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       textAlign: TextAlign.right,

@@ -7,6 +7,7 @@ import '../models/tag_resolver.dart';
 import '../models/test_tag_set.dart';
 import '../services/tag_historian.dart';
 import '../ui/responsive.dart';
+import '../ui/value_format.dart';
 import '../widgets/live_tick.dart';
 import '../widgets/scalar_value_field.dart';
 import '../widgets/tag_autocomplete_field.dart';
@@ -60,6 +61,15 @@ class _TagRowData {
     }
     if (isBoolLeaf) {
       return (value == true) ? 'TRUE (1)' : 'FALSE (0)';
+    }
+    // REAL values print at a sane fixed precision (trailing zeros trimmed,
+    // but always at least one decimal) rather than raw double precision —
+    // checked against the tag's declared type, not the runtime value's
+    // exact representation, because an uninitialized/JSON-round-tripped
+    // FLOAT64 value can be a plain `int` zero, which would otherwise print
+    // as a bare `0` next to sibling rows showing `0.0` (QA #15).
+    if (dataType == 'FLOAT64' && value is num) {
+      return formatLiveValue(value.toDouble());
     }
     return '$value';
   }
