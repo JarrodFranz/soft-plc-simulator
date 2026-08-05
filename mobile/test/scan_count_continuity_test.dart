@@ -24,6 +24,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:soft_plc_mobile/models/tag_resolver.dart';
 import 'package:soft_plc_mobile/screens/workspace_shell.dart';
 import 'support/responsive_test_utils.dart';
 
@@ -138,6 +139,85 @@ void main() {
     await tester.pump(const Duration(milliseconds: 150));
     expect(find.text('Scan Count: 6'), findsOneWidget,
         reason: 'A genuine Redo must not reset Scan Count within the same project');
+    expect(tester.takeException(), isNull);
+  });
+
+  // Final-review F4: `_clearFault()` zeroes min/max scan time but not
+  // `_sessionScans`, and no path resets `_sessionScans` on a fault clear — so
+  // the old `_sessionScans == 1` seed condition never re-fired and
+  // `System.MinScanTimeMs` stayed pinned at 0 forever after the first fault.
+  testWidgets('System.MinScanTimeMs re-seeds from a real sample after a fault is cleared',
+      (tester) async {
+    await setSurface(tester, desktopSize);
+    await tester.pumpWidget(_app());
+    await tester.pumpAndSettle();
+
+    final state = tester.state<WorkspaceShellState>(find.byType(WorkspaceShell));
+    await _tapRunToggle(tester, tooltip: 'Pause Scan Loop');
+
+    // A few scans so min/max hold real samples. (A `Stopwatch` inside the
+    // test's FakeAsync zone measures exactly 0 around a synchronous scan, so
+    // the sample is supplied through the same kind of test seam the watchdog
+    // measurement already uses.)
+    state.debugSetScanTimeMsForTest(5.0);
+    state.debugRunScan();
+    state.debugSetScanTimeMsForTest(9.0);
+    state.debugRunScan();
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(readPath(state.debugActiveProject, 'System.MinScanTimeMs'), 5.0);
+    expect(readPath(state.debugActiveProject, 'System.MaxScanTimeMs'), 9.0);
+
+    state.debugForceFault('MainContinuousTask');
+    await tester.pump();
+    await tester.tap(find.text('Clear Fault'));
+    await tester.pump();
+    expect(state.debugFaulted, isFalse);
+
+    // The clear zeroed min/max deliberately (they described the pre-fault
+    // run); the very next scan after the clear must RE-SEED them.
+    state.debugSetScanTimeMsForTest(7.0);
+    state.debugRunScan();
+    await tester.pump(const Duration(milliseconds: 150));
+
+    final min = readPath(state.debugActiveProject, 'System.MinScanTimeMs') as double;
+    final last = readPath(state.debugActiveProject, 'System.ScanTimeMs') as double;
+    final max = readPath(state.debugActiveProject, 'System.MaxScanTimeMs') as double;
+    expect(last, 7.0);
+    expect(min, greaterThan(0.0), reason: 'MinScanTime must not stay pinned at 0 after a fault clear');
+    expect(min, equals(last), reason: 'the first scan after a clear seeds min from its own sample');
+    expect(max, equals(last));
+    expect(tester.takeException(), isNull);
+  });
+
+  // Final-review F8: `_beginProjectSession` restarted the uptime stopwatch
+  // unconditionally, so an undo/redo (which passes preserveScanCount: true —
+  // the scan loop never actually stopped) snapped System.UptimeMs back to 0
+  // even though Scan Count correctly continued.
+  testWidgets('Uptime continues across a genuine Undo (same project)', (tester) async {
+    await setSurface(tester, desktopSize);
+    await tester.pumpWidget(_app());
+    await tester.pumpAndSettle();
+
+    final state = tester.state<WorkspaceShellState>(find.byType(WorkspaceShell));
+    await _tapRunToggle(tester, tooltip: 'Pause Scan Loop');
+
+    await _goToMemoryView(tester);
+    await _addTagViaUi(tester);
+    await tester.pump(const Duration(seconds: 1));
+
+    state.debugRunScan();
+    await tester.pump(const Duration(milliseconds: 150));
+    final before = readPath(state.debugActiveProject, 'System.UptimeMs') as int;
+    expect(before, greaterThan(500), reason: 'the session has been up for at least a second by now');
+
+    await tester.tap(find.byTooltip('Undo'));
+    await tester.pumpAndSettle();
+    state.debugRunScan();
+    await tester.pump(const Duration(milliseconds: 150));
+
+    final after = readPath(state.debugActiveProject, 'System.UptimeMs') as int;
+    expect(after, greaterThanOrEqualTo(before),
+        reason: 'an undo is not a new run session — the uptime clock must keep running');
     expect(tester.takeException(), isNull);
   });
 

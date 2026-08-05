@@ -171,6 +171,19 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   String _faultTaskName = '';
   int _faultCode = 0;
   double _lastScanMs = 0, _maxScanMs = 0, _minScanMs = 0;
+
+  /// Whether `_minScanMs`/`_maxScanMs` hold a real sample yet.
+  ///
+  /// Both are seeded from the FIRST scan of a stats session rather than
+  /// compared against their zero initial values (a min seeded that way could
+  /// never rise off 0). This used to be inferred from `_sessionScans == 1`,
+  /// which silently stopped working once `_clearFault()` started zeroing
+  /// min/max without also resetting `_sessionScans`: after any fault clear the
+  /// seed condition never fired again and `System.MinScanTime` stayed pinned
+  /// at 0 for the rest of the session. Tracking it explicitly keeps the seed
+  /// decision independent of the scan counter's own (deliberately different)
+  /// reset rules.
+  bool _scanStatsSeeded = false;
   int _sessionScans = 0;
   final Stopwatch _uptime = Stopwatch();
   final Stopwatch _sinceLast = Stopwatch();
@@ -608,6 +621,16 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   @visibleForTesting
   void debugSetScanElapsedForTest(int ms) => _scan.elapsedForTest = ms;
 
+  /// Test-only override for the measured scan-tick duration that feeds
+  /// `System.ScanTimeMs`/`MinScanTimeMs`/`MaxScanTimeMs` (the sibling of
+  /// [debugSetScanElapsedForTest], which overrides the per-task watchdog
+  /// measurement). A widget test runs inside `FakeAsync`, where a `Stopwatch`
+  /// around a synchronous scan always measures exactly zero — so the
+  /// min/max seeding rules can only be exercised by supplying the sample.
+  @visibleForTesting
+  void debugSetScanTimeMsForTest(double ms) => _scanTimeMsForTest = ms;
+  double? _scanTimeMsForTest;
+
   /// Test-only hook: adds [proj] to the in-memory project catalog (mirrors
   /// what `_createNewProject`/`_importProject` do) so it's a valid target
   /// for `debugSwitchToProject` — the project switcher UI only ever offers
@@ -739,10 +762,16 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _lastScanMs = 0;
       _maxScanMs = 0;
       _minScanMs = 0;
+      _scanStatsSeeded = false;
+      // Uptime is per-run-session telemetry exactly like the scan counters:
+      // an undo/redo restore of the SAME project (preserveScanCount: true)
+      // never stopped the scan loop, so restarting the uptime clock there
+      // would snap `System.UptimeMs` back to 0 mid-run. Pause -> resume goes
+      // through `_startRunSession` instead, which does restart it on purpose.
+      _uptime
+        ..reset()
+        ..start();
     }
-    _uptime
-      ..reset()
-      ..start();
     _sinceLast
       ..reset()
       ..start();
@@ -795,12 +824,18 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     // `_refreshHz`, instead of an unconditional whole-shell rebuild every scan.
     scanCount++;
     _sessionScans++;
-    _lastScanMs = tickSw.elapsedMicroseconds / 1000.0;
-    if (_sessionScans == 1 || _lastScanMs > _maxScanMs) {
+    _lastScanMs = _scanTimeMsForTest ?? (tickSw.elapsedMicroseconds / 1000.0);
+    if (!_scanStatsSeeded) {
       _maxScanMs = _lastScanMs;
-    }
-    if (_sessionScans == 1 || _lastScanMs < _minScanMs) {
       _minScanMs = _lastScanMs;
+      _scanStatsSeeded = true;
+    } else {
+      if (_lastScanMs > _maxScanMs) {
+        _maxScanMs = _lastScanMs;
+      }
+      if (_lastScanMs < _minScanMs) {
+        _minScanMs = _lastScanMs;
+      }
     }
     // A fault first becoming true is a rare structural transition — it flips
     // the fault banner into existence and halts the scan loop, so it still
@@ -867,8 +902,12 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     _faulted = false;
     _faultTaskName = '';
     _faultCode = 0;
+    // Min/max described the pre-fault run; drop them AND disarm the seed flag
+    // so the first scan after the clear re-seeds both from its own sample
+    // (without this, `_minScanMs` would stay stuck at 0 forever).
     _maxScanMs = 0;
     _minScanMs = 0;
+    _scanStatsSeeded = false;
   }
 
   void _switchActiveProject(PlcProject proj) {
