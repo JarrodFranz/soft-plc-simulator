@@ -524,11 +524,9 @@ void main() {
         await tester.pumpWidget(ldApp(project, program));
         await tester.pumpAndSettle();
 
-        // Open the block's config dialog (two quick taps register as the
-        // double-tap that opens it — same convention as the existing GT
-        // edit-dialog widget test in ld_editor_test.dart).
-        await tester.tap(find.text('Scaler'));
-        await tester.pump(const Duration(milliseconds: 50));
+        // Open the block's config dialog — a single tap on a placed element
+        // (same convention as the GT edit-dialog widget test in
+        // ld_editor_test.dart).
         await tester.tap(find.text('Scaler'));
         await tester.pumpAndSettle();
 

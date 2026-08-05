@@ -121,6 +121,33 @@ void main() {
       expect(previous.name, isNot('DemoProject'),
           reason: 'the previously-active project must be unchanged, not overwritten');
     });
+
+    testWidgets(
+        'QA bug 5: importing the same XML twice yields two projects with distinct '
+        'names and ids (no silent duplicate-name collision)', (tester) async {
+      final basicXml = File('test/fixtures/plcopen/basic.xml').readAsStringSync();
+
+      await tester.pumpWidget(const MaterialApp(home: WorkspaceShell()));
+      await tester.pumpAndSettle();
+
+      final state = tester.state<WorkspaceShellState>(find.byType(WorkspaceShell));
+      final countBefore = state.debugAllProjects.length;
+
+      await state.debugImportXml(basicXml);
+      await tester.pump();
+      await state.debugImportXml(basicXml);
+      await tester.pump();
+
+      expect(state.debugAllProjects.length, countBefore + 2);
+      final imported =
+          state.debugAllProjects.where((p) => p.name.startsWith('DemoProject')).toList();
+      expect(imported, hasLength(2));
+      expect(imported[0].id, isNot(imported[1].id),
+          reason: 're-importing must never collide on id');
+      expect(imported.map((p) => p.name).toSet().length, 2,
+          reason: 're-importing the same document must never produce two same-named projects');
+      expect(imported.map((p) => p.name).toSet(), {'DemoProject', 'DemoProject (2)'});
+    });
   });
 
   group('ImportXmlPreview (standalone)', () {

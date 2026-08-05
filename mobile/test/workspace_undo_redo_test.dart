@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/screens/workspace_shell.dart';
 import 'support/responsive_test_utils.dart';
 
@@ -162,6 +163,65 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('Undo reverts a structural edit while the scan loop churns live tag values', (tester) async {
+    // Regression: the history snapshot serializes every tag's LIVE value
+    // (`PlcTag.toJson` writes the current `value` as `initial_value`), so on a
+    // project whose scan loop actually moves values ('Tank Level Simulation'
+    // integrates Level_PV via its sim rules) the snapshot changes on every
+    // tick with no user edit at all. Undo must still step back to the
+    // pre-edit STRUCTURE rather than to a snapshot that merely differs by
+    // that live-value drift (which would leave the edit in place).
+    await setSurface(tester, desktopSize);
+    await tester.pumpWidget(_app());
+    await tester.pumpAndSettle();
+
+    // Switch to the churning project (this also resets history).
+    await tester.tap(find.byType(DropdownButton<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Tank Level Simulation').last);
+    await tester.pumpAndSettle();
+
+    const tankBase = 'Tags & Structs (7 Tags, 0 Structs)';
+    const tankPlusOne = 'Tags & Structs (8 Tags, 0 Structs)';
+    await tester.tap(find.text(tankBase).hitTestable());
+    await tester.pumpAndSettle();
+
+    await _addTagViaUi(tester);
+    expect(find.text(tankPlusOne), findsOneWidget);
+
+    // Let the 800ms autosave/history debounce fire (captures the edit)...
+    await tester.pump(const Duration(seconds: 1));
+    expect(_iconButton(tester, 'Undo').onPressed, isNotNull);
+    // ...then let the scan loop run on, drifting live tag values away from
+    // the captured snapshot without any further user edit.
+    await tester.pump(const Duration(seconds: 2));
+
+    await tester.tap(find.byTooltip('Undo'));
+    await tester.pumpAndSettle();
+
+    expect(find.text(tankBase), findsOneWidget,
+        reason: 'Undo must revert the added tag, not just the live-value drift');
+    expect(tester.takeException(), isNull);
+
+    // The restore's own debounced autosave (plus further drift) must not
+    // record a bogus entry that wipes redo...
+    await tester.pump(const Duration(seconds: 2));
+    expect(_iconButton(tester, 'Redo').onPressed, isNotNull);
+    await tester.tap(find.byTooltip('Redo'));
+    await tester.pumpAndSettle();
+    expect(find.text(tankPlusOne), findsOneWidget);
+
+    // ...and undo must not get stuck oscillating between two drift states:
+    // a second Undo (after more drift) still returns to the pre-edit state.
+    await tester.pump(const Duration(seconds: 2));
+    await tester.tap(find.byTooltip('Undo'));
+    await tester.pumpAndSettle();
+    expect(find.text(tankBase), findsOneWidget);
+    expect(_iconButton(tester, 'Undo').onPressed, isNull,
+        reason: 'drift must not have manufactured extra undo steps');
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('no exception on undo across surfaces 320 and 1400', (tester) async {
     for (final size in const [smallPhoneSize, desktopSize]) {
       await setSurface(tester, size);
@@ -179,5 +239,106 @@ void main() {
 
       expect(tester.takeException(), isNull);
     }
+  });
+
+  // ── ST editor x undo (final-review F1/F2/F3) ───────────────────────────
+  //
+  // The ST editor persists typed source through a 350ms debounce and flushes
+  // whatever is still pending from `dispose()`. The centre pane is re-keyed
+  // (and the editor therefore disposed) by every view/project switch AND by
+  // every undo/redo restore, so that flush used to fire from inside the
+  // framework's tree-lock window — calling the shell's `setState` (a throw in
+  // assert-enabled builds), writing into whatever project was active by then,
+  // and re-arming `_pendingHistoryCapture` right after `_applySnapshot` had
+  // cleared it (which wiped the redo stack on the next autosave).
+  //
+  // The contract: the shell flushes the editor BEFORE it swaps anything, so
+  // typing then hitting Undo behaves exactly like any other editor's edit.
+  group('ST editor + undo/redo', () {
+    const codeField = Key('stCodeEditorField');
+
+    /// Boots the shell onto the built-in Structured Text demo project with
+    /// its ST program open in the centre pane.
+    Future<PlcProgram> openStProgram(WidgetTester tester) async {
+      final state = tester.state<WorkspaceShellState>(find.byType(WorkspaceShell));
+      final st = state.debugAllProjects.firstWhere((p) => p.id == 'proj_st_reactor');
+      state.debugSwitchToProject(st);
+      await tester.pumpAndSettle();
+      state.debugSetActiveViewId('PROGRAM:ReactorTemp_ST');
+      await tester.pumpAndSettle();
+      expect(find.byKey(codeField), findsOneWidget);
+      return state.debugActiveProject.programs.firstWhere((p) => p.name == 'ReactorTemp_ST');
+    }
+
+    String stSourceOf(WidgetTester tester) => tester
+        .state<WorkspaceShellState>(find.byType(WorkspaceShell))
+        .debugActiveProject
+        .programs
+        .firstWhere((p) => p.name == 'ReactorTemp_ST')
+        .stSource;
+
+    testWidgets('typing then Undo: no tree-lock throw, the undone text stays undone, Redo still works',
+        (tester) async {
+      await setSurface(tester, desktopSize);
+      await tester.pumpWidget(_app());
+      await tester.pumpAndSettle();
+
+      await openStProgram(tester);
+
+      // Edit 1, fully debounced + captured as an undo step.
+      await tester.enterText(find.byKey(codeField), 'FIRST_EDIT;');
+      await tester.pump(const Duration(milliseconds: 400)); // editor persist debounce
+      await tester.pump(const Duration(seconds: 1)); // shell autosave/history debounce
+      expect(stSourceOf(tester), 'FIRST_EDIT;');
+
+      // Edit 2, still INSIDE the editor's persist debounce when Undo is hit —
+      // this is what used to reach the shell from `dispose()`.
+      await tester.enterText(find.byKey(codeField), 'SECOND_EDIT;');
+      await tester.pump();
+
+      await tester.tap(find.byTooltip('Undo'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(tester.takeException(), isNull,
+          reason: 'the dispose-time flush must not call setState during the tree lock');
+
+      // Let any deferred/debounced work settle, then assert the undo held.
+      await tester.pump(const Duration(seconds: 1));
+      expect(stSourceOf(tester), isNot('SECOND_EDIT;'),
+          reason: 'the undone text must not be resurrected by a dispose-time flush');
+      expect(tester.takeException(), isNull);
+
+      expect(_iconButton(tester, 'Redo').onPressed, isNotNull,
+          reason: 'a dispose-time flush must not wipe the redo stack');
+      await tester.tap(find.byTooltip('Redo'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(stSourceOf(tester), 'SECOND_EDIT;');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('typed ST lands in the project it was typed into, not the one switched to',
+        (tester) async {
+      await setSurface(tester, desktopSize);
+      await tester.pumpWidget(_app());
+      await tester.pumpAndSettle();
+
+      final state = tester.state<WorkspaceShellState>(find.byType(WorkspaceShell));
+      final stProject = await openStProgram(tester);
+      final otherProject = state.debugAllProjects.firstWhere((p) => p.id == 'proj_motor');
+
+      // Type, then switch projects before the persist debounce elapses.
+      await tester.enterText(find.byKey(codeField), 'TYPED_INTO_ST_PROJECT;');
+      await tester.pump();
+      state.debugSwitchToProject(otherProject);
+      await tester.pumpAndSettle();
+
+      expect(stProject.stSource, 'TYPED_INTO_ST_PROJECT;',
+          reason: 'the text must land in the project that was active while typing');
+      expect(otherProject.programs.every((p) => p.stSource != 'TYPED_INTO_ST_PROJECT;'), isTrue,
+          reason: 'and never in the project switched to');
+      expect(tester.takeException(), isNull);
+    });
   });
 }

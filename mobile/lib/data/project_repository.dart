@@ -138,12 +138,26 @@ class ProjectRepository {
 
   /// Upserts the project's blob and its catalog summary (stamping
   /// `updatedAt` to now).
+  ///
+  /// When [p] is a genuinely NEW catalog entry (its id isn't already
+  /// present), its name is deduped against every other stored project via
+  /// [uniqueProjectName] and [p.name] is mutated in place before the blob is
+  /// written — this is the single shared seam every add-project path
+  /// (Create, Duplicate, import XML/L5X, import `.splc.json`) funnels
+  /// through, so none of them can silently produce two catalog entries with
+  /// the same display name. Updating an EXISTING project (its id already
+  /// present) never renames it here — a user editing/renaming a project
+  /// on purpose is not this seam's concern.
   Future<void> saveProject(PlcProject p, {DateTime? updatedAt}) async {
+    final catalog = _readCatalog();
+    final idx = catalog.indexWhere((s) => s.id == p.id);
+    if (idx < 0) {
+      p.name = uniqueProjectName(catalog.map((s) => s.name), p.name);
+    }
+
     await _prefs.setString(_projectKey(p.id), jsonEncode(p.toJson()));
 
-    final catalog = _readCatalog();
     final stamp = updatedAt ?? DateTime.now();
-    final idx = catalog.indexWhere((s) => s.id == p.id);
     final summary = ProjectSummary(
       id: p.id,
       name: p.name,
@@ -156,6 +170,26 @@ class ProjectRepository {
       catalog.add(summary);
     }
     await _writeCatalog(catalog);
+  }
+
+  /// Returns [proposed] unchanged if it doesn't already match (case-
+  /// insensitively) any name in [existingNames]; otherwise returns the first
+  /// free `<proposed> (2)`, `<proposed> (3)`, ... variant — the platform-
+  /// conventional collision suffix (matching how Windows/macOS/most file
+  /// managers dedupe a copied/imported item's name).
+  ///
+  /// Pure and deterministic (no randomness, no I/O) so every add-project
+  /// path — repository-level ([saveProject]) or UI-level fallback — can
+  /// share the exact same collision behavior and it's directly unit-testable
+  /// without a `SharedPreferences` backend.
+  static String uniqueProjectName(Iterable<String> existingNames, String proposed) {
+    final taken = existingNames.map((n) => n.toLowerCase()).toSet();
+    if (!taken.contains(proposed.toLowerCase())) return proposed;
+    var n = 2;
+    while (taken.contains('$proposed ($n)'.toLowerCase())) {
+      n++;
+    }
+    return '$proposed ($n)';
   }
 
   /// Removes a project's blob and its catalog entry. No-op if the project
@@ -182,12 +216,23 @@ class ProjectRepository {
     return copy.id;
   }
 
-  /// Renames a project both in its own blob and in the catalog summary.
-  Future<void> renameProject(String id, String name) async {
+  /// Renames a project both in its own blob and in the catalog summary, and
+  /// returns the name actually applied.
+  ///
+  /// [name] is deduped against every OTHER stored project via
+  /// [uniqueProjectName] (the project being renamed is excluded, so renaming
+  /// it to its own current name is never suffixed) — [saveProject]'s dedup
+  /// seam deliberately only covers newly-added catalog entries, so without
+  /// this a rename was the one path that could produce two catalog entries
+  /// with the same display name. Callers should use the returned name rather
+  /// than the requested one when mirroring the rename into in-memory state.
+  Future<String> renameProject(String id, String name) async {
     final proj = await loadProject(id);
-    if (proj == null) return;
-    proj.name = name;
+    if (proj == null) return name;
+    final otherNames = _readCatalog().where((s) => s.id != id).map((s) => s.name);
+    proj.name = uniqueProjectName(otherNames, name);
     await saveProject(proj);
+    return proj.name;
   }
 
   // ── Active project ──────────────────────────────────────────────────

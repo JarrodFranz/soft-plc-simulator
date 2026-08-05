@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:soft_plc_mobile/data/default_projects.dart';
 import 'package:soft_plc_mobile/data/project_repository.dart';
+import 'package:soft_plc_mobile/models/project_model.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -11,6 +12,17 @@ void main() {
     final prefs = await SharedPreferences.getInstance();
     return ProjectRepository(prefs);
   }
+
+  PlcProject makeProject(String id, String name) => PlcProject(
+        id: id,
+        name: name,
+        controllerName: name,
+        tags: [],
+        structDefs: [],
+        programs: [],
+        tasks: [],
+        hmis: [],
+      );
 
   test('seedDefaultsIfEmpty seeds once and is idempotent', () async {
     final repo = await freshRepo();
@@ -83,6 +95,30 @@ void main() {
     await repo.renameProject(id, 'Renamed');
     expect((await repo.loadProject(id))!.name, 'Renamed');
     expect((await repo.listProjects()).firstWhere((s) => s.id == id).name, 'Renamed');
+  });
+
+  test('renameProject dedupes the new name against the OTHER stored projects', () async {
+    final repo = await freshRepo();
+    await repo.saveProject(makeProject('proj_a', 'Alpha'));
+    await repo.saveProject(makeProject('proj_b', 'Beta'));
+
+    final applied = await repo.renameProject('proj_b', 'Alpha');
+
+    expect(applied, 'Alpha (2)');
+    expect((await repo.loadProject('proj_b'))!.name, 'Alpha (2)');
+    expect((await repo.listProjects()).firstWhere((s) => s.id == 'proj_b').name, 'Alpha (2)');
+    expect((await repo.loadProject('proj_a'))!.name, 'Alpha',
+        reason: 'the colliding project itself must be left alone');
+  });
+
+  test('renameProject does not suffix a project renamed to its own current name', () async {
+    final repo = await freshRepo();
+    await repo.saveProject(makeProject('proj_a', 'Alpha'));
+
+    final applied = await repo.renameProject('proj_a', 'Alpha');
+
+    expect(applied, 'Alpha', reason: 'a project never collides with itself');
+    expect((await repo.loadProject('proj_a'))!.name, 'Alpha');
   });
 
   test('resetToDefaults clears user projects and re-seeds defaults', () async {
@@ -180,6 +216,76 @@ void main() {
     // A following backfill must be a no-op (ledger rebuilt / bootstrap from catalog).
     await repo.backfillNewDefaults();
     expect((await repo.listProjects()).length, DefaultProjects.all().length);
+  });
+
+  group('uniqueProjectName (pure helper)', () {
+    test('returns the proposed name unchanged when it is free', () {
+      expect(ProjectRepository.uniqueProjectName(['Alpha', 'Beta'], 'Gamma'), 'Gamma');
+    });
+
+    test('suffixes " (2)" when the proposed name is already taken', () {
+      expect(ProjectRepository.uniqueProjectName(['DEVPAC'], 'DEVPAC'), 'DEVPAC (2)');
+    });
+
+    test('increments to " (3)" when " (2)" is also taken', () {
+      expect(
+        ProjectRepository.uniqueProjectName(['DEVPAC', 'DEVPAC (2)'], 'DEVPAC'),
+        'DEVPAC (3)',
+      );
+    });
+
+    test('comparison is case-insensitive', () {
+      expect(ProjectRepository.uniqueProjectName(['devpac'], 'DEVPAC'), 'DEVPAC (2)');
+    });
+  });
+
+  test('saveProject dedupes the name of a newly-added project against the existing catalog '
+      '(QA bug 5: duplicate project names on import)', () async {
+    final repo = await freshRepo();
+    final a = makeProject('proj_devpac_a', 'DEVPAC');
+    await repo.saveProject(a);
+
+    final b = makeProject('proj_devpac_b', 'DEVPAC');
+    await repo.saveProject(b);
+    expect(b.name, 'DEVPAC (2)',
+        reason: 'saveProject must mutate the incoming project\'s name in place on collision');
+
+    final c = makeProject('proj_devpac_c', 'devpac'); // case-insensitive collision
+    await repo.saveProject(c);
+    expect(c.name, 'devpac (3)',
+        reason: 'a third colliding name (any case) must keep incrementing the suffix');
+
+    final names = (await repo.listProjects()).map((s) => s.name).toSet();
+    expect(names.length, 3, reason: 'no two stored projects may share a display name');
+  });
+
+  test('saveProject never renames an existing project on update, even if it now '
+      'matches another stored project\'s name', () async {
+    final repo = await freshRepo();
+    final a = makeProject('proj_a', 'Alpha');
+    final b = makeProject('proj_b', 'Beta');
+    await repo.saveProject(a);
+    await repo.saveProject(b);
+
+    b.name = 'Alpha'; // an explicit user rename onto an existing name
+    await repo.saveProject(b);
+    expect(b.name, 'Alpha',
+        reason: 'updating an existing catalog entry is not this dedup seam\'s concern');
+  });
+
+  test('duplicateProject dedupes when the same target name is used twice', () async {
+    final repo = await freshRepo();
+    const id = 'proj_src';
+    await repo.saveProject(makeProject(id, 'Original'));
+
+    final firstCopyId = await repo.duplicateProject(id, newName: 'Copy');
+    final secondCopyId = await repo.duplicateProject(id, newName: 'Copy');
+    expect(firstCopyId, isNot(secondCopyId));
+
+    final firstCopy = await repo.loadProject(firstCopyId);
+    final secondCopy = await repo.loadProject(secondCopyId);
+    expect(firstCopy!.name, 'Copy');
+    expect(secondCopy!.name, 'Copy (2)');
   });
 
   test('resetToDefaults leaves the ledger durable so a later delete is not resurrected', () async {

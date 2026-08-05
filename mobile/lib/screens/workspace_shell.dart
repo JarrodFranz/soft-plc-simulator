@@ -171,6 +171,19 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   String _faultTaskName = '';
   int _faultCode = 0;
   double _lastScanMs = 0, _maxScanMs = 0, _minScanMs = 0;
+
+  /// Whether `_minScanMs`/`_maxScanMs` hold a real sample yet.
+  ///
+  /// Both are seeded from the FIRST scan of a stats session rather than
+  /// compared against their zero initial values (a min seeded that way could
+  /// never rise off 0). This used to be inferred from `_sessionScans == 1`,
+  /// which silently stopped working once `_clearFault()` started zeroing
+  /// min/max without also resetting `_sessionScans`: after any fault clear the
+  /// seed condition never fired again and `System.MinScanTime` stayed pinned
+  /// at 0 for the rest of the session. Tracking it explicitly keeps the seed
+  /// decision independent of the scan counter's own (deliberately different)
+  /// reset rules.
+  bool _scanStatsSeeded = false;
   int _sessionScans = 0;
   final Stopwatch _uptime = Stopwatch();
   final Stopwatch _sinceLast = Stopwatch();
@@ -196,6 +209,31 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   // fresh instead of trying to diff its old state against the new project.
   final ProjectHistory _history = ProjectHistory();
   int _editorRevision = 0;
+
+  /// Whether a real user edit has happened since the last history capture.
+  ///
+  /// History captures must be gated on this. `_snapshot()` serializes every
+  /// tag's LIVE value (`PlcTag.toJson` writes the current `value` out as
+  /// `initial_value`), so on any project whose scan loop actually moves
+  /// values (sim rules, timers, counters, simulated signal tags) two
+  /// snapshots taken a tick apart differ even with no user edit at all.
+  /// Capturing unconditionally therefore let pure scan-loop drift push
+  /// bogus entries onto the undo stack, and an undo would step back to one
+  /// of those instead of to the pre-edit structure. Set by
+  /// [_markDirtyAndAutosave] (the single callback path every editor uses),
+  /// cleared whenever the snapshot is actually captured or the history is
+  /// reset/restored.
+  bool _pendingHistoryCapture = false;
+
+  /// The live [StEditorScreenState] in the centre pane, if the active view is
+  /// an ST program (registered/unregistered by the editor itself).
+  ///
+  /// The ST editor is the one editor that buffers edits (a 350ms persist
+  /// debounce over a `TextEditingController`) instead of mutating the model
+  /// on every keystroke, so the shell must give it a chance to write that
+  /// buffer out BEFORE swapping the active project/view or restoring a
+  /// snapshot — see [_flushActiveEditor].
+  StEditorScreenState? _stEditor;
 
   /// Serializes the active project for undo/redo + autosave-dirty
   /// comparison. The reserved `System` tag's value is neutralized to a fixed
@@ -352,7 +390,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'MEMORY';
       }
       _booting = false;
-      _history.reset(_snapshot());
+      _resetHistory();
       if (loadedRefreshHz != _refreshHz) {
         _refreshHz = loadedRefreshHz;
         _repaintThrottle.dispose();
@@ -464,7 +502,10 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// real `BuildContext` and drawer state) — used to put the shell in a
   /// known view (e.g. `'LOGS'`) before exercising a project switch.
   @visibleForTesting
-  void debugSetActiveViewId(String id) => setState(() => _activeViewId = id);
+  void debugSetActiveViewId(String id) {
+    _flushActiveEditor(); // mirrors `_selectView`
+    setState(() => _activeViewId = id);
+  }
 
   /// Test-only hook: the shell's current UI refresh rate (Hz), so a widget
   /// test can assert on it directly instead of poking at `_repaintThrottle`'s
@@ -593,6 +634,16 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   @visibleForTesting
   void debugSetScanElapsedForTest(int ms) => _scan.elapsedForTest = ms;
 
+  /// Test-only override for the measured scan-tick duration that feeds
+  /// `System.ScanTimeMs`/`MinScanTimeMs`/`MaxScanTimeMs` (the sibling of
+  /// [debugSetScanElapsedForTest], which overrides the per-task watchdog
+  /// measurement). A widget test runs inside `FakeAsync`, where a `Stopwatch`
+  /// around a synchronous scan always measures exactly zero — so the
+  /// min/max seeding rules can only be exercised by supplying the sample.
+  @visibleForTesting
+  void debugSetScanTimeMsForTest(double ms) => _scanTimeMsForTest = ms;
+  double? _scanTimeMsForTest;
+
   /// Test-only hook: adds [proj] to the in-memory project catalog (mirrors
   /// what `_createNewProject`/`_importProject` do) so it's a valid target
   /// for `debugSwitchToProject` — the project switcher UI only ever offers
@@ -698,10 +749,19 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   }
 
   /// Reset all per-run-session runtime state when the active project is
-  /// replaced (switch / undo-redo / create / duplicate / delete / reset /
-  /// import): scheduler, watchdog fault, scan-time stats, and timers. A
-  /// replaced project must never inherit another project's fault or telemetry.
-  void _beginProjectSession() {
+  /// replaced (switch / create / duplicate / delete / reset / import), or
+  /// when an undo/redo restore lands on a genuinely *different* project id:
+  /// scheduler, watchdog fault, scan-time stats, and timers. A replaced
+  /// project must never inherit another project's fault or telemetry.
+  ///
+  /// [preserveScanCount] is set by `_applySnapshot` when the restored
+  /// snapshot is for the *same* project (i.e. an ordinary undo/redo of an
+  /// edit, not a project switch/reset). Editing a project's logic shouldn't
+  /// reset its runtime telemetry — the scan loop never actually stopped —
+  /// so `_sessionScans`/`_lastScanMs`/`_maxScanMs`/`_minScanMs` are left
+  /// untouched in that case. Every other call site restores a genuinely new
+  /// project and always wants the reset (the default).
+  void _beginProjectSession({bool preserveScanCount = false}) {
     _scan.resetSession();
     _logger.log(kLogSourceSim, LogLevel.info,
         'Sim engine state reset (new project session: "${_activeProject.name}")');
@@ -710,26 +770,39 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     _faulted = false;
     _faultTaskName = '';
     _faultCode = 0;
-    _sessionScans = 0;
-    _lastScanMs = 0;
-    _maxScanMs = 0;
-    _minScanMs = 0;
-    _uptime
-      ..reset()
-      ..start();
+    if (!preserveScanCount) {
+      _sessionScans = 0;
+      _lastScanMs = 0;
+      _maxScanMs = 0;
+      _minScanMs = 0;
+      _scanStatsSeeded = false;
+      // Uptime is per-run-session telemetry exactly like the scan counters:
+      // an undo/redo restore of the SAME project (preserveScanCount: true)
+      // never stopped the scan loop, so restarting the uptime clock there
+      // would snap `System.UptimeMs` back to 0 mid-run. Pause -> resume goes
+      // through `_startRunSession` instead, which does restart it on purpose.
+      _uptime
+        ..reset()
+        ..start();
+    }
     _sinceLast
       ..reset()
       ..start();
   }
 
-  /// (Re)starts a run session: resets the scheduler/engine runtimes and the
-  /// per-session scan-time stats, and (re)starts the uptime/free-run clocks.
-  /// Called on boot and on every stopped -> running transition.
+  /// (Re)starts a run session: resets the scheduler/engine runtime and
+  /// (re)starts the uptime/free-run clocks. Called on boot and on every
+  /// stopped -> running transition (the run/pause toolbar toggle).
+  ///
+  /// Deliberately does NOT reset `_sessionScans`/`_lastScanMs`/`_maxScanMs`/
+  /// `_minScanMs`: a pause is not a PLC mode change or a new project session
+  /// — the scan loop merely stopped ticking for a while — so `System.
+  /// ScanCount` must keep counting across a pause -> resume within the same
+  /// project. At boot these fields already hold their initial zero values,
+  /// so leaving them alone here is a no-op for that call site.
   void _startRunSession() {
     _scan.resetSession();
     _logger.log(kLogSourceScan, LogLevel.info, 'Scan engine started');
-    _sessionScans = 0;
-    _lastScanMs = _maxScanMs = _minScanMs = 0;
     _uptime
       ..reset()
       ..start();
@@ -764,12 +837,18 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     // `_refreshHz`, instead of an unconditional whole-shell rebuild every scan.
     scanCount++;
     _sessionScans++;
-    _lastScanMs = tickSw.elapsedMicroseconds / 1000.0;
-    if (_sessionScans == 1 || _lastScanMs > _maxScanMs) {
+    _lastScanMs = _scanTimeMsForTest ?? (tickSw.elapsedMicroseconds / 1000.0);
+    if (!_scanStatsSeeded) {
       _maxScanMs = _lastScanMs;
-    }
-    if (_sessionScans == 1 || _lastScanMs < _minScanMs) {
       _minScanMs = _lastScanMs;
+      _scanStatsSeeded = true;
+    } else {
+      if (_lastScanMs > _maxScanMs) {
+        _maxScanMs = _lastScanMs;
+      }
+      if (_lastScanMs < _minScanMs) {
+        _minScanMs = _lastScanMs;
+      }
     }
     // A fault first becoming true is a rare structural transition — it flips
     // the fault banner into existence and halts the scan loop, so it still
@@ -836,8 +915,12 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     _faulted = false;
     _faultTaskName = '';
     _faultCode = 0;
+    // Min/max described the pre-fault run; drop them AND disarm the seed flag
+    // so the first scan after the clear re-seeds both from its own sample
+    // (without this, `_minScanMs` would stay stuck at 0 forever).
     _maxScanMs = 0;
     _minScanMs = 0;
+    _scanStatsSeeded = false;
   }
 
   void _switchActiveProject(PlcProject proj) {
@@ -862,7 +945,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _rekeyViewForProject(proj);
       scanCount = 0;
       _beginProjectSession();
-      _history.reset(_snapshot());
+      _resetHistory();
       _editorRevision++;
     });
     _logger.log(kLogSourceProject, LogLevel.info,
@@ -917,13 +1000,31 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// debounce window and refresh the UI. Cheap/no-op-safe to call from
   /// every editor callback — repeated calls just push the save out further.
   void _markDirtyAndAutosave() {
+    _pendingHistoryCapture = true;
     setState(() {});
     _autosaveTimer?.cancel();
     _autosaveTimer = Timer(_autosaveDebounce, _runAutosave);
   }
 
-  Future<void> _runAutosave() async {
+  /// Captures the current snapshot into the undo history, but only if a real
+  /// user edit is pending (see [_pendingHistoryCapture]). Without this gate,
+  /// scan-loop live-value drift alone would be recorded as an undoable step.
+  void _captureHistoryIfDirty() {
+    if (!_pendingHistoryCapture) return;
+    _pendingHistoryCapture = false;
     _history.capture(_snapshot());
+  }
+
+  /// Resets the undo history to the current state and drops any pending
+  /// capture — used by every path that replaces the active project outright
+  /// (boot / switch / create / duplicate / rename / delete / reset / import).
+  void _resetHistory() {
+    _pendingHistoryCapture = false;
+    _history.reset(_snapshot());
+  }
+
+  Future<void> _runAutosave() async {
+    _captureHistoryIfDirty();
     final repo = _repo;
     if (repo == null) return;
     setState(() {
@@ -959,10 +1060,25 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     }
   }
 
+  /// Pushes any edit still buffered inside the centre-pane editor into the
+  /// model, while the project it was typed into is still the active one and
+  /// while `setState` is still legal.
+  ///
+  /// Must be called BEFORE any `setState` that replaces the active project,
+  /// the active view, or bumps `_editorRevision` — all of which re-key the
+  /// centre pane and dispose the editor mid-frame. Leaving the write to the
+  /// editor's `dispose()` instead meant it landed in the wrong project, threw
+  /// on `setState` during the tree lock, and re-armed the pending-history
+  /// flag right after an undo had cleared it.
+  void _flushActiveEditor() => _stEditor?.flushPendingEdits();
+
   /// If a debounced autosave is pending, run it immediately instead of
   /// waiting out the timer (used before switching/closing a project so an
-  /// edit made just before the switch isn't lost).
+  /// edit made just before the switch isn't lost). Also flushes the centre
+  /// pane's buffered editor state first, so an edit that hasn't even reached
+  /// the model yet is part of what gets saved.
   void _flushPendingAutosave() {
+    _flushActiveEditor();
     if (_autosaveTimer == null || !_autosaveTimer!.isActive) return;
     _autosaveTimer!.cancel();
     unawaited(_runAutosave());
@@ -972,11 +1088,19 @@ class WorkspaceShellState extends State<WorkspaceShell> {
 
   /// Moves one step back in the project history and applies it, if any.
   /// Cancels a pending debounced autosave and captures the current state
-  /// first, so an in-flight (not-yet-captured) edit isn't lost off the
-  /// front of the undo stack.
+  /// first *if a user edit is actually pending*, so an in-flight
+  /// (not-yet-captured) edit isn't lost off the front of the undo stack —
+  /// while a snapshot that differs only by scan-loop live-value drift is
+  /// never recorded as a step of its own (see [_pendingHistoryCapture]).
   void _undo() {
+    // Before anything else: the ST editor may still be holding typed text
+    // that hasn't reached the model. Flushing it here folds it into the
+    // pre-undo state (so it becomes its own undo step, like any other
+    // editor's edit) instead of leaking out of the editor's `dispose` after
+    // the restore has already happened.
+    _flushActiveEditor();
     _autosaveTimer?.cancel();
-    _history.capture(_snapshot());
+    _captureHistoryIfDirty();
     final snap = _history.undo();
     if (snap != null) {
       _applySnapshot(snap);
@@ -985,8 +1109,9 @@ class WorkspaceShellState extends State<WorkspaceShell> {
 
   /// Moves one step forward in the project history and applies it, if any.
   void _redo() {
+    _flushActiveEditor(); // see [_undo]
     _autosaveTimer?.cancel();
-    _history.capture(_snapshot());
+    _captureHistoryIfDirty();
     final snap = _history.redo();
     if (snap != null) {
       _applySnapshot(snap);
@@ -995,18 +1120,28 @@ class WorkspaceShellState extends State<WorkspaceShell> {
 
   /// Restores [json] (a `PlcProject.toJson()` snapshot) as the active
   /// project: swaps it into `_allProjects` (by id) and `_activeProject`,
-  /// bumps `_editorRevision` so the center editor rebuilds fresh, clears all
-  /// runtimes (their internal state no longer matches the restored
-  /// project), and re-validates the active view. Schedules a debounced
-  /// persist afterward rather than re-capturing synchronously — the
-  /// restored snapshot already equals the history baseline, so the next
-  /// `_history.capture` call is a no-op.
+  /// bumps `_editorRevision` so the center editor rebuilds fresh, clears
+  /// scheduler/fault runtimes (their internal state no longer matches the
+  /// restored project), and re-validates the active view. Schedules a
+  /// debounced persist afterward; that autosave must NOT capture history — a
+  /// restore is not a user edit, and by the time it runs the live values have
+  /// already drifted off the restored baseline, so capturing would push a
+  /// drift-only entry and wipe the redo stack (hence
+  /// `_pendingHistoryCapture = false` below).
+  ///
+  /// A genuine undo/redo always restores the *same* project (history is
+  /// reset on every project switch/CRUD op, so the stack only ever holds
+  /// snapshots of the current active project) — so `Scan Count` must keep
+  /// counting through it, same as a pause -> resume. `preserveScanCount` is
+  /// still computed from an explicit id comparison (rather than assumed)
+  /// so this stays correct if that invariant ever changes.
   void _applySnapshot(String json) {
     final proj = PlcProject.fromJson(jsonDecode(json) as Map<String, dynamic>);
     // The stored snapshot has the System tag's value neutralized (see
     // `_snapshot`) — restore it to well-formed defaults; the running scan
     // loop repopulates the live status fields on the next tick.
     ensureSystemTag(proj);
+    final samePrj = proj.id == _activeProject.id;
     setState(() {
       final i = _allProjects.indexWhere((p) => p.id == proj.id);
       if (i != -1) {
@@ -1015,9 +1150,10 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _activeProject = proj;
       _resyncHistorian();
       _editorRevision++;
-      _beginProjectSession();
+      _beginProjectSession(preserveScanCount: samePrj);
       _ensureValidView();
     });
+    _pendingHistoryCapture = false;
     _autosaveTimer?.cancel();
     _autosaveTimer = Timer(_autosaveDebounce, _runAutosave);
   }
@@ -1111,6 +1247,14 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   Future<void> _createNewProject() async {
     final repo = _repo;
     if (repo == null) return;
+    // Flush any pending edit on the project we're leaving BEFORE anything
+    // else — mirrors `_duplicateActiveProject`/`_switchActiveProject`/
+    // `_applyImportedProject`. Without this, an edit still sitting inside
+    // the 800ms autosave debounce when `_activeProject` gets swapped to the
+    // new blank project below is never written to disk: the pending
+    // `_autosaveTimer`, if it ever fires, would by then save the NEW (blank)
+    // project instead of the one the edit was actually made in.
+    _flushPendingAutosave();
     final name = await _promptForName(
       context,
       title: 'New Project',
@@ -1151,7 +1295,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _rekeyViewForProject(blank, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
-      _history.reset(_snapshot());
+      _resetHistory();
       _editorRevision++;
     });
     _logger.log(kLogSourceProject, LogLevel.info,
@@ -1186,7 +1330,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _rekeyViewForProject(copy, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
-      _history.reset(_snapshot());
+      _resetHistory();
       _editorRevision++;
     });
     _logger.log(kLogSourceProject, LogLevel.info,
@@ -1204,18 +1348,21 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       confirmLabel: 'Rename',
     );
     if (name == null) return;
-    await repo.renameProject(_activeProject.id, name);
+    // `renameProject` dedupes against the other stored projects and returns
+    // the name it actually applied — mirror THAT into the in-memory project,
+    // or the session would disagree with what's on disk.
+    final applied = await repo.renameProject(_activeProject.id, name);
     if (!mounted) return;
     setState(() {
-      _activeProject.name = name;
+      _activeProject.name = applied;
       // Rename is a project-level operation (like the other CRUD paths): reset
       // the undo history to the renamed state so a later undo can't revert the
       // rename off a stale pre-rename baseline. The active content/view is
       // unchanged, so the editor is not re-keyed (editor state is preserved).
-      _history.reset(_snapshot());
+      _resetHistory();
     });
     _logger.log(kLogSourceProject, LogLevel.info,
-        'Renamed project ${_activeProject.id} from "$oldName" to "$name"');
+        'Renamed project ${_activeProject.id} from "$oldName" to "$applied"');
   }
 
   Future<void> _deleteActiveProject() async {
@@ -1272,7 +1419,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _rekeyViewForProject(next, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
-      _history.reset(_snapshot());
+      _resetHistory();
       _editorRevision++;
     });
     _logger.log(kLogSourceProject, LogLevel.info,
@@ -1324,7 +1471,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _rekeyViewForProject(first, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
-      _history.reset(_snapshot());
+      _resetHistory();
       _editorRevision++;
     });
     _logger.log(kLogSourceProject, LogLevel.warn, 'Reset all projects to defaults');
@@ -1458,8 +1605,18 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     await _bacnetHost.stop();
     final repo = _repo;
     if (repo != null) {
+      // `saveProject` is the shared name-dedup seam (see
+      // `ProjectRepository.uniqueProjectName`) — it mutates `imported.name`
+      // in place when it collides with an already-stored project's name.
       await repo.saveProject(imported);
       await repo.setActiveProjectId(imported.id);
+    } else {
+      // Persistence is genuinely unavailable this session — `saveProject`
+      // (the usual dedup seam) never runs, so dedupe directly against the
+      // in-memory catalog instead. Every add-project path must stay
+      // collision-free regardless of whether storage is available.
+      imported.name = ProjectRepository.uniqueProjectName(
+          _allProjects.map((p) => p.name), imported.name);
     }
     // Import into the in-memory session either way (also covers the
     // non-persistent fallback where `_repo` is null).
@@ -1471,7 +1628,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _rekeyViewForProject(imported, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
-      _history.reset(_snapshot());
+      _resetHistory();
       _editorRevision++;
     });
     _logger.log(kLogSourceProject, LogLevel.info,
@@ -2232,6 +2389,9 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     if (!context.isExpanded) {
       Navigator.pop(context);
     }
+    // Changing the view re-keys (and disposes) the centre pane — flush its
+    // buffered edits first, while this is still a plain event-handler call.
+    _flushActiveEditor();
     setState(() => _activeViewId = viewId);
   }
 
@@ -3135,15 +3295,55 @@ class WorkspaceShellState extends State<WorkspaceShell> {
           scanRunning: isRunning && !_faulted,
         );
       } else {
+        // `proj` is captured at BUILD time on purpose. This callback can
+        // still run after the shell has swapped `_activeProject` (the ST
+        // editor flushes in-flight text from `dispose()`, which happens
+        // during the rebuild that replaced it) — resolving the target
+        // project at CALL time meant those keystrokes were written into
+        // whichever project had just become active, so switching projects
+        // lost the text from the one being left AND clobbered a same-named
+        // program in the one being opened.
+        final proj = _activeProject;
         return StEditorScreen(
-          currentProject: _activeProject,
-          onSaveProgram: (updated) {
-            setState(() {
-              final idx = _activeProject.programs.indexWhere((p) => p.name == updated.name);
-              if (idx != -1) {
-                _activeProject.programs[idx] = updated;
-              }
-            });
+          currentProject: proj,
+          onEditorAttached: (s) => _stEditor = s,
+          onEditorDetached: (s) {
+            // A replaced editor's dispose runs after its replacement's
+            // initState, so only clear the handle if it's still this one.
+            if (identical(_stEditor, s)) _stEditor = null;
+          },
+          onSaveProgram: (updated, {bool notifyHost = true, String? previousName}) {
+            final idx = proj.programs.indexWhere((p) => p.name == updated.name);
+            if (idx != -1) {
+              proj.programs[idx] = updated;
+            }
+            final isActiveProject = identical(proj, _activeProject);
+            // A flush that just applied a header rename leaves `_activeViewId`
+            // pointing at the OLD name (`'PROGRAM:<previousName>'`), which no
+            // longer resolves to anything in `proj.programs` —
+            // `_buildCenterWorkspace`'s `orElse: programs.first` fallback
+            // would then silently swap the centre pane to an arbitrary
+            // (possibly different-language) program on the very next
+            // rebuild. Rewrite it to track the rename. Guarded on
+            // `isActiveProject`: `proj` may no longer be the active project
+            // by the time this fires (see the comment above), in which case
+            // `_activeViewId` belongs to whatever project IS active and must
+            // not be touched. No `setState` is needed here — the value just
+            // needs to be correct before the next rebuild, which either
+            // `_markDirtyAndAutosave` below or some later `setState` provides.
+            if (isActiveProject &&
+                previousName != null &&
+                previousName != updated.name &&
+                _activeViewId == 'PROGRAM:$previousName') {
+              _activeViewId = 'PROGRAM:${updated.name}';
+            }
+            // `notifyHost: false` is the editor's dispose-time call: apply
+            // the model write, but never `setState` — the widget tree is
+            // locked at that point. Nor may a write aimed at a no-longer-
+            // active project mark the CURRENT one dirty: that's what used to
+            // re-arm `_pendingHistoryCapture` immediately after an undo and
+            // wipe the redo stack on the next autosave.
+            if (!notifyHost || !mounted || !isActiveProject) return;
             _markDirtyAndAutosave();
           },
         );
