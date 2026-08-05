@@ -48,6 +48,18 @@ void main() {
     expect(mov.variable, 't');
   });
 
+  test('MOVE alias compiles to the same nodes as MOV', () {
+    final trMove = compileRllRungs(_body(['MOVE(5,Out);']), pouName: 'P');
+    final trMov = compileRllRungs(_body(['MOV(5,Out);']), pouName: 'P');
+    expect(trMove.translatedRungCount, 1);
+    final moveNode = trMove.rungs[0].nodes.firstWhere((n) => n.blockType == 'MOVE');
+    final movNode = trMov.rungs[0].nodes.firstWhere((n) => n.blockType == 'MOVE');
+    expect(moveNode.operandA, movNode.operandA);
+    expect(moveNode.variable, movNode.variable);
+    expect(moveNode.operandA, '5');
+    expect(moveNode.variable, 'Out');
+  });
+
   test('timer with literal preset is exact; with ? preset defaults + warns', () {
     final tr = compileRllRungs(_body(['TON(T1,5000,0);', 'TON(T2,?,?);']), pouName: 'P');
     expect(tr.translatedRungCount, 2); // both translate (best-effort)

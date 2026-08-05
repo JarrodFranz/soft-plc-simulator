@@ -370,6 +370,7 @@ LdNode _instrToNode(
     case 'DIV':
       return _math(m, ops);
     case 'MOV':
+    case 'MOVE':
       return _move(ops);
     default:
       unsupported.add(instr.mnemonic);
