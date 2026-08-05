@@ -80,6 +80,14 @@ class StEditorScreenState extends State<StEditorScreen> {
   late TextEditingController _codeController;
   late TextEditingController _programNameController;
   late TextEditingController _descriptionController;
+
+  // QUICK INSERT chip row (A3/#8): the row used to be a plain horizontal
+  // ListView, which IS scrollable by drag but gave no visual affordance
+  // that there was more to see — chips past the visible width just clipped.
+  // An explicit controller lets an always-visible Scrollbar sit under the
+  // row as that affordance, matching the idiom memory_manager_screen.dart's
+  // `_HorizontalScrollWithBar` already established for the same problem.
+  final ScrollController _quickInsertScrollController = ScrollController();
   PlcProgram? _selectedProgram;
   String _compilationStatus = 'Ready';
   bool _isCompiled = true;
@@ -196,6 +204,7 @@ END_FOR;''',
     _codeController.dispose();
     _programNameController.dispose();
     _descriptionController.dispose();
+    _quickInsertScrollController.dispose();
     super.dispose();
   }
 
@@ -665,28 +674,38 @@ END_FOR;''',
                   ),
                 ),
 
-                // Quick Insert Toolbar (Tags, DBs, Functions, Keywords)
+                // Quick Insert Toolbar (Tags, DBs, Functions, Keywords). Chips
+                // past the visible width are reachable by dragging, with an
+                // always-visible Scrollbar thumb as the discoverability
+                // affordance (A3/#8 — the row used to clip silently).
                 Container(
                   height: 36,
                   color: const Color(0xFF161E2E),
-                  child: ListView(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                    children: [
-                      const Center(child: Text('QUICK INSERT: ', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey))),
-                      const SizedBox(width: 8),
-                      ...allItems.take(12).map((item) => Padding(
-                        padding: const EdgeInsets.only(right: 6),
-                        child: ActionChip(
-                          avatar: Icon(item.icon, size: 12, color: item.color),
-                          label: Text(item.label, style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
-                          backgroundColor: const Color(0xFF1E293B),
-                          padding: EdgeInsets.zero,
-                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          onPressed: () => _insertSuggestion(item),
-                        ),
-                      )),
-                    ],
+                  child: Scrollbar(
+                    controller: _quickInsertScrollController,
+                    thumbVisibility: true,
+                    child: SingleChildScrollView(
+                      controller: _quickInsertScrollController,
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      child: Row(
+                        children: [
+                          const Center(child: Text('QUICK INSERT: ', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey))),
+                          const SizedBox(width: 8),
+                          ...allItems.take(12).map((item) => Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: ActionChip(
+                              avatar: Icon(item.icon, size: 12, color: item.color),
+                              label: Text(item.label, style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
+                              backgroundColor: const Color(0xFF1E293B),
+                              padding: EdgeInsets.zero,
+                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              onPressed: () => _insertSuggestion(item),
+                            ),
+                          )),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
 
