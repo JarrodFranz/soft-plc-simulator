@@ -103,6 +103,23 @@ class PlcTag {
   /// structural default).
   dynamic effectiveDefault(PlcProject p) =>
       defaultValue ?? defaultValueFor(p, dataType, arrayLength);
+
+  /// Toggles Force on/off. Turning force ON seeds [forcedValue] from the
+  /// current live value — a BOOL starts inverted (so the very next scan read
+  /// shows a changed, forced value rather than an unchanged one), everything
+  /// else starts equal to the current [value]. Turning force OFF leaves
+  /// [forcedValue] as-is; it's inert once [isForced] is false.
+  ///
+  /// This is the single source of truth for the force/unforce transition —
+  /// the Tag Inspector dock, the Tags & Structs table/card row action, and
+  /// the per-tag Edit dialog all call this instead of duplicating the rule
+  /// (QA #4: force discoverability).
+  void toggleForce() {
+    isForced = !isForced;
+    if (isForced) {
+      forcedValue = dataType == 'BOOL' ? !(value == true) : value;
+    }
+  }
 }
 
 class StructFieldDef {

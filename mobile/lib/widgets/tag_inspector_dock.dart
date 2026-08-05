@@ -397,10 +397,7 @@ class _TagInspectorDockState extends State<TagInspectorDock> {
                                         ),
                                         onPressed: () {
                                           setState(() {
-                                            tag.isForced = !tag.isForced;
-                                            if (tag.isForced) {
-                                              tag.forcedValue = isBool ? !(tag.value == true) : tag.value;
-                                            }
+                                            tag.toggleForce();
                                           });
                                           widget.onTagStateChanged();
                                         },
