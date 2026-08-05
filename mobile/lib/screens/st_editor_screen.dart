@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
@@ -46,6 +47,28 @@ class _StEditorScreenState extends State<StEditorScreen> {
   // Autocomplete state
   List<AutocompleteItem> _currentSuggestions = [];
   bool _showAutocompleteOverlay = false;
+
+  // Debounced model persistence. Every other editor (LD/FBD/FB/HMI/...)
+  // mutates the project model immediately on edit and calls
+  // onProjectUpdated/onProgramUpdated so the shell's autosave + undo history
+  // pick it up; this editor used to only write `stSource` back into the
+  // model when the explicit "Save" button was pressed, so typed-but-unsaved
+  // code was silently discarded on navigating away and back (Bug 3). This
+  // timer persists the current buffer into the model on a short pause in
+  // typing, and is flushed synchronously (see [_flushPendingPersist])
+  // whenever the buffer is about to be discarded or replaced — dispose,
+  // switching to a different program, or loading a template — so navigation
+  // can never lose text. It deliberately does not gate on
+  // `_compileAndVerify()`/`_isCompiled`: that check stays a Save-button-only
+  // affordance, not a precondition for the model reflecting what's typed.
+  Timer? _persistDebounce;
+  static const Duration _persistDebounceDuration = Duration(milliseconds: 350);
+
+  // Guards `_onCodeChanged` while a program/template load is programmatically
+  // overwriting `_codeController.text` (which fires the same listener a real
+  // keystroke would), so opening/switching programs never schedules a
+  // spurious persist of content that's already in the model.
+  bool _suppressPersistScheduling = false;
 
   final Map<String, String> _stTemplates = {
     'Motor Control (IF/THEN)': '''// Structured Text: Motor Start/Stop Control
@@ -103,6 +126,11 @@ END_FOR;''',
 
   @override
   void dispose() {
+    // Flush before tearing down the controllers so a keystroke that landed
+    // just before navigating away is never lost — this is the fix for
+    // Bug 3 ("ST Editor silently discards unsaved typed edits on navigating
+    // away and back").
+    _flushPendingPersist();
     _codeController.removeListener(_onCodeChanged);
     _codeController.dispose();
     _programNameController.dispose();
@@ -110,7 +138,59 @@ END_FOR;''',
     super.dispose();
   }
 
+  /// Cancels any pending debounced persist and, if one was pending, runs it
+  /// immediately. Called whenever the current buffer is about to be
+  /// discarded or replaced (switching programs, loading a template,
+  /// disposing) so in-flight typed edits are never silently dropped.
+  void _flushPendingPersist() {
+    if (_persistDebounce == null) return;
+    _persistDebounce!.cancel();
+    _persistDebounce = null;
+    _persistToModel();
+  }
+
+  /// (Re)starts the debounce window that persists the current code-editor
+  /// buffer into the model. Deliberately short (well under the shell's
+  /// 800ms autosave/history debounce) so a pause in typing writes the model
+  /// promptly, while the shell's own debounce is what actually coalesces a
+  /// burst of rapid edits into a single undo step (see
+  /// `_markDirtyAndAutosave`/`_pendingHistoryCapture` in workspace_shell.dart
+  /// and the coalescing test in workspace_undo_redo_test.dart) — this timer
+  /// only needs to avoid rebuilding the whole shell on every keystroke.
+  void _schedulePersist() {
+    _persistDebounce?.cancel();
+    _persistDebounce = Timer(_persistDebounceDuration, _persistToModel);
+  }
+
+  /// Writes the current code-editor text into the model right now,
+  /// independent of the "Compile & Verify" gate the explicit Save button
+  /// applies — matching every other editor's immediate-mutation +
+  /// onProjectUpdated convention rather than requiring an explicit save
+  /// workflow before the model (and therefore autosave + undo history)
+  /// reflects what's typed.
+  void _persistToModel() {
+    _persistDebounce = null;
+    final baseline = _selectedProgram;
+    final name = baseline?.name ??
+        (_programNameController.text.trim().isEmpty
+            ? 'StProgram'
+            : _programNameController.text.trim());
+    final description = baseline?.description ?? _descriptionController.text;
+    final prog = PlcProgram(
+      name: name,
+      language: 'StructuredText',
+      description: description,
+      stSource: _codeController.text,
+    );
+    _selectedProgram = prog;
+    widget.onSaveProgram(prog);
+  }
+
   void _loadProgram(PlcProgram prog) {
+    // Persist whatever was pending for the previously-selected program
+    // before switching the buffer away from it.
+    _flushPendingPersist();
+    _suppressPersistScheduling = true;
     setState(() {
       _selectedProgram = prog;
       _programNameController.text = prog.name;
@@ -120,15 +200,19 @@ END_FOR;''',
       _isCompiled = true;
       _showAutocompleteOverlay = false;
     });
+    _suppressPersistScheduling = false;
   }
 
   void _loadTemplate(String templateKey) {
+    _flushPendingPersist();
+    _suppressPersistScheduling = true;
     setState(() {
       _codeController.text = _stTemplates[templateKey] ?? '';
       _compilationStatus = 'Template loaded: $templateKey';
       _isCompiled = false;
       _showAutocompleteOverlay = false;
     });
+    _suppressPersistScheduling = false;
   }
 
   List<AutocompleteItem> _buildAllAutocompleteItems() {
@@ -186,6 +270,10 @@ END_FOR;''',
   }
 
   void _onCodeChanged() {
+    if (!_suppressPersistScheduling) {
+      _schedulePersist();
+    }
+
     final text = _codeController.text;
     final selection = _codeController.selection;
 
@@ -291,6 +379,12 @@ END_FOR;''',
   }
 
   void _saveProgram() {
+    // The explicit Save button always writes the freshest text, so any
+    // debounced auto-persist still pending is redundant — cancel it rather
+    // than let it fire again moments later with (by then) identical content.
+    _persistDebounce?.cancel();
+    _persistDebounce = null;
+
     _compileAndVerify();
     if (!_isCompiled) return;
 
@@ -301,6 +395,7 @@ END_FOR;''',
       stSource: _codeController.text,
     );
 
+    _selectedProgram = prog;
     widget.onSaveProgram(prog);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Program "${prog.name}" saved to project!')),
@@ -481,6 +576,7 @@ END_FOR;''',
                         padding: const EdgeInsets.all(12),
                         color: const Color(0xFF0D1117), // Dark IDE background
                         child: TextField(
+                          key: const Key('stCodeEditorField'),
                           controller: _codeController,
                           maxLines: null,
                           expands: true,
