@@ -606,6 +606,21 @@ END_FOR;''',
 
     return Scaffold(
       appBar: AppBar(
+        // Explicit leading, NOT the auto-implied DrawerButton: this editor is
+        // nested inside the shell's Scaffold, so an auto hamburger here sat
+        // directly beside the shell's own — two identical glyphs opening two
+        // different drawers (QA #6). The hamburger stays reserved for the main
+        // nav drawer; the program list gets the tree glyph the shell already
+        // uses for its "Programs" group.
+        leading: expanded
+            ? null
+            : Builder(
+                builder: (ctx) => IconButton(
+                  icon: const Icon(Icons.account_tree),
+                  tooltip: 'Open program list',
+                  onPressed: () => Scaffold.of(ctx).openDrawer(),
+                ),
+              ),
         title: Text(short ? 'ST Code Editor' : 'Structured Text (ST) Code Editor'),
         backgroundColor: const Color(0xFF1E293B),
         toolbarHeight: short ? 46 : null,
@@ -623,7 +638,7 @@ END_FOR;''',
         ],
       ),
       // On compact widths the program-selector sidebar moves into a Drawer
-      // (with a hamburger the AppBar provides automatically) so the code
+      // (opened by the AppBar's explicit tree-glyph leading above) so the code
       // editor can use the full window width.
       drawer: expanded ? null : Drawer(child: _buildSidebarContent(context, stPrograms)),
       body: Row(

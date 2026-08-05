@@ -401,6 +401,18 @@ class _FbEditorScreenState extends State<FbEditorScreen> {
     return Scaffold(
       key: const Key('fb_editor'),
       appBar: AppBar(
+        // Explicit leading rather than the auto-implied DrawerButton — see the
+        // same note in st_editor_screen.dart (QA #6): a nested editor's drawer
+        // must not reuse the shell's hamburger glyph.
+        leading: expanded
+            ? null
+            : Builder(
+                builder: (ctx) => IconButton(
+                  icon: const Icon(Icons.account_tree),
+                  tooltip: 'Open function block list',
+                  onPressed: () => Scaffold.of(ctx).openDrawer(),
+                ),
+              ),
         title: const Text('Function Blocks'),
         backgroundColor: const Color(0xFF1E293B),
       ),
