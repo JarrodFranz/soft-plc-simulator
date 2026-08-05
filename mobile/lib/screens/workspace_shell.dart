@@ -197,6 +197,21 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   final ProjectHistory _history = ProjectHistory();
   int _editorRevision = 0;
 
+  /// Whether a real user edit has happened since the last history capture.
+  ///
+  /// History captures must be gated on this. `_snapshot()` serializes every
+  /// tag's LIVE value (`PlcTag.toJson` writes the current `value` out as
+  /// `initial_value`), so on any project whose scan loop actually moves
+  /// values (sim rules, timers, counters, simulated signal tags) two
+  /// snapshots taken a tick apart differ even with no user edit at all.
+  /// Capturing unconditionally therefore let pure scan-loop drift push
+  /// bogus entries onto the undo stack, and an undo would step back to one
+  /// of those instead of to the pre-edit structure. Set by
+  /// [_markDirtyAndAutosave] (the single callback path every editor uses),
+  /// cleared whenever the snapshot is actually captured or the history is
+  /// reset/restored.
+  bool _pendingHistoryCapture = false;
+
   /// Serializes the active project for undo/redo + autosave-dirty
   /// comparison. The reserved `System` tag's value is neutralized to a fixed
   /// placeholder first: it carries continuously-changing per-scan telemetry
@@ -352,7 +367,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         _activeViewId = 'MEMORY';
       }
       _booting = false;
-      _history.reset(_snapshot());
+      _resetHistory();
       if (loadedRefreshHz != _refreshHz) {
         _refreshHz = loadedRefreshHz;
         _repaintThrottle.dispose();
@@ -862,7 +877,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _rekeyViewForProject(proj);
       scanCount = 0;
       _beginProjectSession();
-      _history.reset(_snapshot());
+      _resetHistory();
       _editorRevision++;
     });
     _logger.log(kLogSourceProject, LogLevel.info,
@@ -917,13 +932,31 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// debounce window and refresh the UI. Cheap/no-op-safe to call from
   /// every editor callback — repeated calls just push the save out further.
   void _markDirtyAndAutosave() {
+    _pendingHistoryCapture = true;
     setState(() {});
     _autosaveTimer?.cancel();
     _autosaveTimer = Timer(_autosaveDebounce, _runAutosave);
   }
 
-  Future<void> _runAutosave() async {
+  /// Captures the current snapshot into the undo history, but only if a real
+  /// user edit is pending (see [_pendingHistoryCapture]). Without this gate,
+  /// scan-loop live-value drift alone would be recorded as an undoable step.
+  void _captureHistoryIfDirty() {
+    if (!_pendingHistoryCapture) return;
+    _pendingHistoryCapture = false;
     _history.capture(_snapshot());
+  }
+
+  /// Resets the undo history to the current state and drops any pending
+  /// capture — used by every path that replaces the active project outright
+  /// (boot / switch / create / duplicate / rename / delete / reset / import).
+  void _resetHistory() {
+    _pendingHistoryCapture = false;
+    _history.reset(_snapshot());
+  }
+
+  Future<void> _runAutosave() async {
+    _captureHistoryIfDirty();
     final repo = _repo;
     if (repo == null) return;
     setState(() {
@@ -972,11 +1005,13 @@ class WorkspaceShellState extends State<WorkspaceShell> {
 
   /// Moves one step back in the project history and applies it, if any.
   /// Cancels a pending debounced autosave and captures the current state
-  /// first, so an in-flight (not-yet-captured) edit isn't lost off the
-  /// front of the undo stack.
+  /// first *if a user edit is actually pending*, so an in-flight
+  /// (not-yet-captured) edit isn't lost off the front of the undo stack —
+  /// while a snapshot that differs only by scan-loop live-value drift is
+  /// never recorded as a step of its own (see [_pendingHistoryCapture]).
   void _undo() {
     _autosaveTimer?.cancel();
-    _history.capture(_snapshot());
+    _captureHistoryIfDirty();
     final snap = _history.undo();
     if (snap != null) {
       _applySnapshot(snap);
@@ -986,7 +1021,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// Moves one step forward in the project history and applies it, if any.
   void _redo() {
     _autosaveTimer?.cancel();
-    _history.capture(_snapshot());
+    _captureHistoryIfDirty();
     final snap = _history.redo();
     if (snap != null) {
       _applySnapshot(snap);
@@ -998,9 +1033,11 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// bumps `_editorRevision` so the center editor rebuilds fresh, clears all
   /// runtimes (their internal state no longer matches the restored
   /// project), and re-validates the active view. Schedules a debounced
-  /// persist afterward rather than re-capturing synchronously — the
-  /// restored snapshot already equals the history baseline, so the next
-  /// `_history.capture` call is a no-op.
+  /// persist afterward; that autosave must NOT capture history — a restore
+  /// is not a user edit, and by the time it runs the live values have
+  /// already drifted off the restored baseline, so capturing would push a
+  /// drift-only entry and wipe the redo stack (hence
+  /// `_pendingHistoryCapture = false` below).
   void _applySnapshot(String json) {
     final proj = PlcProject.fromJson(jsonDecode(json) as Map<String, dynamic>);
     // The stored snapshot has the System tag's value neutralized (see
@@ -1018,6 +1055,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _beginProjectSession();
       _ensureValidView();
     });
+    _pendingHistoryCapture = false;
     _autosaveTimer?.cancel();
     _autosaveTimer = Timer(_autosaveDebounce, _runAutosave);
   }
@@ -1151,7 +1189,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _rekeyViewForProject(blank, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
-      _history.reset(_snapshot());
+      _resetHistory();
       _editorRevision++;
     });
     _logger.log(kLogSourceProject, LogLevel.info,
@@ -1186,7 +1224,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _rekeyViewForProject(copy, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
-      _history.reset(_snapshot());
+      _resetHistory();
       _editorRevision++;
     });
     _logger.log(kLogSourceProject, LogLevel.info,
@@ -1212,7 +1250,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       // the undo history to the renamed state so a later undo can't revert the
       // rename off a stale pre-rename baseline. The active content/view is
       // unchanged, so the editor is not re-keyed (editor state is preserved).
-      _history.reset(_snapshot());
+      _resetHistory();
     });
     _logger.log(kLogSourceProject, LogLevel.info,
         'Renamed project ${_activeProject.id} from "$oldName" to "$name"');
@@ -1272,7 +1310,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _rekeyViewForProject(next, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
-      _history.reset(_snapshot());
+      _resetHistory();
       _editorRevision++;
     });
     _logger.log(kLogSourceProject, LogLevel.info,
@@ -1324,7 +1362,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _rekeyViewForProject(first, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
-      _history.reset(_snapshot());
+      _resetHistory();
       _editorRevision++;
     });
     _logger.log(kLogSourceProject, LogLevel.warn, 'Reset all projects to defaults');
@@ -1471,7 +1509,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       _rekeyViewForProject(imported, fallbackToView: 'MEMORY');
       scanCount = 0;
       _beginProjectSession();
-      _history.reset(_snapshot());
+      _resetHistory();
       _editorRevision++;
     });
     _logger.log(kLogSourceProject, LogLevel.info,

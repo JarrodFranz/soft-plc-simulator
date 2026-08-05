@@ -162,6 +162,65 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('Undo reverts a structural edit while the scan loop churns live tag values', (tester) async {
+    // Regression: the history snapshot serializes every tag's LIVE value
+    // (`PlcTag.toJson` writes the current `value` as `initial_value`), so on a
+    // project whose scan loop actually moves values ('Tank Level Simulation'
+    // integrates Level_PV via its sim rules) the snapshot changes on every
+    // tick with no user edit at all. Undo must still step back to the
+    // pre-edit STRUCTURE rather than to a snapshot that merely differs by
+    // that live-value drift (which would leave the edit in place).
+    await setSurface(tester, desktopSize);
+    await tester.pumpWidget(_app());
+    await tester.pumpAndSettle();
+
+    // Switch to the churning project (this also resets history).
+    await tester.tap(find.byType(DropdownButton<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Tank Level Simulation').last);
+    await tester.pumpAndSettle();
+
+    const tankBase = 'Tags & Structs (7 Tags, 0 Structs)';
+    const tankPlusOne = 'Tags & Structs (8 Tags, 0 Structs)';
+    await tester.tap(find.text(tankBase).hitTestable());
+    await tester.pumpAndSettle();
+
+    await _addTagViaUi(tester);
+    expect(find.text(tankPlusOne), findsOneWidget);
+
+    // Let the 800ms autosave/history debounce fire (captures the edit)...
+    await tester.pump(const Duration(seconds: 1));
+    expect(_iconButton(tester, 'Undo').onPressed, isNotNull);
+    // ...then let the scan loop run on, drifting live tag values away from
+    // the captured snapshot without any further user edit.
+    await tester.pump(const Duration(seconds: 2));
+
+    await tester.tap(find.byTooltip('Undo'));
+    await tester.pumpAndSettle();
+
+    expect(find.text(tankBase), findsOneWidget,
+        reason: 'Undo must revert the added tag, not just the live-value drift');
+    expect(tester.takeException(), isNull);
+
+    // The restore's own debounced autosave (plus further drift) must not
+    // record a bogus entry that wipes redo...
+    await tester.pump(const Duration(seconds: 2));
+    expect(_iconButton(tester, 'Redo').onPressed, isNotNull);
+    await tester.tap(find.byTooltip('Redo'));
+    await tester.pumpAndSettle();
+    expect(find.text(tankPlusOne), findsOneWidget);
+
+    // ...and undo must not get stuck oscillating between two drift states:
+    // a second Undo (after more drift) still returns to the pre-edit state.
+    await tester.pump(const Duration(seconds: 2));
+    await tester.tap(find.byTooltip('Undo'));
+    await tester.pumpAndSettle();
+    expect(find.text(tankBase), findsOneWidget);
+    expect(_iconButton(tester, 'Undo').onPressed, isNull,
+        reason: 'drift must not have manufactured extra undo steps');
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('no exception on undo across surfaces 320 and 1400', (tester) async {
     for (final size in const [smallPhoneSize, desktopSize]) {
       await setSurface(tester, size);
