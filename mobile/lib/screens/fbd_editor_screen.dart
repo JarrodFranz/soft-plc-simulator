@@ -11,11 +11,13 @@ import '../ui/responsive.dart';
 import '../widgets/live_tick.dart';
 import '../widgets/tag_autocomplete_field.dart';
 
-const double _kBlockWidth = 180;
-// Roomy enough that the 44px pin-dot touch targets don't crowd each other on a
-// dense multi-input block at phone widths.
-const double _kPinRowHeight = 30;
-const double _kHeaderHeight = 40; // icon row + divider, approx.
+// Card geometry comes from `fbd_layout.dart` so placement, auto-arrange and
+// rendering can never drift apart. (`kFbdPinRowHeight` is roomy enough that the
+// 44px pin-dot touch targets don't crowd each other on a dense multi-input
+// block at phone widths.)
+const double _kBlockWidth = kFbdBlockWidth;
+const double _kPinRowHeight = kFbdPinRowHeight;
+const double _kHeaderHeight = kFbdBlockHeaderHeight;
 
 class FbdEditorScreen extends StatefulWidget {
   final PlcProject currentProject;
@@ -291,10 +293,14 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
       type: type,
       title: title,
       tagBinding: tag,
-      x: 150,
-      y: 150,
       network: targetNet,
     );
+    // Land on the default anchor, or the nearest clear grid slot to it, rather
+    // than on top of whatever is already there (QA #14).
+    final slot = findFreeFbdBlockSlot(widget.currentProject, widget.program, newBlock);
+    newBlock
+      ..x = slot.x
+      ..y = slot.y;
 
     setState(() {
       widget.program.fbdBlocks.add(newBlock);
@@ -320,10 +326,12 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
       type: fb.name,
       title: fb.name,
       tagBinding: tag.name,
-      x: 150,
-      y: 150,
       network: targetNet,
     );
+    final slot = findFreeFbdBlockSlot(widget.currentProject, widget.program, newBlock);
+    newBlock
+      ..x = slot.x
+      ..y = slot.y;
 
     setState(() {
       widget.currentProject.tags.add(tag);
