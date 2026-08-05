@@ -2427,10 +2427,17 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Projects Switcher Header
+          // Projects Switcher Header. A7/#10: a subtle top border keeps this
+          // header from visually blending into the scan-speed toolbar row
+          // that sits directly beside it (both are dark, borderless panels
+          // starting right under the AppBar) — cheap, always-on separation
+          // that doesn't depend on the dropdown being open.
           Container(
             padding: const EdgeInsets.all(12),
-            color: const Color(0xFF1E293B),
+            decoration: const BoxDecoration(
+              color: Color(0xFF1E293B),
+              border: Border(top: BorderSide(color: Colors.white24, width: 1)),
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -2453,7 +2460,14 @@ class WorkspaceShellState extends State<WorkspaceShell> {
                               children: [
                                 Icon(isActive ? Icons.check_circle : Icons.folder, size: 16, color: isActive ? Colors.greenAccent : Colors.grey),
                                 const SizedBox(width: 8),
-                                Expanded(child: Text(p.name, overflow: TextOverflow.ellipsis)),
+                                // A7/#10: a long project (template) name
+                                // truncates with no way to read it in full.
+                                Expanded(
+                                  child: Tooltip(
+                                    message: p.name,
+                                    child: Text(p.name, overflow: TextOverflow.ellipsis),
+                                  ),
+                                ),
                               ],
                             ),
                           );
