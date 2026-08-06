@@ -211,6 +211,17 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   final ProjectHistory _history = ProjectHistory();
   int _editorRevision = 0;
 
+  /// Last-selected protocol tab on the Gateway screen. Held here — NOT inside
+  /// `GatewayScreen`'s own `State` — because every `_editorRevision` bump
+  /// (undo/redo chief among them; see the Regenerate-map UNDO snackbar) tears
+  /// the whole `GatewayScreen` (and its `DefaultTabController`) down and
+  /// rebuilds it fresh via the `ValueKey('editor-$_editorRevision-...')`
+  /// below. A field on `GatewayScreen`'s own State would be destroyed right
+  /// along with it; this one survives because `WorkspaceShellState` itself
+  /// isn't rebuilt. Fed back in as `initialProtocolTabIndex` so a rebuild
+  /// reopens on the same tab instead of snapping back to OPC UA (tab 0).
+  int _gatewayTabIndex = 0;
+
   /// Whether a real user edit has happened since the last history capture.
   ///
   /// History captures must be gated on this. `_snapshot()` serializes every
@@ -3427,6 +3438,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         slmpHost: _slmpHost,
         bacnetHost: _bacnetHost,
         onProjectUpdated: _markDirtyAndAutosave,
+        initialProtocolTabIndex: _gatewayTabIndex,
+        onProtocolTabChanged: (i) => _gatewayTabIndex = i,
       );
     } else if (_activeViewId == 'LOGS') {
       return LogsScreen(logger: _logger);

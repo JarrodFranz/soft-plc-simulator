@@ -133,6 +133,21 @@ class GatewayScreen extends StatefulWidget {
   /// overridable for tests.
   final bool hostingSupported;
 
+  /// Which protocol tab is selected when this screen first mounts. The
+  /// caller (`WorkspaceShell`) owns this across remounts: an undo/redo (or
+  /// any other action that bumps the shell's `_editorRevision`) re-keys the
+  /// center pane and tears down/rebuilds this whole screen — including its
+  /// `DefaultTabController` — so without the caller feeding the last-selected
+  /// index back in here, that rebuild silently snaps back to tab 0 (OPC UA).
+  /// Defaults to 0 for callers (and tests) that don't track it.
+  final int initialProtocolTabIndex;
+
+  /// Reports every protocol-tab change (chip tap or `TabBarView` swipe) back
+  /// to the caller, so it can remember the index across the next remount —
+  /// see [initialProtocolTabIndex]. Optional: callers that don't care about
+  /// preserving the tab (e.g. most tests) can omit it.
+  final ValueChanged<int>? onProtocolTabChanged;
+
   const GatewayScreen({
     super.key,
     required this.currentProject,
@@ -147,6 +162,8 @@ class GatewayScreen extends StatefulWidget {
     required this.bacnetHost,
     required this.onProjectUpdated,
     this.hostingSupported = !kIsWeb,
+    this.initialProtocolTabIndex = 0,
+    this.onProtocolTabChanged,
   });
 
   @override
@@ -1530,6 +1547,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
 
     return DefaultTabController(
       length: _protocolTabs.length,
+      initialIndex: widget.initialProtocolTabIndex.clamp(0, _protocolTabs.length - 1),
       child: Scaffold(
         backgroundColor: const Color(0xFF0F172A),
         appBar: AppBar(
@@ -1552,7 +1570,7 @@ class _GatewayScreenState extends State<GatewayScreen> {
         // cannot promise); both drive the one enclosing `DefaultTabController`.
         body: Column(
           children: [
-            const _ProtocolTabSelector(tabs: _protocolTabs),
+            _ProtocolTabSelector(tabs: _protocolTabs, onIndexChanged: widget.onProtocolTabChanged),
             const Divider(height: 1, color: Colors.white12),
             Expanded(
               // Make `context.isCompact` inside the protocol cards key off the
@@ -2110,7 +2128,23 @@ class _GatewayScreenState extends State<GatewayScreen> {
           final item = items[index];
           return switch (item) {
             _FolderHeaderItem<T>() => _folderSubheader(item.folder, item.count),
-            _EntryItem<T>() => rowBuilder(item.entry),
+            // Keyed by the entry's OWN identity (not the list index) so that
+            // when Regenerate/undo swaps `entries` for a list of brand-new
+            // entry objects, the row at this index is a genuinely different
+            // widget from Flutter's point of view — it unmounts the old row
+            // (and its TextFormField/TagAutocompleteField/DropdownButtonFormField
+            // descendants, whose controllers seed from `initialValue` exactly
+            // once in `initState`) and mounts a fresh one seeded from the new
+            // entry. Without this, `ListView.builder` reuses the Element at
+            // that index (same runtimeType, no key) across the swap, so the
+            // old controllers — and whatever the user last hand-typed into
+            // them — survive untouched even though the underlying model is
+            // already correct. `ObjectKey` compares by `identical()`
+            // regardless of the entry class's own `==`, so edits that mutate
+            // an entry IN PLACE (every other field change) keep the same key
+            // and never pay this remount; only a genuine object swap does.
+            _EntryItem<T>() =>
+              KeyedSubtree(key: ObjectKey(item.entry), child: rowBuilder(item.entry)),
           };
         },
       ),
@@ -5593,9 +5627,13 @@ class _GatewayScreenState extends State<GatewayScreen> {
 /// original `Key('protocol_tab_*')`, so callers/tests select a protocol by
 /// the same key as before.
 class _ProtocolTabSelector extends StatefulWidget {
-  const _ProtocolTabSelector({required this.tabs});
+  const _ProtocolTabSelector({required this.tabs, this.onIndexChanged});
 
   final List<Tab> tabs;
+
+  /// Forwarded to `GatewayScreen.onProtocolTabChanged` — see that field's
+  /// doc comment for why the caller needs this.
+  final ValueChanged<int>? onIndexChanged;
 
   @override
   State<_ProtocolTabSelector> createState() => _ProtocolTabSelectorState();
@@ -5619,6 +5657,7 @@ class _ProtocolTabSelectorState extends State<_ProtocolTabSelector> {
   }
 
   void _onTabChanged() {
+    widget.onIndexChanged?.call(_controller!.index);
     if (mounted) {
       setState(() {});
     }
