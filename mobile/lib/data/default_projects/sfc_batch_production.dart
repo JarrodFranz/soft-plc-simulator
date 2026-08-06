@@ -21,7 +21,7 @@
 ///
 /// (d) Proof test: `test/defaults/sfc_batch_production_test.dart` (plus the
 /// re-pointed `test/sfc_exec_integration_test.dart` and
-/// `test/sfc_batchmix_showcase_test.dart`).
+/// `test/sfc_batch_production_showcase_test.dart`).
 library;
 
 import '../../models/project_model.dart';

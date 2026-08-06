@@ -55,6 +55,11 @@ void main() {
       await tester.pumpWidget(app());
       await tester.pumpAndSettle();
 
+      // NOTE: not one InteractiveViewer per network lane (the FBD editor
+      // wraps a fixed small number of chrome regions, not each of
+      // HvacZone_FBD's seven networks individually) — a `findsNWidgets` count
+      // tied to `program.fbdBlocks` network count does not hold here, so this
+      // stays a loose existence check.
       expect(find.byType(InteractiveViewer), findsWidgets);
       expect(tester.takeException(), isNull);
     });
@@ -64,7 +69,9 @@ void main() {
       await tester.pumpWidget(app());
       await tester.pumpAndSettle();
 
-      // The workspace pans/zooms on desktop too, not only on phone.
+      // The workspace pans/zooms on desktop too, not only on phone. See the
+      // NOTE above — the InteractiveViewer count isn't a clean function of
+      // the program's network count, so this stays a loose existence check.
       expect(find.byType(InteractiveViewer), findsWidgets);
       expect(tester.takeException(), isNull);
     });

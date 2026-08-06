@@ -15,8 +15,8 @@ double _d(PlcProject p, String path) => (readPath(p, path) as num).toDouble();
 /// Sets the decoupler CONST blocks' (`a_d12`/`b_d21`) `tagBinding` in the
 /// project's `TwoZone_FBD` FBD program. Both default to `'0'` (loops
 /// coupled); setting them to the identified `K12/K11`/`K21/K22` ratio
-/// cancels the cross-loop interaction (see `_mimoTwoZoneProject` doc
-/// comment in `default_projects.dart`).
+/// cancels the cross-loop interaction (see `docs/mimo-coupled-plant.md` for
+/// the full gain-matrix/RGA/decoupler explanation).
 void _setDecouplerGains(PlcProject p, String d12, String d21) {
   final fbd = p.programs.firstWhere((prog) => prog.name == 'TwoZone_FBD');
   fbd.fbdBlocks.firstWhere((b) => b.id == 'a_d12').tagBinding = d12;

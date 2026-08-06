@@ -32,6 +32,32 @@ void main() {
         reason: 'duplicate project NAME — the dropdown switches by name');
   });
 
+  /// The 13 default-project ids retired by the default-projects redo (see
+  /// `git show f324213~5:mobile/lib/data/default_projects/legacy_defaults.dart`).
+  /// `proj_all_water` is deliberately excluded — it is the one legacy id that
+  /// was kept and reused by the new 7-project catalog.
+  test('the new catalog never resurrects a retired default id', () {
+    const retiredDefaultIds = {
+      'proj_motor',
+      'proj_tank',
+      'proj_st_reactor',
+      'proj_ld_conveyor',
+      'proj_fbd_hvac',
+      'proj_sfc_filling',
+      'proj_sfc_batchmix',
+      'proj_tank_level_pid',
+      'proj_batch_counter',
+      'proj_pulse_output',
+      'proj_cascade_tanks',
+      'proj_noisy_level',
+      'proj_mimo_two_zone',
+    };
+    final currentIds = projects.map((p) => p.id).toSet();
+    expect(currentIds.intersection(retiredDefaultIds), isEmpty,
+        reason: 'reusing a retired id suppresses backfill on every existing '
+            'install');
+  });
+
   test('the catalog order the shell and the repository depend on holds', () {
     expect(projects.length, 7);
     expect(projects.first.id, 'proj_ld_conveyor_line');

@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/data/default_projects.dart';
 import 'package:soft_plc_mobile/models/fbd_pins.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/tag_resolver.dart';
 
 /// Mechanical enforcement of the spec's §5 coverage matrix: the shipped
 /// defaults must, between them, exercise every feature listed here. A cell may
@@ -210,5 +211,85 @@ void main() {
     expect(tags.any((t) => t.arrayLength > 0), isTrue);
     expect(projects.any((p) => p.structDefs.isNotEmpty), isTrue);
     expect(tags.any((t) => t.dataType == 'TIMER'), isTrue);
+  });
+
+  test('some project uses a custom FB block type in an FBD network', () {
+    final found = projects.any((p) => p.programs.any((prog) =>
+        prog.language == 'FunctionBlockDiagram' &&
+        prog.fbdBlocks.any((b) => fbDefinitionFor(p, b.type) != null)));
+    expect(found, isTrue,
+        reason: 'no default wires a custom FB instance into an FBD network');
+  });
+
+  test('some ST source contains an array-index read', () {
+    // An index reference not immediately followed by ':=' is a read, not the
+    // lvalue of an index write (which this app's ST subset doesn't even
+    // support on an array — but the shape check stays honest either way).
+    final arrayRead = RegExp(r'[A-Za-z_]\w*\[[^\]]+\]\s*(?!:=)');
+    final found = projects.any((p) => p.programs.any((prog) =>
+        prog.language == 'StructuredText' && arrayRead.hasMatch(prog.stSource)));
+    expect(found, isTrue,
+        reason: 'no ST program in any default reads an array element');
+  });
+
+  test('some ST source contains a struct-member write', () {
+    final structWrite = RegExp(r'[A-Za-z_]\w*\.[A-Za-z_]\w*\s*:=');
+    final found = projects.any((p) => p.programs.any((prog) =>
+        prog.language == 'StructuredText' && structWrite.hasMatch(prog.stSource)));
+    expect(found, isTrue,
+        reason: 'no ST program in any default writes a struct member');
+  });
+
+  test('some project has more than one HMI screen', () {
+    expect(projects.any((p) => p.hmis.length > 1), isTrue,
+        reason: 'no default ships a multi-screen HMI');
+  });
+
+  test('some project has a PID block resolvable by the autotune loop resolver',
+      () {
+    // Mirrors PidAutoTuneScreen._loopOptions(): an FBD program with a block
+    // whose type is 'PID'.
+    bool hasPidLoop(PlcProject p) => p.programs.any((prog) =>
+        prog.language == 'FunctionBlockDiagram' &&
+        prog.fbdBlocks.any((b) => b.type == 'PID'));
+    expect(projects.any(hasPidLoop), isTrue,
+        reason: 'no default exposes a PID loop the autotune screen can find');
+  });
+
+  test('some SFC project has a step with isInitial', () {
+    final found = projects.any((p) => p.programs.any((prog) =>
+        prog.language == 'SequentialFunctionChart' &&
+        prog.sfcSteps.any((s) => s.isInitial)));
+    expect(found, isTrue, reason: 'no SFC program declares an initial step');
+  });
+
+  /// Pins the two "Not covered" doc bullets in docs/default-projects.md that
+  /// claimed to be "pinned as a set in the coverage guard" without an actual
+  /// assertion backing that claim.
+  test('no default ships a SignalGen (pinned uncovered set)', () {
+    expect(projects.every((p) => p.signalGens.isEmpty), isTrue,
+        reason: 'a default now ships a SignalGen — update the "Not covered" '
+            'section of docs/default-projects.md and strike the matching row '
+            'in docs/DEFERRED.md');
+  });
+
+  test(
+      'no default configures a protocol beyond Modbus + OPC UA (pinned uncovered set)',
+      () {
+    final configuredBeyond = projects.any((p) {
+      final protocols = p.protocols;
+      if (protocols == null) return false;
+      return protocols.mqtt != null ||
+          protocols.dnp3 != null ||
+          protocols.ethernetIp != null ||
+          protocols.s7 != null ||
+          protocols.fins != null ||
+          protocols.slmp != null ||
+          protocols.bacnet != null;
+    });
+    expect(configuredBeyond, isFalse,
+        reason: 'a default now pre-configures a protocol beyond Modbus + OPC '
+            'UA — update the "Not covered" section of docs/default-projects.md '
+            'and strike the matching row in docs/DEFERRED.md');
   });
 }

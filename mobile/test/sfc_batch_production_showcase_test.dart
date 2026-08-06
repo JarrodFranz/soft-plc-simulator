@@ -10,7 +10,7 @@ PlcProject _batchMix() =>
     DefaultProjects.all().firstWhere((p) => p.id == 'proj_sfc_batch_production');
 
 void main() {
-  test('batch-mix project is registered and round-trips losslessly', () {
+  test('batch-production project is registered and round-trips losslessly', () {
     final p = _batchMix();
     expect(p.name, 'SFC — Batch Production');
     final back = PlcProject.fromJson(jsonDecode(jsonEncode(p.toJson())));

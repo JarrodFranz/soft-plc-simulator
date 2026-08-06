@@ -86,6 +86,8 @@ void main() {
       }
       return {'hard': hardFailures, 'skipped': skipped};
     });
+    expect(probe, isNotNull,
+        reason: 'runAsync did not complete — the port probe never ran');
     final hardFailures = probe?['hard'] ?? const <String>[];
     final skipped = probe?['skipped'] ?? const <String>[];
     if (skipped.isNotEmpty) {

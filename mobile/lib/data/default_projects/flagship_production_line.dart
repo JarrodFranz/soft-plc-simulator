@@ -32,12 +32,17 @@
 /// Every tag that is an OUTPUT of a showcased behaviour, and every tag that is
 /// the only writable INPUT to one, is now on a screen or a pen — pinned by the
 /// "every showcase behaviour is reachable from the UI" case in the proof test.
-/// Five tags are deliberately left off the screens because they are internal
-/// intermediates or fixed parameters, each already consumed by logic (so none
-/// is dead content) and each still visible in the Tag Inspector: `Line_Run` and
-/// `Conv2_Request` (ladder rungs read them, and the online ladder view shows
-/// them), and `Steam_Temp` / `Recipe_A_Ratio` / `Recipe_B_Ratio` (constants the
-/// lag rule and the SEL block consume).
+/// Five **scalar** tags are deliberately left off the screens because they are
+/// internal intermediates or fixed parameters, each already consumed by logic
+/// (so none is dead content) and each still visible in the Tag Inspector:
+/// `Line_Run` and `Conv2_Request` (ladder rungs read them, and the online
+/// ladder view shows them), and `Steam_Temp` / `Recipe_A_Ratio` /
+/// `Recipe_B_Ratio` (constants the lag rule and the SEL block consume). The
+/// four composite instance tags (`Zone2Start`, `Blend_Scale`, `JamTimer1`,
+/// `PartCtu`) are also off-screen for the same reason — FB/timer/counter
+/// internals, not dead content: each is visible in the Tag Inspector (which
+/// expands composites to their members) and published on both protocol maps
+/// (`autoGenerate` walks every scalar leaf, composites included).
 ///
 /// (c) Falsifiable: zeroing the PID gains pins `Blend_Valve` shut and the tank
 /// drains to empty under the constant draw; deleting the `deadTime` rule makes

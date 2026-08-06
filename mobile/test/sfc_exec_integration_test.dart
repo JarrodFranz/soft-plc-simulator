@@ -21,7 +21,8 @@ bool _b(PlcProject p, String path) => readPath(p, path) == true;
 int _i(PlcProject p, String path) => (readPath(p, path) as num?)?.toInt() ?? 0;
 
 void main() {
-  test('bottle filler: two full cycles, one count each, display tag tracks',
+  test(
+      'batch production: two full container cycles, one count each, display tag tracks',
       () {
     final p = DefaultProjects.all()
         .firstWhere((x) => x.id == 'proj_sfc_batch_production');
@@ -32,7 +33,7 @@ void main() {
     _scan(p, sim, ld, sfc); // IDLE
     expect(_i(p, 'Sfc_Step'), equals(0));
     writePath(p, 'Start_Cmd', true);
-    _scan(p, sim, ld, sfc); // IDLE fires -> WAIT_BOTTLE next
+    _scan(p, sim, ld, sfc); // IDLE fires -> WAIT_CONTAINER next
     writePath(p, 'Container_Present', true);
 
     int counted = 0;
@@ -48,7 +49,7 @@ void main() {
       }
     }
     expect(counted, equals(2),
-        reason: 'two containers should complete within 80s sim time');
+        reason: 'two batches should complete within 80s sim time');
     expect(_i(p, 'Filled_Count'), equals(2)); // exactly one increment per bottle
   });
 

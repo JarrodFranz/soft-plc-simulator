@@ -11,7 +11,7 @@ import 'package:soft_plc_mobile/models/tag_resolver.dart';
 double _d(PlcProject p, String path) => (readPath(p, path) as num).toDouble();
 
 void main() {
-  test('Tank Level PID Control: closed-loop FBD PID drives an analog valve '
+  test('Process Control Lab PID: closed-loop FBD PID drives an analog valve '
       'to bring Level_PV to and hold it near Level_SP', () {
     final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_process_lab');
     final sim = SimRuntime();

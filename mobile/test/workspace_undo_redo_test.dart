@@ -178,6 +178,8 @@ void main() {
     // tick with no user edit at all. Undo must still step back to the
     // pre-edit STRUCTURE rather than to a snapshot that merely differs by
     // that live-value drift (which would leave the edit in place).
+    expect(_second.simRules.where((r) => r.enabled), isNotEmpty,
+        reason: 'this test needs a project whose scan loop moves live values');
     await setSurface(tester, desktopSize);
     await tester.pumpWidget(_app());
     await tester.pumpAndSettle();

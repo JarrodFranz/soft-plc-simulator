@@ -12,8 +12,8 @@ double _d(PlcProject p, String path) => (readPath(p, path) as num).toDouble();
 
 void main() {
   test(
-      'Noisy Level Measurement: Level_Meas jitters within the noise amplitude '
-      'band around Tank_Level (no drift), varies scan-to-scan, and '
+      'Process Control Lab noise rig: Level_Meas jitters within the noise '
+      'amplitude band around Tank_Level (no drift), varies scan-to-scan, and '
       'Level_Filtered attenuates the jitter relative to Level_Meas', () {
     final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_process_lab');
     final sim = SimRuntime();

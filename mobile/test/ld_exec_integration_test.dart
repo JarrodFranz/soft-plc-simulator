@@ -56,7 +56,7 @@ void main() {
     writePath(p, 'Start_PB', true);
     _scan(p, simRt, ldRt);
     expect(_b(p, 'Zone1_Motor'), isTrue);
-    writePath(p, 'Start_PB', false); // Belt_Latch seal-in keeps it running
+    writePath(p, 'Start_PB', false); // Line_Latch seal-in keeps it running
 
     // The start scan already accumulated 500ms; 8 more keep ACC below the
     // 5000ms preset, so the belt keeps running.

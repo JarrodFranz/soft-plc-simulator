@@ -46,10 +46,13 @@ falls through to a global tag), then reads the output vars back out. Because
 across scans** exactly like a `TON`'s elapsed time — two instances of the
 same FB never see each other's state.
 
-A shipped example lives in the "Noisy Level Measurement" default project: a
-`Hysteresis` FB (`PV`/`High`/`Low` in, internal `Q`, `Out` out) drives a
-High-Level Alarm with a 40–60% deadband around the noisy, filtered tank
-level. Its `IF PV > High THEN Q := TRUE; ELSIF PV < Low THEN Q := FALSE;
+A shipped example lives in the **ST — Reactor Temperature Controller** default
+project (`proj_st_reactor_control`, `st_reactor_control.dart`): a `Hysteresis`
+FB (`PV`/`High`/`Low` in, internal `Q`, `Out` out) instantiated as
+`TempAlarmHyst` drives the `Alarm_Latched` hot-vessel alarm with a 40–60 °C
+deadband around `Temp_PV`, wired up in the companion `ReactorAlarm_FBD`
+program (ST has no FB-call syntax in the app's subset, so the call lives in
+FBD). Its `IF PV > High THEN Q := TRUE; ELSIF PV < Low THEN Q := FALSE;
 END_IF; Out := Q;` body only writes `Q` at the edges — the deadband holds
 because `Q` is read back unchanged on every scan where `PV` is between the
 two thresholds. See `test/hysteresis_fb_demo_test.dart`.
@@ -64,7 +67,12 @@ its `stSource` is ignored; an empty one is the ST path, unchanged.
 Ladder bodies exist because a Rockwell **RLL-bodied AOI** cannot be honestly
 transpiled to the app's ST subset (IF + assignment only — no timers, no
 `OTL`/`OTU` latches, no edge instructions). They are produced by the L5X
-importer (see `docs/import/L5X.md`); the FB editor does not create them.
+importer (see `docs/import/L5X.md`); the FB editor does not create them. Two
+of the shipped default projects also carry hand-authored ladder-bodied FBs
+written directly against this same model — `MotorStarter` in **Ladder —
+Conveyor Line** (`ladder_conveyor_line.dart`) and `ZoneStarter` in
+**Flagship — Production Line** (`flagship_production_line.dart`) — proving the
+ladder-body path isn't exclusively an import artifact.
 
 Execution mirrors the ST path exactly. `executeFbInstance` writes the wired
 inputs into the instance struct, then runs `runScopedLdBody` (`models/
