@@ -16,9 +16,28 @@
 /// (gaussian + drift), `pulse`, **`setWhileCondition`** and **`delayedSet`**
 /// (the last two showcased nowhere else); the reserved **`System` tag bound on
 /// an HMI**; the **`TrendChartDisplay`** widget with project `TrendPen`s
-/// (analog pens plus BOOL step lanes); the **`TextInputField`** widget; and
-/// **pre-configured Modbus + OPC UA maps** so the Gateway screen shows live
-/// content out of the box.
+/// (six pens: four analog on one chart plus two BOOL step lanes on another);
+/// the **`TextInputField`** widget; and **pre-configured Modbus + OPC UA maps**
+/// so the Gateway screen shows live content out of the box.
+///
+/// HMI content: 30 components on the overview, 2 trend charts, 16 on
+/// diagnostics (48 total, 6 pens). That is a deliberate deviation from the
+/// spec's verbatim HMI content, which left the `deadTime` output
+/// (`Line_Transfer`), `Photo2`, the recipe/ratio chain and the whole
+/// batch-sequencer output set unbound, and left the two sim behaviours unique
+/// to this project (`setWhileCondition` / `delayedSet`) with no writable input
+/// — so both latched a couple of seconds after load and never moved again. A
+/// flagship whose headline behaviours cannot be driven is not a showcase.
+///
+/// Every tag that is an OUTPUT of a showcased behaviour, and every tag that is
+/// the only writable INPUT to one, is now on a screen or a pen — pinned by the
+/// "every showcase behaviour is reachable from the UI" case in the proof test.
+/// Five tags are deliberately left off the screens because they are internal
+/// intermediates or fixed parameters, each already consumed by logic (so none
+/// is dead content) and each still visible in the Tag Inspector: `Line_Run` and
+/// `Conv2_Request` (ladder rungs read them, and the online ladder view shows
+/// them), and `Steam_Temp` / `Recipe_A_Ratio` / `Recipe_B_Ratio` (constants the
+/// lag rule and the SEL block consume).
 ///
 /// (c) Falsifiable: zeroing the PID gains pins `Blend_Valve` shut and the tank
 /// drains to empty under the constant draw; deleting the `deadTime` rule makes
@@ -43,6 +62,16 @@
 /// screen's toggle. Task 8 re-confirms this by test (`flagship_gateway_no_
 /// autostart_test.dart`). If that ever changes, ship these configs with
 /// `enabled: false` and record the finding in `docs/DEFERRED.md`.
+///
+/// NOTE on protocol exposure: both maps ship wide open on purpose — anonymous
+/// access with the `None` security mode, and `autoGenerate` publishes EVERY
+/// scalar leaf, which includes function-block and timer internals such as
+/// `Zone2Start.T.ACC` and `Blend_Scale.In` as ReadWrite. That is the intent for
+/// a simulator showcase (point any Modbus/OPC UA client at it and everything is
+/// browsable and pokeable out of the box), not a template for a real
+/// controller. Only the reserved `System` tag is forced ReadOnly, by
+/// `defaultsExternallyWritable`. Anyone reusing this project as a starting
+/// point should prune both maps and turn on OPC UA security first.
 library;
 
 import '../../models/ld_graph.dart';
@@ -635,6 +664,15 @@ PlcProject flagshipProductionLineProject() {
       TrendPen(
           tagPath: 'Blend_Temp',
           color: 'teal',
+          sampleIntervalMs: 250,
+          retentionMode: 'time',
+          windowMs: 300000),
+      // Trended alongside Blend_Level on the SAME chart on purpose: the 4 s
+      // deadTime lag between the two curves is the only way the `deadTime`
+      // behaviour is visible anywhere in the app.
+      TrendPen(
+          tagPath: 'Line_Transfer',
+          color: 'blue',
           sampleIntervalMs: 250,
           retentionMode: 'time',
           windowMs: 300000),
@@ -1243,10 +1281,19 @@ END_IF;''',
           type: 'Continuous',
           periodMs: 100,
           programNames: ['Infeed_LD', 'Blend_FBD', 'Safety_ST']),
+      // 1000 ms, NOT a shorter period, because `scheduleTick` runs a
+      // `Continuous` task only when no higher-priority task is due that tick
+      // (`task_scheduler.dart`: `case 'Continuous': return !anyHigherDue`).
+      // A Periodic task therefore STARVES the Continuous one on every tick it
+      // fires: at 250 ms against a 100 ms scan that is 2 ticks in 5 (jittery
+      // PID sampling, Run_Hours under-counting by ~40 %, stretched SFC dwells),
+      // while at 1000 ms it is 1 tick in 10. Same period `all_water_treatment`
+      // uses for its SFC task, and pinned by the scheduler test in
+      // `flagship_line_test.dart`.
       PlcTask(
           name: 'BatchTask',
           type: 'Periodic',
-          periodMs: 250,
+          periodMs: 1000,
           programNames: ['Batch_SFC']),
     ],
     hmis: [
@@ -1383,6 +1430,97 @@ END_IF;''',
               tagBinding: 'Batch_Done',
               gridSpanWidth: 1,
               accentColor: 'green'),
+          // ── Infeed part sensing ───────────────────────────────────────
+          // Both photo eyes are driven by `pulse` rules (fl5/fl6) off their
+          // conveyor contactors. Photo1 also feeds the CTU/ADD/jam rungs;
+          // Photo2 had no consumer at all before these LEDs.
+          HmiComponent(
+              id: 'fo19',
+              title: 'Photo Eye 1',
+              type: 'LedIndicatorLight',
+              tagBinding: 'Photo1',
+              gridSpanWidth: 1,
+              accentColor: 'amber'),
+          HmiComponent(
+              id: 'fo20',
+              title: 'Photo Eye 2',
+              type: 'LedIndicatorLight',
+              tagBinding: 'Photo2',
+              gridSpanWidth: 1,
+              accentColor: 'amber'),
+          // ── Recipe / ratio (Blend_FBD network 1) ──────────────────────
+          HmiComponent(
+              id: 'fo21',
+              title: 'Recipe B Selected',
+              type: 'ToggleSwitch',
+              tagBinding: 'Recipe_Select',
+              gridSpanWidth: 1,
+              accentColor: 'teal'),
+          HmiComponent(
+              id: 'fo22',
+              title: 'Active Ratio (%)',
+              type: 'DigitalGaugeDisplay',
+              tagBinding: 'Ratio_SP',
+              gridSpanWidth: 2,
+              accentColor: 'teal'),
+          HmiComponent(
+              id: 'fo23',
+              title: 'Component Feed Rate (%)',
+              type: 'DigitalGaugeDisplay',
+              tagBinding: 'Blend_Rate',
+              gridSpanWidth: 2,
+              accentColor: 'amber'),
+          // The deadTime showcase, also trended against Blend_Level.
+          HmiComponent(
+              id: 'fo24',
+              title: 'Transfer Line (%, 4 s lag)',
+              type: 'DigitalGaugeDisplay',
+              tagBinding: 'Line_Transfer',
+              gridSpanWidth: 2,
+              accentColor: 'blue'),
+          // ── Batch sequencer (Batch_SFC) ───────────────────────────────
+          HmiComponent(
+              id: 'fo25',
+              title: 'Batch Step',
+              type: 'StatusPillDisplay',
+              tagBinding: 'Batch_Step',
+              gridSpanWidth: 2,
+              accentColor: 'cyan'),
+          HmiComponent(
+              id: 'fo26',
+              title: 'Batch Vessel Charge',
+              type: 'TankGraphicDisplay',
+              tagBinding: 'Charge_Level',
+              gridSpanWidth: 2,
+              accentColor: 'teal'),
+          HmiComponent(
+              id: 'fo27',
+              title: 'Charge Valve',
+              type: 'LedIndicatorLight',
+              tagBinding: 'Charge_Valve',
+              gridSpanWidth: 1,
+              accentColor: 'cyan'),
+          HmiComponent(
+              id: 'fo28',
+              title: 'Heater',
+              type: 'LedIndicatorLight',
+              tagBinding: 'Heater',
+              gridSpanWidth: 1,
+              accentColor: 'red'),
+          HmiComponent(
+              id: 'fo29',
+              title: 'Agitator',
+              type: 'LedIndicatorLight',
+              tagBinding: 'Agitator',
+              gridSpanWidth: 1,
+              accentColor: 'amber'),
+          HmiComponent(
+              id: 'fo30',
+              title: 'Discharge Pump',
+              type: 'LedIndicatorLight',
+              tagBinding: 'Discharge_Pump',
+              gridSpanWidth: 1,
+              accentColor: 'green'),
         ],
       ),
       HmiScreenDef(
@@ -1400,6 +1538,7 @@ END_IF;''',
             windowMs: 120000,
             trendPens: [
               TrendPenRef(penTagPath: 'Blend_Level'),
+              TrendPenRef(penTagPath: 'Line_Transfer'),
               TrendPenRef(penTagPath: 'Blend_Valve'),
               TrendPenRef(penTagPath: 'Blend_Temp'),
             ],
@@ -1522,6 +1661,26 @@ END_IF;''',
               tagBinding: 'System.Fault',
               gridSpanWidth: 2,
               accentColor: 'red'),
+          // The two INPUTS to the sim behaviours shown above. Without these
+          // toggles both effects latch a couple of seconds after load and never
+          // move again: `Air_Pressure_OK` (fl7, setWhileCondition) mirrors
+          // `Compressor_On` instantly, and `Guard_Locked` (fl8, delayedSet)
+          // follows `Guard_Closed` 2 s later and drops the moment it opens.
+          // Toggling these is the whole demonstration.
+          HmiComponent(
+              id: 'fd15',
+              title: 'Air Compressor Run',
+              type: 'ToggleSwitch',
+              tagBinding: 'Compressor_On',
+              gridSpanWidth: 1,
+              accentColor: 'cyan'),
+          HmiComponent(
+              id: 'fd16',
+              title: 'Guard Door Closed',
+              type: 'ToggleSwitch',
+              tagBinding: 'Guard_Closed',
+              gridSpanWidth: 1,
+              accentColor: 'amber'),
         ],
       ),
     ],

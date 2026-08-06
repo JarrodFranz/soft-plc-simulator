@@ -8,6 +8,7 @@ import 'package:soft_plc_mobile/models/sim_engine.dart';
 import 'package:soft_plc_mobile/models/st_exec.dart';
 import 'package:soft_plc_mobile/models/system_tags.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
+import 'package:soft_plc_mobile/screens/scan_tick.dart';
 
 bool _b(PlcProject p, String path) => readPath(p, path) == true;
 double _d(PlcProject p, String path) => (readPath(p, path) as num).toDouble();
@@ -52,6 +53,40 @@ void main() {
     });
   });
 
+  test('the REAL scheduler runs BatchTask without starving MainTask', () {
+    // The _Rig above bypasses tasks entirely, so nothing else in this file
+    // notices task starvation. `scheduleTick` runs a Continuous task only when
+    // no higher-priority task is due (`!anyHigherDue`), so the Periodic
+    // BatchTask suppresses MainTask on every tick it fires. At 100 ms scans a
+    // 250 ms period costs 2 ticks in 5; 1000 ms costs 1 in 10.
+    final p = flagshipProductionLineProject();
+    final rt = ScanTickRuntime();
+    writePath(p, 'Line_Start', true);
+    writePath(p, 'Batch_Start', true);
+    const ticks = 100;
+    for (var i = 0; i < ticks; i++) {
+      runScanTick(p, 100, rt);
+    }
+
+    // Safety_ST adds 0.0000278 h per execution while Line_Run is set, so
+    // Run_Hours IS a counter of MainTask executions — the only tag in the
+    // project that reveals a skipped Continuous scan.
+    final mainRuns = (_d(p, 'Run_Hours') / 0.0000278).round();
+    expect(mainRuns, greaterThanOrEqualTo((ticks * 0.85).floor()),
+        reason: 'MainTask ran only $mainRuns of $ticks ticks — a Periodic '
+            'BatchTask period that divides the scan period too finely is '
+            'starving the Continuous task');
+    expect(mainRuns, lessThanOrEqualTo(ticks));
+
+    // ...and BatchTask genuinely fired in the same run, so the assertion above
+    // is not passing merely because the Periodic task never became due.
+    expect(_i(p, 'Batch_Step'), greaterThan(0),
+        reason: 'Batch_SFC advanced past IDLE, so BatchTask really did run');
+    // Both MainTask programs also made progress across those ticks.
+    expect(_d(p, 'Blend_Valve'), greaterThan(0.0), reason: 'Blend_FBD ran');
+    expect(_b(p, 'Line_Run'), isTrue, reason: 'Infeed_LD ran');
+  });
+
   test('all four programs execute in the same scan pipeline', () {
     final p = flagshipProductionLineProject();
     final rig = _Rig(p);
@@ -77,8 +112,15 @@ void main() {
   test('the Startup guard initialises the line exactly once', () {
     final p = flagshipProductionLineProject();
     final rig = _Rig(p);
-    // Every tag checked here has exactly ONE writer (the startup block), so a
-    // guard that never ran — or that ran every scan — fails.
+    // Every tag checked here has exactly one writer UNDER THIS TEST'S INPUTS,
+    // so a guard that never ran — or that ran every scan — fails. They are not
+    // single-writer in general: `Batch_Count` is also written by the SFC's
+    // `f_count` step (unreachable here — `Batch_Start` stays false, so the
+    // chart never leaves IDLE) and `Part_Count` by Infeed rung 4's ADD block
+    // (unreachable here — `Line_Start` stays false, so `Conv1_Motor` never
+    // runs, the `Photo1` pulse rule stays false and the rung's rising-edge
+    // contact never fires). `Batch_Target` and `Run_Hours` have no other
+    // writer at all.
     writePath(p, 'Batch_Count', 7);
     writePath(p, 'Part_Count', 42);
     writePath(p, 'Batch_Target', 99);
@@ -248,7 +290,7 @@ void main() {
 
   test('every trend pen and every HMI binding resolves to a real tag', () {
     final p = flagshipProductionLineProject();
-    expect(p.trends.length, 5);
+    expect(p.trends.length, 6);
     final penPaths = p.trends.map((t) => t.tagPath).toSet();
     for (final pen in p.trends) {
       expect(readPath(p, pen.tagPath), isNotNull, reason: 'pen ${pen.tagPath} is dangling');
@@ -281,6 +323,52 @@ void main() {
     expect(trendComponents, 2, reason: 'one analog chart and one BOOL step-lane chart');
     expect(textInputs, 2);
     expect(systemBindings, greaterThanOrEqualTo(6));
+  });
+
+  test('every showcase behaviour is reachable from the UI — its outputs are '
+      'displayed and its inputs are drivable', () {
+    final p = flagshipProductionLineProject();
+    final surfaced = <String>{
+      for (final screen in p.hmis)
+        for (final c in screen.components)
+          if (c.tagBinding.isNotEmpty) c.tagBinding,
+      for (final pen in p.trends) pen.tagPath,
+    };
+
+    // OUTPUTS: a behaviour whose result is on no screen and no pen is a
+    // behaviour the app never shows. `Line_Transfer` is the only evidence the
+    // `deadTime` rule exists at all; the batch set is the only evidence the
+    // SFC's steps do anything.
+    for (final tag in [
+      'Line_Transfer', // deadTime (fl3)
+      'Photo2', // pulse (fl6)
+      'Level_Meas', // noise + drift (fl4)
+      'Ratio_SP', 'Blend_Rate', // FBD network 1 (SEL / MUL / DIV)
+      'Batch_Step', 'Charge_Level', 'Charge_Valve',
+      'Heater', 'Agitator', 'Discharge_Pump', // Batch_SFC step actions
+    ]) {
+      expect(surfaced, contains(tag), reason: '$tag has no display anywhere');
+    }
+
+    // INPUTS: these two drive the behaviours unique to this project. Both ship
+    // true, so without a writable control `Air_Pressure_OK` and `Guard_Locked`
+    // settle within ~2 s of load and never move again.
+    for (final tag in ['Compressor_On', 'Guard_Closed', 'Recipe_Select']) {
+      final control = [
+        for (final screen in p.hmis)
+          for (final c in screen.components)
+            if (c.tagBinding == tag) c.type,
+      ];
+      expect(control, isNotEmpty, reason: '$tag cannot be driven from any screen');
+      expect(
+          control.any((t) =>
+              t == 'ToggleSwitch' ||
+              t == 'PushbuttonSwitch' ||
+              t == 'TextInputField' ||
+              t == 'NumericSliderInput'),
+          isTrue,
+          reason: '$tag is only displayed, never writable');
+    }
   });
 
   test(
