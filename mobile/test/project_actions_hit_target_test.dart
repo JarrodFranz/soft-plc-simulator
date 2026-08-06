@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:soft_plc_mobile/screens/workspace_shell.dart';
+import 'package:soft_plc_mobile/ui/responsive.dart';
 import 'support/responsive_test_utils.dart';
 
 void main() {
@@ -44,6 +45,12 @@ void main() {
       find.descendant(of: popupFinder, matching: find.byIcon(Icons.more_vert)),
       findsOneWidget,
     );
+
+    // F1: the trigger's own hit region must never shrink below the app-wide
+    // minimum touch target, regardless of the (smaller) painted glyph size.
+    final triggerSize = tester.getSize(popupFinder);
+    expect(triggerSize.width, greaterThanOrEqualTo(kMinTouch));
+    expect(triggerSize.height, greaterThanOrEqualTo(kMinTouch));
 
     // Tapping the trigger's own bounds (whatever they are) must still open
     // the menu — i.e. the hit region and the painted widget coincide.

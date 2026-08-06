@@ -1563,7 +1563,12 @@ class _FbdEditorScreenState extends State<FbdEditorScreen> {
           // A drag dropped on nothing must leave no residue. Without this the
           // pin stayed armed from `onDragStarted`, so the NEXT unrelated tap on
           // any input pin silently completed a wire the user never drew.
-          onDraggableCanceled: (_, __) => _cancelArm(),
+          // QA F6: `onDraggableCanceled` can fire after the screen has been
+          // popped/disposed mid-drag; guard with `mounted` before touching
+          // State (`_cancelArm` calls `setState`).
+          onDraggableCanceled: (_, __) {
+            if (mounted) _cancelArm();
+          },
           child: touchable(dot, onTap: onTap),
         );
       }

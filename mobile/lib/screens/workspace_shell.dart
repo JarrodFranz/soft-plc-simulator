@@ -1040,6 +1040,10 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   void _resetHistory() {
     _pendingHistoryCapture = false;
     _history.reset(_snapshot());
+    // QA F3: a live delete-UNDO snackbar references history from the project
+    // being left behind; without clearing it, tapping UNDO after switching
+    // projects would revert an unrelated edit in the new project.
+    ScaffoldMessenger.maybeOf(context)?.clearSnackBars();
   }
 
   Future<void> _runAutosave() async {
@@ -2566,12 +2570,15 @@ class WorkspaceShellState extends State<WorkspaceShell> {
                       // EdgeInsets.zero, which on the web measured the
                       // hit-testable region a few pixels below the painted
                       // glyph at 390px width. `child:` instead wraps exactly
-                      // this Padding+Icon in the InkWell, at shrink-wrap tap
-                      // target size, so the visible glyph and the hit region
-                      // are the same rect.
-                      child: const Padding(
-                        padding: EdgeInsets.all(8),
-                        child: Icon(Icons.more_vert, size: 20, color: Colors.grey),
+                      // this SizedBox+Icon in the InkWell, so the visible
+                      // glyph and the hit region are the same rect.
+                      // QA F1: the SizedBox is explicitly sized to kMinTouch
+                      // (44x44) so the tap target never shrinks below the
+                      // app-wide touch-target floor, regardless of glyph size.
+                      child: const SizedBox(
+                        width: kMinTouch,
+                        height: kMinTouch,
+                        child: Center(child: Icon(Icons.more_vert, size: 20, color: Colors.grey)),
                       ),
                     ),
                   ],

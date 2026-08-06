@@ -212,6 +212,55 @@ void main() {
       expect(_ty(controller), -150);
       expect(outer.offset, 0);
     });
+
+    testWidgets(
+        'QA F5: with wheelPansVertically:false, a diagonal notch pans the canvas '
+        'horizontally but still lets its vertical component chain to the enclosing '
+        'lane list', (tester) async {
+      final controller = TransformationController();
+      addTearDown(controller.dispose);
+      final outer = ScrollController();
+      addTearDown(outer.dispose);
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: ListView(
+            controller: outer,
+            children: [
+              SizedBox(
+                width: 200,
+                height: 200,
+                child: PannableCanvas(
+                  transformationController: controller,
+                  contentSize: const Size(1000, 1000),
+                  wheelPansVertically: false,
+                  child: const SizedBox(width: 1000, height: 1000),
+                ),
+              ),
+              const SizedBox(height: 2000),
+            ],
+          ),
+        ),
+      ));
+
+      // A single trackpad notch with both components set (the diagonal case):
+      // dx is real horizontal intent, dy is the incidental vertical wobble a
+      // trackpad reports even on a "mostly horizontal" swipe.
+      await _wheel(tester, const Offset(100, 100), const Offset(40, 90));
+
+      // The horizontal component is consumed by the canvas...
+      expect(_tx(controller), -40);
+      expect(_ty(controller), 0,
+          reason: 'wheelPansVertically:false means the canvas itself never reacts '
+              'to the vertical component');
+      // ...but before the fix, panning horizontally claimed the WHOLE notch,
+      // so the vertical component never reached the lane list either. It must
+      // now chain through exactly like a plain vertical notch would.
+      expect(outer.offset, 90,
+          reason: "a diagonal notch's vertical component must still reach the "
+              'enclosing lane list, not be swallowed by the canvas claiming the '
+              'whole notch');
+    });
   });
 
   group('PannableCanvas clipped-content edges', () {

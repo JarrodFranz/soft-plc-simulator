@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/system_tags.dart';
@@ -1369,10 +1370,17 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
   // the Tag Inspector dock and the Edit Tag dialog use (QA #4: no forked
   // force logic across the three surfaces).
   void _toggleTagForce(String name) {
-    final tag = widget.currentProject.tags.firstWhere((t) => t.name == name);
+    // QA F4: `firstWhere` without `orElse` throws a StateError if `name` no
+    // longer resolves (e.g. the tag was deleted/renamed out from under a
+    // stale row action) -- fail soft instead of crashing the screen.
+    final tag = widget.currentProject.tags.firstWhereOrNull((t) => t.name == name);
+    if (tag == null) return;
     setState(() => tag.toggleForce());
     widget.onProjectUpdated();
   }
+
+  @visibleForTesting
+  void debugToggleTagForce(String name) => _toggleTagForce(name);
 
   List<DataRow> _buildHierarchicalRows(List<_TagRowData> data,
       {bool showPath = true, bool showQuality = true, bool showIo = true}) {

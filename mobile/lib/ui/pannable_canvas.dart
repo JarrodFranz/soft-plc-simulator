@@ -176,6 +176,15 @@ class _PannableCanvasState extends State<PannableCanvas> {
     // Scrolling "down"/"right" reveals content further down/right, i.e. moves
     // the content up/left under the viewport.
     if (_panBy(Offset(-dx, -dy))) {
+      // QA F5: with wheelPansVertically false (the FBD lane canvas), a
+      // diagonal trackpad notch still has a horizontal component here (dy was
+      // zeroed above, dx wasn't), so `_panBy` succeeds and would otherwise
+      // claim the whole notch -- starving the enclosing lane ListView of the
+      // vertical component it's supposed to own. Only claim the notch when it
+      // had no vertical component of its own to chain upward.
+      if (!widget.wheelPansVertically && event.scrollDelta.dy != 0) {
+        return;
+      }
       _claim(event);
     }
   }

@@ -274,4 +274,22 @@ void main() {
       expect(project.tags.where((t) => t.name == kSystemTagName).length, 1);
     });
   });
+
+  group('QA F4: _toggleTagForce guards against a stale/unresolvable name', () {
+    testWidgets('toggling force for a name that no longer resolves does not throw',
+        (tester) async {
+      final project = _project();
+      await tester.pumpWidget(app(project));
+      await tester.pumpAndSettle();
+
+      final state = tester.state<MemoryManagerScreenState>(find.byType(MemoryManagerScreen));
+
+      // Nothing in the project is named this -- simulates a row action whose
+      // tag was deleted/renamed out from under it before the tap resolved.
+      state.debugToggleTagForce('DoesNotExist');
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+    });
+  });
 }

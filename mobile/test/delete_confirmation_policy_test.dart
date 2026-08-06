@@ -155,4 +155,41 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   });
+
+  group('QA F3: stale UNDO snackbar is cleared on project switch', () {
+    testWidgets('switching projects while a delete-UNDO snackbar is showing dismisses it',
+        (tester) async {
+      await setSurface(tester, desktopSize);
+      await tester.pumpWidget(_app());
+      await tester.pumpAndSettle();
+      await _goToMemoryView(tester);
+
+      // Trigger the "Deleted …" SnackBar with its UNDO action still live.
+      await tester.tap(find.byKey(const Key('delete_tag_Start_PB')));
+      await tester.pump();
+      expect(find.byType(SnackBar), findsOneWidget);
+      expect(find.byKey(kDeleteUndoActionKey), findsOneWidget);
+
+      // Switch to a different project before the snackbar times out — its
+      // UNDO action, if it survived, would resolve against the NEW project's
+      // history and revert an unrelated edit there.
+      final other = PlcProject(
+        id: 'proj_qa_f3_other',
+        name: 'QA F3 Other Project',
+        controllerName: 'PLC_02',
+        tags: [],
+        structDefs: [],
+        programs: [PlcProgram(name: 'Main', language: 'StructuredText')],
+        tasks: [],
+        hmis: [],
+      );
+      _shell(tester).debugAddProject(other);
+      _shell(tester).debugSwitchToProject(other);
+      await tester.pump();
+
+      expect(find.byType(SnackBar), findsNothing);
+      expect(find.byKey(kDeleteUndoActionKey), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+  });
 }
