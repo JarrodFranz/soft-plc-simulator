@@ -33,7 +33,7 @@ void main() {
     late HmiScreenDef hmi;
 
     setUp(() {
-      project = _projectById('proj_fbd_hvac');
+      project = _projectById('proj_fbd_hvac_zone');
       hmi = project.hmis.first;
       hmi.components
         ..clear()

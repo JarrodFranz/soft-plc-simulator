@@ -11,7 +11,7 @@ bool _b(PlcProject p, String path) => readPath(p, path) == true;
 
 void main() {
   test('reactor ST reproduces the retired hardcoded deadband + alarms', () {
-    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_st_reactor');
+    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_st_reactor_control');
     final st = StRuntime();
 
     // ST-only scan: this test hand-picks Temp_PV values to exercise the
@@ -66,13 +66,14 @@ void main() {
 
   test('reactor closed loop: first-order thermal process reaches and holds '
       'setpoint under Auto control, decays to ambient with control off', () {
-    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_st_reactor');
+    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_st_reactor_control');
     final sim = SimRuntime();
     final st = StRuntime();
 
     // Full scan tick, exactly as the workspace shell's `_executeScan` runs it:
-    // sim (thermal model) -> ST (deadband controller). proj_st_reactor has no
-    // LD/FBD/SFC programs, so those stages are omitted.
+    // sim (thermal model) -> ST (deadband controller).
+    // proj_st_reactor_control's only other program is the FBD alarm latch,
+    // which this ST-only harness deliberately does not run.
     void scan() {
       applySimRules(p, p.simRules, 500, sim);
       executeStPrograms(p, 500, st);

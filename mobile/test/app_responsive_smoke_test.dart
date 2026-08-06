@@ -253,26 +253,26 @@ void main() {
         await tester.pumpWidget(_app());
         await tester.pumpAndSettle();
 
-        // proj_ld_conveyor: dedicated LadderLogic project.
-        final ldProject = DefaultProjects.all().firstWhere((p) => p.id == 'proj_ld_conveyor');
+        // proj_ld_conveyor_line: dedicated LadderLogic project.
+        final ldProject = DefaultProjects.all().firstWhere((p) => p.id == 'proj_ld_conveyor_line');
         await _switchProject(tester, compact: compact, projectName: ldProject.name);
         final ldOnlyProg = ldProject.programs.firstWhere((p) => p.language == 'LadderLogic');
         await _navigateTo(tester, compact: compact, destination: find.text(ldOnlyProg.name));
 
-        // proj_fbd_hvac: dedicated FunctionBlockDiagram project.
-        final fbdProject = DefaultProjects.all().firstWhere((p) => p.id == 'proj_fbd_hvac');
+        // proj_fbd_hvac_zone: dedicated FunctionBlockDiagram project.
+        final fbdProject = DefaultProjects.all().firstWhere((p) => p.id == 'proj_fbd_hvac_zone');
         await _switchProject(tester, compact: compact, projectName: fbdProject.name);
         final fbdOnlyProg = fbdProject.programs.firstWhere((p) => p.language == 'FunctionBlockDiagram');
         await _navigateTo(tester, compact: compact, destination: find.text(fbdOnlyProg.name));
 
-        // proj_sfc_filling: dedicated SequentialFunctionChart project.
-        final sfcProject = DefaultProjects.all().firstWhere((p) => p.id == 'proj_sfc_filling');
+        // proj_sfc_batch_production: dedicated SequentialFunctionChart project.
+        final sfcProject = DefaultProjects.all().firstWhere((p) => p.id == 'proj_sfc_batch_production');
         await _switchProject(tester, compact: compact, projectName: sfcProject.name);
         final sfcOnlyProg = sfcProject.programs.firstWhere((p) => p.language == 'SequentialFunctionChart');
         await _navigateTo(tester, compact: compact, destination: find.text(sfcOnlyProg.name));
 
-        // proj_st_reactor: dedicated StructuredText project.
-        final stProject = DefaultProjects.all().firstWhere((p) => p.id == 'proj_st_reactor');
+        // proj_st_reactor_control: dedicated StructuredText project.
+        final stProject = DefaultProjects.all().firstWhere((p) => p.id == 'proj_st_reactor_control');
         await _switchProject(tester, compact: compact, projectName: stProject.name);
         final stOnlyProg = stProject.programs.firstWhere((p) => p.language == 'StructuredText');
         await _navigateTo(tester, compact: compact, destination: find.text(stOnlyProg.name));

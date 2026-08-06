@@ -15,31 +15,37 @@ void _scan(PlcProject p, SimRuntime simRt, LdExecRuntime ldRt, [int dtMs = 500])
 bool _b(PlcProject p, String path) => readPath(p, path) == true;
 
 void main() {
-  test('motor project: ladder drives seal-in start/stop end-to-end', () {
-    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_motor');
+  test('conveyor line: ladder drives seal-in start/stop end-to-end', () {
+    final p = DefaultProjects.all().firstWhere(
+        (x) => x.id == 'proj_ld_conveyor_line');
+    // Suppress the photo-eye pulse so it cannot interfere with the seal-in.
+    for (final r in p.simRules) {
+      r.enabled = false;
+    }
     final simRt = SimRuntime();
     final ldRt = LdExecRuntime();
 
     _scan(p, simRt, ldRt);
-    expect(_b(p, 'Motor_Run'), isFalse);
+    expect(_b(p, 'Zone1_Motor'), isFalse);
 
     writePath(p, 'Start_PB', true);
     _scan(p, simRt, ldRt);
-    expect(_b(p, 'Motor_Latch'), isTrue);
-    expect(_b(p, 'Motor_Run'), isTrue);
+    expect(_b(p, 'Line_Latch'), isTrue);
+    expect(_b(p, 'Zone1_Motor'), isTrue);
 
     writePath(p, 'Start_PB', false); // seal-in must hold
     _scan(p, simRt, ldRt);
-    expect(_b(p, 'Motor_Run'), isTrue);
+    expect(_b(p, 'Zone1_Motor'), isTrue);
 
     writePath(p, 'Stop_PB', true); // NC stop drops the latch and the motor
     _scan(p, simRt, ldRt);
-    expect(_b(p, 'Motor_Latch'), isFalse);
-    expect(_b(p, 'Motor_Run'), isFalse);
+    expect(_b(p, 'Line_Latch'), isFalse);
+    expect(_b(p, 'Zone1_Motor'), isFalse);
   });
 
   test('conveyor project: JamTimer trips Belt_Jammed after 5s without parts', () {
-    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_ld_conveyor');
+    final p = DefaultProjects.all().firstWhere(
+        (x) => x.id == 'proj_ld_conveyor_line');
     // Suppress the photo-eye pulse so no parts are ever "seen" (jam scenario).
     for (final r in p.simRules) {
       r.enabled = false;
@@ -49,14 +55,14 @@ void main() {
 
     writePath(p, 'Start_PB', true);
     _scan(p, simRt, ldRt);
-    expect(_b(p, 'Belt_Motor'), isTrue);
+    expect(_b(p, 'Zone1_Motor'), isTrue);
     writePath(p, 'Start_PB', false); // Belt_Latch seal-in keeps it running
 
     // The start scan already accumulated 500ms; 8 more keep ACC below the
     // 5000ms preset, so the belt keeps running.
     for (int i = 0; i < 8; i++) {
       _scan(p, simRt, ldRt);
-      expect(_b(p, 'Belt_Motor'), isTrue,
+      expect(_b(p, 'Zone1_Motor'), isTrue,
           reason: 'belt should run until the jam trips (scan $i)');
     }
     expect((readPath(p, 'JamTimer.ACC') as num).toInt(), equals(4500));
@@ -65,14 +71,15 @@ void main() {
     expect(_b(p, 'JamTimer.DN'), isTrue);
     expect(_b(p, 'Belt_Jammed'), isTrue);
     _scan(p, simRt, ldRt); // next scan, rung 0's jam interlock opens
-    expect(_b(p, 'Belt_Motor'), isFalse);
+    expect(_b(p, 'Zone1_Motor'), isFalse);
 
     _scan(p, simRt, ldRt);
     expect(_b(p, 'Belt_Jammed'), isTrue, reason: 'jam alarm latches until a part is seen');
   });
 
   test('conveyor: belt keeps running through part passages (sim rules ON)', () {
-    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_ld_conveyor');
+    final p = DefaultProjects.all().firstWhere(
+        (x) => x.id == 'proj_ld_conveyor_line');
     final simRt = SimRuntime();
     final ldRt = LdExecRuntime();
 
@@ -86,7 +93,7 @@ void main() {
       if (_b(p, 'Photo_Eye')) {
         sawPart = true;
       }
-      expect(_b(p, 'Belt_Motor'), isTrue,
+      expect(_b(p, 'Zone1_Motor'), isTrue,
           reason: 'belt must survive normal part passage (scan $i)');
       expect(_b(p, 'Belt_Jammed'), isFalse,
           reason: 'no jam while parts keep arriving (scan $i)');

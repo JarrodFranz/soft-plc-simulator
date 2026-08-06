@@ -13,7 +13,7 @@ double _d(PlcProject p, String path) => (readPath(p, path) as num).toDouble();
 void main() {
   test('Tank Level PID Control: closed-loop FBD PID drives an analog valve '
       'to bring Level_PV to and hold it near Level_SP', () {
-    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_tank_level_pid');
+    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_process_lab');
     final sim = SimRuntime();
     final ld = LdExecRuntime();
     final fbd = FbdRuntime();

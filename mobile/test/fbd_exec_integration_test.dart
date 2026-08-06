@@ -21,7 +21,8 @@ bool _b(PlcProject p, String path) => readPath(p, path) == true;
 void main() {
   test('HVAC diagram reproduces the hardcoded heat/cool/enable truth table',
       () {
-    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_fbd_hvac');
+    final p =
+        DefaultProjects.all().firstWhere((x) => x.id == 'proj_fbd_hvac_zone');
     final sim = SimRuntime();
     final ld = LdExecRuntime();
     final fbd = FbdRuntime();
@@ -150,9 +151,11 @@ void main() {
     expect(_b(p, 'Quality_OK'), isFalse);
   });
 
-  test('tank TankLevel_FBD reproduces the retired hardcoded fill/drain/alarm',
-      () {
-    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_tank');
+  test(
+      'tank TankLevel_FBD, absorbed into HVAC network 5, reproduces the '
+      'retired hardcoded fill/drain/alarm', () {
+    final p =
+        DefaultProjects.all().firstWhere((x) => x.id == 'proj_fbd_hvac_zone');
     final sim = SimRuntime();
     final ld = LdExecRuntime();
     final fbd = FbdRuntime();

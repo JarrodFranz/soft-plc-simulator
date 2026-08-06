@@ -17,7 +17,7 @@ PlcProject _projectById(String id) => DefaultProjects.all().firstWhere((p) => p.
 void main() {
   group('FbdEditorScreen responsive', () {
     Widget app() {
-      final project = _projectById('proj_fbd_hvac');
+      final project = _projectById('proj_fbd_hvac_zone');
       final program = project.programs.firstWhere((p) => p.language == 'FunctionBlockDiagram');
       return MaterialApp(
         home: FbdEditorScreen(
@@ -90,7 +90,7 @@ void main() {
 
   group('SfcEditorScreen responsive', () {
     Widget app() {
-      final project = _projectById('proj_sfc_filling');
+      final project = _projectById('proj_sfc_batch_production');
       final program = project.programs.firstWhere((p) => p.language == 'SequentialFunctionChart');
       return MaterialApp(
         home: SfcEditorScreen(
@@ -144,7 +144,7 @@ void main() {
 
   group('HmiDashboardBuilderScreen responsive', () {
     Widget app() {
-      final project = _projectById('proj_fbd_hvac');
+      final project = _projectById('proj_fbd_hvac_zone');
       final hmi = project.hmis.first;
       return LiveTickScope(
         notifier: LiveTick(),
@@ -232,7 +232,7 @@ void main() {
 
   group('LdEditorScreen responsive', () {
     Widget app() {
-      final project = _projectById('proj_ld_conveyor');
+      final project = _projectById('proj_ld_conveyor_line');
       final program = project.programs.firstWhere((p) => p.language == 'LadderLogic');
       return MaterialApp(
         home: LdEditorScreen(

@@ -29,7 +29,7 @@ void main() {
       testWidgets('$sizeLabel: selecting First-Order Lag shows tau + target fields and edits update the rule',
           (tester) async {
         await setSurface(tester, size);
-        final project = _projectById('proj_st_reactor');
+        final project = _projectById('proj_st_reactor_control');
         await tester.pumpWidget(app(project));
         await tester.pumpAndSettle();
 
@@ -68,7 +68,7 @@ void main() {
       testWidgets('$sizeLabel: selecting integrate shows rate-source-tag + refValue fields and edits update the rule',
           (tester) async {
         await setSurface(tester, size);
-        final project = _projectById('proj_st_reactor');
+        final project = _projectById('proj_st_reactor_control');
         await tester.pumpWidget(app(project));
         await tester.pumpAndSettle();
 
@@ -102,7 +102,7 @@ void main() {
       testWidgets('$sizeLabel: selecting Transport Dead-Time shows source + tau fields and edits update the rule',
           (tester) async {
         await setSurface(tester, size);
-        final project = _projectById('proj_st_reactor');
+        final project = _projectById('proj_st_reactor_control');
         await tester.pumpWidget(app(project));
         await tester.pumpAndSettle();
 
@@ -144,7 +144,7 @@ void main() {
       testWidgets('$sizeLabel: selecting Measurement Noise shows source + amplitude fields and edits update the rule',
           (tester) async {
         await setSurface(tester, size);
-        final project = _projectById('proj_st_reactor');
+        final project = _projectById('proj_st_reactor_control');
         await tester.pumpWidget(app(project));
         await tester.pumpAndSettle();
 
@@ -187,7 +187,7 @@ void main() {
           '$sizeLabel: Measurement Noise shows distribution + drift amplitude, drift period only when amplitude > 0',
           (tester) async {
         await setSurface(tester, size);
-        final project = _projectById('proj_st_reactor');
+        final project = _projectById('proj_st_reactor_control');
         await tester.pumpWidget(app(project));
         await tester.pumpAndSettle();
 
@@ -241,7 +241,7 @@ void main() {
           '$sizeLabel: Measurement Noise distribution dropdown offers Pink (1/f) and selecting it updates the rule',
           (tester) async {
         await setSurface(tester, size);
-        final project = _projectById('proj_st_reactor');
+        final project = _projectById('proj_st_reactor_control');
         await tester.pumpWidget(app(project));
         await tester.pumpAndSettle();
 
@@ -281,7 +281,7 @@ void main() {
           '$sizeLabel: a rule already set to pink displays as Pink (1/f), not Uniform (initialValue coercion guard)',
           (tester) async {
         await setSurface(tester, size);
-        final project = _projectById('proj_st_reactor');
+        final project = _projectById('proj_st_reactor_control');
         final rule = project.simRules.firstWhere((r) => r.id == 'sim0');
         // Pre-set the rule directly (as if loaded from a saved project) so the
         // dropdown's initialValue must reflect it on open, without the test
@@ -304,7 +304,7 @@ void main() {
 
       testWidgets('$sizeLabel: non-noise behaviour does not show distribution/drift controls', (tester) async {
         await setSurface(tester, size);
-        final project = _projectById('proj_st_reactor');
+        final project = _projectById('proj_st_reactor_control');
         await tester.pumpWidget(app(project));
         await tester.pumpAndSettle();
 
@@ -326,7 +326,7 @@ void main() {
 
     testWidgets('320x568: rule editor opens without overflow', (tester) async {
       await setSurface(tester, smallPhoneSize);
-      final project = _projectById('proj_st_reactor');
+      final project = _projectById('proj_st_reactor_control');
       await tester.pumpWidget(app(project));
       await tester.pumpAndSettle();
 
@@ -342,7 +342,7 @@ void main() {
 
     testWidgets('360x740: rule editor opens without overflow', (tester) async {
       await setSurface(tester, phoneSize);
-      final project = _projectById('proj_st_reactor');
+      final project = _projectById('proj_st_reactor_control');
       await tester.pumpWidget(app(project));
       await tester.pumpAndSettle();
 
@@ -358,7 +358,7 @@ void main() {
 
     testWidgets('320x568: Transport Dead-Time rule editor opens without overflow', (tester) async {
       await setSurface(tester, smallPhoneSize);
-      final project = _projectById('proj_st_reactor');
+      final project = _projectById('proj_st_reactor_control');
       await tester.pumpWidget(app(project));
       await tester.pumpAndSettle();
 
@@ -374,7 +374,7 @@ void main() {
 
     testWidgets('360x740: Transport Dead-Time rule editor opens without overflow', (tester) async {
       await setSurface(tester, phoneSize);
-      final project = _projectById('proj_st_reactor');
+      final project = _projectById('proj_st_reactor_control');
       await tester.pumpWidget(app(project));
       await tester.pumpAndSettle();
 
@@ -390,7 +390,7 @@ void main() {
 
     testWidgets('320x568: Measurement Noise rule editor opens without overflow', (tester) async {
       await setSurface(tester, smallPhoneSize);
-      final project = _projectById('proj_st_reactor');
+      final project = _projectById('proj_st_reactor_control');
       await tester.pumpWidget(app(project));
       await tester.pumpAndSettle();
 
@@ -406,7 +406,7 @@ void main() {
 
     testWidgets('360x740: Measurement Noise rule editor opens without overflow', (tester) async {
       await setSurface(tester, phoneSize);
-      final project = _projectById('proj_st_reactor');
+      final project = _projectById('proj_st_reactor_control');
       await tester.pumpWidget(app(project));
       await tester.pumpAndSettle();
 
@@ -426,7 +426,7 @@ void main() {
       testWidgets('$sizeLabel: Measurement Noise distribution + drift controls open without overflow',
           (tester) async {
         await setSurface(tester, size);
-        final project = _projectById('proj_st_reactor');
+        final project = _projectById('proj_st_reactor_control');
         await tester.pumpWidget(app(project));
         await tester.pumpAndSettle();
 

@@ -13,7 +13,7 @@ double _d(PlcProject p, String path) => (readPath(p, path) as num).toDouble();
 void main() {
   test('Cascade Tanks with Transport Delay: Tank_B_Level lags Tank_A_Level '
       'by approximately the transport dead time tauSec', () {
-    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_cascade_tanks');
+    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_process_lab');
     final sim = SimRuntime();
     final ld = LdExecRuntime();
     final fbd = FbdRuntime();
@@ -96,7 +96,7 @@ void main() {
   // if tauSec were 0 (Transfer_Line would just equal current Tank_A_Level)
   // or if the delay length/buffer indexing were wrong.
   test('Transfer_Line reproduces Tank_A_Level delayed by the dead time', () {
-    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_cascade_tanks');
+    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_process_lab');
     final sim = SimRuntime();
     final ld = LdExecRuntime();
     final fbd = FbdRuntime();

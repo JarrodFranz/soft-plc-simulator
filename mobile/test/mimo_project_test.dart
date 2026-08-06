@@ -8,7 +8,7 @@ import 'package:soft_plc_mobile/models/sim_engine.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 
 PlcProject _mimo() =>
-    DefaultProjects.all().firstWhere((p) => p.id == 'proj_mimo_two_zone');
+    DefaultProjects.all().firstWhere((p) => p.id == 'proj_process_lab');
 
 double _d(PlcProject p, String path) => (readPath(p, path) as num).toDouble();
 
@@ -65,7 +65,7 @@ double crossDisturbance(
 void main() {
   test('MIMO project registered and round-trips', () {
     final p = _mimo();
-    expect(p.name, 'MIMO — Two Thermal Zones');
+    expect(p.name, 'Process Control Lab');
     final back = PlcProject.fromJson(jsonDecode(jsonEncode(p.toJson())));
     expect(jsonEncode(back.toJson()), jsonEncode(p.toJson()));
   });

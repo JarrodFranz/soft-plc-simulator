@@ -7,12 +7,12 @@ import 'package:soft_plc_mobile/models/sim_engine.dart';
 import 'dart:convert';
 
 PlcProject _batchMix() =>
-    DefaultProjects.all().firstWhere((p) => p.id == 'proj_sfc_batchmix');
+    DefaultProjects.all().firstWhere((p) => p.id == 'proj_sfc_batch_production');
 
 void main() {
   test('batch-mix project is registered and round-trips losslessly', () {
     final p = _batchMix();
-    expect(p.name, 'SFC — Batch Mix & Dispatch');
+    expect(p.name, 'SFC — Batch Production');
     final back = PlcProject.fromJson(jsonDecode(jsonEncode(p.toJson())));
     expect(jsonEncode(back.toJson()), jsonEncode(p.toJson()));
   });
@@ -47,9 +47,10 @@ void main() {
     void setTag(String name, dynamic v) => p.tags.firstWhere((t) => t.name == name).value = v;
     setTag('Quality_OK', true);
     setTag('Start_Cmd', true);
+    setTag('Container_Present', true);
     // run enough scans for both branches to complete, join, mix dwell, then dispatch
     Set<String> sawParallel = {};
-    for (var i = 0; i < 120; i++) { // 120 * 200ms = 24s
+    for (var i = 0; i < 200; i++) { // 200 * 200ms = 40s
       tick(200);
       final act = rt.active[prog.name] ?? {};
       if (act.length >= 2) { sawParallel = {...act}; }
@@ -70,7 +71,8 @@ void main() {
     void setTag(String name, dynamic v) => p.tags.firstWhere((t) => t.name == name).value = v;
     setTag('Quality_OK', false);
     setTag('Start_Cmd', true);
-    for (var i = 0; i < 120; i++) {
+    setTag('Container_Present', true);
+    for (var i = 0; i < 200; i++) {
       applySimRules(p, p.simRules, 200, sim);
       executeSfcPrograms(p, 200, rt);
     }
@@ -91,6 +93,7 @@ void main() {
 
     setTag('Quality_OK', true);
     setTag('Start_Cmd', true);
+    setTag('Container_Present', true);
     // Run until Batch_Count first reaches 1 (bounded so a broken chart can't hang the test).
     var guard = 0;
     while (batchCount() < 1 && guard < 500) {
