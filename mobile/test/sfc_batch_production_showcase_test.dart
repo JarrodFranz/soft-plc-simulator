@@ -6,19 +6,19 @@ import 'package:soft_plc_mobile/models/sfc_exec.dart';
 import 'package:soft_plc_mobile/models/sim_engine.dart';
 import 'dart:convert';
 
-PlcProject _batchMix() =>
+PlcProject _batchProduction() =>
     DefaultProjects.all().firstWhere((p) => p.id == 'proj_sfc_batch_production');
 
 void main() {
   test('batch-production project is registered and round-trips losslessly', () {
-    final p = _batchMix();
+    final p = _batchProduction();
     expect(p.name, 'SFC — Batch Production');
     final back = PlcProject.fromJson(jsonDecode(jsonEncode(p.toJson())));
     expect(jsonEncode(back.toJson()), jsonEncode(p.toJson()));
   });
 
   test('chart parses to one parallel region (2 branches) + one alternative (2 arms)', () {
-    final prog = _batchMix().programs.firstWhere((pr) => pr.language == 'SequentialFunctionChart');
+    final prog = _batchProduction().programs.firstWhere((pr) => pr.language == 'SequentialFunctionChart');
     final region = parseSfc(prog.sfcSteps, prog.sfcTransitions);
     final pars = <ParRegion>[];
     final alts = <AltRegion>[];
@@ -35,7 +35,7 @@ void main() {
   });
 
   test('multi-scan run: fork -> both branches -> join -> DISPATCH when Quality_OK', () {
-    final p = _batchMix();
+    final p = _batchProduction();
     final prog = p.programs.firstWhere((pr) => pr.language == 'SequentialFunctionChart');
     final rt = SfcRuntime();
     final sim = SimRuntime();
@@ -65,7 +65,7 @@ void main() {
   });
 
   test('multi-scan run: REJECT arm when NOT Quality_OK', () {
-    final p = _batchMix();
+    final p = _batchProduction();
     final rt = SfcRuntime();
     final sim = SimRuntime();
     void setTag(String name, dynamic v) => p.tags.firstWhere((t) => t.name == name).value = v;
@@ -81,7 +81,7 @@ void main() {
   });
 
   test('DISPATCH counter is a true one-shot: Batch_Count increments exactly once per completed batch', () {
-    final p = _batchMix();
+    final p = _batchProduction();
     final rt = SfcRuntime();
     final sim = SimRuntime();
     void tick(int ms) {

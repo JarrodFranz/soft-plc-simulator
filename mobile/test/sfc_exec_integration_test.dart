@@ -50,7 +50,7 @@ void main() {
     }
     expect(counted, equals(2),
         reason: 'two batches should complete within 80s sim time');
-    expect(_i(p, 'Filled_Count'), equals(2)); // exactly one increment per bottle
+    expect(_i(p, 'Filled_Count'), equals(2)); // exactly one increment per container
   });
 
   test('water plant: 30s ladder timer starts backwash; SFC sequences valve/pump',
