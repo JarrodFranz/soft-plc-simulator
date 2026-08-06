@@ -27,7 +27,13 @@ PlcProgram _buildProgram() {
   final program = PlcProgram(name: 'FBD1', language: 'FunctionBlockDiagram');
   program.fbdBlocks.addAll([
     FbdBlock(id: 'const1', type: 'CONST', title: 'Const Block', tagBinding: '1', x: 40, y: 40),
-    FbdBlock(id: 'out1', type: 'TAG_OUTPUT', title: 'Output Block', tagBinding: 'Motor_Run', x: 320, y: 40),
+    FbdBlock(
+        id: 'out1',
+        type: 'TAG_OUTPUT',
+        title: 'Output Block',
+        tagBinding: 'Motor_Run',
+        x: 320,
+        y: 40),
     FbdBlock(id: 'ton1', type: 'TON', title: 'Timer Block', x: 40, y: 220),
     FbdBlock(id: 'and1', type: 'AND', title: 'And Block', x: 320, y: 220),
   ]);
@@ -118,7 +124,8 @@ void main() {
       final project = _buildProject();
       final program = _buildProgram();
       // Pre-wire and1's IN1 from const1.
-      program.fbdWires.add(FbdWire(fromBlockId: 'const1', fromPin: 'OUT', toBlockId: 'and1', toPin: 'IN1'));
+      program.fbdWires
+          .add(FbdWire(fromBlockId: 'const1', fromPin: 'OUT', toBlockId: 'and1', toPin: 'IN1'));
       await tester.pumpWidget(app(project, program));
       await tester.pumpAndSettle();
 
@@ -128,7 +135,8 @@ void main() {
       await tester.tap(find.byKey(const Key('fbdpin_and1_in_IN1')));
       await tester.pumpAndSettle();
 
-      final wiresToAnd1In1 = program.fbdWires.where((w) => w.toBlockId == 'and1' && w.toPin == 'IN1').toList();
+      final wiresToAnd1In1 =
+          program.fbdWires.where((w) => w.toBlockId == 'and1' && w.toPin == 'IN1').toList();
       expect(wiresToAnd1In1.length, 1);
       expect(wiresToAnd1In1.first.fromBlockId, 'ton1');
       expect(wiresToAnd1In1.first.fromPin, 'Q');
@@ -151,6 +159,100 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(program.fbdWires.length, before);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  // QA §3.13 flagged pin-to-pin wiring as "could not be confirmed working" —
+  // six headless drag techniques against the web canvas all failed to produce a
+  // wire, though one pin visibly armed mid-drag. The feature is fine; the
+  // automation could not synthesise the gesture. These lock BOTH interactions
+  // in so the claim never has to be re-litigated by hand.
+  group('FbdEditorScreen wiring interactions (QA §3.13)', () {
+    testWidgets('desktop: dragging an output dot onto an input dot draws the wire', (tester) async {
+      await setSurface(tester, desktopSize);
+      final project = _buildProject();
+      final program = _buildProgram();
+      await tester.pumpWidget(app(project, program));
+      await tester.pumpAndSettle();
+
+      final block = program.fbdBlocks.firstWhere((b) => b.id == 'const1');
+      final blockX = block.x;
+      final blockY = block.y;
+      final from = tester.getCenter(find.byKey(const Key('fbdpin_const1_out_OUT')));
+      final to = tester.getCenter(find.byKey(const Key('fbdpin_out1_in_IN')));
+
+      final gesture = await tester.startGesture(from);
+      await tester.pump(const Duration(milliseconds: 20));
+      await gesture.moveTo(from + const Offset(24, 0));
+      await tester.pump(const Duration(milliseconds: 20));
+      await gesture.moveTo(to);
+      await tester.pump(const Duration(milliseconds: 20));
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(program.fbdWires.length, 1);
+      final wire = program.fbdWires.single;
+      expect(wire.fromBlockId, 'const1');
+      expect(wire.fromPin, 'OUT');
+      expect(wire.toBlockId, 'out1');
+      expect(wire.toPin, 'IN');
+      // The pin drag must not double as a block drag or a canvas pan.
+      expect(block.x, blockX);
+      expect(block.y, blockY);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('desktop: a drag dropped on empty canvas draws nothing AND disarms the pin',
+        (tester) async {
+      await setSurface(tester, desktopSize);
+      final project = _buildProject();
+      final program = _buildProgram();
+      await tester.pumpWidget(app(project, program));
+      await tester.pumpAndSettle();
+
+      final from = tester.getCenter(find.byKey(const Key('fbdpin_const1_out_OUT')));
+      final gesture = await tester.startGesture(from);
+      await tester.pump(const Duration(milliseconds: 20));
+      await gesture.moveTo(from + const Offset(0, 120));
+      await tester.pump(const Duration(milliseconds: 20));
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(program.fbdWires, isEmpty);
+
+      // The abandoned drag must leave no armed output behind: a later, wholly
+      // unrelated tap on an input pin must not silently complete a wire.
+      await tester.tap(find.byKey(const Key('fbdpin_out1_in_IN')));
+      await tester.pumpAndSettle();
+      expect(program.fbdWires, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('phone: no pin Draggable is offered, and tap-tap still wires', (tester) async {
+      await setSurface(tester, phoneSize);
+      final project = _buildProject();
+      final program = PlcProgram(name: 'FBD1', language: 'FunctionBlockDiagram')
+        ..fbdBlocks.addAll([
+          FbdBlock(id: 'const1', type: 'CONST', title: 'Const', tagBinding: '1', x: 10, y: 10),
+          FbdBlock(
+              id: 'out1', type: 'TAG_OUTPUT', title: 'Out', tagBinding: 'Motor_Run', x: 10, y: 160),
+        ]);
+      await tester.pumpWidget(app(project, program));
+      await tester.pumpAndSettle();
+
+      // An immediate-drag recogniser on a 44px pin target would fight canvas
+      // panning on touch, so the drag path is desktop-only by design.
+      expect(find.byType(Draggable<Map<String, String>>), findsNothing);
+
+      await tester.tap(find.byKey(const Key('fbdpin_const1_out_OUT')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('fbdpin_out1_in_IN')));
+      await tester.pumpAndSettle();
+
+      expect(program.fbdWires.length, 1);
+      expect(program.fbdWires.single.fromBlockId, 'const1');
+      expect(program.fbdWires.single.toBlockId, 'out1');
       expect(tester.takeException(), isNull);
     });
   });
@@ -206,7 +308,8 @@ void main() {
       );
       // Fall back to a plain global lookup for the add-circle icon on the card
       // (there is exactly one extensible block instance in this program).
-      final plusIcon = addButtons.evaluate().isNotEmpty ? addButtons : find.byIcon(Icons.add_circle_outline);
+      final plusIcon =
+          addButtons.evaluate().isNotEmpty ? addButtons : find.byIcon(Icons.add_circle_outline);
       await tester.tap(plusIcon.first);
       await tester.pumpAndSettle();
 
@@ -216,13 +319,15 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('- control decreases inputCount and drops wires to removed pins, clamped at 2', (tester) async {
+    testWidgets('- control decreases inputCount and drops wires to removed pins, clamped at 2',
+        (tester) async {
       await setSurface(tester, desktopSize);
       final project = _buildProject();
       final program = _buildProgram();
       final andBlock = program.fbdBlocks.firstWhere((b) => b.id == 'and1');
       andBlock.inputCount = 3;
-      program.fbdWires.add(FbdWire(fromBlockId: 'const1', fromPin: 'OUT', toBlockId: 'and1', toPin: 'IN3'));
+      program.fbdWires
+          .add(FbdWire(fromBlockId: 'const1', fromPin: 'OUT', toBlockId: 'and1', toPin: 'IN3'));
 
       await tester.pumpWidget(app(project, program));
       await tester.pumpAndSettle();
@@ -244,7 +349,8 @@ void main() {
   });
 
   group('FbdEditorScreen responsive', () {
-    testWidgets('desktop full width (1400): pannable workspace, no overflow, free-drag preserved (no config-on-tap)',
+    testWidgets(
+        'desktop full width (1400): pannable workspace, no overflow, free-drag preserved (no config-on-tap)',
         (tester) async {
       await setSurface(tester, desktopSize);
       final project = _buildProject();
@@ -269,7 +375,8 @@ void main() {
       program.fbdBlocks.addAll([
         FbdBlock(id: 'src', type: 'TAG_INPUT', title: 'In', tagBinding: 'Start_PB', x: 500, y: 500),
         FbdBlock(id: 'gate', type: 'NOT', title: 'Not', x: 500, y: 500),
-        FbdBlock(id: 'out', type: 'TAG_OUTPUT', title: 'Out', tagBinding: 'Motor_Run', x: 500, y: 500),
+        FbdBlock(
+            id: 'out', type: 'TAG_OUTPUT', title: 'Out', tagBinding: 'Motor_Run', x: 500, y: 500),
       ]);
       program.fbdWires.addAll([
         FbdWire(fromBlockId: 'src', fromPin: 'OUT', toBlockId: 'gate', toPin: 'IN'),
@@ -301,7 +408,8 @@ void main() {
   });
 
   group('FbdEditorScreen block naming', () {
-    testWidgets('config dialog exposes a Block name field seeded with block.title; editing + Save renames the block face',
+    testWidgets(
+        'config dialog exposes a Block name field seeded with block.title; editing + Save renames the block face',
         (tester) async {
       await setSurface(tester, phoneSize);
       final project = _buildProject();
@@ -376,9 +484,12 @@ void main() {
         ..clear()
         ..addAll([FbdNetwork(comment: ''), FbdNetwork(comment: '')]);
       program.fbdBlocks.addAll([
-        FbdBlock(id: 'n0a', type: 'CONST', title: 'N0 top', tagBinding: '1', x: 40, y: 40, network: 0),
-        FbdBlock(id: 'n0b', type: 'CONST', title: 'N0 low', tagBinding: '2', x: 40, y: 1400, network: 0),
-        FbdBlock(id: 'n1a', type: 'CONST', title: 'N1 top', tagBinding: '3', x: 40, y: 40, network: 1),
+        FbdBlock(
+            id: 'n0a', type: 'CONST', title: 'N0 top', tagBinding: '1', x: 40, y: 40, network: 0),
+        FbdBlock(
+            id: 'n0b', type: 'CONST', title: 'N0 low', tagBinding: '2', x: 40, y: 1400, network: 0),
+        FbdBlock(
+            id: 'n1a', type: 'CONST', title: 'N1 top', tagBinding: '3', x: 40, y: 40, network: 1),
       ]);
       return program;
     }

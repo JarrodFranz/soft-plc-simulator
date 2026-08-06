@@ -42,25 +42,12 @@ class _InteractionAnalysisScreenState extends State<InteractionAnalysisScreen> {
   @override
   void initState() {
     super.initState();
-    final tags = widget.currentProject.tags;
-    _mv1Ctrl.text = _defaultTag('Heater_A', tags, 0);
-    _mv2Ctrl.text = _defaultTag('Heater_B', tags, 1);
-    _pv1Ctrl.text = _defaultTag('Temp_A', tags, 2);
-    _pv2Ctrl.text = _defaultTag('Temp_B', tags, 3);
-  }
-
-  /// Uses [preferred] when a tag of that name exists in [tags]; otherwise the
-  /// [fallbackIndex]-th tag's name (empty when there aren't that many tags).
-  String _defaultTag(String preferred, List<PlcTag> tags, int fallbackIndex) {
-    for (final t in tags) {
-      if (t.name == preferred) {
-        return preferred;
-      }
-    }
-    if (fallbackIndex < tags.length) {
-      return tags[fallbackIndex].name;
-    }
-    return tags.isNotEmpty ? tags.first.name : '';
+    final defaults =
+        defaultInteractionAnalysisTags(widget.currentProject.tags);
+    _mv1Ctrl.text = defaults[0];
+    _mv2Ctrl.text = defaults[1];
+    _pv1Ctrl.text = defaults[2];
+    _pv2Ctrl.text = defaults[3];
   }
 
   @override

@@ -4,6 +4,67 @@ import 'project_model.dart';
 import 'sim_engine.dart';
 import 'tag_resolver.dart';
 
+/// Scalar analog datatypes eligible as a gain/RGA step-test signal — REAL/INT
+/// only. BOOL, STRING, TIMER, arrays and composites can't drive or respond to
+/// a continuous open-loop step in a way a gain matrix can characterize.
+bool _isAnalogScalar(PlcTag t) =>
+    t.arrayLength == 0 &&
+    const {'FLOAT64', 'INT16', 'INT32', 'INT64'}.contains(t.dataType);
+
+/// Whether [t] reads as a process signal worth defaulting an MV/PV selector
+/// to: its name ends with a common process-variable/setpoint/control-value
+/// suffix, or its `ioType` marks it as a simulated plant input or output.
+bool _looksLikeProcessSignal(PlcTag t) {
+  final n = t.name.toUpperCase();
+  return n.endsWith('PV') ||
+      n.endsWith('SP') ||
+      n.endsWith('CV') ||
+      t.ioType == 'SimulatedInput' ||
+      t.ioType == 'SimulatedOutput';
+}
+
+/// Default-selection priority for [t] — lower sorts first. Tier 0: an analog
+/// tag that also looks like a process signal (see [_looksLikeProcessSignal]).
+/// Tier 1: any other analog (REAL/INT) tag — still numerically step-testable,
+/// just without a recognizable name/role. Tier 2: everything else (BOOL,
+/// STRING, TIMER, arrays, composites) — meaningless for a gain/RGA analysis,
+/// only used as a last resort when the project has no analog tags at all.
+int _defaultSelectionPriority(PlcTag t) {
+  if (!_isAnalogScalar(t)) return 2;
+  return _looksLikeProcessSignal(t) ? 0 : 1;
+}
+
+/// Default tag names for Interaction Analysis's four selectors, in order
+/// `[mv1, mv2, pv1, pv2]` (padded with `''` if [tags] has fewer than 4).
+///
+/// QA sweep item #9: the previous heuristic special-cased the `Heater_A`/
+/// `Heater_B`/`Temp_A`/`Temp_B` names (the bundled MIMO demo project) and
+/// otherwise fell back to whatever tag happened to sit at a fixed list
+/// index — on any other project that landed on arbitrary BOOL digital tags
+/// (`Start_PB`, `Stop_PB`, `EStop`, `Pump_Latch`...), which are meaningless
+/// for a continuous gain/RGA step test.
+///
+/// This ranks every tag by [_defaultSelectionPriority] (a stable sort — ties
+/// keep their declared order) and takes the first four names, so all four
+/// selectors land on analog process tags whenever the project has at least
+/// four, and only fall through to BOOL/other tags when it doesn't. The user
+/// can still freely change any selection afterward — this only decides the
+/// screen's initial prefill.
+List<String> defaultInteractionAnalysisTags(List<PlcTag> tags) {
+  final order = List<int>.generate(tags.length, (i) => i)
+    ..sort((a, b) {
+      final pa = _defaultSelectionPriority(tags[a]);
+      final pb = _defaultSelectionPriority(tags[b]);
+      if (pa != pb) return pa.compareTo(pb);
+      return a.compareTo(b); // stable: preserve original declaration order
+    });
+  final picked = order.take(4).map((i) => tags[i].name).toList();
+  while (picked.length < 4) {
+    picked.add('');
+  }
+  return picked;
+}
+
 /// Parameters controlling an open-loop step test: the MV levels to hold, scan
 /// timing, and the convergence criteria used to decide a PV pair has settled
 /// to steady state.

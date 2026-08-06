@@ -263,7 +263,26 @@ void main() {
       await tester.pumpWidget(_fbEditorApp(project));
       await tester.pumpAndSettle();
 
-      expect(find.text('No function blocks defined yet.'), findsOneWidget);
+      // A4/#7: sidebar and main-pane empty states share identical wording,
+      // and both panes render together at desktop width — so this now
+      // matches twice, not once.
+      expect(find.text('No function blocks yet.'), findsNWidgets(2));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('sidebar and main-pane empty states use identical wording (A4/#7)', (tester) async {
+      await setSurface(tester, desktopSize);
+      final project = _buildProject();
+      await tester.pumpWidget(_fbEditorApp(project));
+      await tester.pumpAndSettle();
+
+      // Old, since-unified wording must not survive anywhere.
+      expect(find.text('No function blocks defined yet.'), findsNothing);
+      expect(find.text('No FB'), findsNothing);
+      expect(find.text('Create Function Block'), findsNothing);
+
+      // Both panes' "add" affordance now reads the same.
+      expect(find.text('New Function Block'), findsNWidgets(2));
       expect(tester.takeException(), isNull);
     });
   });

@@ -124,6 +124,16 @@ See `docs/import/L5X.md` for the full support matrix.
 | Exact timer/counter preset fidelity (RLL) | later | A literal preset operand imports exactly; a tag-referenced or expression preset defaults + warns. Rockwell's predefined `TIMER`/`COUNTER` types themselves DO map onto the app's builtin composites (`type_normalize.dart`), so `.PRE`/`.ACC`/`.DN`/`.CV` are real members that execute; what is still deferred is reading the preset **off that backing structure's `.PRE` value** instead of from the operand text alone. |
 | Unmapped RLL instructions | later | `CPT`, `JSR`, `PID`, `SQO`, `COP`, `MSG`, and other instructions outside the supported set have no translation and stub the rung (`unsupported-instruction`), recorded in `ImportReport.unsupportedRllInstructions`. |
 
+## QA whole-branch review follow-ups (feat/qa-improvements)
+
+| Item | Priority | Notes |
+|---|---|---|
+| Project-dropdown scrim | later | The project-select header uses a plain `DropdownButton`, whose modal barrier color isn't overridable through its own API — a real fix needs either a forked/custom dropdown widget or a `NavigatorObserver`-driven overlay. Cosmetic (the stock Material scrim shows instead of the app's), not a functional gap. |
+| Tags & Structs FAB-over-list overlap (full fix) | later | The `ListView`'s trailing `EdgeInsets.fromLTRB(16, 16, 16, 96)` padding (`memory_manager_screen.dart`'s `_buildStructDefsTab`) only keeps the LAST card clear of the "Add DUT" FAB once the user has scrolled to the end; a pinned action surface (e.g. a persistent bottom bar instead of a floating FAB) would be the full fix for the overlap at any scroll position. |
+| `PannableCanvas` pointer-signal gap | later | A wheel notch delivered inside the viewport but off the canvas's actual content falls back to `InteractiveViewer`'s own zoom-on-wheel behavior (see `pannable_canvas.dart`'s `_onPointerSignal`: `pre == null` early-return) rather than the pan affordance — same as a bare, unwrapped viewer. Edge case; the common case (wheel over the drawn content) pans correctly. |
+| FBD lane wheel vs. tall networks | later | With `wheelPansVertically: false`, the plain mouse wheel over an FBD lane drives the outer lane `ListView`, not the individual network canvas. A network whose content exceeds the lane's 1200px height clamp (`fbd_editor_screen.dart`, `(maxY + 220).clamp(260.0, 1200.0)`) is therefore wheel-unreachable past that clamp — drag-to-pan and Shift+wheel (confirmed working against a real Chromium build, which delivers `shiftKey` alongside `dy`) still reach it. |
+| Gateway Regenerate confirm-when-non-empty | later | Regenerating the protocol map prompts for confirmation only when the existing map is non-empty (QA batch C, `3312d2b`). This threshold is a judgment call, not a proven-wrong behavior — revisit if it turns out to read as friction in practice (e.g. a near-empty map that still represents deliberate manual edits). |
+
 ## Housekeeping
 
 | Item | Priority | Notes |

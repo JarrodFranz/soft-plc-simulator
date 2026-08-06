@@ -80,15 +80,16 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('delete (confirmed) removes the lane, its blocks, and renumbers', (tester) async {
+    // Per the app-wide delete policy (`lib/ui/delete_feedback.dart`) an
+    // undoable delete no longer blocks on a confirmation dialog — the lane
+    // goes immediately and the SnackBar carries the UNDO.
+    testWidgets('delete removes the lane, its blocks, and renumbers', (tester) async {
       await setSurface(tester, desktopSize);
       final program = _twoNetworkProgram();
       await tester.pumpWidget(_app(_buildProject(), program));
       await tester.pumpAndSettle();
 
       await tester.tap(find.byKey(const Key('fbd_net_del_1')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('fbd_net_del_confirm')));
       await tester.pumpAndSettle();
 
       expect(program.fbdNetworks.length, 1);

@@ -344,6 +344,12 @@ void main() {
 
     await tester.tap(find.byKey(const Key('logs_clear_button')));
     await tester.pumpAndSettle();
+    // The log buffer is outside the project's undo history, so clearing it
+    // confirms first (delete policy — `lib/ui/delete_feedback.dart`).
+    expect(find.text('Clear Log'), findsOneWidget);
+    expect(logger.entries, isNotEmpty);
+    await tester.tap(find.widgetWithText(ElevatedButton, 'Clear'));
+    await tester.pumpAndSettle();
 
     expect(logger.entries, isEmpty);
     expect(find.text('Something happened'), findsNothing);

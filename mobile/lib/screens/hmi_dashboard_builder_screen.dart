@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/project_model.dart';
 import '../services/tag_historian.dart';
+import '../ui/delete_feedback.dart';
 import '../ui/responsive.dart';
 import '../widgets/live_tick.dart';
 import '../widgets/tag_autocomplete_field.dart';
@@ -278,10 +279,12 @@ class _HmiDashboardBuilderScreenState extends State<HmiDashboardBuilderScreen> {
         constraints: const BoxConstraints(),
         tooltip: 'Delete Component',
         onPressed: () {
+          final removed = components[index];
           setState(() {
             components.removeAt(index);
           });
           widget.onProjectUpdated();
+          showDeleteUndoSnackBar(context, 'component "${removed.title}"');
         },
       ),
     ];

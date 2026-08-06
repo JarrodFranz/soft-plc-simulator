@@ -1,12 +1,15 @@
 import 'dart:math' as math;
 
+import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import '../models/project_model.dart';
 import '../models/system_tags.dart';
 import '../models/tag_resolver.dart';
 import '../models/test_tag_set.dart';
 import '../services/tag_historian.dart';
+import '../ui/delete_feedback.dart';
 import '../ui/responsive.dart';
+import '../ui/value_format.dart';
 import '../widgets/live_tick.dart';
 import '../widgets/scalar_value_field.dart';
 import '../widgets/tag_autocomplete_field.dart';
@@ -30,6 +33,7 @@ class _TagRowData {
   final dynamic rawValue;
   final bool isBoolLeaf;
   final bool hasChildren; // used to pick the value renderer (leaf vs subtree)
+  final bool isForced; // QA #4: shown as a row marker; always false for children
 
   _TagRowData({
     required this.name,
@@ -46,7 +50,17 @@ class _TagRowData {
     required this.rawValue,
     required this.isBoolLeaf,
     required this.hasChildren,
+    required this.isForced,
   });
+
+  /// Whether Force/Unforce applies to this row — root-level scalar tags
+  /// only (never the reserved System tag, since [isDeletable] already
+  /// excludes it; never a composite/array value; never a nested child row).
+  /// Mirrors the Tag Inspector dock's exact exclusion rule (QA #4: the same
+  /// toggle should be reachable, and reachable for the same set of tags,
+  /// from both places).
+  bool get isForceable =>
+      isDeletable && depth == 0 && rawValue is! Map && rawValue is! List;
 
   // Formats an arbitrary value the same way [valueText] formats [rawValue] —
   // shared so the LiveTick-driven builders can re-read the current value and
@@ -60,6 +74,15 @@ class _TagRowData {
     }
     if (isBoolLeaf) {
       return (value == true) ? 'TRUE (1)' : 'FALSE (0)';
+    }
+    // REAL values print at a sane fixed precision (trailing zeros trimmed,
+    // but always at least one decimal) rather than raw double precision —
+    // checked against the tag's declared type, not the runtime value's
+    // exact representation, because an uninitialized/JSON-round-tripped
+    // FLOAT64 value can be a plain `int` zero, which would otherwise print
+    // as a bare `0` next to sibling rows showing `0.0` (QA #15).
+    if (dataType == 'FLOAT64' && value is num) {
+      return formatLiveValue(value.toDouble());
     }
     return '$value';
   }
@@ -230,27 +253,18 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
     widget.onProjectUpdated();
   }
 
-  void _confirmDeleteFolder(String folder) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Delete Folder'),
-        content: Text(
-          'Delete folder "$folder" and all its tags? This removes their signal generators '
-          'and any protocol-map entries too. This cannot be undone.',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () {
-              debugDeleteFolder(folder);
-              Navigator.pop(ctx);
-            },
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
+  /// Folder deletes are wholly inside `PlcProject` (tags + their signal
+  /// generators + their protocol-map rows), so the shell's undo restores them
+  /// in one step. Per the delete policy they complete immediately and report
+  /// their blast radius in the SnackBar instead of blocking on a dialog.
+  void _deleteFolder(String folder) {
+    final count = widget.currentProject.tags.where((t) => t.folder == folder).length;
+    if (count == 0) {
+      return;
+    }
+    debugDeleteFolder(folder);
+    showDeleteUndoSnackBar(
+        context, 'folder "$folder" ($count ${count == 1 ? 'tag' : 'tags'})');
   }
 
   void _showGenerateTestSetDialog() {
@@ -605,6 +619,34 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                     },
                     child: const Text('Reset live value → default'),
                   ),
+                  // QA #4: Force/Unforce reachable from the Edit Tag dialog
+                  // too, not just the Tag Inspector dock. Scalar-only,
+                  // matching the inspector's and the table row action's
+                  // exclusion rule -- forcing a composite/array value is
+                  // ill-defined. Delegates to the same `PlcTag.toggleForce()`
+                  // every other force affordance uses.
+                  if (tag.value is! Map && tag.value is! List)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: ElevatedButton.icon(
+                        key: const Key('edit_tag_force_button'),
+                        icon: Icon(tag.isForced ? Icons.lock : Icons.lock_open, size: 14),
+                        label: Text(tag.isForced ? 'Unforce' : 'Force'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: tag.isForced ? Colors.amber.shade800 : const Color(0xFF334155),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        ),
+                        onPressed: () {
+                          setDlgState(() {
+                            setState(() {
+                              tag.toggleForce();
+                            });
+                          });
+                          widget.onProjectUpdated();
+                        },
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -763,7 +805,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
     double qualityW = _textW('Quality', heading) + _kSortArrow;
     double ioW = _textW('I/O Classification', heading) + _kSortArrow;
     final double actionsW =
-        math.max(_textW('Actions', heading), 80); // two 40px icon buttons
+        math.max(_textW('Actions', heading), 120); // up to three 40px icon buttons (force/edit/delete)
 
     for (final row in rows) {
       final root = row.depth == 0;
@@ -888,7 +930,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                 const SizedBox(width: 8),
                 touchable(
                   const Icon(Icons.delete_forever, color: Colors.redAccent, size: 18),
-                  onTap: () => _confirmDeleteFolder(folder),
+                  onTap: () => _deleteFolder(folder),
                 ),
               ],
             ),
@@ -992,10 +1034,31 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                   else
                     const SizedBox(width: kMinTouch, height: kMinTouch),
                   Expanded(
-                    child: Text(row.name,
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace', fontSize: 14),
-                        overflow: TextOverflow.ellipsis),
+                    child: Row(
+                      children: [
+                        Flexible(
+                          child: Text(row.name,
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace', fontSize: 14),
+                              overflow: TextOverflow.ellipsis),
+                        ),
+                        if (row.isForced) ...[
+                          const SizedBox(width: 4),
+                          const Tooltip(
+                            message: 'Forced',
+                            child: Icon(Icons.lock, size: 14, color: Colors.amber),
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
+                  if (row.isForceable)
+                    touchable(
+                      Icon(row.isForced ? Icons.lock : Icons.lock_open,
+                          color: row.isForced ? Colors.amber : Colors.grey,
+                          size: 18,
+                          key: Key('force_tag_${row.name}')),
+                      onTap: () => _toggleTagForce(row.name),
+                    ),
                   if (row.isDeletable && row.depth == 0 && row.name != kSystemTagName)
                     touchable(
                       Icon(Icons.edit, color: Colors.cyanAccent, size: 18, key: Key('edit_tag_${row.name}')),
@@ -1006,7 +1069,8 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                     ),
                   if (row.isDeletable)
                     touchable(
-                      const Icon(Icons.delete, color: Colors.redAccent, size: 18),
+                      Icon(Icons.delete,
+                          color: Colors.redAccent, size: 18, key: Key('delete_tag_${row.name}')),
                       onTap: () => _deleteTag(row.name),
                     ),
                 ],
@@ -1223,6 +1287,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
         // root tags remains available in the Tag Inspector.
         isBoolLeaf: false,
         hasChildren: expandable,
+        isForced: tag.isForced,
       ));
 
       out.addAll(_childRowData(tag.name, 1));
@@ -1263,6 +1328,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
             child.dataType == 'BOOL' &&
             (!isReservedSystemChild || isWritableSystemChild),
         hasChildren: child.hasChildren,
+        isForced: false,
       ));
       out.addAll(_childRowData(child.path, depth + 1));
     }
@@ -1289,6 +1355,8 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
       widget.currentProject.tags.removeWhere((t) => t.name == name || t.name.startsWith('$name.'));
     });
     widget.onProjectUpdated();
+    // Undoable (tags are part of PlcProject) -> SnackBar + UNDO, no dialog.
+    showDeleteUndoSnackBar(context, 'tag "$name"');
   }
 
   void _toggleBoolValue(_TagRowData row) {
@@ -1296,6 +1364,23 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
     setState(() {});
     widget.onProjectUpdated();
   }
+
+  // Force/Unforce for a root-level tag from the Tags & Structs table/card
+  // row action. Delegates to `PlcTag.toggleForce()` -- the exact same rule
+  // the Tag Inspector dock and the Edit Tag dialog use (QA #4: no forked
+  // force logic across the three surfaces).
+  void _toggleTagForce(String name) {
+    // QA F4: `firstWhere` without `orElse` throws a StateError if `name` no
+    // longer resolves (e.g. the tag was deleted/renamed out from under a
+    // stale row action) -- fail soft instead of crashing the screen.
+    final tag = widget.currentProject.tags.firstWhereOrNull((t) => t.name == name);
+    if (tag == null) return;
+    setState(() => tag.toggleForce());
+    widget.onProjectUpdated();
+  }
+
+  @visibleForTesting
+  void debugToggleTagForce(String name) => _toggleTagForce(name);
 
   List<DataRow> _buildHierarchicalRows(List<_TagRowData> data,
       {bool showPath = true, bool showQuality = true, bool showIo = true}) {
@@ -1322,9 +1407,24 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                     fontWeight: FontWeight.bold,
                     fontFamily: 'monospace',
                     fontSize: row.depth == 0 ? 14 : 12)),
+            if (row.isForced) ...[
+              const SizedBox(width: 4),
+              const Tooltip(
+                message: 'Forced',
+                child: Icon(Icons.lock, size: 13, color: Colors.amber),
+              ),
+            ],
           ]),
         )),
         DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
+          if (row.isForceable)
+            IconButton(
+              key: Key('force_tag_${row.name}'),
+              icon: Icon(row.isForced ? Icons.lock : Icons.lock_open,
+                  color: row.isForced ? Colors.amber : Colors.grey, size: 16),
+              tooltip: row.isForced ? 'Unforce' : 'Force',
+              onPressed: () => _toggleTagForce(row.name),
+            ),
           if (row.isDeletable && row.depth == 0 && row.name != kSystemTagName)
             IconButton(
               key: Key('edit_tag_${row.name}'),
@@ -1336,6 +1436,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
             ),
           if (row.isDeletable)
             IconButton(
+              key: Key('delete_tag_${row.name}'),
               icon: const Icon(Icons.delete, color: Colors.redAccent, size: 16),
               onPressed: () => _deleteTag(row.name),
             ),
@@ -1430,7 +1531,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                         IconButton(
                           icon: const Icon(Icons.delete, color: Colors.redAccent, size: 20),
                           tooltip: 'Delete DUT',
-                          onPressed: () => _confirmDeleteStruct(s),
+                          onPressed: () => _deleteStruct(s),
                         ),
                       ],
                     ),
@@ -1495,7 +1596,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
     );
   }
 
-  void _confirmDeleteStruct(PlcStructDef s) {
+  void _deleteStruct(PlcStructDef s) {
     if (structDefInUse(widget.currentProject, s.name)) {
       final referencedByTags = widget.currentProject.tags
           .where((t) => t.dataType == s.name)
@@ -1521,26 +1622,12 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
       );
       return;
     }
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Delete DUT'),
-        content: Text('Delete struct definition "${s.name}"? This cannot be undone.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () {
-              setState(() {
-                widget.currentProject.structDefs.remove(s);
-              });
-              widget.onProjectUpdated();
-              Navigator.pop(ctx);
-            },
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
+    // Undoable (structDefs are part of PlcProject) -> no confirmation dialog.
+    setState(() {
+      widget.currentProject.structDefs.remove(s);
+    });
+    widget.onProjectUpdated();
+    showDeleteUndoSnackBar(context, 'struct definition "${s.name}"');
   }
 
   void _showEditStructDialog(PlcStructDef s) {
@@ -1745,6 +1832,7 @@ class MemoryManagerScreenState extends State<MemoryManagerScreen> with SingleTic
                   setState(() => widget.currentProject.trends.remove(p));
                   widget.historian.syncPens(widget.currentProject.trends);
                   widget.onProjectUpdated();
+                  showDeleteUndoSnackBar(context, 'trend pen "${p.tagPath}"');
                 }),
               ]),
             ),

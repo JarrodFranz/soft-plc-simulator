@@ -93,4 +93,83 @@ void main() {
     expect(s.warning, contains('ill-conditioned'));
     expect(s.lambda11.isNaN, isTrue);
   });
+
+  group('defaultInteractionAnalysisTags (QA #9)', () {
+    PlcTag tag(String name, String dataType, {String ioType = 'Internal', int arrayLength = 0}) =>
+        PlcTag(name: name, path: name, dataType: dataType, value: 0, ioType: ioType, arrayLength: arrayLength);
+
+    test('prefers analog process-signal tags over arbitrary BOOL tags on a mixed set', () {
+      // Mirrors the real water-treatment demo: a handful of BOOL digital
+      // I/O tags declared first, with the meaningful analog process tags
+      // declared later. The old index-based fallback picked the BOOLs.
+      final tags = [
+        tag('Start_PB', 'BOOL', ioType: 'SimulatedInput'),
+        tag('Stop_PB', 'BOOL', ioType: 'SimulatedInput'),
+        tag('EStop', 'BOOL', ioType: 'SimulatedInput'),
+        tag('Pump_Latch', 'BOOL'),
+        tag('Turbidity_PV', 'FLOAT64', ioType: 'SimulatedInput'),
+        tag('Turbidity_SP', 'FLOAT64'),
+        tag('Level_PV', 'FLOAT64', ioType: 'SimulatedInput'),
+        tag('Flow_PV', 'FLOAT64', ioType: 'SimulatedInput'),
+      ];
+      final defaults = defaultInteractionAnalysisTags(tags);
+      expect(defaults, hasLength(4));
+      for (final name in defaults) {
+        final t = tags.firstWhere((t) => t.name == name);
+        expect(t.dataType, isNot('BOOL'), reason: '$name should not be a BOOL default');
+      }
+      expect(defaults, containsAll(['Turbidity_PV', 'Turbidity_SP', 'Level_PV', 'Flow_PV']));
+    });
+
+    test('ranks analog SimulatedInput/Output tags ahead of undecorated analog tags', () {
+      final tags = [
+        tag('u_A', 'FLOAT64'), // analog, no role hint -> tier 1
+        tag('Heater_A', 'FLOAT64', ioType: 'SimulatedOutput'), // tier 0
+        tag('Temp_A', 'FLOAT64', ioType: 'SimulatedInput'), // tier 0
+      ];
+      final defaults = defaultInteractionAnalysisTags(tags);
+      // Only 3 tags exist -> 4th slot pads with ''.
+      expect(defaults, ['Heater_A', 'Temp_A', 'u_A', '']);
+    });
+
+    test('falls back to BOOL tags only when the project has no analog tags at all', () {
+      final tags = [
+        tag('A', 'BOOL'),
+        tag('B', 'BOOL'),
+        tag('C', 'BOOL'),
+        tag('D', 'BOOL'),
+      ];
+      final defaults = defaultInteractionAnalysisTags(tags);
+      expect(defaults, ['A', 'B', 'C', 'D']);
+    });
+
+    test('reproduces the exact MIMO demo project defaults', () {
+      final tags = [
+        tag('Heater_A', 'FLOAT64', ioType: 'SimulatedOutput'),
+        tag('Heater_B', 'FLOAT64', ioType: 'SimulatedOutput'),
+        tag('Temp_A', 'FLOAT64', ioType: 'SimulatedInput'),
+        tag('Temp_B', 'FLOAT64', ioType: 'SimulatedInput'),
+        tag('SP_A', 'FLOAT64'),
+        tag('SP_B', 'FLOAT64'),
+        tag('Amb', 'FLOAT64'),
+        tag('u_A', 'FLOAT64'),
+        tag('u_B', 'FLOAT64'),
+      ];
+      expect(defaultInteractionAnalysisTags(tags),
+          ['Heater_A', 'Heater_B', 'Temp_A', 'Temp_B']);
+    });
+
+    test('excludes arrays and composites even when marked as process I/O', () {
+      final tags = [
+        tag('Weird_PV', 'FLOAT64', ioType: 'SimulatedInput', arrayLength: 4),
+        tag('Real_PV', 'FLOAT64', ioType: 'SimulatedInput'),
+      ];
+      final defaults = defaultInteractionAnalysisTags(tags);
+      expect(defaults, ['Real_PV', 'Weird_PV', '', '']);
+    });
+
+    test('empty project returns four empty strings', () {
+      expect(defaultInteractionAnalysisTags(const []), ['', '', '', '']);
+    });
+  });
 }

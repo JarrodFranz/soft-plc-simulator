@@ -1,22 +1,114 @@
 import 'project_model.dart';
 import 'fbd_pins.dart';
 
-// Layout geometry — the block width mirrors the editor's `_kBlockWidth`; the
-// rest are generous spacing values so an auto-arranged diagram breathes.
-const double _kBlockWidth = 180;
-const double _kHeaderHeight = 40;
-const double _kPinRowHeight = 30;
-const double _kFooterHeight = 44;
+// Layout geometry. These are the ONE source of truth for a block's rendered
+// extents — the editor's card is built from the same numbers, and both
+// auto-arrange and new-block placement measure against them.
+const double kFbdBlockWidth = 180;
+const double kFbdBlockHeaderHeight = 40;
+const double kFbdPinRowHeight = 30;
+const double kFbdBlockFooterHeight = 44;
+
+/// The canvas grid interval (`GridPaper(interval: …)` behind the blocks), and
+/// therefore the step a placement scan moves by, so new blocks land on the
+/// same grid the user sees.
+const double kFbdGridStep = 40;
+
+/// Where a block added from the palette lands when nothing is in its way.
+const double kFbdDefaultBlockX = 150;
+const double kFbdDefaultBlockY = 150;
+
 const double _kLeftMargin = 60;
 const double _kTopMargin = 60;
 const double _kColumnGap = 110; // horizontal gap between dependency columns
 const double _kRowGap = 48; // vertical gap between blocks stacked in a column
 
-double _blockHeight(FbdBlock b) {
-  final ins = fbdInputPins(b.type, inputCount: b.inputCount).length;
-  final outs = fbdOutputPins(b.type).length;
+double _heightForRows(int ins, int outs) {
   final rows = [ins, outs, 1].reduce((a, c) => a > c ? a : c);
-  return _kHeaderHeight + rows * _kPinRowHeight + _kFooterHeight;
+  return kFbdBlockHeaderHeight + rows * kFbdPinRowHeight + kFbdBlockFooterHeight;
+}
+
+double _blockHeight(FbdBlock b) => _heightForRows(
+      fbdInputPins(b.type, inputCount: b.inputCount).length,
+      fbdOutputPins(b.type).length,
+    );
+
+/// Rendered height of [b] as the editor actually draws it: a block's card grows
+/// one pin row at a time, and for a CUSTOM function block the pin count comes
+/// from the FB's own declared vars rather than the built-in registry — hence
+/// the [project]. Pure; never throws.
+double fbdBlockHeightFor(PlcProject project, FbdBlock b) => _heightForRows(
+      fbdInputPinsFor(project, b).length,
+      fbdOutputPinsFor(project, b).length,
+    );
+
+/// Finds a position for [candidate] in [program]'s network that clears every
+/// block already there (QA #14: a palette add used to drop on a fixed anchor,
+/// landing on top of whatever was already at that spot).
+///
+/// Scans outward from ([anchorX], [anchorY]) in [gridStep] increments — across
+/// a row first, then down to the next row — and returns the first candidate
+/// position whose bounds intersect nothing. The scan is capped at
+/// [maxColumns] x [maxRows] steps; if the whole capped region is occupied the
+/// result is the anchor plus a rotating stacking offset, so successive adds on
+/// a saturated canvas are at least individually grabbable rather than exactly
+/// coincident.
+///
+/// [candidate] is measured but never mutated, and is ignored if it happens to
+/// already be in `program.fbdBlocks` (matched by id). Pure; never throws.
+({double x, double y}) findFreeFbdBlockSlot(
+  PlcProject project,
+  PlcProgram program,
+  FbdBlock candidate, {
+  int? network,
+  double anchorX = kFbdDefaultBlockX,
+  double anchorY = kFbdDefaultBlockY,
+  double gridStep = kFbdGridStep,
+  int maxColumns = 24,
+  int maxRows = 24,
+}) {
+  final net = network ?? candidate.network;
+  final siblings = [
+    for (final b in program.fbdBlocks)
+      if (b.network == net && b.id != candidate.id) b,
+  ];
+  if (siblings.isEmpty) {
+    return (x: anchorX, y: anchorY);
+  }
+
+  final step = gridStep > 0 ? gridStep : kFbdGridStep;
+  final height = fbdBlockHeightFor(project, candidate);
+  final occupied = [
+    for (final b in siblings) (x: b.x, y: b.y, h: fbdBlockHeightFor(project, b)),
+  ];
+
+  bool isFree(double x, double y) {
+    for (final o in occupied) {
+      final hit = x < o.x + kFbdBlockWidth &&
+          o.x < x + kFbdBlockWidth &&
+          y < o.y + o.h &&
+          o.y < y + height;
+      if (hit) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  final cols = maxColumns < 0 ? 0 : maxColumns;
+  final rows = maxRows < 0 ? 0 : maxRows;
+  for (var row = 0; row <= rows; row++) {
+    for (var col = 0; col <= cols; col++) {
+      final x = anchorX + col * step;
+      final y = anchorY + row * step;
+      if (isFree(x, y)) {
+        return (x: x, y: y);
+      }
+    }
+  }
+
+  final stack = (siblings.length % 8) + 1;
+  return (x: anchorX + stack * step, y: anchorY + stack * step);
 }
 
 /// Computes a tidy dependency-ordered layout for [program]'s FBD blocks: each
@@ -84,7 +176,7 @@ Map<String, ({double x, double y})> autoArrangeFbdNetwork(
     if (b.y < minY) {
       minY = b.y;
     }
-    final right = b.x + _kBlockWidth;
+    final right = b.x + kFbdBlockWidth;
     final bottom = b.y + _blockHeight(b);
     if (right > maxRight) {
       maxRight = right;
@@ -166,7 +258,7 @@ Map<String, ({double x, double y})> _arrange(
   final result = <String, ({double x, double y})>{};
   final sortedCols = byColumn.keys.toList()..sort();
   for (final c in sortedCols) {
-    final x = _kLeftMargin + c * (_kBlockWidth + _kColumnGap);
+    final x = _kLeftMargin + c * (kFbdBlockWidth + _kColumnGap);
     var y = _kTopMargin;
     for (final b in byColumn[c]!) {
       result[b.id] = (x: x, y: y);

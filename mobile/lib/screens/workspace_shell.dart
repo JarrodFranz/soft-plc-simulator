@@ -50,6 +50,7 @@ import 'pid_autotune_screen.dart';
 import 'interaction_analysis_screen.dart';
 import 'gateway_screen.dart';
 import 'softplc_settings_dialog.dart';
+import '../ui/delete_feedback.dart';
 
 /// Debounce window between the last project mutation and the autosave write.
 const Duration _autosaveDebounce = Duration(milliseconds: 800);
@@ -209,6 +210,17 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   // fresh instead of trying to diff its old state against the new project.
   final ProjectHistory _history = ProjectHistory();
   int _editorRevision = 0;
+
+  /// Last-selected protocol tab on the Gateway screen. Held here — NOT inside
+  /// `GatewayScreen`'s own `State` — because every `_editorRevision` bump
+  /// (undo/redo chief among them; see the Regenerate-map UNDO snackbar) tears
+  /// the whole `GatewayScreen` (and its `DefaultTabController`) down and
+  /// rebuilds it fresh via the `ValueKey('editor-$_editorRevision-...')`
+  /// below. A field on `GatewayScreen`'s own State would be destroyed right
+  /// along with it; this one survives because `WorkspaceShellState` itself
+  /// isn't rebuilt. Fed back in as `initialProtocolTabIndex` so a rebuild
+  /// reopens on the same tab instead of snapping back to OPC UA (tab 0).
+  int _gatewayTabIndex = 0;
 
   /// Whether a real user edit has happened since the last history capture.
   ///
@@ -651,6 +663,13 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   @visibleForTesting
   void debugAddProject(PlcProject proj) => setState(() => _allProjects.add(proj));
 
+  /// Test-only hook: re-baselines the undo history onto the project's current
+  /// state, exactly as every project-replacing path does. Lets a test seed
+  /// fixture data straight into `debugActiveProject` and still have undo treat
+  /// that seeded state (rather than the boot state) as the step to return to.
+  @visibleForTesting
+  void debugResetHistory() => setState(_resetHistory);
+
   /// Test-only hook: drives the same project-replacement path as picking
   /// [proj] from the project switcher UI. Used by widget tests to exercise
   /// `_switchActiveProject` (and therefore `_beginProjectSession`) without
@@ -1021,6 +1040,10 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   void _resetHistory() {
     _pendingHistoryCapture = false;
     _history.reset(_snapshot());
+    // QA F3: a live delete-UNDO snackbar references history from the project
+    // being left behind; without clearing it, tapping UNDO after switching
+    // projects would revert an unrelated edit in the new project.
+    ScaffoldMessenger.maybeOf(context)?.clearSnackBars();
   }
 
   Future<void> _runAutosave() async {
@@ -1220,29 +1243,18 @@ class WorkspaceShellState extends State<WorkspaceShell> {
     );
   }
 
+  /// Blocking confirmation for the two shell actions the undo history cannot
+  /// reverse (project delete, reset-to-defaults) — see the delete policy in
+  /// `lib/ui/delete_feedback.dart`. Every *undoable* delete uses
+  /// [showDeleteUndoSnackBar] instead of a dialog.
   Future<bool> _confirm(
     BuildContext context, {
     required String title,
     required String message,
     String confirmLabel = 'Confirm',
-  }) async {
-    final result = await showAdaptiveWidthDialog<bool>(
-      context,
-      child: AlertDialog(
-        title: Text(title),
-        content: Text(message),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(confirmLabel),
-          ),
-        ],
-      ),
-    );
-    return result ?? false;
-  }
+  }) =>
+      confirmUnrecoverableDelete(context,
+          title: title, message: message, confirmLabel: confirmLabel);
 
   Future<void> _createNewProject() async {
     final repo = _repo;
@@ -1498,8 +1510,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         fileNameOverrides: [fileName],
         subject: fileName,
       );
-      _logger.log(kLogSourceProject, LogLevel.info,
-          'Exported project "${_activeProject.name}" as $fileName');
+      _onExportSucceeded(fileName, messenger);
     } catch (e) {
       _logger.log(
         kLogSourceProject,
@@ -1513,6 +1524,30 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       );
     }
   }
+
+  /// Shared success tail for a project export: logs it and shows the same
+  /// style/duration completion snackbar every import path already ends with
+  /// (`Imported "<name>"`) — export previously gave no in-app feedback at
+  /// all, leaving only the OS's native share/download indicator as a signal
+  /// that anything happened. Split out of [_exportActiveProject] so a test
+  /// can exercise it directly via [debugExportSucceeded] without driving the
+  /// real plugin-touching share sheet (there is no reliable way to fake a
+  /// successful `Share.shareXFiles` call from a widget test — see
+  /// [debugImportProject]'s doc comment for the same constraint on import).
+  void _onExportSucceeded(String fileName, ScaffoldMessengerState messenger) {
+    _logger.log(kLogSourceProject, LogLevel.info,
+        'Exported project "${_activeProject.name}" as $fileName');
+    if (!mounted) return;
+    messenger.showSnackBar(SnackBar(content: Text('Exported "${_activeProject.name}"')));
+  }
+
+  /// Test-only hook: drives the same success feedback (log + snackbar)
+  /// `_exportActiveProject` shows once `Share.shareXFiles` resolves, without
+  /// actually invoking the real plugin. See [_onExportSucceeded]'s doc
+  /// comment for why the plugin call itself can't be exercised here.
+  @visibleForTesting
+  void debugExportSucceeded(String fileName) =>
+      _onExportSucceeded(fileName, ScaffoldMessenger.of(context));
 
   Future<void> _importProject() async {
     final messenger = ScaffoldMessenger.of(context);
@@ -1825,7 +1860,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       }
     });
     _markDirtyAndAutosave();
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Program "$progName" deleted')));
+    showDeleteUndoSnackBar(context, 'program "$progName"');
   }
 
   /// Delete [task], unless doing so would leave any of its programs in no
@@ -1846,6 +1881,7 @@ class WorkspaceShellState extends State<WorkspaceShell> {
   /// SnackBar naming the program that would be left with no task.
   void _confirmDeleteTask(PlcTask task) {
     if (_deleteTask(task)) {
+      showDeleteUndoSnackBar(context, 'task "${task.name}"');
       return;
     }
     final orphan = task.programNames.firstWhere(
@@ -1938,8 +1974,14 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         },
         child: Focus(
           autofocus: true,
-          child: _buildScaffold(context,
-              expanded: expanded, compact: compact, short: short, showScanBar: showScanBar),
+          // Publishes the shell's undo to every descendant screen, so an
+          // undoable delete performed deep inside an editor can offer UNDO on
+          // its confirmation SnackBar (see `lib/ui/delete_feedback.dart`).
+          child: UndoScope(
+            onUndo: _undo,
+            child: _buildScaffold(context,
+                expanded: expanded, compact: compact, short: short, showScanBar: showScanBar),
+          ),
         ),
       ),
     );
@@ -2404,10 +2446,17 @@ class WorkspaceShellState extends State<WorkspaceShell> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Projects Switcher Header
+          // Projects Switcher Header. A7/#10: a subtle top border keeps this
+          // header from visually blending into the scan-speed toolbar row
+          // that sits directly beside it (both are dark, borderless panels
+          // starting right under the AppBar) — cheap, always-on separation
+          // that doesn't depend on the dropdown being open.
           Container(
             padding: const EdgeInsets.all(12),
-            color: const Color(0xFF1E293B),
+            decoration: const BoxDecoration(
+              color: Color(0xFF1E293B),
+              border: Border(top: BorderSide(color: Colors.white24, width: 1)),
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -2430,7 +2479,14 @@ class WorkspaceShellState extends State<WorkspaceShell> {
                               children: [
                                 Icon(isActive ? Icons.check_circle : Icons.folder, size: 16, color: isActive ? Colors.greenAccent : Colors.grey),
                                 const SizedBox(width: 8),
-                                Expanded(child: Text(p.name, overflow: TextOverflow.ellipsis)),
+                                // A7/#10: a long project (template) name
+                                // truncates with no way to read it in full.
+                                Expanded(
+                                  child: Tooltip(
+                                    message: p.name,
+                                    child: Text(p.name, overflow: TextOverflow.ellipsis),
+                                  ),
+                                ),
                               ],
                             ),
                           );
@@ -2445,8 +2501,6 @@ class WorkspaceShellState extends State<WorkspaceShell> {
                     ),
                     PopupMenuButton<String>(
                       tooltip: 'Project actions',
-                      icon: const Icon(Icons.more_vert, size: 20, color: Colors.grey),
-                      padding: EdgeInsets.zero,
                       color: const Color(0xFF1E293B),
                       onSelected: (value) {
                         switch (value) {
@@ -2511,6 +2565,21 @@ class WorkspaceShellState extends State<WorkspaceShell> {
                           child: _ProjectMenuEntry(icon: Icons.upload_file, label: 'Import PLC Program (XML)'),
                         ),
                       ],
+                      // A5/#12: using `icon:` routes through IconButton's
+                      // forced-48x48 tap target box wrapped in a Padding of
+                      // EdgeInsets.zero, which on the web measured the
+                      // hit-testable region a few pixels below the painted
+                      // glyph at 390px width. `child:` instead wraps exactly
+                      // this SizedBox+Icon in the InkWell, so the visible
+                      // glyph and the hit region are the same rect.
+                      // QA F1: the SizedBox is explicitly sized to kMinTouch
+                      // (44x44) so the tap target never shrinks below the
+                      // app-wide touch-target floor, regardless of glyph size.
+                      child: const SizedBox(
+                        width: kMinTouch,
+                        height: kMinTouch,
+                        child: Center(child: Icon(Icons.more_vert, size: 20, color: Colors.grey)),
+                      ),
                     ),
                   ],
                 ),
@@ -3376,6 +3445,8 @@ class WorkspaceShellState extends State<WorkspaceShell> {
         slmpHost: _slmpHost,
         bacnetHost: _bacnetHost,
         onProjectUpdated: _markDirtyAndAutosave,
+        initialProtocolTabIndex: _gatewayTabIndex,
+        onProtocolTabChanged: (i) => _gatewayTabIndex = i,
       );
     } else if (_activeViewId == 'LOGS') {
       return LogsScreen(logger: _logger);

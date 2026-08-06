@@ -41,10 +41,16 @@ int _depthOf(Element element) {
 }
 
 /// Finds the SHELL's own "Open navigation menu" hamburger — i.e. the button
-/// that opens the [Drawer] wrapping [_navTree] — even when a nested
-/// center-workspace editor (e.g. the ST editor) has its own `Scaffold` with
-/// its own auto-generated drawer button carrying the identical default
-/// tooltip text. `find.byTooltip(...).first` is NOT reliable here: Flutter's
+/// that opens the [Drawer] wrapping [_navTree].
+///
+/// Since QA #6 the hamburger glyph/tooltip is reserved for the shell: the two
+/// nested editors that host their own drawer (ST, Function Blocks) now supply
+/// an explicit tree-glyph leading instead of an auto-generated drawer button,
+/// so there should only ever be one match (see
+/// `test/drawer_icon_distinction_test.dart`). This depth-based disambiguation
+/// is kept as a guard so the smoke tests can never silently start driving a
+/// nested editor's chrome if that ever regresses.
+/// `find.byTooltip(...).first` is NOT reliable for that: Flutter's
 /// finder traversal does not guarantee the shell's (structurally shallower)
 /// AppBar sorts before a nested editor's, so plain widget/element order
 /// cannot disambiguate them. Tree DEPTH can: the shell's own `Scaffold`/

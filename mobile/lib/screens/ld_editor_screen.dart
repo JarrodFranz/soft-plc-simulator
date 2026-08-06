@@ -7,6 +7,8 @@ import '../models/ld_graph.dart';
 import '../models/ld_layout.dart';
 import '../models/ld_monitor.dart';
 import '../models/tag_resolver.dart';
+import '../ui/delete_feedback.dart';
+import '../ui/pannable_canvas.dart';
 import '../ui/responsive.dart';
 import '../widgets/live_tick.dart';
 import '../widgets/tag_autocomplete_field.dart';
@@ -116,16 +118,14 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
   /// reaches it.
   bool _nodeLit(LdRung rung, LdNode n) =>
       _online &&
-      (widget.monitor.nodeTrue[
-              widget.monitor.keyFor(widget.program.name, rung.rungIndex, n.id)] ??
+      (widget.monitor.nodeTrue[widget.monitor.keyFor(widget.program.name, rung.rungIndex, n.id)] ??
           false);
 
   /// Wire energization: whether power actually flows out of [n] (drives the
   /// wire colour, distinct from the element-face highlight).
   bool _nodePowered(LdRung rung, LdNode n) =>
       _online &&
-      (widget.monitor.nodePower[
-              widget.monitor.keyFor(widget.program.name, rung.rungIndex, n.id)] ??
+      (widget.monitor.nodePower[widget.monitor.keyFor(widget.program.name, rung.rungIndex, n.id)] ??
           false);
 
   // Formats a live tag/path value for a block-face readout. Numeric leaves
@@ -169,8 +169,18 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           comment: 'Rung 0: Motor Start/Stop Seal-In Circuit',
           main: [
             LdNode(id: '', kind: LdKind.contact, variable: 'Start_PB', comment: 'Start PB'),
-            LdNode(id: '', kind: LdKind.contact, variable: 'Stop_PB', modifier: 'negated', comment: 'Stop PB'),
-            LdNode(id: '', kind: LdKind.contact, variable: 'Overload_OK', modifier: 'negated', comment: 'Overload'),
+            LdNode(
+                id: '',
+                kind: LdKind.contact,
+                variable: 'Stop_PB',
+                modifier: 'negated',
+                comment: 'Stop PB'),
+            LdNode(
+                id: '',
+                kind: LdKind.contact,
+                variable: 'Overload_OK',
+                modifier: 'negated',
+                comment: 'Overload'),
             LdNode(id: '', kind: LdKind.coil, variable: 'Motor_Run', comment: 'Starter coil'),
           ],
           branches: [
@@ -183,14 +193,26 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           index: 1,
           comment: 'Rung 1: TON Timer Block (IN, Q, PT, ET)',
           main: [
-            LdNode(id: '', kind: LdKind.contact, variable: 'TONTimer.DN', modifier: 'negated', comment: 'Done NC'),
-            LdNode(id: '', kind: LdKind.block, blockType: 'TON', variable: 'TONTimer', presetMs: 5000, comment: '5s timer'),
+            LdNode(
+                id: '',
+                kind: LdKind.contact,
+                variable: 'TONTimer.DN',
+                modifier: 'negated',
+                comment: 'Done NC'),
+            LdNode(
+                id: '',
+                kind: LdKind.block,
+                blockType: 'TON',
+                variable: 'TONTimer',
+                presetMs: 5000,
+                comment: '5s timer'),
             LdNode(id: '', kind: LdKind.coil, variable: 'MixerMotor', comment: 'Mixer coil'),
           ],
           branches: [
             BranchSpec(startIndex: 0, endIndex: 2, nodes: [
               LdNode(id: '', kind: LdKind.contact, variable: 'TONTimer.DN', comment: 'Done NO'),
-              LdNode(id: '', kind: LdKind.coil, variable: 'Arbor1Oiler', comment: 'Arbor oiler coil'),
+              LdNode(
+                  id: '', kind: LdKind.coil, variable: 'Arbor1Oiler', comment: 'Arbor oiler coil'),
             ]),
           ],
         ),
@@ -228,7 +250,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
 
   double _colX(int col) => ldColX(col);
 
-  double _nodeCenterY(LdRung rung, LdNode n) => _laneTop(rung, n.row) + _laneHeight(rung, n.row) / 2;
+  double _nodeCenterY(LdRung rung, LdNode n) =>
+      _laneTop(rung, n.row) + _laneHeight(rung, n.row) / 2;
 
   Offset _outPort(LdRung rung, LdNode n, Map<String, int> col, double width) {
     if (n.kind == LdKind.leftRail) {
@@ -403,14 +426,20 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       ],
     );
 
-    return InteractiveViewer(
-      constrained: false,
+    final canvasHeight = math.max(contentHeight, 200.0);
+    // [PannableCanvas] adds the wheel affordances (QA §3.3): this is the one
+    // ladder path with no scrollbar at all, so the wheel drives the vertical
+    // pan, Shift+wheel the horizontal one, and each clipped edge fades. Nothing
+    // else encloses it, so vertical wheel is safe to claim here (unlike the FBD
+    // lane list).
+    return PannableCanvas(
+      contentSize: Size(contentWidth, canvasHeight),
       minScale: 0.5,
       maxScale: 2.5,
       boundaryMargin: const EdgeInsets.all(200),
       child: SizedBox(
         width: contentWidth,
-        height: math.max(contentHeight, 200),
+        height: canvasHeight,
         child: rails,
       ),
     );
@@ -423,7 +452,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 3),
         child: TextButton.icon(
           icon: Icon(icon, size: 15, color: active ? Colors.black : Colors.cyanAccent),
-          label: Text(label, style: TextStyle(fontSize: 11, color: active ? Colors.black : Colors.cyanAccent)),
+          label: Text(label,
+              style: TextStyle(fontSize: 11, color: active ? Colors.black : Colors.cyanAccent)),
           style: TextButton.styleFrom(
             backgroundColor: active ? Colors.cyanAccent : Colors.transparent,
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -452,7 +482,9 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     final branchHint = Padding(
       padding: const EdgeInsets.only(left: 8),
       child: Text(
-        _branchStartWireKey == null ? 'Tap a start point' : 'Tap an end point (tap the start again to cancel)',
+        _branchStartWireKey == null
+            ? 'Tap a start point'
+            : 'Tap an end point (tap the start again to cancel)',
         style: const TextStyle(fontSize: 10, color: Colors.amberAccent),
       ),
     );
@@ -535,7 +567,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     children: [
                       for (final type in group.value)
                         ActionChip(
-                          label: Text(type, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                          label: Text(type,
+                              style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
                           onPressed: () => Navigator.pop(context, type),
                         ),
                     ],
@@ -554,7 +587,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     children: [
                       for (final fb in widget.currentProject.fbDefinitions)
                         ActionChip(
-                          label: Text(fb.name, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                          label: Text(fb.name,
+                              style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
                           onPressed: () => Navigator.pop(context, fb.name),
                         ),
                     ],
@@ -578,7 +612,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     }
   }
 
-  Widget _rungActionButton({required IconData icon, required Color color, required VoidCallback? onPressed}) {
+  Widget _rungActionButton(
+      {required IconData icon, required Color color, required VoidCallback? onPressed}) {
     return touchable(
       IconButton(
         icon: Icon(icon, size: 16),
@@ -596,26 +631,14 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     widget.onProgramUpdated();
   }
 
-  Future<void> _confirmDeleteRung(int index) async {
-    final confirmed = await showAdaptiveWidthDialog<bool>(
-      context,
-      child: AlertDialog(
-        title: const Text('Delete Rung'),
-        content: Text('Delete RUNG $index? This cannot be undone.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed ?? false) {
-      setState(() => deleteRung(widget.program, index));
-      widget.onProgramUpdated();
-    }
+  /// Rungs live inside `PlcProject`, so the shell's undo restores a deleted
+  /// one — per the delete policy (`lib/ui/delete_feedback.dart`) this fires
+  /// immediately and offers UNDO on a SnackBar rather than blocking first.
+  void _deleteRung(int index) {
+    final count = widget.program.rungs[index].nodes.length;
+    setState(() => deleteRung(widget.program, index));
+    widget.onProgramUpdated();
+    showDeleteUndoSnackBar(context, 'RUNG $index ($count ${count == 1 ? 'element' : 'elements'})');
   }
 
   void _addRung() {
@@ -676,12 +699,13 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 _rungActionButton(
                   icon: Icons.arrow_downward,
                   color: Colors.cyanAccent,
-                  onPressed: index == widget.program.rungs.length - 1 ? null : () => _moveRungBy(index, 1),
+                  onPressed:
+                      index == widget.program.rungs.length - 1 ? null : () => _moveRungBy(index, 1),
                 ),
                 _rungActionButton(
                   icon: Icons.delete_outline,
                   color: Colors.redAccent,
-                  onPressed: () => _confirmDeleteRung(index),
+                  onPressed: () => _deleteRung(index),
                 ),
               ],
             ),
@@ -689,7 +713,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
           LayoutBuilder(
             builder: (context, constraints) {
               final minW = ldMinContentWidth(rung, col);
-              final width = fixedWidth ?? (constraints.maxWidth > minW ? constraints.maxWidth : minW);
+              final width =
+                  fixedWidth ?? (constraints.maxWidth > minW ? constraints.maxWidth : minW);
               final needsScroll = fixedWidth == null && minW > constraints.maxWidth;
               final canvas = SizedBox(
                 height: height,
@@ -703,7 +728,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     ),
                     // Element widgets.
                     ...rung.nodes
-                        .where((n) => n.kind == LdKind.contact ||
+                        .where((n) =>
+                            n.kind == LdKind.contact ||
                             n.kind == LdKind.coil ||
                             n.kind == LdKind.block ||
                             n.kind == LdKind.link)
@@ -716,7 +742,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                     // a permanently dead branch (open AND element = open).
                     if (_editMode == 'contact' || _editMode == 'block')
                       ...rung.wires
-                          .where((w) => canInsertContactOnWire(rung, w) && !_wireTouchesLink(rung, w))
+                          .where(
+                              (w) => canInsertContactOnWire(rung, w) && !_wireTouchesLink(rung, w))
                           .map((w) => _wireInsertTarget(rung, w, col, width)),
                     // Insert targets on wires (coil mode). Same link-exclusion
                     // as above.
@@ -910,7 +937,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     final p2 = _inPort(rung, dst, col, width);
     final mid = Offset((p1.dx + p2.dx) / 2, (p1.dy + p2.dy) / 2);
     final isStart = startWire != null && _wireKey(rungIndex, w) == _wireKey(rungIndex, startWire);
-    final active = startWire == null || isStart || (col[w.fromId] ?? 0) > (col[startWire.fromId] ?? 0);
+    final active =
+        startWire == null || isStart || (col[w.fromId] ?? 0) > (col[startWire.fromId] ?? 0);
     final color = isStart ? Colors.tealAccent : Colors.cyanAccent;
     return Positioned(
       left: mid.dx - 11,
@@ -929,7 +957,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
             color: active ? color.withValues(alpha: 0.85) : color.withValues(alpha: 0.3),
             shape: BoxShape.circle,
           ),
-          child: Icon(isStart ? Icons.check : Icons.circle, size: isStart ? 14 : 8, color: Colors.black),
+          child: Icon(isStart ? Icons.check : Icons.circle,
+              size: isStart ? 14 : 8, color: Colors.black),
         ),
       ),
     );
@@ -1219,6 +1248,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 });
                 widget.onProgramUpdated();
                 Navigator.pop(context);
+                showDeleteUndoSnackBar(context, 'branch');
               },
               child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
             ),
@@ -1247,7 +1277,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     // wired to real tags via `pinBindings` (edited below), not a preset
     // time/count — those fields are timer/counter-only and hidden here.
     final isFb = isBlock && _isFbBlock(n.blockType);
-    final fbVars = isFb ? fbDefinitionFor(widget.currentProject, n.blockType)!.vars : const <FbVar>[];
+    final fbVars =
+        isFb ? fbDefinitionFor(widget.currentProject, n.blockType)!.vars : const <FbVar>[];
     final pendingPinBindings = Map<String, String>.from(n.pinBindings);
 
     const contactMods = [
@@ -1322,7 +1353,9 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 ],
                 if (isFb) ...[
                   const SizedBox(height: 12),
-                  const Text('Pin Bindings', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.cyanAccent)),
+                  const Text('Pin Bindings',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 12, color: Colors.cyanAccent)),
                   for (final v in fbVars)
                     if (v.direction != FbVarDir.internal) ...[
                       const SizedBox(height: 8),
@@ -1384,8 +1417,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                   // n.kind == LdKind.link is handled by the early-return
                   // branch above, so only real contact/coil/block nodes
                   // reach here.
-                  if (n.row > 0 &&
-                      !rung.nodes.any((o) => o.id != n.id && o.row == n.row)) {
+                  if (n.row > 0 && !rung.nodes.any((o) => o.id != n.id && o.row == n.row)) {
                     // Sole element on a branch lane: revert to an open link
                     // (keep the branch) instead of dropping the lane entirely.
                     emptyBranch(rung, n);
@@ -1395,6 +1427,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 });
                 widget.onProgramUpdated();
                 Navigator.pop(context);
+                showDeleteUndoSnackBar(context, 'rung element "${n.variable}"');
               },
               child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
             ),
@@ -1535,8 +1568,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     if (_isCompareBlock(n.blockType) || _isMathBlock(n.blockType)) {
       return _buildDataBlock(n, live: live, lit: lit);
     }
-    final Color borderColor =
-        !live ? Colors.grey.shade500 : (lit ? _kEnergized : _kDeEnergized);
+    final Color borderColor = !live ? Colors.grey.shade500 : (lit ? _kEnergized : _kDeEnergized);
     final isCounter = _isCounterBlock(n.blockType);
     String topLeft;
     String topRight;
@@ -1544,9 +1576,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     String bottomRight;
     String presetLine;
     if (isCounter) {
-      presetLine = live
-          ? 'CV ${_liveNum('${n.variable}.CV')} / ${n.presetMs}'
-          : 'PV ${n.presetMs}';
+      presetLine = live ? 'CV ${_liveNum('${n.variable}.CV')} / ${n.presetMs}' : 'PV ${n.presetMs}';
       switch (n.blockType) {
         case 'CTD':
           topLeft = 'CD';
@@ -1565,9 +1595,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     } else {
       topLeft = 'IN';
       topRight = 'Q';
-      presetLine = live
-          ? '${_liveNum('${n.variable}.ACC')} / ${n.presetMs} ms'
-          : 'PT ${n.presetMs}ms';
+      presetLine =
+          live ? '${_liveNum('${n.variable}.ACC')} / ${n.presetMs} ms' : 'PT ${n.presetMs}ms';
       bottomLeft = 'PT';
       bottomRight = 'ET';
     }
@@ -1585,12 +1614,17 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
             decoration: const BoxDecoration(
               color: Color(0xFF334155),
-              borderRadius: BorderRadius.only(topLeft: Radius.circular(3), topRight: Radius.circular(3)),
+              borderRadius:
+                  BorderRadius.only(topLeft: Radius.circular(3), topRight: Radius.circular(3)),
             ),
             child: Text(n.blockType,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Colors.white, fontFamily: 'monospace'),
+                style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 10,
+                    color: Colors.white,
+                    fontFamily: 'monospace'),
                 textAlign: TextAlign.center),
           ),
           Padding(
@@ -1601,7 +1635,8 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 Text(n.variable,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 8, color: Colors.cyanAccent, fontFamily: 'monospace')),
+                    style: const TextStyle(
+                        fontSize: 8, color: Colors.cyanAccent, fontFamily: 'monospace')),
                 _BlockPinRow(left: topLeft, right: topRight),
                 Text(presetLine,
                     maxLines: 1,
@@ -1624,8 +1659,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
     final isCompare = _isCompareBlock(n.blockType);
     final rightPin = isCompare ? 'Q' : 'ENO';
     final glyph = _blockOperatorGlyph(n.blockType);
-    final Color borderColor =
-        !live ? Colors.grey.shade500 : (lit ? _kEnergized : _kDeEnergized);
+    final Color borderColor = !live ? Colors.grey.shade500 : (lit ? _kEnergized : _kDeEnergized);
     String liveOperand(String s) {
       final literal = num.tryParse(s);
       if (literal != null) {
@@ -1633,6 +1667,7 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
       }
       return live ? _liveNum(s) : s;
     }
+
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF1E293B),
@@ -1647,12 +1682,17 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
             decoration: const BoxDecoration(
               color: Color(0xFF334155),
-              borderRadius: BorderRadius.only(topLeft: Radius.circular(3), topRight: Radius.circular(3)),
+              borderRadius:
+                  BorderRadius.only(topLeft: Radius.circular(3), topRight: Radius.circular(3)),
             ),
             child: Text(n.blockType,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Colors.white, fontFamily: 'monospace'),
+                style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 10,
+                    color: Colors.white,
+                    fontFamily: 'monospace'),
                 textAlign: TextAlign.center),
           ),
           Padding(
@@ -1664,17 +1704,23 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                 Text(liveOperand(n.operandA),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 9, color: Colors.white, fontFamily: 'monospace'),
+                    style:
+                        const TextStyle(fontSize: 9, color: Colors.white, fontFamily: 'monospace'),
                     textAlign: TextAlign.center),
                 Text(glyph,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.amberAccent, fontFamily: 'monospace'),
+                    style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.amberAccent,
+                        fontFamily: 'monospace'),
                     textAlign: TextAlign.center),
                 Text(liveOperand(n.operandB),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 9, color: Colors.white, fontFamily: 'monospace'),
+                    style:
+                        const TextStyle(fontSize: 9, color: Colors.white, fontFamily: 'monospace'),
                     textAlign: TextAlign.center),
                 // Math blocks write a result — surface its destination on the
                 // block face for parity with timer/counter blocks (compare
@@ -1685,13 +1731,15 @@ class _LdEditorScreenState extends State<LdEditorScreen> {
                   Text(live ? '→ ${n.variable} = ${_liveNum(n.variable)}' : '→ ${n.variable}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 7, color: Colors.cyanAccent, fontFamily: 'monospace'),
+                      style: const TextStyle(
+                          fontSize: 7, color: Colors.cyanAccent, fontFamily: 'monospace'),
                       textAlign: TextAlign.center)
                 else if (n.variable.isNotEmpty)
                   Text(n.variable,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 7, color: Colors.cyanAccent, fontFamily: 'monospace'),
+                      style: const TextStyle(
+                          fontSize: 7, color: Colors.cyanAccent, fontFamily: 'monospace'),
                       textAlign: TextAlign.center),
               ],
             ),
@@ -1712,8 +1760,12 @@ class _BlockPinRow extends StatelessWidget {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Text(left, style: const TextStyle(fontSize: 8, color: Colors.greenAccent, fontFamily: 'monospace')),
-        Text(right, style: const TextStyle(fontSize: 8, color: Colors.greenAccent, fontFamily: 'monospace')),
+        Text(left,
+            style:
+                const TextStyle(fontSize: 8, color: Colors.greenAccent, fontFamily: 'monospace')),
+        Text(right,
+            style:
+                const TextStyle(fontSize: 8, color: Colors.greenAccent, fontFamily: 'monospace')),
       ],
     );
   }

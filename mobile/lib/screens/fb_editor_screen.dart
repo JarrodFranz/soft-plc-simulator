@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/fb_name_validation.dart';
 import '../models/project_model.dart';
 import '../models/tag_resolver.dart';
+import '../ui/delete_feedback.dart';
 import '../ui/responsive.dart';
 import '../widgets/scalar_value_field.dart';
 
@@ -188,6 +189,7 @@ class _FbEditorScreenState extends State<FbEditorScreen> {
     });
     _varNameControllers.remove(v)?.dispose();
     widget.onProjectUpdated();
+    showDeleteUndoSnackBar(context, 'variable "${v.name}"');
   }
 
   Widget _buildVarRow(int i, FbVar v) {
@@ -323,7 +325,7 @@ class _FbEditorScreenState extends State<FbEditorScreen> {
             child: OutlinedButton.icon(
               key: const Key('fb_new_button'),
               icon: const Icon(Icons.add, size: 16),
-              label: const Text('New FB'),
+              label: const Text('New Function Block'),
               onPressed: _showAddFbDialog,
             ),
           ),
@@ -399,6 +401,18 @@ class _FbEditorScreenState extends State<FbEditorScreen> {
     return Scaffold(
       key: const Key('fb_editor'),
       appBar: AppBar(
+        // Explicit leading rather than the auto-implied DrawerButton — see the
+        // same note in st_editor_screen.dart (QA #6): a nested editor's drawer
+        // must not reuse the shell's hamburger glyph.
+        leading: expanded
+            ? null
+            : Builder(
+                builder: (ctx) => IconButton(
+                  icon: const Icon(Icons.account_tree),
+                  tooltip: 'Open function block list',
+                  onPressed: () => Scaffold.of(ctx).openDrawer(),
+                ),
+              ),
         title: const Text('Function Blocks'),
         backgroundColor: const Color(0xFF1E293B),
       ),
@@ -415,11 +429,11 @@ class _FbEditorScreenState extends State<FbEditorScreen> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Text('No function blocks defined yet.', style: TextStyle(color: Colors.grey)),
+                        const Text('No function blocks yet.', style: TextStyle(color: Colors.grey)),
                         const SizedBox(height: 12),
                         OutlinedButton.icon(
                           icon: const Icon(Icons.add),
-                          label: const Text('Create Function Block'),
+                          label: const Text('New Function Block'),
                           onPressed: _showAddFbDialog,
                         ),
                       ],
