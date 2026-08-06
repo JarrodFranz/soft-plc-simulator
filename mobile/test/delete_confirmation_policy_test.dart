@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:soft_plc_mobile/data/default_projects.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/screens/workspace_shell.dart';
 import 'package:soft_plc_mobile/ui/delete_feedback.dart';
@@ -15,7 +16,12 @@ import 'support/responsive_test_utils.dart';
 ///  * a delete it CANNOT reverse -> an explicit blocking confirmation.
 Widget _app() => const MaterialApp(home: WorkspaceShell());
 
-const String _baseLabel = 'Tags & Structs (8 Tags, 1 Structs)';
+// Boot-active project (all()[0]). The shell injects the reserved System tag at
+// load, so the rendered count is tags.length + 1.
+final String _baseLabel = () {
+  final p = DefaultProjects.all().first;
+  return 'Tags & Structs (${p.tags.length + 1} Tags, ${p.structDefs.length} Structs)';
+}();
 
 Future<void> _goToMemoryView(WidgetTester tester) async {
   await tester.tap(find.text(_baseLabel).hitTestable());

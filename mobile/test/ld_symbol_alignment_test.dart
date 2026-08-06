@@ -13,7 +13,8 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final PlcProject proj = DefaultProjects.all().firstWhere((p) => p.name.contains('Motor'));
+    final PlcProject proj =
+        DefaultProjects.all().firstWhere((p) => p.id == 'proj_ld_conveyor_line');
     final prog = proj.programs.firstWhere((p) => p.language == 'LadderLogic');
 
     await tester.pumpWidget(MaterialApp(

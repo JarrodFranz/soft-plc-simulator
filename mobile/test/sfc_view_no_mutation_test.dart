@@ -45,17 +45,15 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  test('tank demo no longer ships an empty SFC assigned to the running task', () {
-    final tank = DefaultProjects.all().firstWhere(
-        (p) => p.programs.any((prog) => prog.name == 'TankLevel_FBD'));
+  test('the HVAC demo no longer ships an empty SFC assigned to the running task',
+      () {
+    final hvac = DefaultProjects.all().firstWhere(
+        (p) => p.programs.any((prog) => prog.name == 'HvacZone_FBD'));
 
-    // The pointless empty SFC that fought the FBD is gone.
-    expect(tank.programs.any((p) => p.name == 'TankSequence_SFC'), isFalse);
     expect(
-        tank.programs.any((p) => p.language == 'SequentialFunctionChart'), isFalse);
+        hvac.programs.any((p) => p.language == 'SequentialFunctionChart'), isFalse);
 
-    // The process task now runs only the FBD control program.
-    final task = tank.tasks.firstWhere((t) => t.name == 'ProcessLoopTask');
-    expect(task.programNames, ['TankLevel_FBD']);
+    final task = hvac.tasks.firstWhere((t) => t.name == 'HvacControlTask');
+    expect(task.programNames, ['HvacZone_FBD']);
   });
 }

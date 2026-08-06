@@ -48,12 +48,14 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    // The editor builds ONE bounded pan/zoom canvas per network lane, so a
+    // multi-network program (HvacZone_FBD ships seven) renders several.
     testWidgets('phone: canvas wrapped in InteractiveViewer for pan/zoom', (tester) async {
       await setSurface(tester, phoneSize);
       await tester.pumpWidget(app());
       await tester.pumpAndSettle();
 
-      expect(find.byType(InteractiveViewer), findsOneWidget);
+      expect(find.byType(InteractiveViewer), findsWidgets);
       expect(tester.takeException(), isNull);
     });
 
@@ -63,7 +65,7 @@ void main() {
       await tester.pumpAndSettle();
 
       // The workspace pans/zooms on desktop too, not only on phone.
-      expect(find.byType(InteractiveViewer), findsOneWidget);
+      expect(find.byType(InteractiveViewer), findsWidgets);
       expect(tester.takeException(), isNull);
     });
 
