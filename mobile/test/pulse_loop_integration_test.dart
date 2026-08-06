@@ -1,5 +1,4 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:soft_plc_mobile/data/default_projects.dart';
 import 'package:soft_plc_mobile/models/fbd_exec.dart';
 import 'package:soft_plc_mobile/models/ld_exec.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
@@ -7,6 +6,8 @@ import 'package:soft_plc_mobile/models/sfc_exec.dart';
 import 'package:soft_plc_mobile/models/sim_engine.dart';
 import 'package:soft_plc_mobile/models/st_exec.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
+
+import 'support/legacy_demo_projects.dart';
 
 dynamic _v(PlcProject p, String path) => readPath(p, path);
 bool _b(PlcProject p, String path) => _v(p, path) == true;
@@ -16,7 +17,7 @@ void main() {
   test('Pulse Output: R_TRIG-gated TP produces a fixed-width one-shot pulse '
       'that is independent of how long Start_Btn is held, and re-fires on the '
       'next rising edge', () {
-    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_pulse_output');
+    final p = legacyPulseOutputProject();
     final sim = SimRuntime();
     final ld = LdExecRuntime();
     final fbd = FbdRuntime();

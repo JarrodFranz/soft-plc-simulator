@@ -1,0 +1,1537 @@
+{
+  "schema": 1,
+  "project": {
+    "id": "proj_all_water",
+    "name": "All Languages — Water Treatment Plant",
+    "version": "1.0.0",
+    "description": "",
+    "controller": {
+      "name": "PLC_WTP",
+      "scan_period_ms": 100
+    },
+    "tags": [
+      {
+        "name": "Start_PB",
+        "path": "Inputs/Start_PB",
+        "data_type": "BOOL",
+        "array_length": 0,
+        "initial_value": false,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Pump start pushbutton",
+        "engineering_units": "",
+        "io_type": "SimulatedInput",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "Stop_PB",
+        "path": "Inputs/Stop_PB",
+        "data_type": "BOOL",
+        "array_length": 0,
+        "initial_value": false,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Pump stop pushbutton",
+        "engineering_units": "",
+        "io_type": "SimulatedInput",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "EStop",
+        "path": "Inputs/EStop",
+        "data_type": "BOOL",
+        "array_length": 0,
+        "initial_value": true,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Emergency stop healthy",
+        "engineering_units": "",
+        "io_type": "SimulatedInput",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "Pump_Latch",
+        "path": "Internal/Pump_Latch",
+        "data_type": "BOOL",
+        "array_length": 0,
+        "initial_value": false,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Pump seal-in latch",
+        "engineering_units": "",
+        "io_type": "Internal",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "Pump_Motor",
+        "path": "Outputs/Pump_Motor",
+        "data_type": "BOOL",
+        "array_length": 0,
+        "initial_value": false,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Main pump motor contactor",
+        "engineering_units": "",
+        "io_type": "SimulatedOutput",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "Turbidity_PV",
+        "path": "Inputs/Turbidity_PV",
+        "data_type": "FLOAT64",
+        "array_length": 0,
+        "initial_value": 8.5,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Raw water turbidity sensor",
+        "engineering_units": "NTU",
+        "io_type": "SimulatedInput",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "Turbidity_SP",
+        "path": "Internal/Turbidity_SP",
+        "data_type": "FLOAT64",
+        "array_length": 0,
+        "initial_value": 5.0,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Max turbidity setpoint",
+        "engineering_units": "NTU",
+        "io_type": "Internal",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "Level_PV",
+        "path": "Inputs/Level_PV",
+        "data_type": "FLOAT64",
+        "array_length": 0,
+        "initial_value": 65.0,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Clear water reservoir level",
+        "engineering_units": "%",
+        "io_type": "SimulatedInput",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "Flow_PV",
+        "path": "Inputs/Flow_PV",
+        "data_type": "FLOAT64",
+        "array_length": 0,
+        "initial_value": 0.0,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Treated water flow rate",
+        "engineering_units": "L/min",
+        "io_type": "SimulatedInput",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "Turbidity_Below_SP",
+        "path": "Internal/Turbidity_Below_SP",
+        "data_type": "BOOL",
+        "array_length": 0,
+        "initial_value": false,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Turbidity within setpoint (network 0 result)",
+        "engineering_units": "",
+        "io_type": "Internal",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "Level_Above_Min",
+        "path": "Internal/Level_Above_Min",
+        "data_type": "BOOL",
+        "array_length": 0,
+        "initial_value": false,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Reservoir level above minimum (network 0 result)",
+        "engineering_units": "",
+        "io_type": "Internal",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "Quality_OK",
+        "path": "Internal/Quality_OK",
+        "data_type": "BOOL",
+        "array_length": 0,
+        "initial_value": false,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Water quality within spec",
+        "engineering_units": "",
+        "io_type": "Internal",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "Treat_Dosing",
+        "path": "Outputs/Treat_Dosing",
+        "data_type": "BOOL",
+        "array_length": 0,
+        "initial_value": false,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Chemical dosing pump",
+        "engineering_units": "",
+        "io_type": "SimulatedOutput",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "System_Ready",
+        "path": "Internal/System_Ready",
+        "data_type": "BOOL",
+        "array_length": 0,
+        "initial_value": false,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "All permissives healthy",
+        "engineering_units": "",
+        "io_type": "Internal",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "Alarm_Active",
+        "path": "Outputs/Alarm_Active",
+        "data_type": "BOOL",
+        "array_length": 0,
+        "initial_value": false,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "System alarm beacon",
+        "engineering_units": "",
+        "io_type": "SimulatedOutput",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "Backwash_Active",
+        "path": "Internal/Backwash_Active",
+        "data_type": "BOOL",
+        "array_length": 0,
+        "initial_value": false,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Filter backwash mode active",
+        "engineering_units": "",
+        "io_type": "Internal",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "Backwash_Valve",
+        "path": "Outputs/Backwash_Valve",
+        "data_type": "BOOL",
+        "array_length": 0,
+        "initial_value": false,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Backwash header valve",
+        "engineering_units": "",
+        "io_type": "SimulatedOutput",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "Backwash_Pump",
+        "path": "Outputs/Backwash_Pump",
+        "data_type": "BOOL",
+        "array_length": 0,
+        "initial_value": false,
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Backwash pump",
+        "engineering_units": "",
+        "io_type": "SimulatedOutput",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "BackwashTimer",
+        "path": "Timers/BackwashTimer",
+        "data_type": "TIMER",
+        "array_length": 0,
+        "initial_value": {
+          "EN": false,
+          "TT": false,
+          "DN": false,
+          "PRE": 30000,
+          "ACC": 0
+        },
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "On-delay timer: 30s backwash cycle on sustained high turbidity",
+        "engineering_units": "",
+        "io_type": "Internal",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "Recipe_Steps",
+        "path": "Recipe/Steps",
+        "data_type": "INT16",
+        "array_length": 8,
+        "initial_value": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "8-step recipe setpoints",
+        "engineering_units": "",
+        "io_type": "Internal",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      },
+      {
+        "name": "Pump1_Status",
+        "path": "Status/Pump1",
+        "data_type": "PumpStatusDUT",
+        "array_length": 0,
+        "initial_value": {
+          "Running": false,
+          "Faulted": false,
+          "RunHours": 0
+        },
+        "quality": "Good",
+        "access": "ReadWrite",
+        "retentive": false,
+        "description": "Main pump status/telemetry struct instance",
+        "engineering_units": "",
+        "io_type": "Internal",
+        "is_forced": false,
+        "forced_value": null,
+        "default_value": null,
+        "folder": ""
+      }
+    ],
+    "struct_defs": [
+      {
+        "name": "PumpStatusDUT",
+        "fields": [
+          {
+            "name": "Running",
+            "data_type": "BOOL",
+            "array_length": 0,
+            "default_value": false
+          },
+          {
+            "name": "Faulted",
+            "data_type": "BOOL",
+            "array_length": 0,
+            "default_value": false
+          },
+          {
+            "name": "RunHours",
+            "data_type": "INT32",
+            "array_length": 0,
+            "default_value": 0
+          }
+        ]
+      }
+    ],
+    "programs": [
+      {
+        "name": "Safety_ST",
+        "language": "StructuredText",
+        "description": "Safety supervisor: permissive checks, alarms, quality assessment",
+        "st_source": "// IEC 61131-3 Structured Text — WTP Safety Supervisor\n// Runs every scan — supervisory alarms and system-ready permissive.\n// (Quality_OK is computed by WaterQuality_FBD; Treat_Dosing by PumpControl_LD.)\n\nAlarm_Active := (NOT EStop) OR (Level_PV < 5.0) OR (Turbidity_PV > (Turbidity_SP + 5.0));\nSystem_Ready := Pump_Motor AND Quality_OK AND NOT Alarm_Active;",
+        "rungs": [],
+        "fbd_blocks": [],
+        "fbd_wires": [],
+        "fbd_networks": [],
+        "sfc_steps": [],
+        "sfc_transitions": [],
+        "enabled": true
+      },
+      {
+        "name": "PumpControl_LD",
+        "language": "LadderLogic",
+        "description": "Main pump start/stop seal-in with E-Stop and quality interlock",
+        "st_source": "",
+        "rungs": [
+          {
+            "rung_index": 0,
+            "comment": "Rung 0: Pump Start/Stop — E-Stop and Quality Interlocks",
+            "nodes": [
+              {
+                "id": "L",
+                "kind": "leftRail",
+                "variable": "",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "R",
+                "kind": "rightRail",
+                "variable": "",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "m0",
+                "kind": "contact",
+                "variable": "Start_PB",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "Start NO",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "m1",
+                "kind": "contact",
+                "variable": "Stop_PB",
+                "modifier": "negated",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "Stop NC",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "m2",
+                "kind": "contact",
+                "variable": "EStop",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "E-Stop NC healthy",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "m3",
+                "kind": "contact",
+                "variable": "Alarm_Active",
+                "modifier": "negated",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "Alarm NC interlock",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "m4",
+                "kind": "coil",
+                "variable": "Pump_Motor",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "Main pump contactor",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "b1_0",
+                "kind": "contact",
+                "variable": "Pump_Latch",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "Seal-in",
+                "col": 0,
+                "row": 1
+              }
+            ],
+            "wires": [
+              {
+                "from_id": "L",
+                "from_port": "out",
+                "to_id": "m0",
+                "to_port": "in"
+              },
+              {
+                "from_id": "m0",
+                "from_port": "out",
+                "to_id": "m1",
+                "to_port": "in"
+              },
+              {
+                "from_id": "m1",
+                "from_port": "out",
+                "to_id": "m2",
+                "to_port": "in"
+              },
+              {
+                "from_id": "m2",
+                "from_port": "out",
+                "to_id": "m3",
+                "to_port": "in"
+              },
+              {
+                "from_id": "m3",
+                "from_port": "out",
+                "to_id": "m4",
+                "to_port": "in"
+              },
+              {
+                "from_id": "m4",
+                "from_port": "out",
+                "to_id": "R",
+                "to_port": "in"
+              },
+              {
+                "from_id": "L",
+                "from_port": "out",
+                "to_id": "b1_0",
+                "to_port": "in"
+              },
+              {
+                "from_id": "b1_0",
+                "from_port": "out",
+                "to_id": "m1",
+                "to_port": "in"
+              }
+            ]
+          },
+          {
+            "rung_index": 1,
+            "comment": "Rung 1: Pump Running Seal-In Latch",
+            "nodes": [
+              {
+                "id": "L",
+                "kind": "leftRail",
+                "variable": "",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "R",
+                "kind": "rightRail",
+                "variable": "",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "m0",
+                "kind": "contact",
+                "variable": "Pump_Motor",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "Motor aux",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "m1",
+                "kind": "coil",
+                "variable": "Pump_Latch",
+                "modifier": "set",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "Latch set",
+                "col": 0,
+                "row": 0
+              }
+            ],
+            "wires": [
+              {
+                "from_id": "L",
+                "from_port": "out",
+                "to_id": "m0",
+                "to_port": "in"
+              },
+              {
+                "from_id": "m0",
+                "from_port": "out",
+                "to_id": "m1",
+                "to_port": "in"
+              },
+              {
+                "from_id": "m1",
+                "from_port": "out",
+                "to_id": "R",
+                "to_port": "in"
+              }
+            ]
+          },
+          {
+            "rung_index": 2,
+            "comment": "Rung 2: Chemical Dosing Interlock — Dose When Quality Fails",
+            "nodes": [
+              {
+                "id": "L",
+                "kind": "leftRail",
+                "variable": "",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "R",
+                "kind": "rightRail",
+                "variable": "",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "m0",
+                "kind": "contact",
+                "variable": "Pump_Motor",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "Pump running",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "m1",
+                "kind": "contact",
+                "variable": "Quality_OK",
+                "modifier": "negated",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "Quality not OK NC",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "m2",
+                "kind": "coil",
+                "variable": "Treat_Dosing",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "Dosing pump output",
+                "col": 0,
+                "row": 0
+              }
+            ],
+            "wires": [
+              {
+                "from_id": "L",
+                "from_port": "out",
+                "to_id": "m0",
+                "to_port": "in"
+              },
+              {
+                "from_id": "m0",
+                "from_port": "out",
+                "to_id": "m1",
+                "to_port": "in"
+              },
+              {
+                "from_id": "m1",
+                "from_port": "out",
+                "to_id": "m2",
+                "to_port": "in"
+              },
+              {
+                "from_id": "m2",
+                "from_port": "out",
+                "to_id": "R",
+                "to_port": "in"
+              }
+            ]
+          },
+          {
+            "rung_index": 3,
+            "comment": "Rung 3: Backwash TON — High Turbidity Triggers Backwash Timer",
+            "nodes": [
+              {
+                "id": "L",
+                "kind": "leftRail",
+                "variable": "",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "R",
+                "kind": "rightRail",
+                "variable": "",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "m0",
+                "kind": "contact",
+                "variable": "Quality_OK",
+                "modifier": "negated",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "Quality not OK NC",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "m1",
+                "kind": "contact",
+                "variable": "Pump_Motor",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "Pump running",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "m2",
+                "kind": "block",
+                "variable": "BackwashTimer",
+                "modifier": "normal",
+                "block_type": "TON",
+                "preset_ms": 30000,
+                "comment": "30s backwash timer",
+                "col": 0,
+                "row": 0
+              }
+            ],
+            "wires": [
+              {
+                "from_id": "L",
+                "from_port": "out",
+                "to_id": "m0",
+                "to_port": "in"
+              },
+              {
+                "from_id": "m0",
+                "from_port": "out",
+                "to_id": "m1",
+                "to_port": "in"
+              },
+              {
+                "from_id": "m1",
+                "from_port": "out",
+                "to_id": "m2",
+                "to_port": "in"
+              },
+              {
+                "from_id": "m2",
+                "from_port": "out",
+                "to_id": "R",
+                "to_port": "in"
+              }
+            ]
+          },
+          {
+            "rung_index": 4,
+            "comment": "Rung 4: Backwash Active Output",
+            "nodes": [
+              {
+                "id": "L",
+                "kind": "leftRail",
+                "variable": "",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "R",
+                "kind": "rightRail",
+                "variable": "",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "m0",
+                "kind": "contact",
+                "variable": "BackwashTimer.DN",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "Timer done",
+                "col": 0,
+                "row": 0
+              },
+              {
+                "id": "m1",
+                "kind": "coil",
+                "variable": "Backwash_Active",
+                "modifier": "normal",
+                "block_type": "",
+                "preset_ms": 5000,
+                "comment": "Backwash active",
+                "col": 0,
+                "row": 0
+              }
+            ],
+            "wires": [
+              {
+                "from_id": "L",
+                "from_port": "out",
+                "to_id": "m0",
+                "to_port": "in"
+              },
+              {
+                "from_id": "m0",
+                "from_port": "out",
+                "to_id": "m1",
+                "to_port": "in"
+              },
+              {
+                "from_id": "m1",
+                "from_port": "out",
+                "to_id": "R",
+                "to_port": "in"
+              }
+            ]
+          }
+        ],
+        "fbd_blocks": [],
+        "fbd_wires": [],
+        "fbd_networks": [],
+        "sfc_steps": [],
+        "sfc_transitions": [],
+        "enabled": true
+      },
+      {
+        "name": "WaterQuality_FBD",
+        "language": "FunctionBlockDiagram",
+        "description": "Water quality gate logic using LT/GT/AND signal flow gates, across 2 networks",
+        "st_source": "",
+        "rungs": [],
+        "fbd_blocks": [
+          {
+            "id": "wf_i1",
+            "type": "TAG_INPUT",
+            "title": "Turbidity PV",
+            "tag_binding": "Turbidity_PV",
+            "x": 50.0,
+            "y": 80.0,
+            "input_count": 2,
+            "network": 0
+          },
+          {
+            "id": "wf_i2",
+            "type": "TAG_INPUT",
+            "title": "Turbidity SP",
+            "tag_binding": "Turbidity_SP",
+            "x": 50.0,
+            "y": 190.0,
+            "input_count": 2,
+            "network": 0
+          },
+          {
+            "id": "wf_lt",
+            "type": "LT",
+            "title": "Turbidity < SP",
+            "tag_binding": "",
+            "x": 260.0,
+            "y": 130.0,
+            "input_count": 2,
+            "network": 0
+          },
+          {
+            "id": "wf_i3",
+            "type": "TAG_INPUT",
+            "title": "Level PV",
+            "tag_binding": "Level_PV",
+            "x": 50.0,
+            "y": 320.0,
+            "input_count": 2,
+            "network": 0
+          },
+          {
+            "id": "wf_c1",
+            "type": "CONST",
+            "title": "Min Level",
+            "tag_binding": "10.0",
+            "x": 50.0,
+            "y": 430.0,
+            "input_count": 2,
+            "network": 0
+          },
+          {
+            "id": "wf_gt",
+            "type": "GT",
+            "title": "Level > 10",
+            "tag_binding": "",
+            "x": 260.0,
+            "y": 360.0,
+            "input_count": 2,
+            "network": 0
+          },
+          {
+            "id": "wf_o_lt",
+            "type": "TAG_OUTPUT",
+            "title": "Turbidity OK",
+            "tag_binding": "Turbidity_Below_SP",
+            "x": 460.0,
+            "y": 130.0,
+            "input_count": 2,
+            "network": 0
+          },
+          {
+            "id": "wf_o_gt",
+            "type": "TAG_OUTPUT",
+            "title": "Level OK",
+            "tag_binding": "Level_Above_Min",
+            "x": 460.0,
+            "y": 360.0,
+            "input_count": 2,
+            "network": 0
+          },
+          {
+            "id": "wf_i4",
+            "type": "TAG_INPUT",
+            "title": "Turbidity OK",
+            "tag_binding": "Turbidity_Below_SP",
+            "x": 50.0,
+            "y": 130.0,
+            "input_count": 2,
+            "network": 1
+          },
+          {
+            "id": "wf_i5",
+            "type": "TAG_INPUT",
+            "title": "Level OK",
+            "tag_binding": "Level_Above_Min",
+            "x": 50.0,
+            "y": 240.0,
+            "input_count": 2,
+            "network": 1
+          },
+          {
+            "id": "wf_a1",
+            "type": "AND",
+            "title": "Quality OK",
+            "tag_binding": "",
+            "x": 260.0,
+            "y": 185.0,
+            "input_count": 2,
+            "network": 1
+          },
+          {
+            "id": "wf_o1",
+            "type": "TAG_OUTPUT",
+            "title": "Quality OK",
+            "tag_binding": "Quality_OK",
+            "x": 460.0,
+            "y": 185.0,
+            "input_count": 2,
+            "network": 1
+          }
+        ],
+        "fbd_wires": [
+          {
+            "from_block_id": "wf_i1",
+            "from_pin": "OUT",
+            "to_block_id": "wf_lt",
+            "to_pin": "IN1"
+          },
+          {
+            "from_block_id": "wf_i2",
+            "from_pin": "OUT",
+            "to_block_id": "wf_lt",
+            "to_pin": "IN2"
+          },
+          {
+            "from_block_id": "wf_i3",
+            "from_pin": "OUT",
+            "to_block_id": "wf_gt",
+            "to_pin": "IN1"
+          },
+          {
+            "from_block_id": "wf_c1",
+            "from_pin": "OUT",
+            "to_block_id": "wf_gt",
+            "to_pin": "IN2"
+          },
+          {
+            "from_block_id": "wf_lt",
+            "from_pin": "OUT",
+            "to_block_id": "wf_o_lt",
+            "to_pin": "IN"
+          },
+          {
+            "from_block_id": "wf_gt",
+            "from_pin": "OUT",
+            "to_block_id": "wf_o_gt",
+            "to_pin": "IN"
+          },
+          {
+            "from_block_id": "wf_i4",
+            "from_pin": "OUT",
+            "to_block_id": "wf_a1",
+            "to_pin": "IN1"
+          },
+          {
+            "from_block_id": "wf_i5",
+            "from_pin": "OUT",
+            "to_block_id": "wf_a1",
+            "to_pin": "IN2"
+          },
+          {
+            "from_block_id": "wf_a1",
+            "from_pin": "OUT",
+            "to_block_id": "wf_o1",
+            "to_pin": "IN"
+          }
+        ],
+        "fbd_networks": [
+          {
+            "comment": "Thresholds — turbidity vs. setpoint, level vs. minimum"
+          },
+          {
+            "comment": "Quality gate & output — AND the threshold results, write Quality_OK"
+          }
+        ],
+        "sfc_steps": [],
+        "sfc_transitions": [],
+        "enabled": true
+      },
+      {
+        "name": "FilterBackwash_SFC",
+        "language": "SequentialFunctionChart",
+        "description": "Automated filter backwash sequence on high turbidity",
+        "st_source": "",
+        "rungs": [],
+        "fbd_blocks": [],
+        "fbd_wires": [],
+        "fbd_networks": [],
+        "sfc_steps": [
+          {
+            "id": "bw0",
+            "name": "STANDBY",
+            "is_initial": true,
+            "action_st": "Backwash_Valve := FALSE;\nBackwash_Pump := FALSE;"
+          },
+          {
+            "id": "bw1",
+            "name": "OPEN_BACKWASH_VALVE",
+            "is_initial": false,
+            "action_st": "Backwash_Valve := TRUE;\n// Allow 5s for valve to open"
+          },
+          {
+            "id": "bw2",
+            "name": "BACKWASH_PUMPING",
+            "is_initial": false,
+            "action_st": "Backwash_Pump := TRUE;\n// Flush filter for 30s"
+          },
+          {
+            "id": "bw3",
+            "name": "RINSE",
+            "is_initial": false,
+            "action_st": "Backwash_Pump := FALSE;\n// Rinse cycle 10s"
+          },
+          {
+            "id": "bw4",
+            "name": "CLOSE_BACKWASH",
+            "is_initial": false,
+            "action_st": "Backwash_Valve := FALSE;\n// Return to service"
+          }
+        ],
+        "sfc_transitions": [
+          {
+            "id": "bt0",
+            "from_step_id": "bw0",
+            "to_step_id": "bw1",
+            "condition_st": "Backwash_Active",
+            "kind": "single",
+            "to_step_ids": [],
+            "from_step_ids": []
+          },
+          {
+            "id": "bt1",
+            "from_step_id": "bw1",
+            "to_step_id": "bw2",
+            "condition_st": "STEP_T >= 5000  (* valve open dwell *)",
+            "kind": "single",
+            "to_step_ids": [],
+            "from_step_ids": []
+          },
+          {
+            "id": "bt2",
+            "from_step_id": "bw2",
+            "to_step_id": "bw3",
+            "condition_st": "Quality_OK OR STEP_T >= 30000  (* quality recovers, else 30s flush cap *)",
+            "kind": "single",
+            "to_step_ids": [],
+            "from_step_ids": []
+          },
+          {
+            "id": "bt3",
+            "from_step_id": "bw3",
+            "to_step_id": "bw4",
+            "condition_st": "STEP_T >= 10000  (* rinse cycle *)",
+            "kind": "single",
+            "to_step_ids": [],
+            "from_step_ids": []
+          },
+          {
+            "id": "bt4",
+            "from_step_id": "bw4",
+            "to_step_id": "bw0",
+            "condition_st": "NOT Backwash_Active",
+            "kind": "single",
+            "to_step_ids": [],
+            "from_step_ids": []
+          }
+        ],
+        "enabled": true
+      }
+    ],
+    "tasks": [
+      {
+        "name": "SafetyTask",
+        "type": "Startup",
+        "period_ms": 100,
+        "programs": [
+          "Safety_ST"
+        ],
+        "enabled": true,
+        "trigger_tag": "",
+        "watchdog_ms": 0
+      },
+      {
+        "name": "ContinuousTask",
+        "type": "Continuous",
+        "period_ms": 100,
+        "programs": [
+          "Safety_ST",
+          "PumpControl_LD",
+          "WaterQuality_FBD"
+        ],
+        "enabled": true,
+        "trigger_tag": "",
+        "watchdog_ms": 0
+      },
+      {
+        "name": "BackwashTask",
+        "type": "Periodic",
+        "period_ms": 1000,
+        "programs": [
+          "FilterBackwash_SFC"
+        ],
+        "enabled": true,
+        "trigger_tag": "",
+        "watchdog_ms": 0
+      }
+    ],
+    "hmis": [
+      {
+        "id": "hmi_all_water",
+        "title": "Water Treatment Plant Dashboard",
+        "layout_type": "GridDashboard",
+        "components": [
+          {
+            "id": "wt1",
+            "title": "START Pump (NO)",
+            "type": "PushbuttonSwitch",
+            "tag_binding": "Start_PB",
+            "grid_span_width": 1,
+            "accent_color": "green",
+            "trend_pens": []
+          },
+          {
+            "id": "wt2",
+            "title": "STOP Pump (NC)",
+            "type": "PushbuttonSwitch",
+            "tag_binding": "Stop_PB",
+            "grid_span_width": 1,
+            "accent_color": "red",
+            "trend_pens": []
+          },
+          {
+            "id": "wt3",
+            "title": "E-Stop Healthy",
+            "type": "ToggleSwitch",
+            "tag_binding": "EStop",
+            "grid_span_width": 1,
+            "accent_color": "cyan",
+            "trend_pens": []
+          },
+          {
+            "id": "wt4",
+            "title": "Pump Running",
+            "type": "LedIndicatorLight",
+            "tag_binding": "Pump_Motor",
+            "grid_span_width": 1,
+            "accent_color": "green",
+            "trend_pens": []
+          },
+          {
+            "id": "wt5",
+            "title": "Reservoir Level (%)",
+            "type": "TankGraphicDisplay",
+            "tag_binding": "Level_PV",
+            "grid_span_width": 2,
+            "accent_color": "cyan",
+            "trend_pens": []
+          },
+          {
+            "id": "wt6",
+            "title": "Turbidity Setpoint",
+            "type": "NumericSliderInput",
+            "tag_binding": "Turbidity_SP",
+            "grid_span_width": 2,
+            "accent_color": "teal",
+            "trend_pens": []
+          },
+          {
+            "id": "wt7",
+            "title": "Turbidity (NTU)",
+            "type": "DigitalGaugeDisplay",
+            "tag_binding": "Turbidity_PV",
+            "grid_span_width": 2,
+            "accent_color": "amber",
+            "trend_pens": []
+          },
+          {
+            "id": "wt8",
+            "title": "Flow Rate (L/min)",
+            "type": "DigitalGaugeDisplay",
+            "tag_binding": "Flow_PV",
+            "grid_span_width": 2,
+            "accent_color": "cyan",
+            "trend_pens": []
+          },
+          {
+            "id": "wt9",
+            "title": "Water Quality OK",
+            "type": "LedIndicatorLight",
+            "tag_binding": "Quality_OK",
+            "grid_span_width": 1,
+            "accent_color": "green",
+            "trend_pens": []
+          },
+          {
+            "id": "wt10",
+            "title": "Dosing Pump",
+            "type": "LedIndicatorLight",
+            "tag_binding": "Treat_Dosing",
+            "grid_span_width": 1,
+            "accent_color": "amber",
+            "trend_pens": []
+          },
+          {
+            "id": "wt11",
+            "title": "Backwash Active",
+            "type": "LedIndicatorLight",
+            "tag_binding": "Backwash_Active",
+            "grid_span_width": 1,
+            "accent_color": "red",
+            "trend_pens": []
+          },
+          {
+            "id": "wt12",
+            "title": "System Ready",
+            "type": "LedIndicatorLight",
+            "tag_binding": "System_Ready",
+            "grid_span_width": 1,
+            "accent_color": "green",
+            "trend_pens": []
+          },
+          {
+            "id": "wt13",
+            "title": "SYSTEM ALARM",
+            "type": "StatusPillDisplay",
+            "tag_binding": "Alarm_Active",
+            "grid_span_width": 4,
+            "accent_color": "red",
+            "trend_pens": []
+          }
+        ]
+      }
+    ],
+    "sim_rules": [
+      {
+        "id": "sim0",
+        "name": "Dosing clears turbidity",
+        "enabled": true,
+        "target": "Turbidity_PV",
+        "behavior": "integrate",
+        "delay_ms": 1000,
+        "on_ms": 500,
+        "off_ms": 500,
+        "rate": -0.24,
+        "target_value": 0.0,
+        "min": 0.5,
+        "max": 20.0,
+        "condition": [
+          {
+            "left": "Treat_Dosing",
+            "cmp": "==",
+            "kind": "literal",
+            "operand": "true"
+          }
+        ],
+        "source": "",
+        "ref_value": 100.0,
+        "tau_sec": 5.0,
+        "valve_curve": "linear",
+        "noise_dist": "uniform",
+        "drift_amp": 0.0,
+        "drift_period_sec": 60.0
+      },
+      {
+        "id": "sim1",
+        "name": "Turbidity creeps up",
+        "enabled": true,
+        "target": "Turbidity_PV",
+        "behavior": "integrate",
+        "delay_ms": 1000,
+        "on_ms": 500,
+        "off_ms": 500,
+        "rate": 0.08,
+        "target_value": 0.0,
+        "min": 0.0,
+        "max": 7.5,
+        "condition": [
+          {
+            "left": "Pump_Motor",
+            "cmp": "==",
+            "kind": "literal",
+            "operand": "true"
+          },
+          {
+            "left": "Treat_Dosing",
+            "cmp": "==",
+            "kind": "literal",
+            "operand": "false"
+          }
+        ],
+        "source": "",
+        "ref_value": 100.0,
+        "tau_sec": 5.0,
+        "valve_curve": "linear",
+        "noise_dist": "uniform",
+        "drift_amp": 0.0,
+        "drift_period_sec": 60.0
+      },
+      {
+        "id": "sim2",
+        "name": "Level drops while pumping",
+        "enabled": true,
+        "target": "Level_PV",
+        "behavior": "integrate",
+        "delay_ms": 1000,
+        "on_ms": 500,
+        "off_ms": 500,
+        "rate": -0.3,
+        "target_value": 0.0,
+        "min": 0.0,
+        "max": 100.0,
+        "condition": [
+          {
+            "left": "Pump_Motor",
+            "cmp": "==",
+            "kind": "literal",
+            "operand": "true"
+          }
+        ],
+        "source": "",
+        "ref_value": 100.0,
+        "tau_sec": 5.0,
+        "valve_curve": "linear",
+        "noise_dist": "uniform",
+        "drift_amp": 0.0,
+        "drift_period_sec": 60.0
+      },
+      {
+        "id": "sim3",
+        "name": "Level refills while idle",
+        "enabled": true,
+        "target": "Level_PV",
+        "behavior": "integrate",
+        "delay_ms": 1000,
+        "on_ms": 500,
+        "off_ms": 500,
+        "rate": 0.16,
+        "target_value": 0.0,
+        "min": 0.0,
+        "max": 100.0,
+        "condition": [
+          {
+            "left": "Pump_Motor",
+            "cmp": "==",
+            "kind": "literal",
+            "operand": "false"
+          }
+        ],
+        "source": "",
+        "ref_value": 100.0,
+        "tau_sec": 5.0,
+        "valve_curve": "linear",
+        "noise_dist": "uniform",
+        "drift_amp": 0.0,
+        "drift_period_sec": 60.0
+      },
+      {
+        "id": "sim4",
+        "name": "Flow rises while pumping",
+        "enabled": true,
+        "target": "Flow_PV",
+        "behavior": "ramp",
+        "delay_ms": 1000,
+        "on_ms": 500,
+        "off_ms": 500,
+        "rate": 84.0,
+        "target_value": 42.0,
+        "min": 0.0,
+        "max": 150.0,
+        "condition": [
+          {
+            "left": "Pump_Motor",
+            "cmp": "==",
+            "kind": "literal",
+            "operand": "true"
+          }
+        ],
+        "source": "",
+        "ref_value": 100.0,
+        "tau_sec": 5.0,
+        "valve_curve": "linear",
+        "noise_dist": "uniform",
+        "drift_amp": 0.0,
+        "drift_period_sec": 60.0
+      },
+      {
+        "id": "sim5",
+        "name": "Flow drops to zero while stopped",
+        "enabled": true,
+        "target": "Flow_PV",
+        "behavior": "ramp",
+        "delay_ms": 1000,
+        "on_ms": 500,
+        "off_ms": 500,
+        "rate": 84.0,
+        "target_value": 0.0,
+        "min": 0.0,
+        "max": 150.0,
+        "condition": [
+          {
+            "left": "Pump_Motor",
+            "cmp": "==",
+            "kind": "literal",
+            "operand": "false"
+          }
+        ],
+        "source": "",
+        "ref_value": 100.0,
+        "tau_sec": 5.0,
+        "valve_curve": "linear",
+        "noise_dist": "uniform",
+        "drift_amp": 0.0,
+        "drift_period_sec": 60.0
+      }
+    ],
+    "signal_gens": [],
+    "trends": [],
+    "fb_definitions": []
+  }
+}
