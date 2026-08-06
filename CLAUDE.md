@@ -51,3 +51,8 @@ are git-ignored.
 The Flutter app lives in `mobile/` (package `soft_plc_mobile`). Run all
 `flutter` commands from `mobile/`. `flutter` is at `/c/flutter/bin/flutter`
 (not on PATH). Deferred work is tracked in `docs/DEFERRED.md`.
+
+The seven built-in demo projects live one-per-file in
+`mobile/lib/data/default_projects/`; `mobile/lib/data/default_projects.dart` is
+a barrel that keeps `DefaultProjects.all()` and its import path stable (see
+`docs/default-projects.md`).

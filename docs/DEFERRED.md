@@ -134,6 +134,19 @@ See `docs/import/L5X.md` for the full support matrix.
 | FBD lane wheel vs. tall networks | later | With `wheelPansVertically: false`, the plain mouse wheel over an FBD lane drives the outer lane `ListView`, not the individual network canvas. A network whose content exceeds the lane's 1200px height clamp (`fbd_editor_screen.dart`, `(maxY + 220).clamp(260.0, 1200.0)`) is therefore wheel-unreachable past that clamp — drag-to-pan and Shift+wheel (confirmed working against a real Chromium build, which delivers `shiftKey` alongside `dy`) still reach it. |
 | Gateway Regenerate confirm-when-non-empty | later | Regenerating the protocol map prompts for confirmation only when the existing map is non-empty (QA batch C, `3312d2b`). This threshold is a judgment call, not a proven-wrong behavior — revisit if it turns out to read as friction in practice (e.g. a near-empty map that still represents deliberate manual edits). |
 
+## Default projects redo (spec 2026-08-06)
+
+| Item | Priority | Notes |
+|---|---|---|
+| Retired defaults linger on existing installs | near-term | `backfillNewDefaults` can only ADD a default whose id has never been seeded; it cannot remove or replace one the user already has. An existing install therefore shows up to 20 projects until the user runs Reset to Defaults, which is the only path that yields exactly the new 7. A "retire default ids" reconciliation pass (with user confirmation) is deferred. |
+| `proj_all_water` refresh invisible to existing installs | later | Same root cause: backfill never overwrites an existing id, so any future data change to the water plant reaches only fresh installs. This is why §4.5 fixed its change list at "move to its own file + add the missing doc comment". A "refresh an existing default in place" migration is deferred. |
+| LD-side `GE`/`LE`/`NE`/`MUL`/`DIV`/`TP`/`CTD`/`CTUD` | later | Supported by `ld_exec.dart` and the editor palette, still not showcased in any default project (unchanged from before the redo). Enforced as a set in `test/defaults/default_projects_coverage_test.dart`'s `knownUncoveredLdBlockTypes`. |
+| Task type `Event` | later | No default project uses an event-triggered task; the approved flagship lineup fixes it at three tasks (Startup/Continuous/Periodic). Enforced as `knownUncoveredTaskTypes` in the coverage guard. |
+| `SignalGen` / bulk simulated test tags | later | No default project ships signal generators. |
+| Protocols beyond Modbus + OPC UA | later | MQTT, DNP3, EtherNet/IP, S7, FINS, SLMP and BACnet configs are not pre-populated in any default; the flagship configures Modbus + OPC UA only. |
+| PID autotune / interaction-analysis prefill with multiple loops in one project | later | `PidAutoTuneScreen` prefills from the FIRST `PID` block in the FIRST FBD program and `defaultInteractionAnalysisTags` from the first four analog tags in declaration order. `proj_process_lab` works around this by fixing its program and tag ORDER; a loop-selection UI would be the real fix. |
+| HVAC filter-life `CTD` cold-boot off-by-one | later | On the very first live scan the HVAC zone is already calling for heat (`Room_Temp` 18 vs `Setpoint` 22), so the `CTD`'s load edge and its first count edge land in the same scan; LD wins and that first heat start is not deducted, leaving `Filter_Life` one higher than the true start count. Harmless and self-correcting (recorded during Task 3); no test asserts `Filter_Life` from a cold boot. |
+
 ## Housekeeping
 
 | Item | Priority | Notes |
