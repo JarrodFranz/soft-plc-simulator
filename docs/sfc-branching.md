@@ -179,28 +179,32 @@ structural helper keeps the fork/join invariant intact — a fork's
 `fromStepIds` always equals the current branch tails — so the chart stays
 parseable with no dangling references after every edit.
 
-## Showcase: SFC — Batch Mix & Dispatch
+## Showcase: SFC — Batch Production
 
-`proj_sfc_batchmix` (default project, `mobile/lib/data/default_projects.dart`)
-is a from-scratch showcase built entirely with the structured-authoring
-helpers above, exercising both branch shapes in one chart:
+`proj_sfc_batch_production` (default project,
+`mobile/lib/data/default_projects/sfc_batch_production.dart`) is the shipped
+showcase for both branch shapes in one chart. Its `BatchProduction_SFC`
+program opens with a LINEAR segment (`IDLE` -> `WAIT_CONTAINER` -> `FILLING`
+-> `CAPPING` -> `EJECTING` -> `COUNT`, on `STEP_T` dwells), then branches:
 
-- **Parallel Heat + Fill** — `Start_Cmd` forks `IDLE` into two branches at
-  once: `HEATING` (raises `Temp_PV` toward `Temp_SP`) and `FILLING` (raises
-  `Fill_Level` toward `Fill_Target`). The join at `MIXING` waits for
-  **both** branch tails, and heating is deliberately tuned slower than
-  filling so the demo actually shows the join waiting: the fill branch
-  reaches `FILL_DONE` and parks there — visibly lit but idle on Go-Online —
-  while the heat branch is still running, until the tank finally reaches
-  temperature and the join fires.
+- **Parallel Heat + Charge** — from `PREP`, an unconditional `parallelFork`
+  splits into two branches at once: `HEATING` (raises `Temp_PV` toward
+  `Temp_SP`, 12 °C/s over a 50 °C span) and `CHARGING` (raises `Fill_Level`
+  toward `Fill_Target`, 30 %/s over a 90 % span). The `parallelJoin` into
+  `MIXING` waits for **both** branch tails, and heating is deliberately the
+  slower of the two (~4.2 s vs ~3.0 s) so the demo actually shows the join
+  waiting: the charge branch reaches `CHARGE_DONE` and parks there — visibly
+  lit but idle on Go-Online — while the heat branch is still running, until
+  the tank finally reaches temperature and the join fires.
 - **Alternative quality gate** — from `MIXING`, an alternative divergence
-  routes on `Quality_OK`: the true arm goes to `DISPATCH` (drives
-  `Dispatch_Pump`, increments `Batch_Count`), the false arm to `REJECT`
-  (drives `Drain_Valve`, increments `Reject_Count`). Both arms loop back to
-  `IDLE` after their dwell, so the whole batch cycles continuously.
+  routes on `Quality_OK` after a 3 s mix dwell: the true arm goes to
+  `DISPATCH` (drives `Dispatch_Pump`), the false arm to `REJECT` (drives
+  `Drain_Valve`). Each arm ends in its own one-shot counting step —
+  `COUNT_OK` increments `Batch_Count`, `COUNT_REJ` increments `Reject_Count`
+  — and both loop back to `IDLE`, so the whole batch cycles continuously.
 - **Go-Online** during the parallel phase lights up **two** active steps
-  at once — first `HEATING` and `FILLING` together, then `FILL_DONE`
-  glowing parked next to a still-running `HEATING` once the faster fill
+  at once — first `HEATING` and `CHARGING` together, then `CHARGE_DONE`
+  glowing parked next to a still-running `HEATING` once the faster charge
   branch finishes first — the clearest on-canvas demonstration that the
   engine's active set is a set, not a single token.
 
