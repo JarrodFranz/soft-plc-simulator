@@ -59,7 +59,8 @@ modeled), `OSRI`→`R_TRIG`, `OSFI`→`F_TRIG`.
 Rockwell pin names that don't match the IEC registry): `SourceA`/`SourceB`/
 `Dest` → `IN1`/`IN2`/`OUT` for math and compare blocks; `In<k>`/`Out` →
 `IN<k>`/`OUT` for `BAND`/`BOR`; `In`/`Out` → `IN`/`OUT` for `BNOT`;
-`TimerEnable`/`PRE`/`DN`/`ACC` → `IN`/`PT`/`Q`/`ET` for `TONR`/`TOFR`;
+`TimerEnable`/`PRE`/`Preset`/`DN`/`ACC` → `IN`/`PT`/`PT`/`Q`/`ET` for `TONR`/`TOFR`
+(`PRE` and `Preset` are aliases for the same source attribute and both map to `PT`);
 `SelectorIn`/`In1`/`In2`/`Out` → `G`/`IN0`/`IN1`/`OUT` for `SEL` (Logix's
 `Out = SelectorIn ? In2 : In1` maps onto IEC `OUT = G ? IN1 : IN0`);
 `CUEnable`/`CDEnable`/`Reset`/`Load`/`PRE`/`ACC`/`DN` → `CU`/`CD`/`R`/`LD`/
@@ -78,7 +79,11 @@ type (e.g. `SCL`, `PIDE`, `MOV`, `MOD`, `ESEL`); an unmapped pin; a *wired*
 `EnableIn`/`EnableOut` pin on a block (built-in-aliased or an AOI call — the
 block it maps to has no such pin); an unmatched `ICon`/`OCon` connector; a
 malformed/non-numeric `ID`; more than one wire driving the same input pin;
-and a dotted/member operand (`Timer1.DN`) on an `IRef`/`ORef`.
+a dotted/member operand (`Timer1.DN`) on an `IRef`/`ORef`; and a duplicate
+raw `ID` reused on the same sheet (the second-and-later claimant is given a
+synthetic id so its network is not translated, rather than silently
+replacing the element that claimed the id first — warned at
+`WarningSeverity.warning`).
 
 See `docs/import/L5X.md`'s "FBD routines translate" and "FBD-Logic AOIs
 execute" sections, and `mobile/test/import/import_l5x_aoi_fbd_e2e_test.dart`

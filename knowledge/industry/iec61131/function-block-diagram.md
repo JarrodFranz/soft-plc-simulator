@@ -111,8 +111,7 @@ is **conditional, not clamped-integral**: a candidate integral term is computed
 `raw` falls within `[0, 100]`, the candidate integral is committed; otherwise the integral is
 **frozen** at its previous value and `raw` is recomputed without the candidate term. The final
 `CV` is clamped to `[0, 100]`. **The 0-100 output range is hardcoded** - there is no `MIN`/`MAX`
-input pin to reconfigure it. State persists per `b.id` across scans (per `'fb:<instancePath>|
-<blockId>'` instead, for a PID inside an FBD-bodied custom FB - see §3).
+input pin to reconfigure it. State persists per `b.id` across scans (per `'fb:<instancePath>|<blockId>'` instead, for a PID inside an FBD-bodied custom FB - see §3).
 
 ---
 
