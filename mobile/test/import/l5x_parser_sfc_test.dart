@@ -5,6 +5,7 @@
 // pin. If a real export disagrees, the fixtures are what changes.
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/import/import_ir.dart';
+import 'package:soft_plc_mobile/import/ir_to_project.dart';
 import 'package:soft_plc_mobile/import/l5x_parser.dart';
 import 'package:soft_plc_mobile/import/sfc_translate.dart';
 
@@ -1206,6 +1207,341 @@ void main() {
         expect(_infos(ws).any((m) => m.contains('divergence inlet is a')), isFalse);
         expect(_infos(ws).any((m) => m.contains('convergence outlet is a')), isFalse);
       }
+    });
+  });
+
+  group('L5X SFC: step timing attributes (§5)', () {
+    test('a zero or absent Preset is silent — Logix writes Preset="0" everywhere', () {
+      final (_, ws) = _build(_wrap('''
+        <Step ID="1" Operand="Idle" InitialStep="true" Preset="0"
+              LimitHigh="0" LimitLow="0"/>
+        <Step ID="2" Operand="Run"/>'''));
+      expect(_hasInfo(ws, 'timing attribute'), isFalse, reason: _infos(ws).toString());
+    });
+
+    test('a meaningful Preset/LimitHigh/LimitLow each warn once, naming the step', () {
+      final (body, ws) = _build(_wrap('''
+        <Step ID="1" Operand="Step_003" InitialStep="true"
+              Preset="5000" LimitHigh="9000" LimitLow="10"/>'''));
+
+      final timing = _infos(ws).where((m) => m.contains('timing attribute')).toList();
+      expect(timing, hasLength(3));
+      expect(timing[0],
+          'Routine "Main_Seq": SFC step "Step_003" timing attribute Preset '
+          'dropped — no native step timer (use STEP_T in a transition condition).');
+      expect(timing[1], contains('timing attribute LimitHigh'));
+      expect(timing[2], contains('timing attribute LimitLow'));
+      // Dropping timing NEVER stubs the chart.
+      expect(translateSfcBody(body, pouName: 'P').translated, isTrue);
+    });
+
+    test('a *UsesExpr="true" companion makes the attribute meaningful even at 0', () {
+      final (_, ws) = _build(_wrap('''
+        <Step ID="1" Operand="S" InitialStep="true" Preset="0" PresetUsesExpr="true"/>'''));
+      expect(_infos(ws).where((m) => m.contains('timing attribute')), hasLength(1));
+    });
+  });
+
+  group('L5X SFC: action degrades (§6)', () {
+    test('IsBoolean="true" skips the action with a `boolean action` breadcrumb', () {
+      final (body, ws) = _build(_wrap('''
+        <Step ID="1" Operand="Run" InitialStep="true">
+          <Action ID="11" Operand="Motor" Qualifier="N" IsBoolean="true"/>
+        </Step>'''));
+
+      expect(body.actions, isEmpty);
+      expect(_hasInfo(ws, 'boolean action'), isTrue, reason: _infos(ws).toString());
+      expect(_hasInfo(ws, 'action has no body'), isFalse); // boolean check wins
+      expect(translateSfcBody(body, pouName: 'P').translated, isTrue);
+    });
+
+    test('an action with an absent or whitespace-only body is skipped, loudly', () {
+      // Without this the assoc reaches _actionSt, whose `if (s.text.isNotEmpty)`
+      // guard drops it WITHOUT a warning — the one silent-loss hole in the
+      // action path, and one only the builder can close.
+      final (body, ws) = _build(_wrap('''
+        <Step ID="1" Operand="Run" InitialStep="true">
+          <Action ID="11" Operand="Empty1" Qualifier="N"/>
+          <Action ID="12" Operand="Empty2" Qualifier="N">
+            <Body><STContent><Line Number="0"><![CDATA[   ]]></Line></STContent></Body>
+          </Action>
+        </Step>'''));
+
+      expect(body.actions, isEmpty);
+      final noBody = _infos(ws).where((m) => m.contains('action has no body')).toList();
+      expect(noBody, hasLength(2));
+      expect(noBody[0], contains('"Empty1"'));
+      expect(noBody[1], contains('"Empty2"'));
+      // A per-action degrade, NOT a poison: an empty action is a
+      // documentation stub, not a structural defect.
+      expect(translateSfcBody(body, pouName: 'P').translated, isTrue);
+    });
+
+    test('a non-N qualifier is NOT pre-filtered — the translator degrades it', () {
+      final (body, ws) = _build(_wrap('''
+        <Step ID="1" Operand="Run" InitialStep="true">
+          <Action ID="11" Operand="A1" Qualifier="S">
+            <Body><STContent><Line Number="0"><![CDATA[Motor := TRUE;]]></Line></STContent></Body>
+          </Action>
+        </Step>'''));
+
+      expect(body.actions.single.qualifier, 'S'); // reaches the translator untouched
+      expect(ws, isEmpty);
+      final tr = translateSfcBody(body, pouName: 'P');
+      expect(tr.translated, isTrue);
+      expect(tr.steps.single.actionSt, '');
+      expect(
+          tr.warnings.any((w) =>
+              w.severity == WarningSeverity.info &&
+              w.message.contains('unsupported — action skipped (N only)')),
+          isTrue);
+    });
+  });
+
+  group('L5X SFC: unmappable elements and the poison mechanism (§4)', () {
+    for (final tag in const ['Stop', 'SbrRet', 'JSR', 'Frobnicate', 'Leg']) {
+      test('<$tag> has no representable equivalent', () {
+        final (body, ws) = _build(_wrap('''
+          <Step ID="1" Operand="Idle" InitialStep="true"/>
+          <$tag ID="9" X="0" Y="0"/>'''));
+
+        expect(
+            _infos(ws).any((m) =>
+                m.contains('no representable equivalent') &&
+                m.contains('<$tag ID="9">')),
+            isTrue,
+            reason: _infos(ws).toString());
+        // Not emitted as a node — the poison flag is what makes it visible.
+        expect(body.nodes.where((n) => n.name == '#unrepresentable'), hasLength(1));
+        // Poison fires even though the element is on NO path at all.
+        final tr = translateSfcBody(body, pouName: 'P');
+        expect(tr.translated, isFalse);
+        expect(tr.stubReason, 'complex-topology');
+      });
+    }
+
+    test('a poisoned body produces exactly ONE warning and ZERO translator infos', () {
+      // The mechanism's whole guarantee: _build's step->step edge scan sits
+      // above every warning-emitting statement, so nothing else gets a word in.
+      final (body, _) = _build(_wrap('''
+        <Step ID="1" Operand="Idle"/>
+        <Step ID="2" Operand="Run">
+          <Action ID="21" Operand="A" Qualifier="S">
+            <Body><STContent><Line Number="0"><![CDATA[X := 1;]]></Line></STContent></Body>
+          </Action>
+        </Step>
+        <Stop ID="9"/>'''));
+
+      final tr = translateSfcBody(body, pouName: 'P');
+      expect(tr.translated, isFalse);
+      expect(tr.stubReason, 'complex-topology');
+      expect(tr.warnings, hasLength(1));
+      expect(tr.warnings.single.severity, WarningSeverity.warning);
+      expect(tr.warnings.single.message,
+          contains('step directly wired to step (missing transition)'));
+    });
+
+    test('many defects still produce exactly one poison node', () {
+      final (body, _) = _build(_wrap('''
+        <Stop ID="9"/>
+        <SbrRet ID="8"/>
+        <Step ID="abc" Operand="Bad"/>
+        <Step ID="1" Operand="A" InitialStep="true"/>
+        <Step ID="1" Operand="Dup"/>
+        <DirectedLink FromID="1" ToID="777"/>'''));
+      expect(body.nodes.where((n) => n.name == '#unrepresentable'), hasLength(1));
+    });
+
+    test('the L5X path never reaches the translator\'s PLCopen-only degrades', () {
+      // §1: Logix has no external action/transition POUs and no graphically
+      // wired condition, so these translator paths are dead for L5X input.
+      // Kept in the translator (PLCopen needs them), asserted unreachable here.
+      for (final fixture in [
+        _wrap('''
+          <Step ID="1" Operand="Idle" InitialStep="true">
+            <Action ID="11" Operand="A" Qualifier="N">
+              <Body><STContent><Line Number="0"><![CDATA[X := 1;]]></Line></STContent></Body>
+            </Action>
+          </Step>
+          ${_t(2, 'T1', 'Go')}
+          <Step ID="3" Operand="Run"/>
+          <DirectedLink FromID="1" ToID="2"/>
+          <DirectedLink FromID="2" ToID="3"/>'''),
+      ]) {
+        final (body, _) = _build(fixture);
+        // Actions are associated by XML NESTING, so stepLocalId is always a
+        // real step id — the "unknown step" degrade is structurally
+        // unreachable.
+        final stepIds = {
+          for (final n in body.nodes)
+            if (n.kind == SfcNodeKind.step) n.localId
+        };
+        expect(body.actions.every((a) => stepIds.contains(a.stepLocalId)), isTrue);
+        final tr = translateSfcBody(body, pouName: 'P');
+        for (final needle in const [
+          'action associated with unknown step',
+          'not resolvable to ST — skipped',
+          'transition references',
+          'graphical transition condition',
+        ]) {
+          expect(tr.warnings.any((w) => w.message.contains(needle)), isFalse,
+              reason: needle);
+        }
+      }
+    });
+  });
+
+  group('L5X SFC: annotations and empty content (§2, §8)', () {
+    test('a link anchored to a <TextBox> is discarded — no warning, no poison', () {
+      // Poisoning a chart because it is well commented would be absurd.
+      final (body, ws) = _build(_wrap('''
+        <Step ID="1" Operand="Idle" InitialStep="true"/>
+        ${_t(2, 'T1', 'Go')}
+        <Step ID="3" Operand="Run"/>
+        <TextBox ID="50" X="0" Y="0"/>
+        <DirectedLink FromID="1" ToID="2"/>
+        <DirectedLink FromID="2" ToID="3"/>
+        <DirectedLink FromID="50" ToID="1"/>'''));
+
+      expect(_hasInfo(ws, 'dangling link'), isFalse, reason: _infos(ws).toString());
+      expect(body.nodes.where((n) => n.name == '#unrepresentable'), isEmpty);
+      expect(body.edges, hasLength(2));
+      expect(translateSfcBody(body, pouName: 'P').translated, isTrue);
+    });
+
+    test('an EMPTY <SFCContent/> yields no-initial, not a topology defect', () {
+      // Guards against a "when in doubt, poison" drift that would mislabel an
+      // empty routine.
+      final (body, ws) = _build(_wrap(''));
+      expect(body.nodes, isEmpty);
+      expect(ws, isEmpty);
+      final tr = translateSfcBody(body, pouName: 'P');
+      expect(tr.stubReason, 'no-initial');
+      expect(tr.warnings.single.message, contains('chart has no steps'));
+    });
+  });
+
+  group('L5X SFC: §8 warning conformance', () {
+    // Every builder-emitted row of §8's table, with its exact assertable
+    // substring, reachable from a named fixture. Severity is `info` on ALL of
+    // them: builder warnings are breadcrumbs, the verdict belongs to
+    // translateSfcBody + the mapper.
+    final cases = <(String, String, String)>[
+      (
+        'annotations',
+        '<Step ID="1" Operand="A" InitialStep="true"/><TextBox ID="9"/>',
+        'element(s) ignored'
+      ),
+      (
+        'unknown element',
+        '<Step ID="1" Operand="A" InitialStep="true"/><Stop ID="9"/>',
+        'no representable equivalent'
+      ),
+      ('malformed id', '<Step ID="abc" Operand="A"/>', 'malformed ID'),
+      (
+        'duplicate id',
+        '<Step ID="1" Operand="A"/><Step ID="1" Operand="B"/>',
+        'duplicate ID'
+      ),
+      (
+        'dangling link',
+        '<Step ID="1" Operand="A"/><DirectedLink FromID="1" ToID="99"/>',
+        'dangling link'
+      ),
+      (
+        'branch type',
+        '<Branch ID="10" BranchType="Parallel"><Leg ID="11"/></Branch>',
+        'branch type'
+      ),
+      (
+        'branch shape',
+        '<Branch ID="10" BranchType="Selection"><Leg ID="11"/></Branch>',
+        'branch shape not representable ('
+      ),
+      (
+        'timing attribute',
+        '<Step ID="1" Operand="A" InitialStep="true" Preset="5000"/>',
+        'timing attribute'
+      ),
+      (
+        'boolean action',
+        '<Step ID="1" Operand="A" InitialStep="true">'
+            '<Action ID="11" Operand="M" IsBoolean="true"/></Step>',
+        'boolean action'
+      ),
+      (
+        'action has no body',
+        '<Step ID="1" Operand="A" InitialStep="true">'
+            '<Action ID="11" Operand="M"/></Step>',
+        'action has no body'
+      ),
+    ];
+
+    for (final (label, fixture, needle) in cases) {
+      test('$label -> info "$needle", prefixed with the owner label', () {
+        final (_, ws) = _build(_wrap(fixture));
+        final hits = ws
+            .where((w) => w.message.contains(needle))
+            .toList();
+        expect(hits, isNotEmpty, reason: _infos(ws).toString());
+        expect(hits.every((w) => w.severity == WarningSeverity.info), isTrue);
+        expect(hits.every((w) => w.message.startsWith('Routine "Main_Seq": ')),
+            isTrue, reason: hits.map((w) => w.message).toString());
+      });
+    }
+  });
+
+  group('L5X SFC: the double-warning regression (§7)', () {
+    // The bug this sub-project fixes: the old parser arm emitted its own
+    // warning-severity message on TOP of the translator's and the mapper's —
+    // three messages where the PLCopen path emits two.
+    const translating = '''
+      <Step ID="1" Operand="Idle" InitialStep="true"/>
+      <Transition ID="2"><Condition><STContent>
+        <Line Number="0"><![CDATA[Start]]></Line></STContent></Condition></Transition>
+      <Step ID="3" Operand="Run"/>
+      <DirectedLink FromID="1" ToID="2"/>
+      <DirectedLink FromID="2" ToID="3"/>''';
+    const stubbing = '''
+      <Step ID="1" Operand="Idle" InitialStep="true"/>
+      <Stop ID="9"/>''';
+
+    List<ImportWarning> mapAndCollect(String sfcChildren) {
+      final ir = parseL5x(_wrap(sfcChildren));
+      final res =
+          mapImportedProject(ir, projectName: ir.name, projectId: 'sfc_msg');
+      return res.report.warnings
+          .where((w) => w.message.contains('Main_Seq'))
+          .toList();
+    }
+
+    test('parseL5x alone emits zero warning-severity messages for the POU', () {
+      for (final f in [translating, stubbing]) {
+        final ir = parseL5x(_wrap(f));
+        expect(
+            ir.warnings.where((w) =>
+                w.severity == WarningSeverity.warning &&
+                w.message.contains('Main_Seq')),
+            isEmpty);
+      }
+    });
+
+    test('a translating SFC routine produces zero warning-severity messages', () {
+      expect(
+          mapAndCollect(translating)
+              .where((w) => w.severity == WarningSeverity.warning),
+          isEmpty);
+    });
+
+    test('a stubbing SFC routine produces exactly two — translator + mapper', () {
+      final loud = mapAndCollect(stubbing)
+          .where((w) => w.severity == WarningSeverity.warning)
+          .toList();
+      expect(loud, hasLength(2), reason: loud.map((w) => w.message).toString());
+      expect(loud.any((w) => w.message.contains('not translated (')), isTrue);
+      expect(
+          loud.any((w) => w.message.contains('graphical body not yet translated')),
+          isTrue);
     });
   });
 }

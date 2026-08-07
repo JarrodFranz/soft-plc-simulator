@@ -938,6 +938,108 @@ void _l5xSfcValidateShape(_L5xSfcBranch br, Map<int, _L5xSfcKind> kindById,
 /// document order (of elements, then of the `<DirectedLink>` list) is the sole
 /// tiebreaker, and an absent/empty `<SFCContent>` yields an empty body.
 ///
+/// §5 — one info breadcrumb per MEANINGFUL step timing attribute.
+///
+/// Logix steps carry `Preset`, `LimitHigh` and `LimitLow` (each with a
+/// `*UsesExpr` companion): a step timer plus high/low residence limits.
+/// `SfcStep` is `{id, name, isInitial, actionSt}` and `sfc_exec` has no
+/// per-step timer, so these are not structurally representable and v1 drops
+/// them — but never silently. The post-import recovery is `STEP_T` (elapsed
+/// time in the active step), which `sfc_exec` injects as an ST variable usable
+/// in a transition condition, so a dropped `Preset="5000"` is hand-recoverable
+/// as `STEP_T >= 5000` on the step's outgoing transition.
+///
+/// The MEANINGFUL gate matters: Logix writes `Preset="0"` on every step in a
+/// typical export, and warning on those would bury the real ones. A present
+/// but non-numeric value counts as meaningful (it is most likely an inlined
+/// expression, and dropping it silently would be the worst case).
+void _l5xSfcTiming(XmlElement step, String stepLabel,
+    List<ImportWarning> warnings, String ownerLabel) {
+  for (final attr in const ['Preset', 'LimitHigh', 'LimitLow']) {
+    final raw = (step.getAttribute(attr) ?? '').trim();
+    final usesExpr = step.getAttribute('${attr}UsesExpr') == 'true';
+    final n = num.tryParse(raw);
+    final meaningful = usesExpr || (raw.isNotEmpty && (n == null || n != 0));
+    if (!meaningful) continue;
+    warnings.add(ImportWarning(
+        severity: WarningSeverity.info,
+        message: '$ownerLabel: SFC step "$stepLabel" timing attribute $attr '
+            'dropped — no native step timer (use STEP_T in a transition '
+            'condition).'));
+  }
+}
+
+/// §6 — the [SfcActionAssoc]s for one `<Step>`.
+///
+/// Association comes from XML NESTING, not from a link (contrast PLCopen's
+/// `<actionBlock>` + `connectionPointIn`), so `stepLocalId` is always a real
+/// step id and the translator's "action associated with unknown step" degrade
+/// is structurally unreachable on this path.
+///
+/// A `<Step>` with `<Action>` children emits one assoc each, in document order
+/// (the order the translator concatenates them into `actionSt`); a `<Step>`
+/// with none but a direct `<Body><STContent>` emits one implicit `N` action.
+///
+/// TWO PER-ACTION DEGRADES, both info + skip, never a poison — an unsupported
+/// action must not cost the whole chart (north-star 1's action granularity):
+///  * `IsBoolean="true"` names a BOOL Logix holds true while the step is
+///    active and CLEARS on deactivation. `actionSt` runs only while the step
+///    is active but nothing runs on deactivation, so `Op := TRUE;` would leave
+///    the bit latched forever — wrong logic, not a degrade. Checked FIRST,
+///    because a boolean action typically carries no `<Body>` at all.
+///  * An empty/absent body would otherwise reach `_actionSt`, whose
+///    `if (s.text.isNotEmpty)` guard drops it WITHOUT a warning — the one
+///    silent-loss hole in the action path, and one only this builder can close
+///    because only it knows the action existed.
+///
+/// Non-`N` qualifiers are deliberately NOT pre-filtered: they reach the
+/// translator untouched and hit its existing per-action degrade, so the policy
+/// and the message live in exactly one place.
+void _l5xSfcActions(XmlElement step, int stepLocalId, String stepLabel,
+    List<SfcActionAssoc> out, List<ImportWarning> warnings, String ownerLabel) {
+  final actionEls = _children(step, 'Action').toList();
+  if (actionEls.isEmpty) {
+    final inline = _l5xSfcSt(step, 'Body');
+    if (inline.isNotEmpty) {
+      out.add(SfcActionAssoc(
+          stepLocalId: stepLocalId,
+          qualifier: 'N',
+          source: SfcActInline(inline)));
+    }
+    return;
+  }
+  for (final a in actionEls) {
+    final operand =
+        (a.getAttribute('Operand') ?? a.getAttribute('Name') ?? '').trim();
+    final label = operand.isEmpty ? '(unnamed)' : operand;
+    if (a.getAttribute('IsBoolean') == 'true') {
+      warnings.add(ImportWarning(
+          severity: WarningSeverity.info,
+          message: '$ownerLabel: SFC step "$stepLabel" boolean action "$label" '
+              'skipped — a BOOL held true for the step\'s duration and cleared '
+              'on deactivation has no native equivalent.'));
+      continue;
+    }
+    final text = _l5xSfcSt(a, 'Body');
+    if (text.isEmpty) {
+      warnings.add(ImportWarning(
+          severity: WarningSeverity.info,
+          // Worded so the assertable substring `action has no body` appears
+          // LITERALLY: the action name follows in parentheses rather than
+          // splitting the phrase.
+          message: '$ownerLabel: SFC step "$stepLabel": action has no body '
+              '("$label") — skipped.'));
+      continue;
+    }
+    final q = (a.getAttribute('Qualifier') ?? '').trim();
+    out.add(SfcActionAssoc(
+      stepLocalId: stepLocalId,
+      qualifier: q.isEmpty ? 'N' : q,
+      source: SfcActInline(text),
+    ));
+  }
+}
+
 /// Emits exactly the IR shapes `plcopen_parser.dart`'s `_sfcBody` emits, so
 /// `translateSfcBody` and `ir_to_project`'s `body is SfcBody` arm need ZERO
 /// changes. `refBodies`/`graphicalRefs` are always empty (Logix has no external
@@ -1087,28 +1189,9 @@ SfcBody _l5xSfcBody(
               y: y,
             ));
             kindById[localId] = _L5xSfcKind.step;
-            // Actions come from XML NESTING, not from a link (contrast
-            // PLCopen's <actionBlock> + connectionPointIn), so stepLocalId is
-            // always a real step id here.
-            final actionEls = _children(el, 'Action').toList();
-            if (actionEls.isEmpty) {
-              final inline = _l5xSfcSt(el, 'Body');
-              if (inline.isNotEmpty) {
-                actions.add(SfcActionAssoc(
-                    stepLocalId: localId,
-                    qualifier: 'N',
-                    source: SfcActInline(inline)));
-              }
-            } else {
-              for (final a in actionEls) {
-                final q = (a.getAttribute('Qualifier') ?? '').trim();
-                actions.add(SfcActionAssoc(
-                  stepLocalId: localId,
-                  qualifier: q.isEmpty ? 'N' : q,
-                  source: SfcActInline(_l5xSfcSt(a, 'Body')),
-                ));
-              }
-            }
+            final stepLabel = name.isEmpty ? 's$localId' : name;
+            _l5xSfcTiming(el, stepLabel, warnings, ownerLabel);
+            _l5xSfcActions(el, localId, stepLabel, actions, warnings, ownerLabel);
             break;
           }
         case 'Transition':
