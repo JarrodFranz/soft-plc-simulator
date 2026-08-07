@@ -1,7 +1,21 @@
-# L5X FBD: front-end + FBD-bodied AOIs (L5X sub-projects 4+5, combined) — Design Spec
+# FBD routines + FBD-bodied AOI logic (L5X sub-project 4 + the FBD-bodied-AOI deferred row) — Design Spec
 
 **Status:** Approved (brainstorm) — ready for implementation plan.
 **Date:** 2026-08-04
+**Updated:** 2026-08-07 after freshness review (see changelog below).
+
+## Changelog
+
+- **2026-08-07** — freshness review: fixed a test-behavior inversion (§7/§9),
+  reworked the element whitelist into an ignore/keep split with `FeedbackWire`
+  and `JSR`/`SBR`/`Ret` handling (§4/§8/§9), corrected the R2 import premise,
+  scoped the corpus-grep claim to the actual folder, fixed two warning
+  severities, clarified the synthetic-id counter's scope, added three §5
+  wording clarifications, added a rename/isolation test pair, reconciled the
+  Decision-1 key list, documented the `fb_exec.dart` → `fbd_exec.dart` import,
+  recorded the EnableIn/EnableOut wired-pin decision, retitled the spec, and
+  added an "Execution shape" note. See `docs/superpowers/specs/` review
+  thread for the full finding list.
 
 ## Goal
 
@@ -21,21 +35,32 @@ program:
 The two halves ship together because they share one parser: the same
 `GraphBody` builder feeds `_l5xRoutines`' FBD arm and `_l5xAois`' FBD arm.
 
-**Corpus note (recorded honestly):** the local corpus
-(`Resources/Project Exports/Rockwell-L5X/`, 5 files) contains **zero** FBD
-content — `grep -rl 'FBDContent'` and `grep -rl 'Type="FBD"'` over the whole
-repo (corpus included) return nothing. Every fixture in this feature is
-therefore **handcrafted schema-faithful L5X**, the same precedent as the
-PLCopen FBD e2e (`import_fbd_e2e_test.dart`) and all of sub-project 3. The
-corpus test (`corpus_import_test.dart`) keeps proving only "imports without
-throwing" for the real files.
+**Corpus note (recorded honestly, scope corrected):** the local corpus folder
+`Resources/Project Exports/Rockwell-L5X/` (5 files) contains **zero** FBD
+content — `grep -rl 'FBDContent'` and `grep -rl 'Type="FBD"'` scoped to that
+folder return nothing. (The earlier draft of this note claimed a whole-repo
+grep; the claim is scoped to the corpus folder itself, which is the only
+thing that matters for "does the corpus exercise this feature.") Every
+fixture in this feature is therefore **handcrafted schema-faithful L5X**, the
+same precedent as the PLCopen FBD e2e (`import_fbd_e2e_test.dart`) and all of
+sub-project 3. That folder is also **absent in CI** — `corpus_import_test.dart`
+detects its absence and calls `skip: true` on the corpus-dependent group, so
+CI proves nothing about real L5X files either way; the corpus test only ever
+proves "imports without throwing" locally, for whoever has the folder
+checked out.
 
 ## North-star decisions (from brainstorming — binding)
 
 1. **One parser, two consumers.** `_l5xFbdBody` emits exactly the IR attribute
    keys `plcopen_parser.dart`'s `_graphBody` emits (`variable`, `typeName`,
-   `instanceName`, `hasNegatedPin`, negative synthetic ids for malformed
-   `localId`s), so **`translateFbdBody` needs zero changes**.
+   `instanceName`, `hasNegatedPin`, `negated` — the generic per-element
+   attribute copy at `plcopen_parser.dart:221-223`, read by
+   `_buildBlock`'s `inVariable`/`outVariable` arms at
+   `fbd_translate.dart:269,289` — and negative synthetic ids for malformed
+   `localId`s), so **`translateFbdBody` needs zero changes**. `abOriginal`
+   (§6) is a permitted *extra* key beyond this list: `translateFbdBody`
+   copies attributes through but only ever reads the keys it knows about, so
+   an unrecognized key like `abOriginal` is silently ignored, not an error.
 2. **Compile-at-import, never at execution.** An FBD AOI's `Logic` routine is
    translated by `translateFbdBody` **during import** (against the FB registry
    built so far) into native `FbdBlock`/`FbdWire`/`FbdNetwork` lists stored on
@@ -242,10 +267,19 @@ direction):**
 | `ld_exec.dart` `runScopedLdBody` | gains `FbdRuntime? fbdRt` and forwards it (a ladder AOI calling an FBD AOI) |
 | `screens/scan_tick.dart` | `executeLdPrograms(p, dtMs, rt.ld, …, fbdRt: rt.fbd)` — the same `rt.fbd` already passed to `executeFbdPrograms` |
 
-`ld_exec.dart` importing `fbd_exec.dart` for `FbdRuntime` closes a library
-cycle with `fbd_exec.dart`'s existing `import 'ld_exec.dart'` — the same
-already-shipped shape as `fb_exec.dart` ↔ `ld_exec.dart`. Dart permits it (no
-top-level circular initialization is introduced).
+This section introduces **two** new import edges, both legal Dart:
+
+- `ld_exec.dart` importing `fbd_exec.dart` for `FbdRuntime` closes a library
+  cycle with `fbd_exec.dart`'s existing `import 'ld_exec.dart'` — the same
+  already-shipped shape as `fb_exec.dart` ↔ `ld_exec.dart`. Dart permits it
+  (no top-level circular initialization is introduced).
+- `fb_exec.dart` importing `fbd_exec.dart` (for `FbdRuntime` and
+  `runScopedFbdBody`, used by the FBD branch above) closes a second cycle
+  with `fbd_exec.dart`'s existing `import 'fb_exec.dart'` at
+  `fbd_exec.dart:5` — the exact same cycle *shape* already shipped between
+  `ld_exec.dart` and `fb_exec.dart` (§ above). Neither library performs
+  top-level circular initialization, so both cycles are inert at compile
+  time, matching the precedent.
 
 ## §4 — L5X FBD parser (`import/l5x_parser.dart`)
 
@@ -256,7 +290,9 @@ GraphBody _l5xFbdBody(XmlElement routine, List<ImportWarning> warnings,
     String ownerLabel);   // ownerLabel: 'Routine "Prog_Main"' | 'AOI "Foo"'
 ```
 
-**Element mapping** (whitelist — anything else is ignored, see below):
+**Element mapping** splits into three groups: recognized nodes/wires, pure
+annotations (ignored), and everything else (kept as an opaque stub node —
+*not* ignored):
 
 | L5X element | IR `elementType` | Attributes emitted |
 |---|---|---|
@@ -267,13 +303,40 @@ GraphBody _l5xFbdBody(XmlElement routine, List<ImportWarning> warnings,
 | `<AddOnInstruction Name=… Operand=… >` | `block` | `typeName` = `Name` (never aliased); `instanceName` = `Operand` |
 | `<ICon Name=…>` / `<OCon Name=…>` | resolved away (§5); **unmatched ones kept** as `ICon`/`OCon` | `connectorName` |
 | `<Wire FromID FromParam ToID ToParam>` | → `IrConnection` | — |
-| `<TextBox>`, `<Attachment>`, anything else | **ignored** | — |
+| `<FeedbackWire FromID FromParam ToID ToParam>` | → `IrConnection` (same shape as `<Wire>`) | — |
+| `<TextBox>`, `<Attachment>` | **ignored** (pure annotations — group (a)) | — |
+| Any other unrecognized element carrying an `ID` (e.g. `<JSR>`, `<SBR>`, `<Ret>`) | **kept as a node** — group (b) | `elementType` = the element's raw tag name (e.g. `JSR`) |
 
-- The whitelist (rather than plcopen's "every child with a `localId`") is
-  required: `<TextBox>` carries an `ID` and `<Attachment>` links it to a real
-  element, so a generic loop would drag an annotation into a real component
-  and stub it as `unsupported-element`. One info warning per routine when any
-  element kind was ignored (count + kinds), no per-element noise.
+- **(a) Pure annotations — ignored + counted.** `<TextBox>` and
+  `<Attachment>` are the only elements that are truly decorative: a
+  `<TextBox>` carries an `ID` and an `<Attachment>` links it to a real
+  element, but neither participates in dataflow. Both are dropped entirely
+  (not turned into nodes). One `WarningSeverity.info` warning per routine
+  when any annotation was dropped (count + kinds), no per-element noise —
+  assertable substring `"ignored"` (e.g. `"2 element(s) ignored (TextBox,
+  Attachment)"`).
+- **(b) Everything else unrecognized — kept, not ignored.** Any element this
+  spec doesn't otherwise name (`<JSR>`, `<SBR>`, `<Ret>`, and any future
+  Logix FBD element this spec doesn't yet know about) that carries an `ID` is
+  kept as an ordinary IR node whose `elementType` is that element's **raw
+  element name** (`'JSR'`, `'SBR'`, `'Ret'`, …) rather than one of the known
+  `elementType` strings (`inVariable`/`outVariable`/`block`/…). Because
+  `_translateComponent`'s element-kind pre-flight only recognizes the known
+  strings, this node — and by extension its whole weakly-connected component
+  — fails the pre-flight and stubs as `unsupported-element`, the same
+  faithful-or-stub path an unmatched connector takes (§5, R4). This means
+  `<JSR>`/`<SBR>`/`<Ret>` are **not silently invisible**: a subroutine-call
+  network in an FBD sheet shows up as a stubbed network with a named reason,
+  not as a hole. No new report field — `unsupported-element` is an existing
+  `stubReasons` key.
+- `<FeedbackWire>` is Logix's element for a wire that closes a feedback loop
+  (a block's output feeding back into an earlier input in the same sheet,
+  common in `PIDE`/counter-style networks). It carries the identical
+  `FromID`/`FromParam`/`ToID`/`ToParam` attribute set as `<Wire>`, so it maps
+  to an `IrConnection` exactly the same way; `weaklyConnectedComponents` and
+  the translator's cycle fallback (§8, "Dataflow cycle inside an FB body")
+  already handle a cyclic wire graph regardless of which XML element produced
+  the edge.
 - `IrConnection(toLocalId: ToID, toPin: ToParam, fromLocalId: FromID,
   fromPin: FromParam)` — `null` when the attribute is absent (implicit single
   pin), exactly like `_graphBody`.
@@ -281,7 +344,11 @@ GraphBody _l5xFbdBody(XmlElement routine, List<ImportWarning> warnings,
   (`> 1 << 31`) ids get a **unique negative synthetic id** (`malformedId--`),
   reproducing `_graphBody`'s contract so `weaklyConnectedComponents` can't
   merge two malformed nodes and the translator's `localId < 0` gate still
-  stubs their component.
+  stubs their component. **The counter is routine-wide** — one running
+  `malformedId` counter shared across every `<Sheet>` in the routine (not
+  reset per sheet), so a malformed-id node on sheet 1 and a malformed-id node
+  on sheet 2 still get distinct negative ids and never collide after the
+  per-sheet localId offsetting (below) is applied.
 - `hasNegatedPin` is never emitted (Logix FBD has no pin inversion; `BNOT` is
   an explicit element). Documented, not implemented.
 - **Two passes per sheet:** nodes first (so every element's aliased type is
@@ -300,38 +367,57 @@ whole-POU stub + warning (that arm's existing `else`).
 
 ## §5 — Multi-sheet merge + connector resolution
 
-**Sheet merge.** All `<Sheet>`s of a routine merge into ONE `GraphBody`:
+**Sheet order.** Sheets are processed in ascending `<Sheet Number="…">` order;
+when a sheet lacks a `Number` attribute (schema allows it, though real
+exports always carry one), it falls back to **document order** relative to
+its neighbors. This ordering drives both offsetting passes below, so network
+numbering and y-offsetting always read in a stable, predictable sheet
+sequence rather than XML-child order when the two disagree.
+
+**Sheet merge.** All `<Sheet>`s of a routine (visited in the order above)
+merge into ONE `GraphBody`:
 
 - Per-sheet **localId offsetting**: sheet 0 uses raw ids; before each later
   sheet, `offset = maxAssignedIdSoFar + 1`. Wires live inside their own
   `<Sheet>`, so every reference is sheet-local and offsetting is
   self-consistent and collision-free. Synthetic negative ids are never
-  offset.
+  offset (and are never reused across sheets — see the routine-wide counter
+  note in §4).
 - Per-sheet **y offsetting**: `y = rawY + yBase`, where `yBase` advances to
-  `maxYSeenSoFar + 200` before each later sheet (Resolution R5). Without it,
-  `weaklyConnectedComponents`' layout ordering (min-y, min-x, min-localId)
-  would interleave sheet 2's networks with sheet 1's; with it, network
-  numbering reads sheet-by-sheet, top-to-bottom. Offsets stay small enough
-  that block coordinates remain plausible for a future editor.
+  `maxYSeenSoFar + 200` before each later sheet (Resolution R5). **`maxYSeenSoFar`
+  is the *offset-adjusted* max** — i.e. the max of the already-`yBase`-shifted
+  `y` values emitted so far, not the raw per-sheet `y` values — so the running
+  base only ever grows and never overlaps a prior sheet's emitted range.
+  Without offsetting at all, `weaklyConnectedComponents`' layout ordering
+  (min-y, min-x, min-localId) would interleave sheet 2's networks with sheet
+  1's; with it, network numbering reads sheet-by-sheet, top-to-bottom.
+  Offsets stay small enough that block coordinates remain plausible for a
+  future editor.
 
 **Connectors (`ICon`/`OCon`) resolved at parse time**, routine-wide (Logix
 connector names link across sheets):
 
 1. Collect, over the merged routine: `oconIn[name]` = the wires whose `ToID`
-   is an `OCon` with that `Name`; `iconOut[name]` = the wires whose `FromID`
-   is an `ICon` with that `Name`.
-2. For each name present in both, emit the cross-product of direct wires:
+   is an `OCon` with that `Name` — these are the **producer** wires (a real
+   block's output flows *into* the named output connector); `iconOut[name]` =
+   the wires whose `FromID` is an `ICon` with that `Name` — these are the
+   **consumer** wires (the named input connector flows *out to* a real
+   block's input).
+2. For each name present in both maps, emit the cross-product of direct
+   wires — one `IrConnection` per (producer, consumer) pair, drawn from
+   `oconIn[name]` (producers) × `iconOut[name]` (consumers):
    `IrConnection(from: producer.fromLocalId, fromPin: producer.fromParam,
    to: consumer.toLocalId, toPin: consumer.toParam)`. Then drop those
    connector nodes and their wires.
 3. **Unmatched** connector (`ICon` with no same-named `OCon`, or vice versa):
    the node and its wires are **kept** with `elementType` `ICon`/`OCon`, so
    the affected component stubs through the translator's faithful-or-stub gate
-   (`unsupported-element`) rather than silently losing a data path. An info
-   warning names the routine/AOI and the connector name. Never throws.
-   (Resolution R4 — decision 4 called this "the pin gate"; the gate that
-   actually fires is the element-kind gate in the same `_translateComponent`
-   pre-flight.)
+   (`unsupported-element`) rather than silently losing a data path. A
+   `WarningSeverity.info` warning names the routine/AOI and the connector
+   name — assertable substring `"unmatched connector"` (e.g. `Routine
+   "Prog_Main": unmatched connector "Loop1"`). Never throws. (Resolution
+   R4 — decision 4 called this "the pin gate"; the gate that actually fires
+   is the element-kind gate in the same `_translateComponent` pre-flight.)
 
 ## §6 — Rockwell mnemonic + pin aliasing (at parse)
 
@@ -345,7 +431,10 @@ is never aliased):
 `BOR→OR`, `BNOT→NOT`; best-effort `TONR→TON`, `TOFR→TOF`.
 
 `TONR`/`TOFR` additionally get `attributes['abOriginal'] = 'TONR'|'TOFR'` and a
-**prominent verify warning** naming the routine/AOI:
+**prominent verify warning at `WarningSeverity.warning`** (not `.info` — this
+one changes runtime behavior, unlike the purely-informational annotation and
+connector warnings above) naming the routine/AOI — assertable substring
+`"verify"`:
 *"Rockwell TONR mapped best-effort to the IEC TON block — retentive/reset
 behaviour differs; verify."* (`abOriginal` is IR-only: `translateFbdBody`
 ignores unknown attributes and there is no native field to carry it. Recorded
@@ -367,6 +456,33 @@ using the source node's type:
 Any pin not in the map passes through **verbatim** and, if it isn't a real
 IEC pin, `_assertPin` stubs that network (`unresolved-pin`) — faithful-or-stub
 preserved.
+
+**`EnableIn`/`EnableOut` on an aliased built-in (decision recorded).** Logix
+`Block`/`Function`/`AddOnInstruction` elements can expose `EnableIn`/
+`EnableOut` pins independent of the pin maps above (they're a Logix
+rung-condition concept, not present on the IEC `TON`/`TOF`/etc. blocks these
+alias to). Two cases:
+
+- **Unwired (the common case):** an `EnableIn`/`EnableOut` pin with no wire
+  attached simply never appears in the wire list `_l5xFbdBody` builds —
+  there's nothing to alias or reject, and it costs nothing (no node, no
+  warning, no stub).
+- **Wired:** if a wire's `ToParam`/`FromParam` is literally `EnableIn` or
+  `EnableOut` on an aliased built-in, `_l5xFbdBody` leaves the pin name
+  unaliased and lets it flow into the IR exactly like any other unmapped
+  pin — it then follows the **existing unmapped-pin path** at translation
+  time (`translateFbdBody` needs zero changes, decision 1): `_assertPin`
+  doesn't recognize `"EnableIn"`/`"EnableOut"` on the aliased IEC block type,
+  so the network stubs (`unresolved-pin`), faithful-or-stub preserved,
+  exactly like any other unmapped pin. The one small addition, purely in the
+  **parser** (not the translator, which stays untouched): when `_l5xFbdBody`
+  aliases a `Block`/`Function`/`AddOnInstruction` node and notices one of its
+  wires targets `EnableIn`/`EnableOut` by name, it emits an extra
+  `WarningSeverity.info` heads-up warning alongside the translator's generic
+  stub reason, with the assertable substring `"EnableIn/EnableOut wired"`, so
+  this specific case reads as a named, diagnosable condition instead of a
+  generic unresolved-pin stub. See §11 for the deferred pass-through-support
+  row.
 
 **Everything else unmapped:** `SCL`, `PIDE`, `MOV`, `MOD`, `ESEL`, … keep their
 Rockwell type name, fail `kFbdBuiltinBlockTypes`, and stub with
@@ -390,6 +506,19 @@ Rockwell type name, fail `kFbdBuiltinBlockTypes`, and stub with
   "logic not yet translated" warning.
 - The `_reassertEnableIn` call in `executeFbInstance` (§3) makes an
   `EnableOut`-clearing body non-self-disabling across calls, same as ladder.
+- **Existing test to rewrite, not preserve.**
+  `mobile/test/import/l5x_parser_test.dart:163-184`, `'an FBD-logic AOI
+  still imports interface-only with a warning (unchanged)'`, currently
+  asserts exactly the pre-this-spec behavior this section replaces:
+  `pou.lang == PouLanguage.st`, `(pou.body as TextBody).source == ''`,
+  `pou.localVars.map((v) => v.name) == ['X']` (EnableIn/EnableOut dropped),
+  and a warning present naming the AOI and `'not yet translated'`. Task 7
+  (§13) **rewrites this test** (does not add a new one alongside it) to
+  assert the new behavior: `pou.lang == PouLanguage.fbd`, `pou.body is
+  GraphBody`, `pou.localVars.map((v) => v.name) == ['EnableIn', 'EnableOut',
+  'X']` (parameter-loop order — `EnableIn`/`EnableOut` are no longer
+  skipped, per the bullet above), and **no** warning naming the AOI as
+  "not yet translated" (see §9 mapper-units list).
 
 **Mapper (`mapImportedFbs`).** New arm mirroring the `NeutralLadderBody` arm:
 
@@ -451,12 +580,15 @@ FbImportResult mapImportedFbs(List<ImportedPou> pous, {
 | AOI FBD `Logic`, ≥1 network translates | FBD-bodied `FbDefinition`; stubbed networks inert, reasons warned as `POU "AOI <name>" network N: …` |
 | AOI FBD `Logic`, 0 networks translate (body had nodes) | Interface-only `FbDefinition` + warning naming the AOI |
 | AOI FBD `Logic` with empty/absent `FBDContent` | Interface-only, **no** warning |
-| Unmatched `ICon`/`OCon` | Node kept → component stubs (`unsupported-element`) + info warning naming the connector |
-| `TONR`/`TOFR` | Mapped best-effort to `TON`/`TOF` + prominent verify warning; a wired `Reset` stubs that network (`unresolved-pin`) |
+| Unmatched `ICon`/`OCon` | Node kept → component stubs (`unsupported-element`) + `WarningSeverity.info` warning naming the connector (substring `"unmatched connector"`) |
+| `TONR`/`TOFR` | Mapped best-effort to `TON`/`TOF` + prominent `WarningSeverity.warning` verify warning (substring `"verify"`); a wired `Reset` stubs that network (`unresolved-pin`) |
+| Wired `EnableIn`/`EnableOut` on an aliased built-in | Existing unmapped-pin path: network stubs (`unresolved-pin`) + `WarningSeverity.info` heads-up warning (substring `"EnableIn/EnableOut wired"`); unwired (common case) costs nothing |
 | Unmapped AB block (`SCL`, `PIDE`, `MOV`, …) | Network stubs (`unsupported-block`), type inventoried in `unsupportedFbdBlockTypes` |
 | Unmapped pin name (`SourceC`, `EN`, …) | Network stubs (`unresolved-pin`) |
 | Dotted operand (`Timer1.DN`) on an `IRef`/`ORef` | Stubs (`complex-expression`) — pre-existing `_isIdentifier` limit shared with the PLCopen FBD translator (deferred row) |
-| `<TextBox>` / `<Attachment>` / unknown element | Ignored at parse; one info warning per routine |
+| `<TextBox>` / `<Attachment>` (pure annotations) | Ignored at parse (not turned into a node); one `WarningSeverity.info` warning per routine (substring `"ignored"`) |
+| Any other unrecognized element with an `ID` (`<JSR>`, `<SBR>`, `<Ret>`, future unknowns) | Kept as a node, `elementType` = raw tag name → component stubs (`unsupported-element`) |
+| `<FeedbackWire>` | Mapped to `IrConnection` exactly like `<Wire>` (same attributes); a feedback loop it creates hits the existing dataflow-cycle fallback below, not a special case |
 | Malformed/absent `ID` | Unique negative synthetic id → that component stubs (`unsupported-element`) |
 | Multiple wires into one input pin | Existing `claimedInputSlots` gate → `unresolved-pin` |
 | Dataflow cycle inside an FB body | `_runFbdBody`'s existing cycle fallback evaluates once with cached values; scan always terminates |
@@ -472,21 +604,50 @@ FbImportResult mapImportedFbs(List<ImportedPou> pous, {
   produces the expected `elementType` + attribute keys (`variable`/`typeName`/
   `instanceName`);
 - `Wire` → `IrConnection` with `toPin`/`fromPin` (and `null` when absent);
+- **`FeedbackWire` loop case:** a sheet where a block's output feeds back
+  into an earlier input via `<FeedbackWire>` maps to an `IrConnection`
+  identical in shape to a `<Wire>`-produced one, and the resulting cyclic
+  graph translates via the existing dataflow-cycle fallback (§8) rather than
+  hanging or throwing;
+- **`JSR`-stubs case:** a sheet containing a `<JSR>` (or `<SBR>`/`<Ret>`)
+  element with a valid `ID` produces a node whose `elementType` is the raw
+  tag name (`'JSR'`), and the containing component stubs
+  (`unsupported-element`) rather than being silently dropped;
 - type aliasing (`EQU`→`EQ`, `BAND`→`AND`) **and** pin aliasing
   (`SourceA`→`IN1`, `Dest`→`OUT`, `In1`→`IN1`);
-- `TONR` → `TON` + `abOriginal` + verify warning;
+- `TONR` → `TON` + `abOriginal` + `WarningSeverity.warning` verify warning
+  (substring `"verify"`);
+- a wired `EnableIn`/`EnableOut` pin on an aliased built-in stubs
+  (`unresolved-pin`) and carries the `"EnableIn/EnableOut wired"` info
+  warning; an unwired one produces no node/warning/stub;
 - multi-sheet: two sheets with **overlapping raw ids** merge with disjoint
-  localIds and sheet-ordered y;
+  localIds and sheet-ordered y (per the `<Sheet Number>` ascending order,
+  falling back to document order when absent);
+- **multi-sheet malformed-id case:** a routine with **two sheets**, each
+  containing an element with a malformed (missing or non-numeric) `ID`,
+  proves the synthetic-id counter is **routine-wide**: the two synthetic ids
+  are distinct (not both `-1`, and not colliding after per-sheet localId
+  offsetting), so each malformed element stubs its own component
+  independently;
 - connectors: matched `OCon`/`ICon` pair becomes a direct wire (producer→
   consumer, pins preserved) and the connector nodes disappear; unmatched
-  connector keeps its node + warns;
-- malformed: missing `ID`, non-numeric `ID`, absent `FBDContent`, `<TextBox>`/
-  `<Attachment>` present → never throws, ignored-element warning.
+  connector keeps its node and carries a `WarningSeverity.info` warning
+  (substring `"unmatched connector"`);
+- malformed: missing `ID`, non-numeric `ID`, absent `FBDContent` → never
+  throws; `<TextBox>`/`<Attachment>` present → **dropped** (not a node), one
+  `WarningSeverity.info` "ignored" warning per routine — distinct from the
+  `JSR`-stubs case above, which keeps a node.
 
 **Model round-trip** (`test/models/fb_model_test.dart`): an FBD-bodied
 `FbDefinition` round-trips (`fbd_blocks`/`fbd_wires`/`fbd_networks`); an
 ST-bodied and a ladder-bodied FB serialize byte-identically to before (keys
-absent); old JSON without the keys loads.
+absent); old JSON without the keys loads. **Rename retargets the third
+root:** `renameFbDefinition` on a project where FB `A`'s `fbdBlocks`
+contains a custom-FB call block with `b.type == 'B'` (an FBD-bodied FB
+calling another FB from its body) retargets `b.type` to the new name when
+`B` is renamed — proving the third `fbdBlocks` root added in §1, not just
+the two roots (`PlcProgram.fbdBlocks`, `def.ladderRungs`) the function
+already walked.
 
 **Scoped executor units** (`test/models/fb_fbd_body_exec_test.dart`):
 - `TAG_INPUT`/`TAG_OUTPUT` bind to `<instance>.<var>` and do **not** touch
@@ -495,6 +656,14 @@ absent); old JSON without the keys loads.
 - **two-instance stateful isolation:** an FBD body with a `TON` (and an
   `R_TRIG`) accumulates independently for `Inst1`/`Inst2` across scans with
   `dtMs`, proving the `'fb:<instance>|<blockId>'` state key;
+- **nested-instance isolation:** a stateful FBD AOI (a `TON` in its body)
+  nested inside another FBD AOI — i.e. the outer AOI's body has a custom-FB
+  call block for the inner AOI — accumulates independently per
+  `instancePath = 'Outer.Inner'` when the outer AOI itself has two
+  instances (`Outer1`, `Outer2`), proving `LdScope`'s dotted `instancePath`
+  produces disjoint state keys (`'fb:Outer1.Inner|<blockId>'` vs
+  `'fb:Outer2.Inner|<blockId>'`) one level deep, not just for a single
+  non-nested instance;
 - `readOnly` drops a body `TAG_OUTPUT` writing a read-only global but never an
   instance member;
 - **ephemeral degrade:** calling `executeFbInstance` with no `fbdRt` still
@@ -507,13 +676,20 @@ absent); old JSON without the keys loads.
 an FBD-bodied FB called from a **ladder** program keeps its state across scans
 (`fbdRt` threading through `executeLdPrograms`); a ladder-bodied FB called from
 an **FBD** program still works (no regression); EnableIn is re-asserted true
-each call for an FBD body.
+each call for an FBD body. This is also where the nested-instance isolation
+test above may equivalently live if it's easier to compose through
+`executeFbInstance` directly rather than `runScopedFbdBody`.
 
 **Mapper units** (`test/import/fb_import_fbd_test.dart`): registry-so-far
 routing (AOI-in-AOI, earlier vs later definition), zero-translated fallback +
 warning naming the AOI, zero-node body → no warning, nested-instance var
 synthesis/reuse (R3), counters land on `FbImportResult`, and a **PLCopen**
-`functionBlock` FBD POU still hits the unchanged warning path.
+`functionBlock` FBD POU still hits the unchanged warning path. **Rewritten
+test:** the former `'an FBD-logic AOI still imports interface-only with a
+warning (unchanged)'` case in `l5x_parser_test.dart:163-184` moves/rewrites
+to assert `lang == PouLanguage.fbd`, `body is GraphBody`, `localVars ==
+['EnableIn', 'EnableOut', 'X']` (parameter-loop order), and the
+"not yet translated" warning **absent** — see §7's parser bullet list.
 
 **Composed e2e** (`test/import/import_l5x_aoi_fbd_e2e_test.dart`): one
 handcrafted L5X containing (a) a program `<Routine Type="FBD">` with two
@@ -542,6 +718,26 @@ serialization round-trips, corpus test.
 - `docs/DEFERRED.md` — **strike** the "FBD-bodied AOI logic" row (~110) and the
   "L5X FBD routine translation" row (~115), replacing both with shipped rows
   citing the e2e test; keep/add the rows in §11.
+- `knowledge/industry/plc-formats/rockwell-l5x.md` — this feature makes the
+  doc's central "still fully unshipped" claim stale, so it needs a real
+  update, not just a footnote: the frontmatter `summary:` (currently
+  advertises "the confirmed still-unshipped state of L5X FBD and SFC routine
+  translation" — reword to reflect FBD shipped, SFC still unshipped); the
+  "**Read this before:**" callout note; **§5 in full**, retitled from
+  "FBD and SFC in L5X - confirmed still fully unshipped" (including its
+  claim that `fbdBlocks`/`fbdWires`/`fbdNetworks` "does not exist on
+  [`FbDefinition`] today" — that claim flips once §1 ships — and the
+  "Design-rationale note, not behavioral authority" paragraph pointing at
+  this spec, which becomes stale once the spec ships); the §5 support-matrix
+  table's `FBD routine` and `` `FBD`-Logic AOI `` rows (currently "Whole-POU
+  stub, always empty" / "Interface-only import, logic not translated" —
+  update to describe real translation/execution, `SFC` rows stay as-is);
+  and the "What this means practically" Q&A entries 1
+  ("I imported an L5X file with FBD routines...") and 2 ("My AOI's RLL logic
+  runs, but its FBD logic doesn't...") — both answers currently describe the
+  FBD gap as expected/current and need to describe the shipped behavior
+  instead. Bump the frontmatter `version:` (currently `"2026-08"`) per
+  `knowledge/governance.md`'s update conventions.
 
 ## §11 — Deferred (tracked in `docs/DEFERRED.md`)
 
@@ -554,7 +750,12 @@ serialization round-trips, corpus test.
 - **AOI auxiliary routines** (`Prescan`/`Postscan`/`EnableInFalse`) — only
   `Logic` is imported/executed (shared with sub-project 3).
 - **`<TextBox>` / `<Attachment>` elements** — annotations are ignored (counted
-  in one info warning), not imported as documentation.
+  in one `WarningSeverity.info` warning), not imported as documentation.
+- **`EnableIn`/`EnableOut` pass-through on aliased built-ins** — a *wired*
+  `EnableIn`/`EnableOut` pin on a Rockwell block aliased to an IEC built-in
+  (e.g. `TONR`→`TON`) stubs its network today (§6/§8); no attempt is made to
+  synthesize IEC-side enable/condition semantics for these two Logix-only
+  pins. The unwired case (the common one) is unaffected.
 - **FB editor for graphical bodies** — an FBD-bodied `FbDefinition` shows its
   (empty) ST source; no view/edit UI for `fbdBlocks` (extends the existing
   ladder-body row, including the same "renaming/deleting an FB var silently
@@ -583,15 +784,21 @@ serialization round-trips, corpus test.
   `unresolved-pin`, i.e. the feature would translate almost nothing. Resolved
   minimally by extending the same parse-time alias table with a per-type pin
   map (§6); unmapped pins still pass through and still stub.
-- **R2 — a dialect marker is required to keep PLCopen byte-identical.** The IR
-  carries no dialect (`ImportDialect` lives only in `dialect_detect.dart`), and
-  a PLCopen `functionBlock` FBD POU is indistinguishable from an L5X FBD AOI
-  by `kind`/`lang`/body type alone. Resolved by adding
-  `ImportedProject.dialect` (default `ImportDialect.plcOpen`, set by
-  `parseL5x`) and a defaulted `dialect` param on `mapImportedFbs` — the
-  smallest change that implements decision 8's "safe rule". Rejected
-  alternative: gating on `lang == fbd` alone, which would silently change the
-  PLCopen path.
+- **R2 — a dialect marker is required to keep PLCopen byte-identical.**
+  `ImportedProject` itself carries no dialect field today — that's the actual
+  gap. (Earlier drafts of this spec said the *type* `ImportDialect` didn't
+  exist on the IR side; that's wrong: `ImportDialect` is declared in
+  `import_ir.dart:12` — `enum ImportDialect { plcOpen, l5x }` — and merely
+  re-exported by `dialect_detect.dart:2` for callers that only need
+  detection. Since `ImportedProject` already lives in `import_ir.dart`,
+  adding `final ImportDialect dialect` to it needs **no new import** — the
+  enum is already in scope in that file.) Without the field, a PLCopen
+  `functionBlock` FBD POU is indistinguishable from an L5X FBD AOI by
+  `kind`/`lang`/body type alone. Resolved by adding `ImportedProject.dialect`
+  (default `ImportDialect.plcOpen`, set to `ImportDialect.l5x` by `parseL5x`)
+  and a defaulted `dialect` param on `mapImportedFbs` — the smallest change
+  that implements decision 8's "safe rule". Rejected alternative: gating on
+  `lang == fbd` alone, which would silently change the PLCopen path.
 - **R3 — nested-FB instance tags inside an AOI body have no home.**
   `translateFbdBody` emits `instanceTags` (project `PlcTag`s) for custom-FB
   call blocks, but `mapImportedFbs` cannot add project tags, and a shared
@@ -619,8 +826,23 @@ serialization round-trips, corpus test.
 
 ## §13 — Implementation shape (for the plan)
 
-Nine tasks, one plan. Tasks 1–3 (model + executor + plumbing) and tasks 4–6
-(parser) are independent and parallelizable; 7 joins them.
+Nine tasks, **one plan** (not split into two plans/specs) — the two halves
+are independent in design, not in delivery.
+
+**Execution shape.** Tasks 1–3 (model + scoped runtime executor + dispatch
+plumbing) and tasks 4–6 (parser) are two **independent halves** — neither
+half's code depends on the other's — that join at task 7 (the mapper arm,
+which needs both a working parser *and* a working scoped executor to be
+testable end to end). "Independent" describes the dependency graph, not the
+execution schedule: per the SDD (spec → plan → execute) process this repo
+follows, tasks still execute **sequentially**, one at a time, with a review
+checkpoint between them — there is no concurrent/parallel task execution in
+this workflow. Given that constraint, order the **runtime half first**
+(tasks 1, 2, 3, in that order), then the **parser half** (tasks 4, 5, 6, in
+that order), then the join (7), then 8–9. Runtime-first means the scoped
+executor and its tests exist and are green before the parser half starts,
+so task 7's mapper arm has a proven executor to target instead of two
+half-finished halves landing at the same time.
 
 1. Model: `FbDefinition` FBD fields, JSON, precedence doc, `renameFbDefinition`
    third root (+ round-trip tests).
