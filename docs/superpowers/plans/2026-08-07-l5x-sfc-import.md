@@ -37,7 +37,7 @@ Copied from the spec's binding rules (`docs/superpowers/specs/2026-08-07-l5x-sfc
   | `ID` absent, unparseable, **negative**, or **> `_kMaxL5xElementId`** | info | `malformed ID` | synthetic negative id + **poison** |
   | `ID` reused by a later element | info | `duplicate ID` | later claimant gets a synthetic id (raw id never re-registered) + **poison** |
   | `<DirectedLink>` endpoint names nothing | info | `dangling link` | edge kept against a synthetic id + **poison** |
-  | `<DirectedLink>` endpoint names a dropped annotation | — | (none) | link discarded whole; **no** poison |
+  | `<DirectedLink>` endpoint names a dropped annotation (matched on the annotation's **accepted** `localId`) | — | (none) | link discarded whole; **no** poison. An annotation whose own `ID` was rejected never registered, so it takes the `duplicate ID` / `malformed ID` row instead — see recorded resolution 12 |
   | `BranchType` absent/unrecognized | info | `branch type` | **poison**; no connectors synthesized |
   | Any branch defect | info | `branch shape not representable (` **+ a cause clause** | **poison** |
   | `BranchFlow` contradicts derived topology | info | `branch flow mismatch` | derived topology wins; **no** stub |
@@ -51,7 +51,13 @@ Copied from the spec's binding rules (`docs/superpowers/specs/2026-08-07-l5x-sfc
 
 - **Inherited verbatim from `translateSfcBody`** (unchanged, no L5X-specific text): `unsupported — action skipped (N only)` (info) · `action associated with unknown step` (info, unreachable on L5X) · `not resolvable to ST — skipped` (info, unreachable on L5X) · `no initial step marked — first step used` (info) · `not translated (` (**warning**). From the mapper: `graphical body not yet translated` (**warning**).
 - **Stub-reason keys** are the existing `sfcStubReasons` keys only (`complex-topology`, `unresolved-condition`, `wired-condition`, `no-initial`). **No new `ImportReport` field, no preview-UI change** — `translatedSfcCount`, `stubbedSfcCount` and `sfcStubReasons` already exist and are already rendered by `screens/import_xml_preview.dart:106-108`.
-- **Invariants asserted by test on EVERY fixture** (via a shared helper, not per-test): `localId` uniqueness across the whole body; every synthetic `localId` negative and every real one in `[0, _kMaxL5xElementId]`; no node of kind `jump`; `refBodies`/`graphicalRefs` empty; a poisoned body emits **zero** translator info warnings.
+- **Invariants asserted by test on EVERY fixture** (via the shared `_build` helper, not per-test — an invariant asserted in one named test is an invariant that holds in one named test):
+  - `localId` uniqueness across the whole body;
+  - the id ranges **partition** the body: every node with a real id is a `step` or `transition`, and every synthesized node (the four connector kinds, the poison node) has a **negative** `localId`;
+  - no node of kind `jump`; `refBodies`/`graphicalRefs` empty;
+  - a poisoned body (one carrying a `#unrepresentable` node) stubs `complex-topology` with **exactly one** warning-severity message and **zero** translator infos;
+  - when a body translates, **no negative `localId` reaches an `SfcStep.id` or `SfcTransition.id`** (no `Main_Seq_s-3`);
+  - the four defence-in-depth inlet/outlet **kind** causes never fire (recorded resolution 7).
 - **Zero `flutter analyze` warnings.** Flutter is NOT on PATH: use `/c/flutter/bin/flutter`, and run every `flutter` command from `mobile/`.
 - **Every task ends green:** the task's own tests, the **full suite** (`/c/flutter/bin/flutter test`) and `/c/flutter/bin/flutter analyze` all pass before the commit step. Every PLCopen SFC test (`sfc_body_test.dart`, `sfc_translate_test.dart` apart from its one *added* invariant test, `import_sfc_e2e_test.dart`), every existing L5X test, and `corpus_import_test.dart` must be byte-identical in outcome.
 - **TDD:** write the failing test first, run it and watch it fail for the expected reason, then implement.
@@ -62,17 +68,20 @@ Copied from the spec's binding rules (`docs/superpowers/specs/2026-08-07-l5x-sfc
 Twelve points the spec leaves open or where a mechanical reading would be ambiguous. Implement them as written; do not re-litigate them mid-task.
 
 1. **The ID gate registers only ACCEPTED raw ids.** §2's gate snippet writes `assignedByRawId[parsed] = localId` in the `else` arm only, so a malformed / out-of-range / duplicate id is **not** registered. This deliberately differs from `_l5xFbdBody`, which also registers out-of-range ids so a wire still resolves to the real node. On the SFC path the body is already poisoned in every such case, so the only observable difference is *which* synthetic id the edge names — and not registering keeps "a rejected id never resolves" true without exception, which is the simpler invariant to reason about.
-2. **Link classification is a total, ordered decision.** For each `<DirectedLink>`, in this exact order: (1) either endpoint names a dropped annotation → **discard whole**, no warning, no poison; (2) either endpoint names an element belonging to an **unrecognized-`BranchType` `<Branch>`** → discard whole, no extra warning (that branch already emitted its own breadcrumb + poison); (3) either endpoint resolves to no *mappable* element → `dangling link` + poison + the edge is still emitted, the unresolvable side against a fresh synthetic id and a connector side against the direction fallback (`FromID` → `divId`, `ToID` → `convId`); (4) **both** endpoints are connector-ish (branch or leg) → poison, cause `branch is directly adjacent to another branch`, **no edge emitted** (there is no non-arbitrary connector id to attach it to, and the branch cause message is the loud, named record of the link); (5) exactly one endpoint is connector-ish → §3's unified classifier; (6) neither → ordinary pending edge.
+2. **Link classification is a total, ordered decision.** Both endpoints are resolved through `assignedByRawId` **first**, and every rule below is keyed off the resolved (accepted) id, never off the raw attribute. Then, in this exact order: (1) either endpoint names a dropped annotation → **discard whole**, no warning, no poison; (2) either endpoint names an element belonging to an **unrecognized-`BranchType` `<Branch>`** → discard whole, no extra warning (that branch already emitted its own breadcrumb + poison); (3) either endpoint resolves to no *mappable* element → `dangling link` + poison + the edge is still emitted, the unresolvable side against a fresh synthetic id and a connector side against the direction fallback (`FromID` → `divId`, `ToID` → `convId`); (4) **both** endpoints are connector-ish (branch or leg) → poison, cause `branch is directly adjacent to another branch`, **no edge emitted** (there is no non-arbitrary connector id to attach it to, and the branch cause message is the loud, named record of the link); (5) exactly one endpoint is connector-ish → §3's unified classifier; (6) neither → ordinary pending edge.
 3. **Unmappable elements are registered for duplicate detection but not for resolution.** A `<Stop>`/`<SbrRet>`/unknown tag runs the ID gate (so a later element reusing its `ID` is still a duplicate) but gets **no** `kindById` entry and **no** `SfcNode`. A link naming one therefore takes the `dangling link` path, producing two info breadcrumbs (`no representable equivalent` + `dangling link`) for one defect. Both are info, both poison, and the pair is more informative than either alone.
 4. **Branch connector ids are reserved at registration (pass 1), for every branch with a recognized `BranchType`, even when one side is later dropped.** This makes id allocation a pure function of document order, independent of the link list.
 5. **At most one `branch shape not representable` warning per branch**, with a fixed precedence: connector-adjacent (recorded in pass 2a) > emission-table cause > shape-validation cause; first recorded wins. Within shape validation the order is: divergence inlet **arity** → divergence inlet **kind** → leg **heads** → leg **tails** → convergence outlet **arity** → convergence outlet **kind**. Warnings are emitted in pass 3 in branch **document order**, never at the moment of recording, so message order is deterministic.
+   **A connector-adjacent link is recorded against the `FromID`-side branch only** — one link, one cause, and the `FromID` side is the upstream one (the same "divergence-side cause wins" instinct §3 applies within a branch). The `ToID`-side branch is left to report whatever its own bits say, which for a branch touched by nothing else is `branch has no links`; the connector-adjacent test asserts the `FromID` side's cause specifically, not "the only warning".
 6. **The §8 arity cause is a template, instantiated at all four trunk sites.** §8 names only `selection divergence has N inlets, expected 1`; the three mirrors use the identical wording pattern: `selection convergence has N outlets, expected 1`, `simultaneous divergence has N inlets, expected 1`, `simultaneous convergence has N outlets, expected 1`. §9's named case (`selection divergence has 2 inlets, expected 1`) is unchanged; the mirrors get their own cases so all four are reachable.
 7. **Four of the eight shape-validation causes are unreachable by construction, and are implemented anyway as defence in depth.** §3's unified classifier derives the *trunk* role **from** the neighbour's kind — a Selection `ToID == B` link whose other endpoint is a transition is classified as a leg tail (`convIn`), never as a mis-kinded `divIn` — so `divIn` and `convOut` can only ever hold correctly-kinded nodes. The four inlet/outlet **kind** causes (`selection divergence inlet is a …`, `selection convergence outlet is a …`, `simultaneous divergence inlet is a …`, `simultaneous convergence outlet is a …`) therefore cannot fire today. They are implemented (a future classifier change would need them) and **asserted absent by test** across the whole branch matrix — the same "kept as defence, asserted absent by test" idiom §1 uses for the translator's dead paths. The four leg head/tail causes and all four arity causes **are** live and each gets its own named test.
 8. **A link touching an unrecognized-`BranchType` branch (or its legs) is discarded silently** (resolution 2, rule 2). The alternative — leaving those ids unregistered so every incident link also reports `dangling link` — would bury the one actionable cause (`branch type`) under N breadcrumbs.
 9. **`BranchFlow` is checked only against the two recognized values.** `Diverge` with an emitted convergence, or `Converge` with an emitted divergence, is a `branch flow mismatch` info. Absent, empty, or any other value is not checked at all (there is nothing to contradict). The derived topology always wins.
 10. **A step timing attribute that is present but non-numeric is treated as meaningful** and warned. §5 says "present and parsing to a non-zero number, or with `*UsesExpr="true"`"; a non-empty unparseable value is neither, and dropping it silently would violate never-silent for the one case most likely to be an expression the exporter inlined.
 11. **`IsBoolean="true"` is checked before the empty-body check**, so a boolean action (which typically carries no `<Body>` at all — it names a tag through `Operand`) reports `boolean action` and never also `action has no body`.
-12. **`<Action ID>` is not run through the ID gate.** Actions are addressed by XML nesting, never by a link endpoint, so their ids are never dereferenced. A link naming one resolves to nothing and takes the `dangling link` path, which is correct.
+12. **`<Action ID>` is not gated; `<TextBox>`/`<Attachment>` `ID` **is**.** The asymmetry is not an oversight, and the test for it is one question: *is the id ever dereferenced?*
+    - An `<Action>` is addressed by XML **nesting** and is never a link endpoint, so its id is never looked up. Gating it would buy nothing. A link naming one resolves to nothing and takes the `dangling link` path, which is correct.
+    - An **annotation is the one non-node kind whose id IS dereferenced** — rule (1) of resolution 2 discards a link anchored to one. It therefore runs the **same** `gateId` as every other ID-bearing element, and is recorded in `annotationIds` under its **accepted** `localId`. Ungated (recording the raw attribute and skipping the gate), a `<TextBox ID="1"/>` sharing an id with a real element would produce **no** `duplicate ID` warning and **no** poison in either document order, while rule (1) silently discarded every link naming the real element: on this plan's own e2e chart, one extra `<TextBox ID="25"/>` would drop a leg tail out of the simultaneous convergence, `convIn` would become `[27]`, shape validation would still pass, and the `parallelJoin` would degrade to a `single` transition that no longer waits — translated, zero warnings, wrong logic. Exactly the CL-19 shape, and a direct violation of the "any ID collision leads to a visible whole-POU stub" constraint.
 
 **Two task-boundary notes** (mechanics, not policy):
 
@@ -140,19 +149,29 @@ Implements spec §1 (steps / transitions / actions / links / annotations), §2 (
 
 - [ ] **Step 1: Grep sweep for existing SFC expectations (do this FIRST)**
 
-The spec asserts only one existing test mentions L5X SFC. Verify before changing anything:
+Verify the blast radius before changing anything:
 
 ```
 cd mobile && grep -rn "SFC" test/import/ | grep -v sfc_translate_test | grep -v sfc_body_test | grep -v import_sfc_e2e_test
 ```
 
-Expected: exactly one hit, `test/import/l5x_parser_test.dart:227` (the test *name* `routines -> program POUs (ST body; RLL/FBD/SFC stubbed)`), whose fixture contains **no** SFC routine. Also confirm `corpus_import_test.dart`, `import_xml_flow_test.dart` and `ir_to_project_test.dart` contain no L5X-SFC expectation:
+Expected: exactly **four** hits, all accounted for — the gate is that there is no *fifth*:
+
+| Hit | Verdict |
+|---|---|
+| `test/import/l5x_parser_test.dart:227` | the test **name** `routines -> program POUs (ST body; RLL/FBD/SFC stubbed)`; its fixture contains no SFC routine, so only the name is stale (renamed in Step 7) |
+| `test/import/ir_to_project_test.dart:482` | group name `mapImportedProject: SFC translation wiring (Task 4)` — **benign** |
+| `test/import/ir_to_project_test.dart:483` | test name `SFC POU with a translatable chart becomes a real SFC program` — **benign** |
+| `test/import/ir_to_project_test.dart:516` | test name `SFC POU with a wired condition keeps the whole-POU stub` — **benign** |
+
+The three `ir_to_project_test.dart` hits construct `SfcBody`s **directly** and never call `parseL5x`, so deleting the parser's SFC warning cannot move them. Confirm that directly:
 
 ```
+cd mobile && grep -n "parseL5x" test/import/ir_to_project_test.dart
 cd mobile && grep -n "graphical body not yet translated" test/import/corpus_import_test.dart test/import/import_xml_flow_test.dart test/import/ir_to_project_test.dart
 ```
 
-Expected: hits only inside `ir_to_project_test.dart`'s PLCopen-fed `mapImportedProject` group (they feed `SfcBody`s directly, not L5X XML) — nothing that would move when the parser stops emitting its own SFC warning. If any *other* hit appears, stop and reconcile before proceeding.
+Expected: **no** `parseL5x` in `ir_to_project_test.dart`, and no `graphical body not yet translated` expectation anywhere that is fed by an L5X SFC routine. If either check surprises you, stop and reconcile before proceeding.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -187,7 +206,9 @@ String _wrapRoutine(String routine) => '''
 ///
 /// EVERY fixture in this file goes through here, because the §8 invariants
 /// asserted below must hold for every L5X-built body, not just the malformed
-/// ones. Task 3 extends this helper; do not bypass it.
+/// ones — an invariant asserted in one named test is an invariant that holds
+/// in one named test. It also translates the body, so the poison-mechanism and
+/// step-id invariants ride along on every fixture too. Do not bypass it.
 (SfcBody, List<ImportWarning>) _build(String xml) {
   final ir = parseL5x(xml);
   final pou = ir.pous.firstWhere((p) => p.name == 'Main_Seq');
@@ -201,10 +222,27 @@ String _wrapRoutine(String routine) => '''
   // keep both — a chart that translates cleanly as the WRONG logic.
   expect(body.nodes.map((n) => n.localId).toSet(), hasLength(body.nodes.length),
       reason: 'two SfcNodes share a localId');
-  // §8 invariant: real ids are in [0, _kMaxL5xElementId], synthetics negative
-  // — the two ranges cannot overlap.
+  // §8 invariant: the two id ranges PARTITION the body. Every node carrying a
+  // REAL id is a step or a transition; every SYNTHESIZED node — the four
+  // connector kinds and the poison node — carries a negative id. Stated as a
+  // partition rather than as an upper bound, because a bound is satisfied by
+  // almost any body and would prove nothing.
+  const synthesizedKinds = {
+    SfcNodeKind.selDiv,
+    SfcNodeKind.selConv,
+    SfcNodeKind.simDiv,
+    SfcNodeKind.simConv,
+  };
   for (final n in body.nodes) {
-    expect(n.localId <= (1 << 31), isTrue, reason: 'localId ${n.localId} out of range');
+    if (synthesizedKinds.contains(n.kind) || n.name == '#unrepresentable') {
+      expect(n.localId, lessThan(0),
+          reason: 'synthesized node (${n.kind}) must never carry a real id');
+    } else {
+      expect(n.kind == SfcNodeKind.step || n.kind == SfcNodeKind.transition,
+          isTrue, reason: 'unexpected node kind ${n.kind}');
+      expect(n.localId <= (1 << 31), isTrue,
+          reason: 'localId ${n.localId} out of range');
+    }
   }
   // §1/§8 invariant: Logix has no jump element, so the builder never emits one.
   expect(body.nodes.any((n) => n.kind == SfcNodeKind.jump), isFalse,
@@ -212,6 +250,41 @@ String _wrapRoutine(String routine) => '''
   // §1 invariant: Logix has no external action/transition POUs.
   expect(body.refBodies, isEmpty);
   expect(body.graphicalRefs, isEmpty);
+
+  // Recorded resolution 7: the four inlet/outlet KIND causes are unreachable
+  // by construction — the classifier derives the trunk role FROM the
+  // neighbour's kind. Asserted here rather than in one named test, so EVERY
+  // fixture in this file (all 16 emission rows, all 8 shape fixtures, the
+  // connector-adjacent and nesting cases) carries the assertion. If this ever
+  // fires, the classifier changed and that is the news.
+  for (final m in ir.warnings.map((w) => w.message)) {
+    expect(m.contains('divergence inlet is a'), isFalse, reason: m);
+    expect(m.contains('convergence outlet is a'), isFalse, reason: m);
+  }
+
+  final tr = translateSfcBody(body, pouName: 'P');
+  if (body.nodes.any((n) => n.name == '#unrepresentable')) {
+    // §4 invariant, on EVERY poisoned fixture: the step->step edge scan sits
+    // above every warning-emitting statement in `_build`, so a poisoned body
+    // yields exactly one message and zero translator infos.
+    expect(tr.translated, isFalse, reason: 'a poisoned body must never translate');
+    expect(tr.stubReason, 'complex-topology');
+    expect(tr.warnings, hasLength(1));
+    expect(tr.warnings.single.severity, WarningSeverity.warning);
+  }
+  if (tr.translated) {
+    // §8 invariant: no negative localId ever reaches an SfcStep.id or
+    // SfcTransition.id — guards against a program id like `Main_Seq_s-3`.
+    // (A poisoned body always stubs, and connector nodes never become steps
+    // or transitions, so this holds by construction; it is asserted because
+    // "by construction" is exactly the kind of claim that rots.)
+    for (final s in tr.steps) {
+      expect(s.id.contains('_s-'), isFalse, reason: s.id);
+    }
+    for (final t in tr.transitions) {
+      expect(t.id.contains('_t-'), isFalse, reason: t.id);
+    }
+  }
   return (body, ir.warnings);
 }
 
@@ -340,6 +413,30 @@ void main() {
       expect(tr.warnings.single.message, contains('transition has no condition'));
     });
 
+    test('a chart with no InitialStep leans on the translator\'s first-step default', () {
+      // The builder does not pre-judge this — `no initial step marked` is the
+      // translator's inherited info warning, and it must still be reachable
+      // from L5X input (§8's inherited table).
+      final (body, ws) = _build(_wrap('''
+        <Step ID="1" Operand="A"/>
+        <Transition ID="2"><Condition><STContent>
+          <Line Number="0"><![CDATA[Go]]></Line></STContent></Condition></Transition>
+        <Step ID="3" Operand="B"/>
+        <DirectedLink FromID="1" ToID="2"/>
+        <DirectedLink FromID="2" ToID="3"/>'''));
+
+      expect(body.nodes.every((n) => !n.initial), isTrue);
+      expect(ws, isEmpty);
+      final tr = translateSfcBody(body, pouName: 'P');
+      expect(tr.translated, isTrue);
+      expect(tr.steps.first.isInitial, isTrue);
+      expect(
+          tr.warnings.any((w) =>
+              w.severity == WarningSeverity.info &&
+              w.message.contains('no initial step marked — first step used')),
+          isTrue);
+    });
+
     test('a missing Operand leaves the name empty (translator synthesizes s<id>)', () {
       final (body, _) = _build(_wrap('<Step ID="7" InitialStep="true"/>'));
       expect(_nodeAt(body, 7).name, '');
@@ -396,6 +493,43 @@ void main() {
       expect(ids.every((i) => i < 0), isTrue);
       expect(ids.toSet(), hasLength(ids.length)); // also asserted by _build
       expect(translateSfcBody(body, pouName: 'P').translated, isFalse);
+    });
+
+    test('an annotation reusing a real element\'s ID is caught, in EITHER order', () {
+      // C1. An annotation is not a node, but its id IS dereferenced by pass
+      // 2a's annotation-anchor rule — it is the one non-node kind that is.
+      // Ungated, a <TextBox ID="1"/> would claim id 1 with no duplicate-ID
+      // warning and no poison, and every link naming the real element 1 would
+      // then be silently discarded: with the e2e chart's join, `convIn` loses
+      // a leg tail, shape validation still passes, and the parallelJoin
+      // degrades to a `single` transition that no longer waits — translated,
+      // zero warnings, wrong logic.
+      const step = '<Step ID="1" Operand="Idle" InitialStep="true"/>';
+      const box = '<TextBox ID="1" X="0" Y="0"/>';
+      const rest = '''
+        <Transition ID="2"><Condition><STContent>
+          <Line Number="0"><![CDATA[Go]]></Line></STContent></Condition></Transition>
+        <DirectedLink FromID="1" ToID="2"/>''';
+
+      for (final (label, fixture) in [
+        ('element first', '$step$box$rest'),
+        ('annotation first', '$box$step$rest'),
+      ]) {
+        final (body, ws) = _build(_wrap(fixture));
+        expect(_hasInfo(ws, 'duplicate ID'), isTrue,
+            reason: '$label: ${_infos(ws)}');
+        expect(body.nodes.any((n) => n.name == '#unrepresentable'), isTrue,
+            reason: label);
+        final tr = translateSfcBody(body, pouName: 'P');
+        expect(tr.translated, isFalse, reason: label);
+        expect(tr.stubReason, 'complex-topology', reason: label);
+      }
+
+      // Element-first: the annotation is the one demoted, so the real element
+      // keeps its id AND its inbound link — nothing was swallowed.
+      final (body, _) = _build(_wrap('$step$box$rest'));
+      expect(body.edges.any((e) => e.fromLocalId == 1 && e.toLocalId == 2),
+          isTrue);
     });
 
     test('two <SFCContent> containers merge, and a cross-container duplicate is caught', () {
@@ -608,10 +742,15 @@ SfcBody _l5xSfcBody(
   var unrepresentable = false;
   final ignoredKinds = <String>[];
   var ignoredCount = 0;
-  // Raw ids of dropped <TextBox>/<Attachment>. Logix anchors an annotation to
-  // the element it comments on; that anchor is a documentation relationship,
-  // not control flow, so a link touching one is discarded WITHOUT poisoning.
-  final annotationRawIds = <int>{};
+  // Assigned localIds of dropped <TextBox>/<Attachment>. Logix anchors an
+  // annotation to the element it comments on; that anchor is a documentation
+  // relationship, not control flow, so a link touching one is discarded
+  // WITHOUT poisoning.
+  //
+  // Keyed by the ACCEPTED localId, never by the raw attribute: an annotation
+  // is the one non-node kind whose id IS dereferenced, so it runs the same ID
+  // gate as everything else (see pass 1).
+  final annotationIds = <int>{};
   // Raw `ID` -> assigned localId. Only ACCEPTED ids are registered: a rejected
   // one must never resolve, or a link naming it would silently retarget onto
   // the element that was demoted.
@@ -659,8 +798,15 @@ SfcBody _l5xSfcBody(
       if (_kL5xAnnotationElements.contains(tag)) {
         ignoredCount++;
         if (!ignoredKinds.contains(tag)) ignoredKinds.add(tag);
-        final raw = int.tryParse(el.getAttribute('ID') ?? '');
-        if (raw != null) annotationRawIds.add(raw);
+        // An annotation is not a node, but its id IS dereferenced (pass 2a
+        // discards a link anchored to one), so it MUST run the same ID gate as
+        // every other ID-bearing element. Ungated, a <TextBox> reusing a real
+        // element's `ID` would claim that id in `annotationIds` without a
+        // duplicate-ID warning and without poisoning, and pass 2a would then
+        // silently discard every link naming the REAL element — a chart that
+        // translates cleanly as the wrong logic, the exact CL-19 shape. Gated,
+        // the collision is an ordinary duplicate in either document order.
+        annotationIds.add(gateId(el));
         continue;
       }
       final localId = gateId(el);
@@ -750,13 +896,17 @@ SfcBody _l5xSfcBody(
       final toAttr = el.getAttribute('ToID');
       final fromRaw = int.tryParse(fromAttr ?? '');
       final toRaw = int.tryParse(toAttr ?? '');
-      // (1) An annotation anchor is documentation, not control flow.
-      if ((fromRaw != null && annotationRawIds.contains(fromRaw)) ||
-          (toRaw != null && annotationRawIds.contains(toRaw))) {
-        continue;
-      }
       final fromId = fromRaw == null ? null : assignedByRawId[fromRaw];
       final toId = toRaw == null ? null : assignedByRawId[toRaw];
+      // (1) An annotation anchor is documentation, not control flow. Keyed off
+      // the ACCEPTED id: an annotation whose raw `ID` was rejected (malformed,
+      // out of range, or a duplicate) never registered in `assignedByRawId`,
+      // so it can never swallow another element's links — it poisoned the
+      // chart instead.
+      if ((fromId != null && annotationIds.contains(fromId)) ||
+          (toId != null && annotationIds.contains(toId))) {
+        continue;
+      }
       final fromKind = fromId == null ? null : kindById[fromId];
       final toKind = toId == null ? null : kindById[toId];
       // (3) An endpoint naming no MAPPABLE element. The edge is still emitted
@@ -1148,6 +1298,44 @@ String _t(int id, String name, String cond) =>
       expect(translateSfcBody(body, pouName: 'P').translated, isTrue);
     });
 
+    test('loop-back legs are not a special case (ordinary edges + row 2)', () {
+      // A leg tail wired to an upstream step instead of back into the branch
+      // never touches a branch or leg id, so it is an ordinary edge and the
+      // branch's own bits land on the diverge-only row.
+      final (body, ws) = _build(_wrap('''
+        <Step ID="1" Operand="S0" InitialStep="true"/>
+        <Branch ID="10" BranchType="Selection"><Leg ID="11"/><Leg ID="12"/></Branch>
+        ${_t(2, 'T1', 'A')}
+        <Step ID="3" Operand="S1"/>
+        ${_t(4, 'T2', 'B')}
+        <Step ID="5" Operand="S2"/>
+        ${_t(6, 'BackA', 'C')}
+        ${_t(7, 'BackB', 'D')}
+        <DirectedLink FromID="1" ToID="10"/>
+        <DirectedLink FromID="11" ToID="2"/>
+        <DirectedLink FromID="12" ToID="4"/>
+        <DirectedLink FromID="2" ToID="3"/>
+        <DirectedLink FromID="4" ToID="5"/>
+        <DirectedLink FromID="3" ToID="6"/>
+        <DirectedLink FromID="6" ToID="1"/>
+        <DirectedLink FromID="5" ToID="7"/>
+        <DirectedLink FromID="7" ToID="1"/>'''));
+
+      expect(ws, isEmpty, reason: _infos(ws).toString());
+      expect(body.nodes.where((n) => n.kind == SfcNodeKind.selDiv), hasLength(1));
+      expect(body.nodes.where((n) => n.kind == SfcNodeKind.selConv), isEmpty);
+      final tr = translateSfcBody(body, pouName: 'P');
+      expect(tr.translated, isTrue);
+      expect(tr.transitions.map((t) => t.kind).toSet(), {'single'});
+      // Both loop-backs land on the initial step.
+      expect(
+          tr.transitions
+              .where((t) => t.toStepId == 'P_s1')
+              .map((t) => t.fromStepId)
+              .toSet(),
+          {'P_s3', 'P_s5'});
+    });
+
     test('a single-leg branch translates as an ordinary linear path', () {
       final (body, ws) = _build(_wrap('''
         <Step ID="1" Operand="S0" InitialStep="true"/>
@@ -1513,9 +1701,13 @@ String _t(int id, String name, String cond) =>
     test('the four inlet/outlet KIND causes are unreachable by construction', () {
       // §3's classifier derives the trunk role FROM the neighbour's kind, so
       // divIn/convOut can only ever hold correctly-kinded nodes. The checks
-      // exist as defence in depth against a future classifier change; this
-      // test is what documents that they never fire today. If it ever starts
-      // failing, the classifier changed and this assertion is the news.
+      // exist as defence in depth against a future classifier change.
+      //
+      // DOCUMENTATION ONLY — the enforcing assertion lives in `_build`, so it
+      // rides on every fixture in this file including all 16 emission rows and
+      // all 8 shape fixtures. A version of this test that only walked
+      // well-formed charts would pass with the kind checks deleted outright,
+      // which is why it must not be the only home for the claim.
       final fixtures = <String>[
         _wrap('''
           <Step ID="1" Operand="S0" InitialStep="true"/>
@@ -1794,19 +1986,19 @@ In `_l5xSfcBody`'s pass-1 `switch (tag)`, insert between `case 'Transition':` an
 
 - [ ] **Step 6: Add the connector rules to pass 2a**
 
-In `_l5xSfcBody`'s pass 2a, insert rule (2) immediately after the annotation check (rule 1) and before `final fromId = ...`:
+In `_l5xSfcBody`'s pass 2a, insert rule (2) immediately after the annotation check (rule 1) and before `final fromKind = ...` (`fromId`/`toId` are already resolved above rule 1, so nothing needs renaming):
 
 ```dart
       // (2) A link touching an unrecognized-BranchType branch (or its legs).
-      final fromResolved = fromRaw == null ? null : assignedByRawId[fromRaw];
-      final toResolved = toRaw == null ? null : assignedByRawId[toRaw];
-      if ((fromResolved != null && unrecognizedIds.contains(fromResolved)) ||
-          (toResolved != null && unrecognizedIds.contains(toResolved))) {
+      // That branch already emitted the one actionable breadcrumb plus the
+      // poison flag; N `dangling link` messages would bury it.
+      if ((fromId != null && unrecognizedIds.contains(fromId)) ||
+          (toId != null && unrecognizedIds.contains(toId))) {
         continue;
       }
 ```
 
-then replace `final fromId = fromRaw == null ? null : assignedByRawId[fromRaw];` / `final toId = ...` with `final fromId = fromResolved;` / `final toId = toResolved;`, and replace the dangling arm's edge construction plus the trailing ordinary-edge line with:
+then replace the dangling arm's edge construction plus the trailing ordinary-edge line with:
 
 ```dart
       // (3) An endpoint naming no MAPPABLE element. The edge is still emitted
@@ -2508,8 +2700,11 @@ void _l5xSfcActions(XmlElement step, int stepLocalId, String stepLabel,
     if (text.isEmpty) {
       warnings.add(ImportWarning(
           severity: WarningSeverity.info,
-          message: '$ownerLabel: SFC step "$stepLabel" action "$label" has no '
-              'body — skipped.'));
+          // Worded so the assertable substring `action has no body` appears
+          // LITERALLY: the action name follows in parentheses rather than
+          // splitting the phrase.
+          message: '$ownerLabel: SFC step "$stepLabel": action has no body '
+              '("$label") — skipped.'));
       continue;
     }
     final q = (a.getAttribute('Qualifier') ?? '').trim();

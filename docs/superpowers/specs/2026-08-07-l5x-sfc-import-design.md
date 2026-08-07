@@ -20,6 +20,14 @@ whose conventions this one mirrors).
   clauses on every `branch shape not representable` message (§3/§8), a
   dialect-neutral poison-ordering invariant test plus a one-line coupling
   comment in `sfc_translate.dart` (§9/§12), and assorted citation fixes.
+- 2026-08-07 — plan review (C1): `<TextBox>`/`<Attachment>` now run the **ID
+  gate** and are recorded in `annotationIds` under their **accepted**
+  `localId`, not the raw attribute (§2 pass 1, §8's annotation-anchor row, §9's
+  annotation tests). Ungated, an annotation sharing an `ID` with a real element
+  produced no `duplicate ID` warning and no poison while pass 2a silently
+  discarded every link naming that element — a `parallelJoin` degrading to a
+  `single` transition with zero warnings. The `<Action ID>`-vs-annotation
+  asymmetry ("is the id ever dereferenced?") is now stated explicitly in §2.
 
 ---
 
@@ -270,9 +278,25 @@ tiebreaker, which is what makes the output byte-identical run to run.
 **Pass 1 — register elements.** For each child element of each `<SFCContent>`:
 
 1. `<TextBox>` / `<Attachment>` (`_kL5xAnnotationElements`) → increment
-   `ignoredCount`, record the tag in `ignoredKinds`, record the raw `ID` in
-   `annotationIds`, `continue`. Registering the id is what lets pass 2a
-   distinguish an annotation anchor from a dangling link.
+   `ignoredCount`, record the tag in `ignoredKinds`, **run the ID gate below**,
+   record the resulting `localId` in `annotationIds`, `continue`. Registering
+   the id is what lets pass 2a distinguish an annotation anchor from a dangling
+   link.
+
+   **Annotations are gated; `<Action ID>`s are not.** The asymmetry follows one
+   test — *is the id ever dereferenced?* An `<Action>` is addressed by XML
+   nesting and is never a link endpoint, so its id is never looked up and
+   gating it would buy nothing. An annotation is **the one non-node kind whose
+   id IS dereferenced** (pass 2a discards a link anchored to one), so it must
+   run the same gate as every node-bearing element, and `annotationIds` must be
+   keyed by the **accepted** `localId`, never by the raw attribute. Ungated, a
+   `<TextBox>` reusing a real element's `ID` would claim that id with **no**
+   `duplicate ID` warning and **no** poison in either document order, while
+   pass 2a silently discarded every link naming the real element — a chart that
+   translates cleanly as the wrong logic (one stray `<TextBox>` anchored to a
+   simultaneous branch's leg tail turns its `parallelJoin` into a `single`
+   transition that no longer waits). That is the CL-19 shape north-star 3
+   exists to forbid.
 2. Run the ID gate above.
 3. Dispatch on tag:
    - `<Step>` → `SfcNode(kind: step, …)`; collect its actions (§6); check its
@@ -743,7 +767,7 @@ fragment.
 | `ID` absent, unparseable, **negative**, or **> `_kMaxL5xElementId`** | info | `malformed ID` | synthetic negative id + **poison** |
 | `ID` reused by a later element | info | `duplicate ID` | later claimant gets a synthetic id (raw id never re-registered) + **poison** |
 | `<DirectedLink>` endpoint names nothing | info | `dangling link` | edge kept against a synthetic id + **poison** |
-| `<DirectedLink>` endpoint names a dropped annotation | — | (none) | link discarded whole; no poison — an annotation anchor is documentation, not control flow |
+| `<DirectedLink>` endpoint names a dropped annotation (matched on the annotation's **accepted** `localId`) | — | (none) | link discarded whole; no poison — an annotation anchor is documentation, not control flow. An annotation whose own `ID` was rejected never registered, so it takes the `duplicate ID` / `malformed ID` row above instead and cannot swallow another element's links (§2) |
 | `BranchType` absent/unrecognized | info | `branch type` | **poison**; no connectors synthesized |
 | Any branch defect: an emission-table defect row, a wrong-kind leg head/tail, >1 trunk-in or trunk-out, connector-adjacent nesting, or a `<Branch>` no link touches | info | `branch shape not representable (` **+ a cause clause** | **poison** |
 | `BranchFlow` contradicts derived topology | info | `branch flow mismatch` | derived topology wins; no stub |
@@ -926,6 +950,11 @@ fixtures written to §1's asserted schema)
 - A `<DirectedLink>` anchored to a `<TextBox>` → link discarded, **no**
   `dangling link` warning, **no** poison, chart still translates. (Guards the
   §2 exception against a naive "unknown endpoint ⇒ poison" refactor.)
+- **A `<TextBox>` reusing a real element's `ID`, in BOTH document orders** →
+  `duplicate ID` + poison, and the link naming that id is **not** swallowed by
+  the annotation-anchor rule. This is the regression test for the §2 gate:
+  ungated, the fixture translates cleanly with zero warnings and one control
+  path deleted.
 
 *Degrades*
 - `Qualifier="S"` → chart still translates, `actionSt` omits it, translator's
