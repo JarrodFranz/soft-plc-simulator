@@ -14,10 +14,10 @@ Copied from the spec's binding rules (`docs/superpowers/specs/2026-08-04-l5x-fbd
 
 - **Spec is the single source of requirements:** `docs/superpowers/specs/2026-08-04-l5x-fbd-import-design.md`. Every section maps to a task in this plan (see the coverage table below).
 - **Faithful-or-stub, never-throws, everywhere.** An FBD AOI whose body cannot translate degrades to the existing interface-only no-op plus a warning; an FBD routine that cannot translate keeps today's whole-POU stub. A parser that meets malformed XML emits a warning, never an exception. `parseL5x` still throws `FormatException` only for non-well-formed XML or a wrong root element (unchanged).
-- **`translateFbdBody` needs ZERO changes.** `_l5xFbdBody` emits exactly the IR attribute keys `plcopen_parser.dart`'s `_graphBody` emits: `variable`, `typeName`, `instanceName`, `hasNegatedPin`, `negated`, plus unique negative synthetic ids for malformed ids. `abOriginal` is the one permitted extra key (unknown keys are copied through and ignored).
+- **`translateFbdBody` needs ZERO changes.** `_l5xFbdBody` emits a **deliberately stricter subset** of the IR attribute keys `plcopen_parser.dart`'s `_graphBody` emits: `variable`, `typeName`, `instanceName`, plus unique negative synthetic ids for malformed ids. It never emits `hasNegatedPin` and never emits `negated` (Logix FBD has no pin inversion or element negation: `BNOT` is an explicit element), so the translator's negated-pin gate is unreachable from this parser by construction. `abOriginal` (Task 6) and `connectorName` (Tasks 4-5) are permitted EXTRA keys: `translateFbdBody` copies attributes through and only reads the keys it knows, so an unrecognized key is silently ignored, not an error.
 - **PLCopen path stays byte-identical.** PLCopen `functionBlock` FBD POUs keep today's "graphical body (fbd) - not imported" warning verbatim; only L5X-parser-produced FBD AOIs enter the new `mapImportedFbs` arm, gated on `ImportedProject.dialect == ImportDialect.l5x`. The whole PLCopen import path, every ST- and ladder-bodied FB, and all existing L5X behaviour are unchanged.
 - **Additive / backward-compatible JSON.** `FbDefinition` JSON keys are exactly `fbd_blocks` / `fbd_wires` / `fbd_networks` (the same key names `PlcProgram` already uses, so the element serializers are reused as-is). Each is emitted **only when non-empty**, so ST- and ladder-bodied FB JSON is byte-identical to today. `fromJson` defaults each to `[]`, so old projects (no `fbd_blocks` key) load unchanged.
-- **Runtime state key prefix is exactly `'fb:<instancePath>|'`** (note the trailing pipe), producing keys like `fb:Pump1|AOI Ramp_n7`. Programs use the empty prefix, so program keys stay bare `b.id`. Do not invent another scheme.
+- **Runtime state key prefix is exactly `'fb:<instancePath>|'`** (note the trailing pipe), producing keys like `fb:Pump1|AOI Ramp_n7`. Programs use the empty prefix, so program keys stay bare `b.id`. Do not invent another scheme. **Disjointness argument (state it this way, not via the sanitizer):** a program-produced block id can never contain `:` or `|`, so no prefixed key can collide with one. It is NOT true that block ids are fully sanitized identifiers: `_blockId` is `'${pouName}_n$localId'` and `pouName` for an AOI body is `'AOI Ramp'`, which carries a space. The space is harmless; only `:`/`|` matter.
 - **Body precedence discriminator, single source of truth in `executeFbInstance`:** `ladderRungs.isNotEmpty` -> ladder; else `fbdBlocks.isNotEmpty` -> FBD; else ST.
 - **Exact warning severities and assertable substrings** (tests assert these):
   | Condition | Severity | Substring |
@@ -25,14 +25,28 @@ Copied from the spec's binding rules (`docs/superpowers/specs/2026-08-04-l5x-fbd
   | `<TextBox>` / `<Attachment>` dropped | `WarningSeverity.info` | `ignored` |
   | Unmatched `ICon`/`OCon` | `WarningSeverity.info` | `unmatched connector` |
   | `TONR`/`TOFR` best-effort mapping | `WarningSeverity.warning` | `verify` |
-  | Wired `EnableIn`/`EnableOut` on an aliased built-in | `WarningSeverity.info` | `EnableIn/EnableOut wired` |
+  | Wired `EnableIn`/`EnableOut` on a block endpoint | `WarningSeverity.info` | `EnableIn/EnableOut wired` |
+  | Unnamed (blank `Name`) `ICon`/`OCon` | `WarningSeverity.info` | `unmatched connector` + `(unnamed)` |
   | AOI FBD body, 0 networks translated, body had nodes | `WarningSeverity.warning` | the AOI name |
-- **Stub reason keys** are the existing `stubReasons` keys only: `unsupported-element` (unmatched connector, `JSR`/`SBR`/`Ret` and other unknown elements, malformed id), `unsupported-block` (unmapped AB block), `unresolved-pin` (unmapped pin, wired `EnableIn`/`EnableOut`, multiple wires into one input pin), `complex-expression` (dotted operand). No new `ImportReport` field, no preview-UI change.
+  | Nested-instance var name collides with a differently-typed var (R3) | `WarningSeverity.info` | `may not resolve` |
+  | Dotted/member operand on an `IRef`/`ORef` (`Timer1.DN`) | `WarningSeverity.warning` (from `translateFbdBody`) | `not translated` + `compound` |
+  | Multiple wires into one input pin | `WarningSeverity.warning` (from `translateFbdBody`) | `not translated` + `same input pin` |
+- **Stub reason keys** are the existing `stubReasons` keys only: `unsupported-element` (unmatched or unnamed connector, `JSR`/`SBR`/`Ret` and other unknown elements, malformed id, dangling-wire placeholder), `unsupported-block` (unmapped AB block), `unresolved-pin` (unmapped pin, wired `EnableIn`/`EnableOut`, multiple wires into one input pin), `complex-expression` (dotted/member operand). No new `ImportReport` field, no preview-UI change.
 - **Pure Dart, in-app (ADR-010). Deterministic.** The `xml` package stays confined to `lib/import/*_parser.dart`; `fbd_exec.dart`, `fb_exec.dart` and `ld_exec.dart` stay Flutter-free.
 - **Zero `flutter analyze` warnings.** Flutter is NOT on PATH: use `/c/flutter/bin/flutter`, and run every `flutter` command from `mobile/`.
 - **Every task ends green:** the task's own tests, the **full suite** (`/c/flutter/bin/flutter test`) and `/c/flutter/bin/flutter analyze` all pass before the commit step.
 - **TDD:** write the failing test first, run it and watch it fail for the expected reason, then implement.
-- **No em dashes in authored docs prose** (Task 9 and this plan): use ASCII hyphens, commas or parentheses. Code quoted verbatim from live files keeps its original punctuation.
+- **No em dashes in `knowledge/**` prose** (`.git/sdd/kb-conventions.md:99`: "No em dashes anywhere. Plain hyphens only."). This applies to the knowledge-base files touched in Task 9 and to this plan's own prose. It does **not** apply to `docs/**`, which keeps its existing house style (em dashes are used throughout `docs/import/L5X.md`, `docs/DEFERRED.md` and the `docs/iec61131/` files), and it does **not** apply to Dart code: the five new warning strings and every new doc-comment follow the codebase's existing em-dash style, and code quoted verbatim from live files keeps its original punctuation.
+
+## Recorded resolutions
+
+Five points the spec leaves open, resolved here. Implement them as written; do not re-litigate them mid-task.
+
+1. **A wire endpoint that names no assigned node is NOT dropped.** Pass 1 records `assignedByRawId[rawId] = assignedLocalId` for every element whose `ID` parsed as a non-negative int (including one that got a synthetic negative id for being out of range). Pass 2 resolves each endpoint through that map; an endpoint that still does not resolve (absent, unparseable, negative, or naming no element on the sheet) gets a fresh `danglingWire` placeholder node with a synthetic negative id, and the wire points at it. Dropping the wire instead would silently delete a data path and let the consumer's component translate as if the input were simply unwired; the placeholder makes that component stub (`unsupported-element`) with a named reason. (Revised from the first draft of this plan, which dropped such wires.)
+2. **Sheet ordering when `<Sheet Number>` is absent.** The sheet's sort key is `previousSheetKey + 0.5` with a stable sort, so an unnumbered sheet lands immediately after its document-order predecessor. Sheets numbered `2`, none, `1` therefore process as `1`, `2`, unnumbered.
+3. **Scope of the wired-`EnableIn`/`EnableOut` heads-up.** It fires whenever a wire endpoint is any recorded FBD block node (`Block`, `Function` or `AddOnInstruction`) and the pin is literally `EnableIn`/`EnableOut`. Restricting it to aliased built-ins would miss the most common real case, an `<AddOnInstruction>` call whose `EnableIn` is wired: for an FBD-Logic AOI, `EnableIn`/`EnableOut` are INTERNAL vars and therefore not pins, so that wire stubs the network exactly like an aliased built-in's would.
+4. **Em dashes.** REVISED per review: the no-em-dash rule is a `knowledge/**` convention (`.git/sdd/kb-conventions.md:99`), not a repo-wide one. `docs/**` keeps its house style and the new Dart warning strings keep theirs. See the Global Constraints bullet above.
+5. **`<Function>` carries no `instanceName`.** The spec's §4 table gives `<Function Type=>` a `typeName` only, and Logix `<Function>` elements are the stateless ones (`BAND`/`BOR`/`BNOT`), so only `<Block>` and `<AddOnInstruction>` emit `instanceName`. Both still record their raw type for pin aliasing and the `EnableIn` heads-up.
 
 ## Spec coverage
 
@@ -73,7 +87,8 @@ Copied from the spec's binding rules (`docs/superpowers/specs/2026-08-04-l5x-fbd
 | `mobile/test/import/l5x_parser_test.dart` | Rewritten FBD-AOI test | 7 |
 | `mobile/test/import/fb_import_fbd_test.dart` | Mapper units (new file) | 7 |
 | `mobile/test/import/import_l5x_aoi_fbd_e2e_test.dart` | Composed e2e (new file) | 8 |
-| `docs/iec61131/FUNCTION_BLOCKS.md`, `docs/iec61131/FUNCTION_BLOCK_DIAGRAM.md`, `docs/import/L5X.md`, `docs/DEFERRED.md`, `knowledge/industry/plc-formats/rockwell-l5x.md` | Docs | 9 |
+| `docs/iec61131/FUNCTION_BLOCKS.md`, `docs/iec61131/FUNCTION_BLOCK_DIAGRAM.md`, `docs/import/L5X.md`, `docs/DEFERRED.md` | Feature docs | 9 |
+| `knowledge/industry/plc-formats/rockwell-l5x.md`, `knowledge/industry/plc-formats/index.md`, `knowledge/industry/iec61131/custom-function-blocks.md`, `knowledge/industry/iec61131/function-block-diagram.md`, `knowledge/app/scan-engine.md`, `knowledge/canonical-manifest.json` | Knowledge base | 9 |
 
 ---
 
@@ -318,6 +333,22 @@ Also update the comment directly above that loop (lines 143-147) so it names all
   // now-nonexistent composite.
 ```
 
+And update the function's PUBLIC doc-comment (`mobile/lib/models/tag_resolver.dart:103-116`), whose root enumeration currently stops at the ladder body. Replace its first sentence with:
+
+```dart
+/// Renames function block definition [oldName] to [newName] everywhere it is
+/// referenced: the FB's own name, every FBD block of that type
+/// (`FbdBlock.type`) in a PROGRAM and in another FB's FBD body
+/// (`FbDefinition.fbdBlocks` — the third `FbdBlock` root), every LD block
+/// instance of that type (`LdNode.blockType`) in a PROGRAM's rungs AND in
+/// another FB's ladder body (`FbDefinition.ladderRungs` — the second `LdNode`
+/// root), every instance tag's data type (`PlcTag.dataType`), and every
+/// FB-typed FB var (`FbVar.dataType`, i.e. a nested instance member) —
+/// mirroring [renameStructDef]'s exact traversal/immutability idiom (in-place
+/// field mutation, not copyWith, so autosave/serialization sees the same object
+/// graph). No-op if the names are equal or no such FB definition exists.
+```
+
 - [ ] **Step 5: Run the tests to verify they pass**
 
 From `mobile/`: `/c/flutter/bin/flutter test test/models/fb_model_test.dart`
@@ -538,7 +569,23 @@ From `mobile/`: `/c/flutter/bin/flutter test test/models/fb_fbd_body_exec_test.d
 
 Expected: FAIL with `The function 'runScopedFbdBody' isn't defined`.
 
-- [ ] **Step 3: Give `_evalBlock` a state key and a scope**
+- [ ] **Step 3: Update `FbdRuntime`'s class doc-comment**
+
+`FbdRuntime`'s doc (`mobile/lib/models/fbd_exec.dart:8-10`) currently says its maps are keyed by block id alone, which stops being the whole truth in this task. Replace it with:
+
+```dart
+/// Per-block state for stateful FBD blocks (TON/TOF, PID, counters, edge
+/// detectors, TP). Keyed by `'<stateKeyPrefix><blockId>'`: program execution
+/// uses an EMPTY prefix, so the key is the bare block id (unique within a
+/// project's FBD programs, unchanged); a scoped FB body uses
+/// `'fb:<instancePath>|'`, so two instances of the same FBD-bodied FB never
+/// share timer/counter/edge state even though they share one set of body block
+/// ids (see `runScopedFbdBody`). Cleared on project switch.
+```
+
+The per-field comments below it ("keyed by block id") should say "keyed by state key" for the same reason.
+
+- [ ] **Step 4: Give `_evalBlock` a state key and a scope**
 
 In `mobile/lib/models/fbd_exec.dart`, change the `_evalBlock` doc-comment tail and signature (lines 159-179) to:
 
@@ -570,7 +617,7 @@ Map<String, dynamic> _evalBlock(
   String sp(String path) => scope == null ? path : scope.rewrite(path);
 ```
 
-- [ ] **Step 4: Apply the scope at the three tag-path sites**
+- [ ] **Step 5: Apply the scope at the three tag-path sites**
 
 Still in `_evalBlock`:
 
@@ -608,7 +655,7 @@ Still in `_evalBlock`:
       return {};
 ```
 
-- [ ] **Step 5: Replace every `rt._xxx[b.id]` with `rt._xxx[stateKey]`**
+- [ ] **Step 6: Replace every `rt._xxx[b.id]` with `rt._xxx[stateKey]`**
 
 Still in `_evalBlock`, the stateful branches. There are exactly nine lookups to change:
 
@@ -633,7 +680,7 @@ cd mobile && grep -n "rt\._\(elapsedMs\|pid\|counters\|prevClk\|pulse\)\[b\.id\]
 
 Expected: no output.
 
-- [ ] **Step 6: Extract `_runFbdBody` and rewrite `executeFbdPrograms`**
+- [ ] **Step 7: Extract `_runFbdBody` and rewrite `executeFbdPrograms`**
 
 In `mobile/lib/models/fbd_exec.dart`, replace the whole `executeFbdPrograms` function (lines 521-665, doc-comment included) with:
 
@@ -819,9 +866,12 @@ void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? onl
 /// stateful block's runtime state is keyed `'fb:<instancePath>|<blockId>'`, so
 /// two instances of the same FBD-bodied FB have disjoint timer/counter/edge
 /// state even though they share one set of body block ids. That prefix is also
-/// disjoint from every program block id: the importer's identifier sanitizer
-/// reduces names to `[A-Za-z0-9_]`, so no program-produced key can contain ':'
-/// or '|'. Online monitoring is deliberately not wired up for FB bodies
+/// disjoint from every program block id: a block id is `'<pouName>_n<localId>'`
+/// (or an editor-assigned id) and can never contain ':' or '|', so no
+/// prefixed key can collide with a program's. (Note the id is NOT a sanitized
+/// identifier — an AOI body's pouName is e.g. `'AOI Ramp'`, with a space —
+/// the argument rests only on ':' and '|' never occurring.)
+/// Online monitoring is deliberately not wired up for FB bodies
 /// (`monitor: null`) — see docs/DEFERRED.md. The FBD analog of
 /// `runScopedLdBody` (ld_exec.dart). Never throws.
 void runScopedFbdBody(PlcProject p, List<FbdBlock> blocks, List<FbdWire> wires,
@@ -836,13 +886,13 @@ void runScopedFbdBody(PlcProject p, List<FbdBlock> blocks, List<FbdWire> wires,
 }
 ```
 
-- [ ] **Step 7: Run the new tests**
+- [ ] **Step 8: Run the new tests**
 
 From `mobile/`: `/c/flutter/bin/flutter test test/models/fb_fbd_body_exec_test.dart`
 
 Expected: all 7 tests pass.
 
-- [ ] **Step 8: Prove the program path is unchanged**
+- [ ] **Step 9: Prove the program path is unchanged**
 
 From `mobile/`:
 
@@ -852,12 +902,12 @@ From `mobile/`:
 
 Expected: `All tests passed!` (these cover network ordering, the cycle fallback, monitor keys and custom-FB calls from FBD).
 
-- [ ] **Step 9: Verify the whole suite and the analyzer**
+- [ ] **Step 10: Verify the whole suite and the analyzer**
 
 From `mobile/`: `/c/flutter/bin/flutter test` then `/c/flutter/bin/flutter analyze`.
 Expected: `All tests passed!` and `No issues found!`.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```
 git add -A && git commit -m "feat(fbd): scoped FBD body executor (runScopedFbdBody)"
@@ -1182,6 +1232,69 @@ Append to `mobile/test/fb_fbd_exec_test.dart`, inside `void main() {` (it alread
   });
 ```
 
+Append to `mobile/test/models/fb_exec_test.dart` as well (this one proves `runScopedLdBody` FORWARDS `fbdRt`, the only threading edge with no other coverage: a LADDER-bodied AOI whose rung calls an FBD-bodied AOI):
+
+```dart
+  test('a ladder-bodied AOI calling an FBD-bodied AOI keeps the inner timer state', () {
+    final inner = FbDefinition(name: 'Inner', vars: [
+      FbVar(name: 'In', dataType: 'BOOL', direction: FbVarDir.input),
+      FbVar(name: 'Out', dataType: 'BOOL', direction: FbVarDir.output),
+    ], fbdBlocks: [
+      FbdBlock(id: 'i_ti', type: 'TAG_INPUT', title: 'In', tagBinding: 'In'),
+      FbdBlock(id: 'i_pt', type: 'CONST', title: 'CONST', tagBinding: '1000'),
+      FbdBlock(id: 'i_ton', type: 'TON', title: 'TON'),
+      FbdBlock(id: 'i_to', type: 'TAG_OUTPUT', title: 'Out', tagBinding: 'Out'),
+    ], fbdWires: [
+      FbdWire(fromBlockId: 'i_ti', fromPin: 'OUT', toBlockId: 'i_ton', toPin: 'IN'),
+      FbdWire(fromBlockId: 'i_pt', fromPin: 'OUT', toBlockId: 'i_ton', toPin: 'PT'),
+      FbdWire(fromBlockId: 'i_ton', fromPin: 'Q', toBlockId: 'i_to', toPin: 'IN'),
+    ]);
+    // LADDER body: left rail -> FB call block (type 'Inner', instance var
+    // 'Nested') -> right rail.
+    final outer = FbDefinition(name: 'Outer', vars: [
+      FbVar(name: 'In', dataType: 'BOOL', direction: FbVarDir.input),
+      FbVar(name: 'Out', dataType: 'BOOL', direction: FbVarDir.output),
+      FbVar(name: 'Nested', dataType: 'Inner', direction: FbVarDir.internal),
+    ], ladderRungs: [
+      LdRung(rungIndex: 0, nodes: [
+        LdNode(id: 'L', kind: LdKind.leftRail),
+        LdNode(id: 'b', kind: LdKind.block, blockType: 'Inner', variable: 'Nested',
+            pinBindings: {'In': 'In', 'Out': 'Out'}),
+        LdNode(id: 'R', kind: LdKind.rightRail),
+      ], wires: [
+        LdWire(fromId: 'L', toId: 'b'),
+        LdWire(fromId: 'b', toId: 'R'),
+      ]),
+    ]);
+    final defaults = PlcProject(
+        id: 'd', name: 'd', controllerName: 'c',
+        tags: [], structDefs: [], programs: [], tasks: [], hmis: [],
+        fbDefinitions: [inner, outer]);
+    final p = PlcProject(
+      id: 'p', name: 'P', controllerName: 'C',
+      tags: [
+        PlcTag(name: 'O1', path: 'O1', dataType: 'Outer',
+            value: defaultValueFor(defaults, 'Outer', 0), ioType: 'Internal'),
+      ],
+      structDefs: [], programs: [], tasks: [], hmis: [],
+      fbDefinitions: [inner, outer],
+    );
+
+    final ldRt = LdExecRuntime();
+    final fbdRt = FbdRuntime();
+    executeFbInstance(p, outer, 'O1', {'In': true},
+        dtMs: 500, ldRt: ldRt, fbdRt: fbdRt);
+    expect(readPath(p, 'O1.Out'), isFalse); // ET 500 < PT 1000
+    executeFbInstance(p, outer, 'O1', {'In': true},
+        dtMs: 500, ldRt: ldRt, fbdRt: fbdRt);
+    // Only true if runScopedLdBody -> executeRung -> executeFbInstance carried
+    // fbdRt all the way down; with a dropped fbdRt the inner TON restarts.
+    expect(readPath(p, 'O1.Out'), isTrue);
+  });
+```
+
+This test needs `import 'package:soft_plc_mobile/models/ld_exec.dart';` in `fb_exec_test.dart` for `LdExecRuntime`; add it if absent.
+
 - [ ] **Step 3: Run the tests to verify they fail**
 
 From `mobile/`:
@@ -1370,7 +1483,7 @@ Expected: `All tests passed!`.
 
 From `mobile/`: `/c/flutter/bin/flutter test` then `/c/flutter/bin/flutter analyze`.
 
-Expected: `All tests passed!` and `No issues found!`. Pay particular attention to `test/fb_ladder_exec_test.dart`, `test/fb_ladder_engine_test.dart`, `test/ld_exec_test.dart`, `test/models/executor_readonly_test.dart` and `test/scan_scheduling_test.dart`: a ladder-bodied FB called from an FBD program must still work, and the LD path with `fbdRt: null` must be unchanged.
+Expected: `All tests passed!` and `No issues found!`. Pay particular attention to `test/models/fb_ladder_exec_test.dart`, `test/models/fb_ladder_engine_test.dart`, `test/ld_exec_test.dart`, `test/models/executor_readonly_test.dart` and `test/scan_scheduling_test.dart`: a ladder-bodied FB called from an FBD program must still work, and the LD path with `fbdRt: null` must be unchanged.
 
 - [ ] **Step 9: Commit**
 
@@ -1410,6 +1523,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/import/fbd_translate.dart';
 import 'package:soft_plc_mobile/import/import_ir.dart';
 import 'package:soft_plc_mobile/import/l5x_parser.dart';
+import 'package:soft_plc_mobile/models/fbd_exec.dart';
+import 'package:soft_plc_mobile/models/project_model.dart';
+import 'package:soft_plc_mobile/models/tag_resolver.dart';
 
 ImportedProject _parse(String fbdContent) => parseL5x('''
 <RSLogix5000Content TargetType="Controller"><Controller Name="C">
@@ -1424,18 +1540,24 @@ GraphBody _graph(ImportedProject ir) =>
 IrGraphNode _node(GraphBody g, int id) =>
     g.nodes.firstWhere((n) => n.localId == id);
 
+PlcTag _tag(String n, dynamic v) =>
+    PlcTag(name: n, path: n, dataType: 'INT32', value: v, ioType: 'Internal');
+
 void main() {
   test('every element kind maps to the expected elementType + attributes', () {
+    // Real-Logix element shapes: stateful instructions are <Block> with an
+    // Operand (their backing tag); stateless bit functions are <Function>.
     final g = _graph(_parse('''
       <Sheet Number="1">
         <IRef ID="0" Operand=" Speed " X="10" Y="20"/>
         <ORef ID="1" Operand="Alarm" X="30" Y="40"/>
         <Block ID="2" Type="TON" Operand="T1" X="50" Y="60"/>
-        <Function ID="3" Type="ADD" X="70" Y="80"/>
+        <Block ID="3" Type="ADD" Operand="Add_01" X="70" Y="80"/>
         <AddOnInstruction ID="4" Name="MyAoi" Operand="Inst1" X="90" Y="100"/>
+        <Function ID="5" Type="BNOT" X="110" Y="120"/>
       </Sheet>'''));
 
-    expect(g.nodes, hasLength(5));
+    expect(g.nodes, hasLength(6));
 
     expect(_node(g, 0).elementType, 'inVariable');
     expect(_node(g, 0).attributes['variable'], 'Speed'); // trimmed
@@ -1451,43 +1573,52 @@ void main() {
 
     expect(_node(g, 3).elementType, 'block');
     expect(_node(g, 3).attributes['typeName'], 'ADD');
+    expect(_node(g, 3).attributes['instanceName'], 'Add_01');
 
     expect(_node(g, 4).elementType, 'block');
     expect(_node(g, 4).attributes['typeName'], 'MyAoi');
     expect(_node(g, 4).attributes['instanceName'], 'Inst1');
 
-    // hasNegatedPin is never emitted (Logix FBD has no pin inversion).
+    // <Function> is stateless: no Operand, so no instanceName key at all.
+    expect(_node(g, 5).elementType, 'block');
+    expect(_node(g, 5).attributes.containsKey('instanceName'), isFalse);
+
+    // hasNegatedPin/negated are NEVER emitted (Logix FBD has no pin inversion
+    // or element negation; BNOT is an explicit element).
     expect(g.nodes.any((n) => n.attributes.containsKey('hasNegatedPin')), isFalse);
+    expect(g.nodes.any((n) => n.attributes.containsKey('negated')), isFalse);
   });
 
   test('Wire maps to IrConnection; absent Params are null', () {
+    // A real Logix wire out of an <IRef> carries no FromParam (the ref has a
+    // single implicit output); a wire out of a block names its output pin.
     final g = _graph(_parse('''
       <Sheet Number="1">
         <IRef ID="0" Operand="A"/>
-        <Block ID="1" Type="NOT"/>
+        <Function ID="1" Type="BNOT"/>
         <ORef ID="2" Operand="B"/>
-        <Wire FromID="0" FromParam="OUT" ToID="1" ToParam="IN"/>
-        <Wire FromID="1" ToID="2"/>
+        <Wire FromID="0" ToID="1" ToParam="IN"/>
+        <Wire FromID="1" FromParam="OUT" ToID="2"/>
       </Sheet>'''));
 
     expect(g.connections, hasLength(2));
     final w0 = g.connections[0];
     expect(w0.fromLocalId, 0);
-    expect(w0.fromPin, 'OUT');
+    expect(w0.fromPin, isNull); // absent FromParam -> null
     expect(w0.toLocalId, 1);
     expect(w0.toPin, 'IN');
     final w1 = g.connections[1];
-    expect(w1.fromPin, isNull);
-    expect(w1.toPin, isNull);
+    expect(w1.fromPin, 'OUT');
+    expect(w1.toPin, isNull); // absent ToParam -> null
   });
 
-  test('FeedbackWire maps like Wire and its cycle translates, never hangs', () {
+  test('FeedbackWire maps like Wire, translates, and EXECUTES without hanging', () {
     final ir = _parse('''
       <Sheet Number="1">
         <IRef ID="0" Operand="Src" X="0" Y="0"/>
-        <Block ID="1" Type="ADD" X="100" Y="0"/>
+        <Block ID="1" Type="ADD" Operand="Add_01" X="100" Y="0"/>
         <ORef ID="2" Operand="Dst" X="200" Y="0"/>
-        <Wire FromID="0" FromParam="OUT" ToID="1" ToParam="IN1"/>
+        <Wire FromID="0" ToID="1" ToParam="IN1"/>
         <Wire FromID="1" FromParam="OUT" ToID="2" ToParam="IN"/>
         <FeedbackWire FromID="1" FromParam="OUT" ToID="1" ToParam="IN2"/>
       </Sheet>''');
@@ -1500,11 +1631,26 @@ void main() {
     expect(fb.toLocalId, 1);
     expect(fb.toPin, 'IN2');
 
-    // One weakly-connected component -> one real network (the executor's
-    // dataflow-cycle fallback handles the loop at scan time).
+    // One weakly-connected component -> one real network.
     final tr = translateFbdBody(g, pouName: 'Prog_Main');
     expect(tr.translatedNetworkCount, 1);
     expect(tr.stubbedNetworkCount, 0);
+
+    // The "never hangs" claim is only worth anything if it is EXECUTED: the
+    // engine's dataflow-cycle fallback evaluates each unresolved block once
+    // and returns. (The ADD's own feedback input is unresolved on that pass,
+    // so it yields null and the ORef writes nothing; the point is the call
+    // returns at all.)
+    final prog = PlcProgram(name: 'Prog_Main', language: 'FunctionBlockDiagram');
+    prog.fbdBlocks.addAll(tr.blocks);
+    prog.fbdWires.addAll(tr.wires);
+    final p = PlcProject(
+      id: 'p', name: 'p', controllerName: 'c',
+      tags: [_tag('Src', 5), _tag('Dst', 0)],
+      structDefs: [], programs: [prog], tasks: [], hmis: [], fbDefinitions: [],
+    );
+    executeFbdPrograms(p, 100, FbdRuntime());
+    expect(readPath(p, 'Dst'), 0);
   });
 
   test('an unrecognized element with an ID is KEPT and stubs its component', () {
@@ -1545,23 +1691,39 @@ void main() {
     expect(ignored.single.message, contains('Attachment'));
   });
 
-  test('malformed ids get DISTINCT negative synthetic ids; wires to them drop', () {
+  test('malformed ids get DISTINCT negative ids; a dangling wire gets a placeholder', () {
     final g = _graph(_parse('''
       <Sheet Number="1">
         <IRef Operand="NoId"/>
         <IRef ID="abc" Operand="BadId"/>
         <IRef ID="-4" Operand="Negative"/>
         <IRef ID="0" Operand="Fine"/>
-        <Wire FromID="abc" ToID="0"/>
+        <Wire FromID="abc" ToID="0" ToParam="IN"/>
       </Sheet>'''));
 
-    final negatives = g.nodes.where((n) => n.localId < 0).map((n) => n.localId);
-    expect(negatives.toSet(), hasLength(3)); // distinct, never a shared -1
+    // 3 malformed elements + 1 placeholder for the wire's unresolvable source.
+    final negatives =
+        g.nodes.where((n) => n.localId < 0).map((n) => n.localId).toList();
+    expect(negatives, hasLength(4));
+    expect(negatives.toSet(), hasLength(4)); // distinct, never a shared -1
     expect(g.nodes.where((n) => n.localId >= 0), hasLength(1));
-    expect(g.connections, isEmpty); // a wire naming an unparseable id is dropped
+
+    // The wire is KEPT (never silently dropped) and points at the placeholder.
+    expect(g.connections, hasLength(1));
+    final placeholder =
+        g.nodes.firstWhere((n) => n.elementType == 'danglingWire');
+    expect(g.connections.single.fromLocalId, placeholder.localId);
+    expect(g.connections.single.toLocalId, 0);
+
+    // So the CONSUMER's component stubs instead of translating as if its
+    // input were merely unwired. 3 isolated malformed nodes + 1 component
+    // {placeholder, Fine} = 4 stubbed components, 0 translated.
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 0);
+    expect(tr.stubReasons['unsupported-element'], 4);
   });
 
-  test('an absent/empty FBDContent yields an empty GraphBody and no throw', () {
+  test('an absent/empty FBDContent yields an empty GraphBody, no warning, no throw', () {
     final ir = parseL5x('''
 <RSLogix5000Content TargetType="Controller"><Controller Name="C">
   <Programs><Program Name="Prog"><Tags/><Routines>
@@ -1570,9 +1732,15 @@ void main() {
   </Routines></Program></Programs>
 </Controller></RSLogix5000Content>''');
     for (final n in ['Prog_Main', 'Prog_Empty']) {
-      final g = ir.pous.firstWhere((p) => p.name == n).body as GraphBody;
+      final pou = ir.pous.firstWhere((p) => p.name == n);
+      expect(pou.lang, PouLanguage.fbd);
+      final g = pou.body as GraphBody;
       expect(g.nodes, isEmpty);
       expect(g.connections, isEmpty);
+      // Distinguishes the NEW path from the old one: the pre-feature FBD arm
+      // emitted an equally-empty GraphBody but ALWAYS warned. Nothing here has
+      // failed, so nothing warns at all.
+      expect(ir.warnings.any((w) => w.message.contains(n)), isFalse);
     }
   });
 
@@ -1628,8 +1796,11 @@ const Set<String> _kL5xFbdAnnotationElements = {'TextBox', 'Attachment'};
 /// inversion (`BNOT` is an explicit element).
 ///
 /// Two passes per sheet — nodes first, then wires — because pin aliasing needs
-/// the endpoint node's type to be known. Never throws: every attribute read is
-/// null-tolerant and an absent/empty `<FBDContent>` yields an empty body.
+/// the endpoint node's type to be known, and because a wire endpoint is
+/// resolved through the node pass's `assignedByRawId` map (an endpoint that
+/// names no element gets a `danglingWire` placeholder node so the wire is
+/// never silently dropped). Never throws: every attribute read is null-tolerant
+/// and an absent/empty `<FBDContent>` yields an empty body.
 GraphBody _l5xFbdBody(
     XmlElement routine, List<ImportWarning> warnings, String ownerLabel) {
   final nodes = <IrGraphNode>[];
@@ -1642,6 +1813,12 @@ GraphBody _l5xFbdBody(
 
   for (final content in _children(routine, 'FBDContent')) {
     for (final sheet in _children(content, 'Sheet')) {
+      // Raw `ID` -> the localId actually assigned to that element, so pass 2
+      // can resolve a wire endpoint to a REAL node (including one that was
+      // given a synthetic negative id for an out-of-range `ID`). Wire
+      // endpoints are sheet-local, so this map is per sheet.
+      final assignedByRawId = <int, int>{};
+
       // Pass 1 — nodes.
       for (final el in sheet.childElements) {
         final tag = el.name.local;
@@ -1657,6 +1834,9 @@ GraphBody _l5xFbdBody(
         final localId = (parsed == null || parsed < 0 || parsed > _kMaxL5xFbdId)
             ? malformedId--
             : parsed;
+        if (parsed != null && parsed >= 0) {
+          assignedByRawId[parsed] = localId;
+        }
         final attrs = <String, String>{};
         final String elementType;
         switch (tag) {
@@ -1720,6 +1900,24 @@ GraphBody _l5xFbdBody(
         ));
       }
 
+      // Resolves one wire endpoint to a real node id. An endpoint that names
+      // no element on this sheet (absent, unparseable, negative, or an id no
+      // element carries) gets a fresh `danglingWire` PLACEHOLDER node instead
+      // of dropping the wire: dropping it would silently delete a data path
+      // and let the consumer's component translate as though that input were
+      // simply unwired. The placeholder's negative id + unknown elementType
+      // make the consumer's component stub (`unsupported-element`).
+      int resolveEndpoint(String? raw) {
+        final parsed = int.tryParse(raw ?? '');
+        final hit = parsed == null ? null : assignedByRawId[parsed];
+        if (hit != null) {
+          return hit;
+        }
+        final id = malformedId--;
+        nodes.add(IrGraphNode(localId: id, elementType: 'danglingWire'));
+        return id;
+      }
+
       // Pass 2 — wires. `<FeedbackWire>` (a wire closing a feedback loop)
       // carries the identical attribute set as `<Wire>` and maps the same way;
       // the cyclic graph it creates is handled by the executor's existing
@@ -1729,19 +1927,10 @@ GraphBody _l5xFbdBody(
         if (tag != 'Wire' && tag != 'FeedbackWire') {
           continue;
         }
-        final fromId = int.tryParse(el.getAttribute('FromID') ?? '');
-        final toId = int.tryParse(el.getAttribute('ToID') ?? '');
-        // A wire whose endpoint id is absent/unparseable/negative names no
-        // element (synthetic negative ids are only ever assigned to elements,
-        // never referenced by a wire), so it is dropped rather than pointed at
-        // an arbitrary node.
-        if (fromId == null || toId == null || fromId < 0 || toId < 0) {
-          continue;
-        }
         conns.add(IrConnection(
-          fromLocalId: fromId,
+          fromLocalId: resolveEndpoint(el.getAttribute('FromID')),
           fromPin: el.getAttribute('FromParam'),
-          toLocalId: toId,
+          toLocalId: resolveEndpoint(el.getAttribute('ToID')),
           toPin: el.getAttribute('ToParam'),
         ));
       }
@@ -1806,9 +1995,9 @@ git add -A && git commit -m "feat(l5x): parse FBD routine bodies into the neutra
 
 ### Task 5: Multi-sheet merge + connector resolution
 
-**Model:** sonnet · **Effort:** medium
+**Model:** opus · **Effort:** high
 
-Implements spec §5 and resolutions R4 (unmatched connectors stub via the element gate) and R5 (per-sheet y offsetting).
+Implements spec §5 and resolutions R4 (unmatched connectors stub via the element gate) and R5 (per-sheet y offsetting). Raised to opus/high on review: the merge touches id assignment, wire-endpoint resolution and connector splicing at once, and three of its edge cases (unnamed connectors, connector chaining, dangling endpoints) silently produce WRONG graphs rather than failing loudly if they are handled naively.
 
 **Files:**
 - Modify: `mobile/lib/import/l5x_parser.dart` (`_l5xFbdBody` restructured; new `_l5xFbdSheets` and `_resolveL5xFbdConnectors` helpers)
@@ -1868,6 +2057,26 @@ Append to `mobile/test/import/l5x_parser_fbd_test.dart`, inside `void main() {`:
     expect(_node(g, 1).attributes['variable'], 'Second');
   });
 
+  test('an unnumbered sheet falls back to its document-order position', () {
+    // Document order: Number="2", (none), Number="1". Keys: 2.0, 2.5, 1.0 ->
+    // processed 1, 2, unnumbered (the unnumbered one sits just after the
+    // neighbour it followed in the file).
+    final g = _graph(_parse('''
+      <Sheet Number="2">
+        <IRef ID="0" Operand="Two" X="0" Y="0"/>
+      </Sheet>
+      <Sheet>
+        <IRef ID="0" Operand="NoNumber" X="0" Y="0"/>
+      </Sheet>
+      <Sheet Number="1">
+        <IRef ID="0" Operand="One" X="0" Y="0"/>
+      </Sheet>'''));
+
+    expect(_node(g, 0).attributes['variable'], 'One');
+    expect(_node(g, 1).attributes['variable'], 'Two');
+    expect(_node(g, 2).attributes['variable'], 'NoNumber');
+  });
+
   test('the synthetic-id counter is ROUTINE-wide across sheets', () {
     final g = _graph(_parse('''
       <Sheet Number="1">
@@ -1893,7 +2102,7 @@ Append to `mobile/test/import/l5x_parser_fbd_test.dart`, inside `void main() {`:
     final g = _graph(_parse('''
       <Sheet Number="1">
         <IRef ID="0" Operand="Src" X="0" Y="0"/>
-        <Block ID="1" Type="NOT" X="50" Y="0"/>
+        <Function ID="1" Type="NOT" X="50" Y="0"/>
         <OCon ID="2" Name="Loop1" X="100" Y="0"/>
         <Wire FromID="0" ToID="1" ToParam="IN"/>
         <Wire FromID="1" FromParam="OUT" ToID="2"/>
@@ -1923,10 +2132,78 @@ Append to `mobile/test/import/l5x_parser_fbd_test.dart`, inside `void main() {`:
     expect(direct.single.toPin, 'IN');
     expect(g.connections, hasLength(2)); // Src->NOT plus the merged wire
 
-    // Merged into ONE component -> one real network.
+    // Merged into ONE component -> one real network. (The IEC type name `NOT`
+    // is deliberate: Task 6's alias table does not exist yet, so the fixture
+    // must already name an IEC built-in to translate here.)
     final tr = translateFbdBody(g, pouName: 'Prog_Main');
     expect(tr.translatedNetworkCount, 1);
     expect(tr.stubbedNetworkCount, 0);
+  });
+
+  test('UNNAMED connectors never match each other; both stub', () {
+    // Two blank-Name connectors are NOT the same connector. Splicing them
+    // would wire two unrelated networks together, so they must never enter the
+    // match maps: the nodes stay and their components stub.
+    final ir = _parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="Src" X="0" Y="0"/>
+        <OCon ID="1" Name="" X="50" Y="0"/>
+        <Wire FromID="0" ToID="1"/>
+      </Sheet>
+      <Sheet Number="2">
+        <ICon ID="0" X="0" Y="0"/>
+        <ORef ID="1" Operand="Dst" X="50" Y="0"/>
+        <Wire FromID="0" ToID="1" ToParam="IN"/>
+      </Sheet>''');
+    final g = _graph(ir);
+
+    expect(g.nodes.any((n) => n.elementType == 'OCon'), isTrue);
+    expect(g.nodes.any((n) => n.elementType == 'ICon'), isTrue);
+    // No splice happened: Src is not wired to Dst.
+    expect(
+        g.connections.any((c) => c.fromLocalId == 0 && c.toLocalId == 3), isFalse);
+
+    final w = ir.warnings
+        .where((x) =>
+            x.message.contains('unmatched connector') &&
+            x.message.contains('(unnamed)'))
+        .toList();
+    expect(w, hasLength(1));
+    expect(w.single.severity, WarningSeverity.info);
+
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 0);
+    expect(tr.stubReasons['unsupported-element'], 2);
+  });
+
+  test('connector CHAINING (an ICon feeding an OCon) routes to the unmatched path', () {
+    // There is no producer/consumer pair to splice here, so both names take
+    // the unmatched path and their components stub.
+    final ir = _parse('''
+      <Sheet Number="1">
+        <ICon ID="0" Name="A" X="0" Y="0"/>
+        <OCon ID="1" Name="B" X="50" Y="0"/>
+        <Wire FromID="0" ToID="1"/>
+      </Sheet>
+      <Sheet Number="2">
+        <IRef ID="0" Operand="Src" X="0" Y="0"/>
+        <OCon ID="1" Name="A" X="50" Y="0"/>
+        <Wire FromID="0" ToID="1"/>
+      </Sheet>''');
+    final g = _graph(ir);
+
+    expect(g.nodes.where((n) => n.elementType == 'ICon'), hasLength(1));
+    expect(g.nodes.where((n) => n.elementType == 'OCon'), hasLength(2));
+    final names = ir.warnings
+        .where((x) => x.message.contains('unmatched connector'))
+        .map((x) => x.message)
+        .toList();
+    expect(names, hasLength(2)); // one for "A", one for "B"
+    expect(names.any((m) => m.contains('"A"')), isTrue);
+    expect(names.any((m) => m.contains('"B"')), isTrue);
+
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 0);
   });
 
   test('an unmatched connector is KEPT, warns, and stubs its component', () {
@@ -2012,6 +2289,15 @@ Add below `_l5xFbdSheets`:
 /// which `_translateComponent`'s element-kind pre-flight does not recognize),
 /// so the affected component stubs as `unsupported-element` rather than
 /// silently losing a data path, plus one info warning per connector name.
+///
+/// Two shapes are deliberately routed to that unmatched path rather than
+/// spliced:
+///  * an UNNAMED connector (blank `Name`) never even reaches this function's
+///    maps (the caller does not register it) — two blank names are not the
+///    same connector, and splicing them would wire unrelated networks together;
+///  * CHAINED connectors (a wire whose source is an `ICon` and whose target is
+///    an `OCon`) have no real producer or consumer to splice, and splicing
+///    would leave a wire referencing a dropped connector node.
 /// Never throws.
 void _resolveL5xFbdConnectors(
     List<IrGraphNode> nodes,
@@ -2025,16 +2311,24 @@ void _resolveL5xFbdConnectors(
   }
   final producers = <String, List<IrConnection>>{};
   final consumers = <String, List<IrConnection>>{};
+  final chained = <String>{};
   for (final c in conns) {
     final o = oconNames[c.toLocalId];
-    if (o != null) (producers[o] ??= []).add(c);
     final i = iconNames[c.fromLocalId];
+    if (o != null && i != null) {
+      // Connector-to-connector chaining: both names route to unmatched.
+      chained.add(o);
+      chained.add(i);
+      continue;
+    }
+    if (o != null) (producers[o] ??= []).add(c);
     if (i != null) (consumers[i] ??= []).add(c);
   }
 
   final matched = <String>{};
   final direct = <IrConnection>[];
   for (final entry in producers.entries) {
+    if (chained.contains(entry.key)) continue;
     final cons = consumers[entry.key];
     if (cons == null) continue;
     matched.add(entry.key);
@@ -2096,22 +2390,31 @@ GraphBody _l5xFbdBody(
   var malformedId = -1;
   final ignoredKinds = <String>[];
   var ignoredCount = 0;
-  // Connector nodes, collected routine-wide: assigned localId -> name.
+  // Connector nodes, collected routine-wide: assigned localId -> name. ONLY
+  // named connectors are registered; an unnamed one can never be matched (two
+  // blank names are not the same connector), so it must not enter these maps.
   final iconNames = <int, String>{};
   final oconNames = <int, String>{};
+  var unnamedConnectors = 0;
   // Sheet-merge state.
   var idOffset = 0;
   var maxAssignedId = -1;
   var yBase = 0.0;
-  var maxYSeen = 0.0;
+  // Nullable so the FIRST node's y seeds the running max instead of an assumed
+  // 0.0 (a sheet whose coordinates are all negative would otherwise make the
+  // next sheet's yBase overlap it).
+  double? maxYSeen;
   var firstSheet = true;
 
   for (final sheet in _l5xFbdSheets(routine)) {
     if (!firstSheet) {
       idOffset = maxAssignedId + 1;
-      yBase = maxYSeen + 200;
+      yBase = (maxYSeen ?? 0) + 200;
     }
     firstSheet = false;
+    // Raw `ID` -> the localId actually assigned, so pass 2 resolves a wire
+    // endpoint to a REAL node. Per sheet, because wires are sheet-local.
+    final assignedByRawId = <int, int>{};
 
     // Pass 1 — nodes.
     for (final el in sheet.childElements) {
@@ -2132,8 +2435,14 @@ GraphBody _l5xFbdBody(
         localId = parsed + idOffset;
         if (localId > maxAssignedId) maxAssignedId = localId;
       }
+      // Recorded even when the element got a SYNTHETIC id (out-of-range `ID`),
+      // so a wire naming that raw id still resolves to the real (stubbing)
+      // node rather than to a placeholder.
+      if (parsed != null && parsed >= 0) {
+        assignedByRawId[parsed] = localId;
+      }
       final y = (double.tryParse(el.getAttribute('Y') ?? '') ?? 0) + yBase;
-      if (y > maxYSeen) maxYSeen = y;
+      if (maxYSeen == null || y > maxYSeen!) maxYSeen = y;
 
       final attrs = <String, String>{};
       final String elementType;
@@ -2179,7 +2488,11 @@ GraphBody _l5xFbdBody(
             elementType = tag;
             final cname = (el.getAttribute('Name') ?? '').trim();
             attrs['connectorName'] = cname;
-            if (tag == 'ICon') {
+            if (cname.isEmpty) {
+              // Unnamed: NOT registered, so it can never be spliced. The node
+              // stays, so its component stubs (`unsupported-element`).
+              unnamedConnectors++;
+            } else if (tag == 'ICon') {
               iconNames[localId] = cname;
             } else {
               oconNames[localId] = cname;
@@ -2204,22 +2517,35 @@ GraphBody _l5xFbdBody(
       ));
     }
 
+    // Resolves one wire endpoint to a real node id (see Task 4): an endpoint
+    // naming no element on this sheet gets a `danglingWire` PLACEHOLDER node
+    // so the wire is never silently dropped and the consumer's component
+    // stubs. Resolution goes through `assignedByRawId`, so the per-sheet
+    // offset is applied exactly once and out-of-range ids land on the real
+    // synthetic-id node.
+    int resolveEndpoint(String? raw) {
+      final parsed = int.tryParse(raw ?? '');
+      final hit = parsed == null ? null : assignedByRawId[parsed];
+      if (hit != null) {
+        return hit;
+      }
+      final id = malformedId--;
+      nodes.add(IrGraphNode(
+          localId: id, elementType: 'danglingWire', y: yBase));
+      return id;
+    }
+
     // Pass 2 — wires. Wires live inside their own <Sheet>, so every reference
-    // is sheet-local and takes this sheet's offset.
+    // is sheet-local.
     for (final el in sheet.childElements) {
       final tag = el.name.local;
       if (tag != 'Wire' && tag != 'FeedbackWire') {
         continue;
       }
-      final rawFrom = int.tryParse(el.getAttribute('FromID') ?? '');
-      final rawTo = int.tryParse(el.getAttribute('ToID') ?? '');
-      if (rawFrom == null || rawTo == null || rawFrom < 0 || rawTo < 0) {
-        continue; // names no element
-      }
       conns.add(IrConnection(
-        fromLocalId: rawFrom + idOffset,
+        fromLocalId: resolveEndpoint(el.getAttribute('FromID')),
         fromPin: el.getAttribute('FromParam'),
-        toLocalId: rawTo + idOffset,
+        toLocalId: resolveEndpoint(el.getAttribute('ToID')),
         toPin: el.getAttribute('ToParam'),
       ));
     }
@@ -2227,6 +2553,14 @@ GraphBody _l5xFbdBody(
 
   _resolveL5xFbdConnectors(
       nodes, conns, iconNames, oconNames, warnings, ownerLabel);
+
+  if (unnamedConnectors > 0) {
+    warnings.add(ImportWarning(
+        severity: WarningSeverity.info,
+        message: '$ownerLabel: $unnamedConnectors unmatched connector(s) '
+            '(unnamed) — a connector with no Name can never be matched, so the '
+            'affected networks are not translated.'));
+  }
 
   if (ignoredCount > 0) {
     warnings.add(ImportWarning(
@@ -2242,7 +2576,7 @@ GraphBody _l5xFbdBody(
 
 From `mobile/`: `/c/flutter/bin/flutter test test/import/l5x_parser_fbd_test.dart`
 
-Expected: all 13 tests pass (the Task 4 tests are single-sheet, so their raw ids and y values are unchanged).
+Expected: all 16 tests pass (the Task 4 tests are single-sheet, so their raw ids and y values are unchanged).
 
 - [ ] **Step 7: Verify the whole suite and the analyzer**
 
@@ -2263,13 +2597,15 @@ git add -A && git commit -m "feat(l5x): merge FBD sheets and resolve ICon/OCon c
 
 Implements spec §6 and resolution R1 (the alias table must map PIN names, not just type names, or every math/compare network would stub).
 
+**Beyond the spec's §6 table (added on review):** `SEL` and `CTUD` get pin maps, and `OSRI`/`OSFI` get type + pin maps. `SEL` and `CTUD` are Rockwell FBD blocks whose type names are ALREADY in `kFbdBuiltinBlockTypes`, so they sail past the block allowlist and then die in `_assertPin` with `unresolved-pin` and **no inventory entry** - the worst failure mode available (a silently non-executing network with no type recorded in `unsupportedFbdBlockTypes`). `OSRI`/`OSFI` are the Logix one-shot instructions that correspond exactly to `R_TRIG`/`F_TRIG`. All four are best-effort like `TONR`/`TOFR`; any pin outside the map still passes through and still stubs.
+
 **Files:**
 - Modify: `mobile/lib/import/l5x_parser.dart` (alias tables, `_aliasL5xFbdPin`, node/wire passes in `_l5xFbdBody`)
 - Test: `mobile/test/import/l5x_parser_fbd_test.dart` (append)
 
 **Interfaces:**
 - Produces: `const Map<String, String> _kL5xFbdTypeAliases`, `const Map<String, Map<String, String>> _kL5xFbdPinAliases`, `const Set<String> _kL5xFbdBitFunctions`.
-- Produces: `bool _isAliasedAbBlock(String abType)` and `String? _aliasL5xFbdPin(String? abType, String? pin)` (returns `pin` verbatim when there is no mapping, `null` when `pin` is null).
+- Produces: `String? _aliasL5xFbdPin(String? abType, String? pin)` (returns `pin` verbatim when there is no mapping, `null` when `pin` is null). There is deliberately NO `_isAliasedAbBlock` helper: the `EnableIn`/`EnableOut` heads-up fires for ANY recorded block endpoint (Recorded resolution 3), so no such predicate is needed and an unused private function would fail `flutter analyze`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2281,10 +2617,10 @@ Append to `mobile/test/import/l5x_parser_fbd_test.dart`, inside `void main() {`:
       <Sheet Number="1">
         <IRef ID="0" Operand="Level" X="0" Y="0"/>
         <IRef ID="1" Operand="50" X="0" Y="40"/>
-        <Block ID="2" Type="GRT" X="100" Y="0"/>
+        <Block ID="2" Type="GRT" Operand="Grt_01" X="100" Y="0"/>
         <ORef ID="3" Operand="HiAlarm" X="200" Y="0"/>
-        <Wire FromID="0" FromParam="OUT" ToID="2" ToParam="SourceA"/>
-        <Wire FromID="1" FromParam="OUT" ToID="2" ToParam="SourceB"/>
+        <Wire FromID="0" ToID="2" ToParam="SourceA"/>
+        <Wire FromID="1" ToID="2" ToParam="SourceB"/>
         <Wire FromID="2" FromParam="Dest" ToID="3" ToParam="IN"/>
       </Sheet>'''));
 
@@ -2298,16 +2634,18 @@ Append to `mobile/test/import/l5x_parser_fbd_test.dart`, inside `void main() {`:
     expect(tr.stubbedNetworkCount, 0);
   });
 
-  test('BAND/BNOT alias their type and their In<k>/Out pins', () {
+  test('BAND/BNOT (real <Function> elements) alias their type and In<k>/Out pins', () {
+    // Bit functions are stateless, so real exports carry them as <Function>
+    // elements with no Operand - the element kind this test deliberately uses.
     final g = _graph(_parse('''
       <Sheet Number="1">
         <IRef ID="0" Operand="A" X="0" Y="0"/>
         <IRef ID="1" Operand="B" X="0" Y="40"/>
-        <Block ID="2" Type="BAND" X="100" Y="0"/>
-        <Block ID="3" Type="BNOT" X="200" Y="0"/>
+        <Function ID="2" Type="BAND" X="100" Y="0"/>
+        <Function ID="3" Type="BNOT" X="200" Y="0"/>
         <ORef ID="4" Operand="Out" X="300" Y="0"/>
-        <Wire FromID="0" FromParam="OUT" ToID="2" ToParam="In1"/>
-        <Wire FromID="1" FromParam="OUT" ToID="2" ToParam="In2"/>
+        <Wire FromID="0" ToID="2" ToParam="In1"/>
+        <Wire FromID="1" ToID="2" ToParam="In2"/>
         <Wire FromID="2" FromParam="Out" ToID="3" ToParam="In"/>
         <Wire FromID="3" FromParam="Out" ToID="4" ToParam="IN"/>
       </Sheet>'''));
@@ -2323,12 +2661,56 @@ Append to `mobile/test/import/l5x_parser_fbd_test.dart`, inside `void main() {`:
     expect(tr.translatedNetworkCount, 1);
   });
 
-  test('an AddOnInstruction Name is never aliased', () {
+  test('an AddOnInstruction Name is never aliased, though the same word IS on a Function', () {
     final g = _graph(_parse('''
       <Sheet Number="1">
         <AddOnInstruction ID="0" Name="BAND" Operand="Inst1"/>
+        <Function ID="1" Type="BAND"/>
       </Sheet>'''));
-    expect(_node(g, 0).attributes['typeName'], 'BAND'); // NOT rewritten to AND
+    // Discriminating pair: the identical word aliases on a <Function> and does
+    // NOT on an <AddOnInstruction>, so this cannot pass vacuously.
+    expect(_node(g, 0).attributes['typeName'], 'BAND');
+    expect(_node(g, 1).attributes['typeName'], 'AND');
+  });
+
+  test('SEL/OSRI pins alias instead of dying uninventoried in _assertPin', () {
+    final g = _graph(_parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="Pick" X="0" Y="0"/>
+        <IRef ID="1" Operand="Lo" X="0" Y="40"/>
+        <IRef ID="2" Operand="Hi" X="0" Y="80"/>
+        <Block ID="3" Type="SEL" Operand="Sel_01" X="100" Y="0"/>
+        <ORef ID="4" Operand="Picked" X="200" Y="0"/>
+        <Wire FromID="0" ToID="3" ToParam="SelectorIn"/>
+        <Wire FromID="1" ToID="3" ToParam="In1"/>
+        <Wire FromID="2" ToID="3" ToParam="In2"/>
+        <Wire FromID="3" FromParam="Out" ToID="4" ToParam="IN"/>
+      </Sheet>
+      <Sheet Number="2">
+        <IRef ID="0" Operand="Pulse" X="0" Y="0"/>
+        <Block ID="1" Type="OSRI" Operand="Osr_01" X="100" Y="0"/>
+        <ORef ID="2" Operand="Edge" X="200" Y="0"/>
+        <Wire FromID="0" ToID="1" ToParam="InputBit"/>
+        <Wire FromID="1" FromParam="OutputBit" ToID="2" ToParam="IN"/>
+      </Sheet>'''));
+
+    // SEL keeps its type (it IS an IEC built-in name) but its pins are
+    // Rockwell's: SelectorIn -> G, In1 -> IN0 (selector false), In2 -> IN1,
+    // Out -> OUT. Without the map these die in _assertPin UNINVENTORIED.
+    expect(_node(g, 3).attributes['typeName'], 'SEL');
+    expect(g.connections[0].toPin, 'G');
+    expect(g.connections[1].toPin, 'IN0');
+    expect(g.connections[2].toPin, 'IN1');
+    expect(g.connections[3].fromPin, 'OUT');
+    // OSRI -> R_TRIG with InputBit -> CLK, OutputBit -> Q.
+    final osri = g.nodes.firstWhere((n) => n.attributes['abOriginal'] == 'OSRI');
+    expect(osri.attributes['typeName'], 'R_TRIG');
+    expect(g.connections[4].toPin, 'CLK');
+    expect(g.connections[5].fromPin, 'Q');
+
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 2);
+    expect(tr.stubbedNetworkCount, 0);
   });
 
   test('TONR maps to TON with abOriginal + a prominent verify warning', () {
@@ -2338,8 +2720,8 @@ Append to `mobile/test/import/l5x_parser_fbd_test.dart`, inside `void main() {`:
         <IRef ID="1" Operand="1000" X="0" Y="40"/>
         <Block ID="2" Type="TONR" Operand="T1" X="100" Y="0"/>
         <ORef ID="3" Operand="Done" X="200" Y="0"/>
-        <Wire FromID="0" FromParam="OUT" ToID="2" ToParam="TimerEnable"/>
-        <Wire FromID="1" FromParam="OUT" ToID="2" ToParam="PRE"/>
+        <Wire FromID="0" ToID="2" ToParam="TimerEnable"/>
+        <Wire FromID="1" ToID="2" ToParam="PRE"/>
         <Wire FromID="2" FromParam="DN" ToID="3" ToParam="IN"/>
       </Sheet>''');
     final g = _graph(ir);
@@ -2368,8 +2750,8 @@ Append to `mobile/test/import/l5x_parser_fbd_test.dart`, inside `void main() {`:
         <IRef ID="0" Operand="Run" X="0" Y="0"/>
         <IRef ID="1" Operand="Rst" X="0" Y="40"/>
         <Block ID="2" Type="TONR" Operand="T1" X="100" Y="0"/>
-        <Wire FromID="0" FromParam="OUT" ToID="2" ToParam="TimerEnable"/>
-        <Wire FromID="1" FromParam="OUT" ToID="2" ToParam="Reset"/>
+        <Wire FromID="0" ToID="2" ToParam="TimerEnable"/>
+        <Wire FromID="1" ToID="2" ToParam="Reset"/>
       </Sheet>'''));
 
     expect(g.connections[1].toPin, 'Reset'); // passes through verbatim
@@ -2378,16 +2760,16 @@ Append to `mobile/test/import/l5x_parser_fbd_test.dart`, inside `void main() {`:
     expect(tr.stubReasons['unresolved-pin'], 1);
   });
 
-  test('a WIRED EnableIn on an aliased built-in warns and stubs; unwired costs nothing', () {
+  test('a WIRED EnableIn on a built-in warns and stubs; unwired costs nothing', () {
     final ir = _parse('''
       <Sheet Number="1">
         <IRef ID="0" Operand="Gate" X="0" Y="0"/>
         <IRef ID="1" Operand="A" X="0" Y="40"/>
         <IRef ID="2" Operand="B" X="0" Y="80"/>
-        <Block ID="3" Type="BAND" X="100" Y="0"/>
-        <Wire FromID="0" FromParam="OUT" ToID="3" ToParam="EnableIn"/>
-        <Wire FromID="1" FromParam="OUT" ToID="3" ToParam="In1"/>
-        <Wire FromID="2" FromParam="OUT" ToID="3" ToParam="In2"/>
+        <Function ID="3" Type="BAND" X="100" Y="0"/>
+        <Wire FromID="0" ToID="3" ToParam="EnableIn"/>
+        <Wire FromID="1" ToID="3" ToParam="In1"/>
+        <Wire FromID="2" ToID="3" ToParam="In2"/>
       </Sheet>''');
     final g = _graph(ir);
 
@@ -2407,10 +2789,10 @@ Append to `mobile/test/import/l5x_parser_fbd_test.dart`, inside `void main() {`:
       <Sheet Number="1">
         <IRef ID="0" Operand="A" X="0" Y="0"/>
         <IRef ID="1" Operand="B" X="0" Y="40"/>
-        <Block ID="2" Type="BAND" X="100" Y="0"/>
+        <Function ID="2" Type="BAND" X="100" Y="0"/>
         <ORef ID="3" Operand="Out" X="200" Y="0"/>
-        <Wire FromID="0" FromParam="OUT" ToID="2" ToParam="In1"/>
-        <Wire FromID="1" FromParam="OUT" ToID="2" ToParam="In2"/>
+        <Wire FromID="0" ToID="2" ToParam="In1"/>
+        <Wire FromID="1" ToID="2" ToParam="In2"/>
         <Wire FromID="2" FromParam="Out" ToID="3" ToParam="IN"/>
       </Sheet>''');
     expect(
@@ -2420,18 +2802,49 @@ Append to `mobile/test/import/l5x_parser_fbd_test.dart`, inside `void main() {`:
         .translatedNetworkCount, 1);
   });
 
-  test('an unmapped Rockwell block stubs and is inventoried', () {
+  test('a wired EnableIn on an AddOnInstruction call warns too (the common case)', () {
+    // The most common real occurrence of a wired EnableIn is an AOI call, not
+    // an aliased built-in: for an FBD-Logic AOI, EnableIn/EnableOut are
+    // INTERNAL vars and therefore not pins, so the network stubs identically.
+    final ir = _parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="Gate" X="0" Y="0"/>
+        <AddOnInstruction ID="1" Name="Ramp" Operand="R1" X="100" Y="0"/>
+        <Wire FromID="0" ToID="1" ToParam="EnableIn"/>
+      </Sheet>''');
+    final w = ir.warnings
+        .where((x) => x.message.contains('EnableIn/EnableOut wired'))
+        .toList();
+    expect(w, hasLength(1));
+    expect(w.single.severity, WarningSeverity.info);
+    expect(w.single.message, contains('Ramp'));
+  });
+
+  test('an unmapped Rockwell block stubs and is inventoried, while a mapped one aliases', () {
     final g = _graph(_parse('''
       <Sheet Number="1">
         <IRef ID="0" Operand="Raw" X="0" Y="0"/>
         <Block ID="1" Type="SCL" Operand="S1" X="100" Y="0"/>
-        <Wire FromID="0" FromParam="OUT" ToID="1" ToParam="In"/>
+        <Wire FromID="0" ToID="1" ToParam="In"/>
+      </Sheet>
+      <Sheet Number="2">
+        <IRef ID="0" Operand="A" X="0" Y="0"/>
+        <IRef ID="1" Operand="B" X="0" Y="40"/>
+        <Block ID="2" Type="GRT" Operand="Grt_02" X="100" Y="0"/>
+        <ORef ID="3" Operand="Hi" X="200" Y="0"/>
+        <Wire FromID="0" ToID="2" ToParam="SourceA"/>
+        <Wire FromID="1" ToID="2" ToParam="SourceB"/>
+        <Wire FromID="2" FromParam="Dest" ToID="3" ToParam="IN"/>
       </Sheet>'''));
 
-    expect(_node(g, 1).attributes['typeName'], 'SCL'); // unchanged
+    // Discriminating pair in ONE routine: the aliasable GRT is rewritten, the
+    // unmapped SCL is not, so "unchanged" cannot pass vacuously.
+    expect(_node(g, 1).attributes['typeName'], 'SCL');
+    expect(g.nodes.any((n) => n.attributes['typeName'] == 'GT'), isTrue);
+
     final tr = translateFbdBody(g, pouName: 'Prog_Main');
-    expect(tr.translatedNetworkCount, 0);
-    expect(tr.stubReasons['unsupported-block'], 1);
+    expect(tr.translatedNetworkCount, 1); // the GRT network
+    expect(tr.stubReasons['unsupported-block'], 1); // the SCL network
     expect(tr.unsupportedBlockTypes, contains('SCL'));
   });
 ```
@@ -2464,6 +2877,9 @@ const Map<String, String> _kL5xFbdTypeAliases = {
   'BNOT': 'NOT',
   'TONR': 'TON',
   'TOFR': 'TOF',
+  // Logix one-shots map exactly onto the IEC edge detectors.
+  'OSRI': 'R_TRIG',
+  'OSFI': 'F_TRIG',
 };
 
 /// Pin renames keyed by the ROCKWELL (pre-alias) type name. Rockwell FBD wires
@@ -2486,6 +2902,24 @@ const Map<String, Map<String, String>> _kL5xFbdPinAliases = {
   'BNOT': {'In': 'IN', 'Out': 'OUT'},
   'TONR': {'TimerEnable': 'IN', 'PRE': 'PT', 'Preset': 'PT', 'DN': 'Q', 'ACC': 'ET'},
   'TOFR': {'TimerEnable': 'IN', 'PRE': 'PT', 'Preset': 'PT', 'DN': 'Q', 'ACC': 'ET'},
+  // SEL and CTUD keep their IEC-identical TYPE names, so they pass
+  // `kFbdBuiltinBlockTypes` and would otherwise die in `_assertPin` with
+  // `unresolved-pin` and NO inventory entry. IEC SEL is
+  // `OUT = G ? IN1 : IN0`; Logix SEL is `Out = SelectorIn ? In2 : In1`.
+  'SEL': {'SelectorIn': 'G', 'In1': 'IN0', 'In2': 'IN1', 'Out': 'OUT'},
+  // CTUD is BEST-EFFORT (like TONR/TOFR): the mapped pins are the ones whose
+  // meaning is unambiguous; anything else passes through and stubs.
+  'CTUD': {
+    'CUEnable': 'CU',
+    'CDEnable': 'CD',
+    'Reset': 'R',
+    'Load': 'LD',
+    'PRE': 'PV',
+    'ACC': 'CV',
+    'DN': 'QU',
+  },
+  'OSRI': {'InputBit': 'CLK', 'OutputBit': 'Q'},
+  'OSFI': {'InputBit': 'CLK', 'OutputBit': 'Q'},
 };
 
 /// Extensible bit functions whose pins are `In<k>`/`Out` (mapped by regex to
@@ -2493,14 +2927,6 @@ const Map<String, Map<String, String>> _kL5xFbdPinAliases = {
 const Set<String> _kL5xFbdBitFunctions = {'BAND', 'BOR'};
 
 final RegExp _kL5xFbdBitFunctionPin = RegExp(r'^In(\d+)$');
-
-/// True when [abType] is a Rockwell block this parser aliases (by type name,
-/// by pin names, or as an extensible bit function). Used only to scope the
-/// `EnableIn`/`EnableOut` heads-up warning.
-bool _isAliasedAbBlock(String abType) =>
-    _kL5xFbdTypeAliases.containsKey(abType) ||
-    _kL5xFbdPinAliases.containsKey(abType) ||
-    _kL5xFbdBitFunctions.contains(abType);
 
 /// Rewrites a Rockwell pin name to its IEC equivalent, given the endpoint
 /// node's ROCKWELL type. Anything unmapped (including `EnableIn`/`EnableOut`)
@@ -2546,7 +2972,7 @@ Replace the `case 'Block':` and `case 'Function':` arms with (both share the ali
             final aliased = _kL5xFbdTypeAliases[abType] ?? abType;
             attrs['typeName'] = aliased;
             abTypeById[localId] = abType;
-            if (abType == 'TONR' || abType == 'TOFR') {
+            if (_kL5xFbdBestEffortTypes.contains(abType)) {
               // IR-only breadcrumb: translateFbdBody copies attributes through
               // and only reads the keys it knows, so an unknown key is
               // silently ignored (there is no native field to carry it).
@@ -2555,8 +2981,8 @@ Replace the `case 'Block':` and `case 'Function':` arms with (both share the ali
                 warnings.add(ImportWarning(
                     severity: WarningSeverity.warning,
                     message: '$ownerLabel: Rockwell $abType mapped best-effort '
-                        'to the IEC $aliased block — retentive/reset behaviour '
-                        'differs; verify.'));
+                        'to the IEC $aliased block — behaviour differs '
+                        '(retentive/reset, extra pins); verify.'));
               }
             }
             if (tag == 'Block') {
@@ -2567,19 +2993,38 @@ Replace the `case 'Block':` and `case 'Function':` arms with (both share the ali
           }
 ```
 
+Add the best-effort set next to the alias tables (Step 3):
+
+```dart
+/// Aliases whose IEC target is only an APPROXIMATION of the Rockwell block, so
+/// each carries an `abOriginal` breadcrumb and a prominent verify warning.
+/// (`TONR`/`TOFR` lose retentive accumulation and the `Reset` pin;
+/// `OSRI`/`OSFI` lose Logix's separate storage/output bits.)
+const Set<String> _kL5xFbdBestEffortTypes = {'TONR', 'TOFR', 'OSRI', 'OSFI'};
+```
+
+Record the raw type for `AddOnInstruction` nodes too, so the `EnableIn`/`EnableOut` heads-up below covers AOI calls (the most common real occurrence). In that case arm, after `attrs['typeName'] = ...`, add:
+
+```dart
+            abTypeById[localId] = attrs['typeName']!; // never aliased
+```
+
 In pass 2, replace the `conns.add(...)` with the aliasing version plus the `EnableIn`/`EnableOut` heads-up:
 
 ```dart
       final rawFromPin = el.getAttribute('FromParam');
       final rawToPin = el.getAttribute('ToParam');
-      final fromId = rawFrom + idOffset;
-      final toId = rawTo + idOffset;
+      final fromId = resolveEndpoint(el.getAttribute('FromID'));
+      final toId = resolveEndpoint(el.getAttribute('ToID'));
 
       // Logix `EnableIn`/`EnableOut` are a rung-condition concept with no pin
-      // on the IEC block an aliased type maps to. A WIRED one is left
-      // unaliased and follows the existing unmapped-pin path (the network
-      // stubs with `unresolved-pin`); this extra heads-up just makes that a
-      // named, diagnosable condition. An UNWIRED one never reaches here.
+      // on the IEC block an aliased type maps to — and none on an imported AOI
+      // either, where they are INTERNAL vars (see l5x_parser's AOI arm). A
+      // WIRED one is left unaliased and follows the existing unmapped-pin path
+      // (the network stubs with `unresolved-pin`); this heads-up just makes
+      // that a named, diagnosable condition instead of a generic pin stub. An
+      // UNWIRED one never reaches here. The gate is simply "the endpoint is a
+      // block": narrowing it to aliased built-ins would miss the AOI case.
       for (final e in [
         MapEntry(abTypeById[fromId], rawFromPin),
         MapEntry(abTypeById[toId], rawToPin),
@@ -2588,12 +3033,11 @@ In pass 2, replace the `conns.add(...)` with the aliasing version plus the `Enab
         final pin = e.value;
         if (t == null || pin == null) continue;
         if (pin != 'EnableIn' && pin != 'EnableOut') continue;
-        if (!_isAliasedAbBlock(t)) continue;
         if (enableWarned.add('$t|$pin')) {
           warnings.add(ImportWarning(
               severity: WarningSeverity.info,
               message: '$ownerLabel: EnableIn/EnableOut wired on "$t" — the '
-                  'IEC block it maps to has no such pin, so that network is '
+                  'block it maps to has no such pin, so that network is '
                   'not translated.'));
         }
       }
@@ -2610,7 +3054,7 @@ In pass 2, replace the `conns.add(...)` with the aliasing version plus the `Enab
 
 From `mobile/`: `/c/flutter/bin/flutter test test/import/l5x_parser_fbd_test.dart`
 
-Expected: all 20 tests pass.
+Expected: all 25 tests pass.
 
 - [ ] **Step 6: Verify the whole suite and the analyzer**
 
@@ -2829,6 +3273,41 @@ void main() {
     expect(syn.direction, FbVarDir.internal);
     expect(syn.initialValue, isA<Map>());
   });
+
+  test('R3: a synthesized nested-instance name is sanitized and retargeted', () {
+    final leaf = ImportedPou(name: 'Leaf', kind: PouKind.functionBlock,
+        lang: PouLanguage.st,
+        localVars: [_v('In', 'BOOL', VarScope.input), _v('Out', 'BOOL', VarScope.output)],
+        body: TextBody('Out := In;'));
+    // A Logix Operand is not bound by this app's identifier rules.
+    final body = GraphBody(nodes: [
+      IrGraphNode(localId: 0, elementType: 'inVariable',
+          attributes: {'variable': 'In'}),
+      IrGraphNode(localId: 1, elementType: 'block',
+          attributes: {'typeName': 'Leaf', 'instanceName': 'Pump-1'}),
+      IrGraphNode(localId: 2, elementType: 'outVariable',
+          attributes: {'variable': 'Out'}),
+    ], connections: [
+      IrConnection(fromLocalId: 0, fromPin: 'OUT', toLocalId: 1, toPin: 'In'),
+      IrConnection(fromLocalId: 1, fromPin: 'Out', toLocalId: 2, toPin: 'IN'),
+    ]);
+
+    final warnings = <ImportWarning>[];
+    final res = _map([leaf, _fbdAoi('Outer', body)], warnings);
+    final outer = res.defs.firstWhere((d) => d.name == 'Outer');
+
+    // NOTE: translateFbdBody's own `_fbInstanceName` rejects 'Pump-1' as an
+    // identifier and falls back to '<pouName>_fb<localId>'; whichever name
+    // arrives, the var and the block binding must AGREE and must be a legal
+    // identifier, or the nested instance is unaddressable at runtime.
+    final callBlock = outer.fbdBlocks.firstWhere((b) => b.type == 'Leaf');
+    expect(RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$').hasMatch(callBlock.tagBinding),
+        isTrue);
+    expect(outer.vars.map((v) => v.name), contains(callBlock.tagBinding));
+    expect(
+        outer.vars.firstWhere((v) => v.name == callBlock.tagBinding).dataType,
+        'Leaf');
+  });
 }
 ```
 
@@ -3005,21 +3484,57 @@ FbImportResult mapImportedFbs(
         // LdScope rewrites the call block's tagBinding to
         // `<instance>.<localTag>` and each instance gets its own nested state.
         for (final it in tr.instanceTags) {
+          final original = it.name;
+          // The instance name came from the L5X `Operand` attribute, which is
+          // NOT constrained to this app's identifier rules. Every other import
+          // path sanitizes before creating a member (`_sanitize` here, and
+          // `_sanitizeIdentifier` in ir_to_project for project tags), so this
+          // one must too: an unsanitized member name would be unaddressable by
+          // `readPath`/`writePath` and by the FB editor.
+          var vname = _sanitize(original);
+          if (vname != original) {
+            warnings.add(ImportWarning(severity: WarningSeverity.info,
+                message: 'Function block "$name": nested instance "$original" '
+                    'renamed to "$vname" (identifier rules).'));
+          }
           FbVar? existing;
           for (final v in vars) {
-            if (v.name == it.name) {
+            if (v.name == vname) {
               existing = v;
               break;
             }
           }
-          if (existing == null) {
-            vars.add(FbVar(name: it.name, dataType: it.dataType,
-                direction: FbVarDir.internal, initialValue: it.value));
-          } else if (existing.dataType != it.dataType) {
+          if (existing != null && existing.dataType != it.dataType) {
+            // The name collides with an UNRELATED var of another type (often a
+            // consequence of the sanitize above). Dedupe rather than reuse it:
+            // reusing would point the call block at a member of the wrong type.
+            final base = vname;
+            var i = 2;
+            while (vars.any((v) => v.name == '${base}_$i')) {
+              i++;
+            }
+            vname = '${base}_$i';
             warnings.add(ImportWarning(severity: WarningSeverity.info,
-                message: 'Function block "$name": local "${it.name}" is typed '
+                message: 'Function block "$name": local "$base" is typed '
                     '"${existing.dataType}" but backs a "${it.dataType}" call '
-                    'block — the nested instance may not resolve.'));
+                    'block — the nested instance was given its own local '
+                    '"$vname" (a reference to "$base" may not resolve).'));
+            existing = null;
+          }
+          if (existing == null) {
+            vars.add(FbVar(name: vname, dataType: it.dataType,
+                direction: FbVarDir.internal, initialValue: it.value));
+          }
+          if (vname != original) {
+            // Retarget the call block(s) that named the instance, mirroring
+            // ir_to_project's instance-tag retarget loop. Only blocks whose
+            // TYPE is a registered FB may be retargeted: a TAG_INPUT/CONST
+            // binding that coincidentally matches must not be.
+            for (final b in tr.blocks) {
+              if (registry.containsKey(b.type) && b.tagBinding == original) {
+                b.tagBinding = vname;
+              }
+            }
           }
         }
         def = FbDefinition(name: name, vars: vars, fbdBlocks: tr.blocks,
@@ -3082,7 +3597,7 @@ Seed the FBD accumulators (lines 189-192):
 
 From `mobile/`: `/c/flutter/bin/flutter test test/import/fb_import_fbd_test.dart`
 
-Expected: all 6 tests pass.
+Expected: all 7 tests pass.
 
 - [ ] **Step 7: Write the failing parser test (rewrite the existing one)**
 
@@ -3135,7 +3650,7 @@ Expected: FAIL - `pou.lang` is `PouLanguage.st` and `localVars` is `['X']`.
 
 In `mobile/lib/import/l5x_parser.dart`, `_l5xAois`:
 
-1. Replace the `isRll` line (line 203) and the comment above the logic lookup:
+1. Replace lines 202-203 (the `logicType`/`isRll` pair) with:
 
 ```dart
       final logicType = logic?.getAttribute('Type');
@@ -3270,14 +3785,14 @@ const String _kXml = '''
         <Sheet Number="1">
           <IRef ID="0" Operand="EnableIn" X="0" Y="0"/>
           <IRef ID="1" Operand="In" X="0" Y="40"/>
-          <Block ID="2" Type="BAND" X="100" Y="0"/>
+          <Function ID="2" Type="BAND" X="100" Y="0"/>
           <IRef ID="3" Operand="1000" X="100" Y="80"/>
           <Block ID="4" Type="TONR" Operand="T1" X="200" Y="0"/>
           <ORef ID="5" Operand="Out" X="300" Y="0"/>
-          <Wire FromID="0" FromParam="OUT" ToID="2" ToParam="In1"/>
-          <Wire FromID="1" FromParam="OUT" ToID="2" ToParam="In2"/>
+          <Wire FromID="0" ToID="2" ToParam="In1"/>
+          <Wire FromID="1" ToID="2" ToParam="In2"/>
           <Wire FromID="2" FromParam="Out" ToID="4" ToParam="TimerEnable"/>
-          <Wire FromID="3" FromParam="OUT" ToID="4" ToParam="PRE"/>
+          <Wire FromID="3" ToID="4" ToParam="PRE"/>
           <Wire FromID="4" FromParam="DN" ToID="5" ToParam="IN"/>
         </Sheet>
       </FBDContent></Routine></Routines>
@@ -3300,10 +3815,10 @@ const String _kXml = '''
         <Sheet Number="1">
           <IRef ID="0" Operand="Level" X="0" Y="0"/>
           <IRef ID="1" Operand="50" X="0" Y="40"/>
-          <Block ID="2" Type="GRT" X="100" Y="0"/>
+          <Block ID="2" Type="GRT" Operand="Grt_01" X="100" Y="0"/>
           <OCon ID="3" Name="Hi" X="200" Y="0"/>
-          <Wire FromID="0" FromParam="OUT" ToID="2" ToParam="SourceA"/>
-          <Wire FromID="1" FromParam="OUT" ToID="2" ToParam="SourceB"/>
+          <Wire FromID="0" ToID="2" ToParam="SourceA"/>
+          <Wire FromID="1" ToID="2" ToParam="SourceB"/>
           <Wire FromID="2" FromParam="Dest" ToID="3"/>
         </Sheet>
         <Sheet Number="2">
@@ -3400,6 +3915,44 @@ void main() {
     expect(readPath(p, 'Dst2'), isTrue);
     expect(readPath(p, 'Dst1'), isTrue); // still latched on
   });
+
+  test('an FBD routine where NOTHING translates keeps the whole-POU stub', () {
+    // The faithful-or-stub floor, end to end: a routine made only of unmapped
+    // Rockwell blocks must fall into `ir_to_project`'s EXISTING else arm (an
+    // empty LadderLogic-style stub program + a warning + graphicalStubCount),
+    // not into a half-built FBD program.
+    const xml = '''
+<RSLogix5000Content TargetType="Controller"><Controller Name="C">
+  <Tags>
+    <Tag Name="Raw" DataType="REAL"><Data Format="Decorated"><DataValue Value="1.0"/></Data></Tag>
+  </Tags>
+  <Programs><Program Name="Main">
+    <Tags/>
+    <Routines>
+      <Routine Name="Fbd" Type="FBD"><FBDContent>
+        <Sheet Number="1">
+          <IRef ID="0" Operand="Raw" X="0" Y="0"/>
+          <Block ID="1" Type="SCL" Operand="S1" X="100" Y="0"/>
+          <Wire FromID="0" ToID="1" ToParam="In"/>
+        </Sheet>
+      </FBDContent></Routine>
+    </Routines>
+  </Program></Programs>
+</Controller></RSLogix5000Content>''';
+    final res = mapImportedProject(parseL5x(xml),
+        projectName: 'P', projectId: 'l5x_fbd_stub');
+    final prog = res.project.programs.firstWhere((pr) => pr.name == 'Main_Fbd');
+
+    expect(prog.fbdBlocks, isEmpty);
+    expect(res.report.translatedFbdNetworkCount, 0);
+    expect(res.report.stubbedFbdNetworkCount, 1);
+    expect(res.report.unsupportedFbdBlockTypes, contains('SCL'));
+    expect(
+        res.report.warnings.any((w) =>
+            w.message.contains('Main_Fbd') &&
+            w.message.contains('not yet translated')),
+        isTrue);
+  });
 }
 ```
 
@@ -3407,7 +3960,7 @@ void main() {
 
 From `mobile/`: `/c/flutter/bin/flutter test test/import/import_l5x_aoi_fbd_e2e_test.dart`
 
-Expected: PASS. If it fails, fix the implementation (not the assertions) unless an assertion contradicts the spec. Two likely diagnostics:
+Expected: both tests PASS. If it fails, fix the implementation (not the assertions) unless an assertion contradicts the spec. Two likely diagnostics:
 - `translatedFbdNetworkCount` is 3 instead of 2 -> the connector pair did not merge (check `_resolveL5xFbdConnectors` and the sheet-2 id offset).
 - `Dst1` never turns true -> either the ladder engine is not receiving `fbdRt` (Task 3, `scan_tick`/`executeLdPrograms`) or the `TONR` pin aliasing did not produce `IN`/`PT`/`Q` (Task 6).
 
@@ -3441,13 +3994,20 @@ git add -A && git commit -m "test(l5x): end-to-end FBD routine + FBD-Logic AOI e
 Implements spec §10 and §11. No code changes; prose only. Follow the plan-wide constraint: no em dashes in authored prose (use ASCII hyphens, commas or parentheses), matching the existing `knowledge/**` style.
 
 **Files:**
-- Modify: `docs/iec61131/FUNCTION_BLOCKS.md`
-- Modify: `docs/iec61131/FUNCTION_BLOCK_DIAGRAM.md`
+- Modify: `docs/iec61131/FUNCTION_BLOCKS.md` (new FBD-bodied section + the stale lines 106-111)
+- Modify: `docs/iec61131/FUNCTION_BLOCK_DIAGRAM.md` (section heading + L5X subsection)
 - Modify: `docs/import/L5X.md`
-- Modify: `docs/DEFERRED.md`
+- Modify: `docs/DEFERRED.md` (the two struck rows, the new rows, and the stale line 42)
 - Modify: `knowledge/industry/plc-formats/rockwell-l5x.md`
+- Modify: `knowledge/industry/plc-formats/index.md`
+- Modify: `knowledge/industry/iec61131/custom-function-blocks.md`
+- Modify: `knowledge/industry/iec61131/function-block-diagram.md`
+- Modify: `knowledge/app/scan-engine.md`
+- Modify: `knowledge/canonical-manifest.json`
 
 **Interfaces:** none (documentation only). Every factual claim below must match the code as implemented in Tasks 1-8; re-read the relevant file before writing the claim.
+
+**Style:** `knowledge/**` prose takes plain hyphens, never em dashes (`.git/sdd/kb-conventions.md:99`), and each touched knowledge file bumps its frontmatter `version:` with the manifest kept in sync. `docs/**` keeps its existing house style (em dashes included); do not reflow it.
 
 - [ ] **Step 1: `docs/iec61131/FUNCTION_BLOCKS.md` - FBD-bodied FBs**
 
@@ -3459,12 +4019,16 @@ Add a section next to the existing ladder-body material covering:
 - `EnableIn` is re-asserted true before every graphical-body call.
 - The FB editor does not view or edit FBD bodies yet (it shows the empty ST source), and FB bodies have no online monitoring.
 
+Then fix the now-false claim at `docs/iec61131/FUNCTION_BLOCKS.md:106-111`: "Graphical-bodied FBs, FB-calling-FB nesting, ST bodies beyond the app's subset, and IEC *functions* (stateless POUs) all remain out of scope". Ladder bodies already shipped and FBD bodies ship here, so graphical-bodied FBs must come out of that out-of-scope list (leave the other three items, and keep the pointer to `docs/DEFERRED.md`); note instead that graphical bodies are import-produced and not yet editable.
+
 - [ ] **Step 2: `docs/iec61131/FUNCTION_BLOCK_DIAGRAM.md` - the L5X support matrix**
 
-Extend the existing "FBD import" section with an L5X subsection stating:
+First retitle the section heading at line 5, which currently names only one dialect: `## FBD import (PLCopen → native FunctionBlockDiagram)` becomes `## FBD import (PLCopen and Rockwell L5X → native FunctionBlockDiagram)`.
+
+Then extend that section with an L5X subsection stating:
 - Element mapping table: `IRef` -> inVariable, `ORef` -> outVariable, `Block`/`Function` -> block (type aliased), `AddOnInstruction` -> block (name never aliased), `Wire`/`FeedbackWire` -> connection, `ICon`/`OCon` resolved at parse time, `TextBox`/`Attachment` ignored (one info warning), anything else with an `ID` kept as an opaque node so its network stubs visibly (`JSR`/`SBR`/`Ret`).
-- Type alias table: EQU/NEQ/GEQ/LEQ/GRT/LES/BAND/BOR/BNOT plus best-effort TONR/TOFR (with the verify warning).
-- Pin alias table: `SourceA`/`SourceB`/`Dest` for math and compares, `In<k>`/`Out` for BAND/BOR, `In`/`Out` for BNOT, `TimerEnable`/`PRE`/`DN`/`ACC` for TONR/TOFR. Unmapped pins pass through and stub.
+- Type alias table: EQU/NEQ/GEQ/LEQ/GRT/LES/BAND/BOR/BNOT plus best-effort TONR/TOFR and OSRI/OSFI (each with the verify warning).
+- Pin alias table: `SourceA`/`SourceB`/`Dest` for math and compares, `In<k>`/`Out` for BAND/BOR, `In`/`Out` for BNOT, `TimerEnable`/`PRE`/`DN`/`ACC` for TONR/TOFR, `SelectorIn`/`In1`/`In2`/`Out` for SEL, the CUEnable/CDEnable/Reset/Load/PRE/ACC/DN set for CTUD, and `InputBit`/`OutputBit` for OSRI/OSFI. Unmapped pins pass through and stub.
 - Multi-sheet: all sheets merge into one body, ascending `<Sheet Number>`, later sheets offset in localId and y so network numbering reads sheet by sheet.
 - What stubs: unmapped blocks (`SCL`, `PIDE`, `MOV`, `MOD`, `ESEL`), unmapped pins, wired `EnableIn`/`EnableOut`, unmatched connectors, malformed ids, multiple wires into one input pin, dotted operands.
 
@@ -3505,12 +4069,14 @@ Add the §11 deferred rows (keep the existing AOI-auxiliary-routines and AOI-in-
 
 Confirm the existing "FB editor support for ladder bodies", "AOI auxiliary routines", "AOI-in-AOI forward references" and "L5X SFC routine translation" rows are still accurate and left in place.
 
+Also fix the now-false row at `docs/DEFERRED.md:42`, "Graphical-bodied FBs (LD/FBD body) | later | v1 FBs have an ST body; ... Import mapping explicitly skips these with a warning (`mapImportedFbs`) - not imported." Both halves shipped (LD in sub-project 3, FBD here). Strike it the same way as the other two rows, citing `FbDefinition.ladderRungs`/`fbdBlocks` and the two e2e tests, and note the one part that is still true: a PLCopen FBD `functionBlock` is still skipped with that warning (the dialect gate).
+
 - [ ] **Step 5: `knowledge/industry/plc-formats/rockwell-l5x.md` - the real update**
 
 This file's central claim ("FBD and SFC in L5X - confirmed still fully unshipped") is now stale for FBD. Update, per `knowledge/governance.md`'s conventions:
 
 1. Frontmatter `summary:` - replace the tail "and the confirmed still-unshipped state of L5X FBD and SFC routine translation" with wording that says FBD routine and FBD-Logic AOI translation now ship and only SFC remains unshipped.
-2. Frontmatter `version:` - bump from `"2026-08"` (per governance; use the current month or the governance-specified increment).
+2. Frontmatter `version:` - bump from `"2026-08"` (per governance; use the current month or the governance-specified increment), and update the "**Current as of:**" blockquote at line 19 to match the new version, since it makes the same freshness claim in prose.
 3. The "**Read this before:**" callout - re-point it at the shipped FBD behaviour, keeping the SFC caveat.
 4. **§5 in full** (line 126) - retitle from "FBD and SFC in L5X - confirmed still fully unshipped" to something like "FBD ships, SFC does not", and rewrite the body:
    - Delete the claim that `fbdBlocks`/`fbdWires`/`fbdNetworks` "does not exist on [`FbDefinition`] today" (Task 1 added all three).
@@ -3522,15 +4088,39 @@ This file's central claim ("FBD and SFC in L5X - confirmed still fully unshipped
    - "I imported an L5X file with FBD routines - why did they come in empty, when PLCopen FBD imports for real?" - rewrite the question and answer for the shipped behaviour (what translates, what stubs and why).
    - "My AOI's RLL logic runs, but its FBD logic doesn't - is that inconsistent?" - rewrite: both run now; SFC-logic AOIs are still interface-only.
 
-- [ ] **Step 6: Sweep the knowledge base for other stale FBD claims**
+- [ ] **Step 6: Fix the other knowledge files that this feature falsifies**
 
-From the repo root:
+These are not a style sweep: each line below asserts something the shipped code now contradicts. Work the checklist, then run the two greps at the end to catch anything missed.
+
+`knowledge/industry/iec61131/custom-function-blocks.md` (the worst-affected file; bump `version:`):
+- [ ] line 7 (frontmatter `summary:`) - "the ST-bodied/ladder-bodied body discriminator" must become the three-way ST/ladder/FBD discriminator.
+- [ ] line 29 (the headline rule) - "A custom FB body is ST-bodied or ladder-bodied (never FBD-bodied)" is now false.
+- [ ] lines 34-36 - the `FbDefinition` field list must include `fbdBlocks`/`fbdWires`/`fbdNetworks`; the discriminator sentence must become the three-way precedence; and "**There is no FBD-bodied custom FB in this engine** - FBD *calls* FBs ..., it does not host FB bodies" must be replaced (FBD both calls FBs and now hosts bodies).
+- [ ] line 66 (body dispatch) - "the three-way precedence, ladder wins over ST since FBD-bodied FBs don't exist" must become ladder > FBD > ST, adding the `runScopedFbdBody` arm and its `FbdRuntime` ephemeral fallback alongside the `LdExecRuntime` one.
+- [ ] line 72 - `EnableIn` re-assertion is no longer "(ladder-bodied FBs only)": it now covers both graphical bodies via `_reassertEnableIn`.
+- [ ] lines 108-110 - the edge/pulse isolation paragraph documents only `'fb:<instancePath>'`; add the FBD body's `'fb:<instancePath>|<blockId>'` state key and state the disjointness argument correctly (no `:` or `|` in a block id, NOT "sanitized identifiers" - an AOI body's block id is `AOI Ramp_n7`, with a space).
+
+`knowledge/app/scan-engine.md` (bump `version:`):
+- [ ] line 118 - the FBD row's key column says "block id (`FbdBlock.id`, unique within a project's FBD programs)". Add the FB-body prefix case.
+
+`knowledge/industry/iec61131/function-block-diagram.md` (bump `version:`):
+- [ ] line 59 - "Every stateful FBD block keys its state off `b.id` into `FbdRuntime`'s maps" is now the program case only.
+- [ ] line 110 - "State persists per `b.id` across scans" (PID) has the same problem.
+
+`knowledge/industry/plc-formats/index.md`:
+- [ ] line 51 - the Rockwell L5X row still advertises "the confirmed still-fully-unshipped state of L5X FBD and SFC routine translation". Reword to match the file's new summary (FBD ships, SFC does not).
+
+`knowledge/canonical-manifest.json`:
+- [ ] the manifest mirrors each file's frontmatter, so every `version:` and `summary:` changed above must be updated in the matching unit entry (`knowledge:industry/plc-formats/rockwell-l5x`, `knowledge:industry/iec61131/custom-function-blocks`, `knowledge:industry/iec61131/function-block-diagram`, `knowledge:app/scan-engine`). Nothing else in the manifest changes: no files are added or removed.
+
+Then, from the repo root:
 
 ```
 grep -rn -i "fbd" knowledge/ | grep -i "unshipped\|not translated\|not imported\|stub\|empty"
+grep -rn "b\.id\|ladderRungs\|ladder-bodied\|ST-bodied" knowledge/
 ```
 
-Review each hit. Update any file that now states something false (for example a claim in `knowledge/industry/iec61131/function-block-diagram.md` or `knowledge/app/scan-engine.md` that FBD state is keyed by bare block id only - the FB-body case now prefixes it). Leave accurate statements alone; do not rewrite files for style.
+Review every hit from both. Update anything that now states something false; leave accurate statements alone and do not rewrite files for style.
 
 - [ ] **Step 7: Verify**
 
@@ -3539,9 +4129,11 @@ From the repo root, confirm no doc still advertises the old behaviour:
 ```
 grep -rn "FBD" docs/import/L5X.md | grep -i "not yet translated"
 grep -rn "still fully unshipped" knowledge/industry/plc-formats/rockwell-l5x.md
+grep -rn "never FBD-bodied\|no FBD-bodied custom FB" knowledge/
+grep -rn "still-fully-unshipped" knowledge/industry/plc-formats/index.md
 ```
 
-Expected: no output from either.
+Expected: no output from any of them.
 
 From `mobile/`: `/c/flutter/bin/flutter test` then `/c/flutter/bin/flutter analyze` one last time.
 Expected: `All tests passed!` and `No issues found!`.
@@ -3559,4 +4151,4 @@ git add -A && git commit -m "docs: L5X FBD routines + FBD-bodied AOI execution"
 - All nine tasks committed, full suite green, `flutter analyze` clean.
 - `mobile/test/import/import_l5x_aoi_fbd_e2e_test.dart` proves the composed pipeline.
 - The PLCopen import path, every ST- and ladder-bodied FB, and all pre-existing L5X behaviour are unchanged; ST/ladder FB JSON is byte-identical.
-- `docs/DEFERRED.md` no longer lists "FBD-bodied AOI logic" or "L5X FBD routine translation" as open, and `knowledge/industry/plc-formats/rockwell-l5x.md` no longer claims L5X FBD is unshipped.
+- `docs/DEFERRED.md` no longer lists "FBD-bodied AOI logic", "L5X FBD routine translation" or "Graphical-bodied FBs" as open, and no `knowledge/**` file still claims L5X FBD is unshipped or that FBD-bodied custom FBs do not exist (`knowledge/canonical-manifest.json` matches the updated frontmatter).
