@@ -11,7 +11,7 @@ PlcProject _projectById(String id) => DefaultProjects.all().firstWhere((p) => p.
 void main() {
   group('LdEditorScreen local-width responsiveness', () {
     Widget app() {
-      final project = _projectById('proj_ld_conveyor');
+      final project = _projectById('proj_ld_conveyor_line');
       final program = project.programs.firstWhere((p) => p.language == 'LadderLogic');
       return MaterialApp(
         home: LdEditorScreen(

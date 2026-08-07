@@ -24,16 +24,22 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:soft_plc_mobile/data/default_projects.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 import 'package:soft_plc_mobile/screens/workspace_shell.dart';
 import 'support/responsive_test_utils.dart';
 
 Widget _app() => const MaterialApp(home: WorkspaceShell());
 
-// Default active project ('Basic Motor Start Stop' / proj_motor), same
-// baseline as workspace_undo_redo_test.dart.
-const String _baseLabel = 'Tags & Structs (8 Tags, 1 Structs)';
-const String _plusOneLabel = 'Tags & Structs (9 Tags, 1 Structs)';
+// Boot-active project (all()[0] = 'Ladder — Conveyor Line'). The shell injects
+// the reserved System tag at load, so the rendered count is tags.length + 1.
+String _tagsLabel({int extra = 0}) {
+  final p = DefaultProjects.all().first;
+  return 'Tags & Structs (${p.tags.length + 1 + extra} Tags, ${p.structDefs.length} Structs)';
+}
+
+final String _baseLabel = _tagsLabel();
+final String _plusOneLabel = _tagsLabel(extra: 1);
 
 Future<void> _goToMemoryView(WidgetTester tester) async {
   await tester.tap(find.text(_baseLabel).hitTestable());
@@ -239,7 +245,7 @@ void main() {
     // Switch active project via the dropdown in the left dock.
     await tester.tap(find.byType(DropdownButton<String>));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Tank Level Simulation').last);
+    await tester.tap(find.text(DefaultProjects.all()[1].name).last);
     await tester.pumpAndSettle();
 
     expect(find.text('Scan Count: 0'), findsOneWidget,

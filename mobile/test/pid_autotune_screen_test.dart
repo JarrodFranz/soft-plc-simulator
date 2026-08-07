@@ -6,7 +6,7 @@ import 'package:soft_plc_mobile/screens/pid_autotune_screen.dart';
 import 'support/responsive_test_utils.dart';
 
 PlcProject _project() =>
-    DefaultProjects.all().firstWhere((p) => p.id == 'proj_tank_level_pid');
+    DefaultProjects.all().firstWhere((p) => p.id == 'proj_process_lab');
 
 FbdBlock _kpBlock(PlcProject p) {
   final prog = p.programs.firstWhere((pr) => pr.language == 'FunctionBlockDiagram');

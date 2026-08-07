@@ -23,7 +23,7 @@ WorkspaceShellState _shell(WidgetTester tester) =>
 Future<void> _openStEditor(WidgetTester tester) async {
   final state = _shell(tester);
   state.debugSwitchToProject(
-      state.debugAllProjects.firstWhere((p) => p.id == 'proj_st_reactor'));
+      state.debugAllProjects.firstWhere((p) => p.id == 'proj_st_reactor_control'));
   await tester.pumpAndSettle();
   state.debugSetActiveViewId('PROGRAM:ReactorTemp_ST');
   await tester.pumpAndSettle();

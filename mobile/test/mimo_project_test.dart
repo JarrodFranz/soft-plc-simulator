@@ -8,15 +8,15 @@ import 'package:soft_plc_mobile/models/sim_engine.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 
 PlcProject _mimo() =>
-    DefaultProjects.all().firstWhere((p) => p.id == 'proj_mimo_two_zone');
+    DefaultProjects.all().firstWhere((p) => p.id == 'proj_process_lab');
 
 double _d(PlcProject p, String path) => (readPath(p, path) as num).toDouble();
 
 /// Sets the decoupler CONST blocks' (`a_d12`/`b_d21`) `tagBinding` in the
 /// project's `TwoZone_FBD` FBD program. Both default to `'0'` (loops
 /// coupled); setting them to the identified `K12/K11`/`K21/K22` ratio
-/// cancels the cross-loop interaction (see `_mimoTwoZoneProject` doc
-/// comment in `default_projects.dart`).
+/// cancels the cross-loop interaction (see `docs/mimo-coupled-plant.md` for
+/// the full gain-matrix/RGA/decoupler explanation).
 void _setDecouplerGains(PlcProject p, String d12, String d21) {
   final fbd = p.programs.firstWhere((prog) => prog.name == 'TwoZone_FBD');
   fbd.fbdBlocks.firstWhere((b) => b.id == 'a_d12').tagBinding = d12;
@@ -65,7 +65,7 @@ double crossDisturbance(
 void main() {
   test('MIMO project registered and round-trips', () {
     final p = _mimo();
-    expect(p.name, 'MIMO — Two Thermal Zones');
+    expect(p.name, 'Process Control Lab');
     final back = PlcProject.fromJson(jsonDecode(jsonEncode(p.toJson())));
     expect(jsonEncode(back.toJson()), jsonEncode(p.toJson()));
   });

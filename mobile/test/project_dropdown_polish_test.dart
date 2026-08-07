@@ -50,7 +50,7 @@ void main() {
 
     // The active project's row renders both in the closed-button display and
     // again inside the open popup list, so this legitimately matches twice.
-    expect(find.byTooltip('Basic Motor Start Stop'), findsWidgets);
+    expect(find.byTooltip('Ladder — Conveyor Line'), findsWidgets);
 
     // Close the menu so addTearDown's surface reset doesn't race an open
     // overlay.

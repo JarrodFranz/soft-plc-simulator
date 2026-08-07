@@ -112,7 +112,7 @@ void main() {
 
   group('resolvePidLoop', () {
     test('resolvePidLoop resolves the Tank Level PID demo', () {
-      final proj = DefaultProjects.all().firstWhere((p) => p.id == 'proj_tank_level_pid');
+      final proj = DefaultProjects.all().firstWhere((p) => p.id == 'proj_process_lab');
       final prog = proj.programs.firstWhere((pr) => pr.language == 'FunctionBlockDiagram');
       final b = resolvePidLoop(prog, proj, 'p_pid');
       expect(b.pidBlockId, 'p_pid');

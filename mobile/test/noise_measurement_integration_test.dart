@@ -12,10 +12,10 @@ double _d(PlcProject p, String path) => (readPath(p, path) as num).toDouble();
 
 void main() {
   test(
-      'Noisy Level Measurement: Level_Meas jitters within the noise amplitude '
-      'band around Tank_Level (no drift), varies scan-to-scan, and '
+      'Process Control Lab noise rig: Level_Meas jitters within the noise '
+      'amplitude band around Tank_Level (no drift), varies scan-to-scan, and '
       'Level_Filtered attenuates the jitter relative to Level_Meas', () {
-    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_noisy_level');
+    final p = DefaultProjects.all().firstWhere((x) => x.id == 'proj_process_lab');
     final sim = SimRuntime();
     final ld = LdExecRuntime();
     final fbd = FbdRuntime();
@@ -41,7 +41,10 @@ void main() {
     expect(amplitude, greaterThan(0), reason: 'demo must exercise non-trivial noise amplitude');
     const epsilon = 1e-6;
 
-    final lagRule = p.simRules.firstWhere((r) => r.behavior == 'firstOrderLag');
+    // The consolidated lab ships several firstOrderLag rules (the MIMO rig's
+    // conduction/loss terms too), so select the noise rig's filter by target.
+    final lagRule = p.simRules.firstWhere(
+        (r) => r.behavior == 'firstOrderLag' && r.targetPath == 'Level_Filtered');
     expect(lagRule.sourcePath, 'Level_Meas');
     expect(lagRule.targetPath, 'Level_Filtered');
 

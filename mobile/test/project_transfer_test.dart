@@ -134,19 +134,19 @@ void main() {
     });
 
     test('reassigns a colliding id to a new unique id', () {
-      final p = makeProject('proj_motor');
-      final result = ProjectTransfer.reassignIdIfColliding(p, {'proj_motor'});
-      expect(result.id, isNot('proj_motor'));
-      expect(result.id, 'proj_motor_import');
+      final p = makeProject('proj_demo');
+      final result = ProjectTransfer.reassignIdIfColliding(p, {'proj_demo'});
+      expect(result.id, isNot('proj_demo'));
+      expect(result.id, 'proj_demo_import');
     });
 
     test('reassignment is deterministic and keeps incrementing on repeated collisions', () {
-      final p = makeProject('proj_motor');
+      final p = makeProject('proj_demo');
       final result = ProjectTransfer.reassignIdIfColliding(
         p,
-        {'proj_motor', 'proj_motor_import'},
+        {'proj_demo', 'proj_demo_import'},
       );
-      expect(result.id, 'proj_motor_import_2');
+      expect(result.id, 'proj_demo_import_2');
     });
   });
 }

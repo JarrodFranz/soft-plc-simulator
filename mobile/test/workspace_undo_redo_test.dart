@@ -1,20 +1,27 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:soft_plc_mobile/data/default_projects.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/screens/workspace_shell.dart';
 import 'support/responsive_test_utils.dart';
 
 Widget _app() => const MaterialApp(home: WorkspaceShell());
 
-// The default active project ('Basic Motor Start Stop' / proj_motor) has
-// 7 tags and 1 struct def, plus the reserved `System` status tag the shell
-// injects on boot (`ensureSystemTag`) -> 8 tags baseline. Adding a tag via
-// the Memory Manager's "Add Tag" dialog (defaults accepted) bumps the tag
-// count by one from there.
-const String _baseLabel = 'Tags & Structs (8 Tags, 1 Structs)';
-const String _plusOneLabel = 'Tags & Structs (9 Tags, 1 Structs)';
-const String _plusTwoLabel = 'Tags & Structs (10 Tags, 1 Structs)';
+// The boot-active project (`all()[0]`, 'Ladder — Conveyor Line') ships its
+// declared tags plus the reserved `System` status tag the shell injects on
+// boot (`ensureSystemTag`) -> tags.length + 1 baseline. Adding a tag via the
+// Memory Manager's "Add Tag" dialog (defaults accepted) bumps the tag count
+// by one from there.
+String _tagsLabel(PlcProject p, {int extra = 0}) =>
+    'Tags & Structs (${p.tags.length + 1 + extra} Tags, ${p.structDefs.length} Structs)';
+
+final PlcProject _boot = DefaultProjects.all()[0];   // Ladder — Conveyor Line
+final PlcProject _second = DefaultProjects.all()[1]; // FBD — HVAC Zone Controller
+
+final String _baseLabel = _tagsLabel(_boot);
+final String _plusOneLabel = _tagsLabel(_boot, extra: 1);
+final String _plusTwoLabel = _tagsLabel(_boot, extra: 2);
 
 /// Navigates to the Memory Manager view via the left dock nav tree. On
 /// compact widths the dock lives in a Drawer that must be opened first.
@@ -155,7 +162,7 @@ void main() {
     // Switch active project via the dropdown in the left dock.
     await tester.tap(find.byType(DropdownButton<String>));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Tank Level Simulation').last);
+    await tester.tap(find.text(_second.name).last);
     await tester.pumpAndSettle();
 
     expect(_iconButton(tester, 'Undo').onPressed, isNull);
@@ -166,11 +173,13 @@ void main() {
   testWidgets('Undo reverts a structural edit while the scan loop churns live tag values', (tester) async {
     // Regression: the history snapshot serializes every tag's LIVE value
     // (`PlcTag.toJson` writes the current `value` as `initial_value`), so on a
-    // project whose scan loop actually moves values ('Tank Level Simulation'
-    // integrates Level_PV via its sim rules) the snapshot changes on every
+    // project whose scan loop actually moves values (the HVAC zone controller
+    // integrates its room/tank levels via sim rules) the snapshot changes on every
     // tick with no user edit at all. Undo must still step back to the
     // pre-edit STRUCTURE rather than to a snapshot that merely differs by
     // that live-value drift (which would leave the edit in place).
+    expect(_second.simRules.where((r) => r.enabled), isNotEmpty,
+        reason: 'this test needs a project whose scan loop moves live values');
     await setSurface(tester, desktopSize);
     await tester.pumpWidget(_app());
     await tester.pumpAndSettle();
@@ -178,16 +187,16 @@ void main() {
     // Switch to the churning project (this also resets history).
     await tester.tap(find.byType(DropdownButton<String>));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Tank Level Simulation').last);
+    await tester.tap(find.text(_second.name).last);
     await tester.pumpAndSettle();
 
-    const tankBase = 'Tags & Structs (7 Tags, 0 Structs)';
-    const tankPlusOne = 'Tags & Structs (8 Tags, 0 Structs)';
-    await tester.tap(find.text(tankBase).hitTestable());
+    final secondBase = _tagsLabel(_second);
+    final secondPlusOne = _tagsLabel(_second, extra: 1);
+    await tester.tap(find.text(secondBase).hitTestable());
     await tester.pumpAndSettle();
 
     await _addTagViaUi(tester);
-    expect(find.text(tankPlusOne), findsOneWidget);
+    expect(find.text(secondPlusOne), findsOneWidget);
 
     // Let the 800ms autosave/history debounce fire (captures the edit)...
     await tester.pump(const Duration(seconds: 1));
@@ -199,7 +208,7 @@ void main() {
     await tester.tap(find.byTooltip('Undo'));
     await tester.pumpAndSettle();
 
-    expect(find.text(tankBase), findsOneWidget,
+    expect(find.text(secondBase), findsOneWidget,
         reason: 'Undo must revert the added tag, not just the live-value drift');
     expect(tester.takeException(), isNull);
 
@@ -209,14 +218,14 @@ void main() {
     expect(_iconButton(tester, 'Redo').onPressed, isNotNull);
     await tester.tap(find.byTooltip('Redo'));
     await tester.pumpAndSettle();
-    expect(find.text(tankPlusOne), findsOneWidget);
+    expect(find.text(secondPlusOne), findsOneWidget);
 
     // ...and undo must not get stuck oscillating between two drift states:
     // a second Undo (after more drift) still returns to the pre-edit state.
     await tester.pump(const Duration(seconds: 2));
     await tester.tap(find.byTooltip('Undo'));
     await tester.pumpAndSettle();
-    expect(find.text(tankBase), findsOneWidget);
+    expect(find.text(secondBase), findsOneWidget);
     expect(_iconButton(tester, 'Undo').onPressed, isNull,
         reason: 'drift must not have manufactured extra undo steps');
     expect(tester.takeException(), isNull);
@@ -261,7 +270,7 @@ void main() {
     /// its ST program open in the centre pane.
     Future<PlcProgram> openStProgram(WidgetTester tester) async {
       final state = tester.state<WorkspaceShellState>(find.byType(WorkspaceShell));
-      final st = state.debugAllProjects.firstWhere((p) => p.id == 'proj_st_reactor');
+      final st = state.debugAllProjects.firstWhere((p) => p.id == 'proj_st_reactor_control');
       state.debugSwitchToProject(st);
       await tester.pumpAndSettle();
       state.debugSetActiveViewId('PROGRAM:ReactorTemp_ST');
@@ -326,7 +335,8 @@ void main() {
 
       final state = tester.state<WorkspaceShellState>(find.byType(WorkspaceShell));
       final stProject = await openStProgram(tester);
-      final otherProject = state.debugAllProjects.firstWhere((p) => p.id == 'proj_motor');
+      final otherProject =
+          state.debugAllProjects.firstWhere((p) => p.id == 'proj_fbd_hvac_zone');
 
       // Type, then switch projects before the persist debounce elapses.
       await tester.enterText(find.byKey(codeField), 'TYPED_INTO_ST_PROJECT;');

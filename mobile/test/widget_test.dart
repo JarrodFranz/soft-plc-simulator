@@ -26,7 +26,7 @@ void main() {
     _useDesktopSurface(tester);
 
     final project =
-        DefaultProjects.all().firstWhere((p) => p.id == 'proj_ld_conveyor');
+        DefaultProjects.all().firstWhere((p) => p.id == 'proj_ld_conveyor_line');
     final program =
         project.programs.firstWhere((pr) => pr.language == 'LadderLogic');
 

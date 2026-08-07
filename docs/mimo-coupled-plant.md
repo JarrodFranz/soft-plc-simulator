@@ -1,4 +1,4 @@
-# MIMO — Two Thermal Zones: Coupled Plant & Interaction Analysis
+# MIMO Two-Zone Rig: Coupled Plant & Interaction Analysis
 
 A **multi-input, multi-output (MIMO)** demo showing what happens when two
 control loops are not actually independent — and how to detect and fix that
@@ -6,8 +6,8 @@ with real multivariable-control tools instead of guesswork.
 
 ## The plant: two adjacent thermal zones
 
-The default project **"MIMO — Two Thermal Zones"** models two adjacent zones
-that share a wall:
+The MIMO rig inside the default project **"Process Control Lab"**
+(`proj_process_lab`) models two adjacent zones that share a wall:
 
 - **Zone A**: heater `Heater_A` (%), temperature `Temp_A` (°C), setpoint `SP_A`.
 - **Zone B**: heater `Heater_B` (%), temperature `Temp_B` (°C), setpoint `SP_B`.
@@ -160,10 +160,10 @@ it does not eliminate it.
 
 | Concept | Where it lives |
 |---|---|
-| Coupled plant (stacked SimRules) | `mobile/lib/data/default_projects.dart` (`_mimoTwoZoneProject`) |
+| Coupled plant (stacked SimRules) | `mobile/lib/data/default_projects/process_control_lab.dart` (`processControlLabProject`, sim rules `sa0`–`sb2`) |
 | Gain-matrix identification + RGA (pure, deterministic) | `mobile/lib/models/interaction_analysis.dart` |
 | Interaction Analysis panel (UI) | `mobile/lib/screens/interaction_analysis_screen.dart` |
-| Static decoupler (FBD: `MUL`/`SUB`/`LIMIT`) | `TwoZone_FBD` program inside the default project |
+| Static decoupler (FBD: `MUL`/`SUB`/`LIMIT`) | `TwoZone_FBD` program inside `Process Control Lab` (dashboard `hmi_lab_mimo`) |
 | Coverage | `mobile/test/interaction_analysis_test.dart`, `mobile/test/interaction_analysis_screen_test.dart`, `mobile/test/mimo_project_test.dart` |
 
 Multivariable control beyond a static 2×2 decoupler (e.g. dynamic

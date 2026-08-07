@@ -87,12 +87,15 @@ The gains reported are the **parallel form** (`Kp`, `Ki`, `Kd` feeding
 implementation (`fbd_exec.dart`), so a suggested row can be applied straight
 onto a loop without any unit conversion.
 
-## Running it on the "Tank Level PID Control" demo
+## Running it on the "Process Control Lab" PID rig
 
-The default project **Tank Level PID Control** is a single closed loop: a
-`PID` FBD block reads `Level_PV` (process value) and `Level_SP` (setpoint,
-60%), and drives `Valve_CV` (0–100%), which scales the tank's inflow against
-a constant outflow disturbance.
+The default project **Process Control Lab** (`proj_process_lab`) hosts the
+single-loop PID level rig in its `LevelPID_FBD` program (dashboard
+`hmi_lab_pid`): a `PID` FBD block reads `Level_PV` (process value) and
+`Level_SP` (setpoint, 60%), and drives `Valve_CV` (0–100%), which scales the
+tank's inflow against a constant outflow disturbance. `LevelPID_FBD` is
+deliberately `programs[0]` — the auto-tune panel prefills from the first `PID`
+block in the first FBD program.
 
 To auto-tune it:
 

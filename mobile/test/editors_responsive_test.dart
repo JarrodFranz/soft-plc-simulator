@@ -17,7 +17,7 @@ PlcProject _projectById(String id) => DefaultProjects.all().firstWhere((p) => p.
 void main() {
   group('FbdEditorScreen responsive', () {
     Widget app() {
-      final project = _projectById('proj_fbd_hvac');
+      final project = _projectById('proj_fbd_hvac_zone');
       final program = project.programs.firstWhere((p) => p.language == 'FunctionBlockDiagram');
       return MaterialApp(
         home: FbdEditorScreen(
@@ -48,12 +48,20 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    // The editor builds ONE bounded pan/zoom canvas per network lane, so a
+    // multi-network program (HvacZone_FBD ships seven) renders several.
     testWidgets('phone: canvas wrapped in InteractiveViewer for pan/zoom', (tester) async {
       await setSurface(tester, phoneSize);
       await tester.pumpWidget(app());
       await tester.pumpAndSettle();
 
-      expect(find.byType(InteractiveViewer), findsOneWidget);
+      // NOTE: the editor DOES build one InteractiveViewer per network lane
+      // (each lane wraps a PannableCanvas -> one InteractiveViewer), but the
+      // lane ListView builds LAZILY — only the lanes actually in the
+      // viewport are realized — so the count here is viewport-dependent, not
+      // a fixed function of `program.fbdBlocks`'s network count. This stays
+      // a loose existence check rather than a pinned `findsNWidgets`.
+      expect(find.byType(InteractiveViewer), findsWidgets);
       expect(tester.takeException(), isNull);
     });
 
@@ -62,8 +70,11 @@ void main() {
       await tester.pumpWidget(app());
       await tester.pumpAndSettle();
 
-      // The workspace pans/zooms on desktop too, not only on phone.
-      expect(find.byType(InteractiveViewer), findsOneWidget);
+      // The workspace pans/zooms on desktop too, not only on phone. See the
+      // NOTE above — the lane ListView's lazy build means the
+      // InteractiveViewer count is viewport-dependent, not a clean function
+      // of the program's network count, so this stays a loose existence check.
+      expect(find.byType(InteractiveViewer), findsWidgets);
       expect(tester.takeException(), isNull);
     });
 
@@ -90,7 +101,7 @@ void main() {
 
   group('SfcEditorScreen responsive', () {
     Widget app() {
-      final project = _projectById('proj_sfc_filling');
+      final project = _projectById('proj_sfc_batch_production');
       final program = project.programs.firstWhere((p) => p.language == 'SequentialFunctionChart');
       return MaterialApp(
         home: SfcEditorScreen(
@@ -144,7 +155,7 @@ void main() {
 
   group('HmiDashboardBuilderScreen responsive', () {
     Widget app() {
-      final project = _projectById('proj_fbd_hvac');
+      final project = _projectById('proj_fbd_hvac_zone');
       final hmi = project.hmis.first;
       return LiveTickScope(
         notifier: LiveTick(),
@@ -232,7 +243,7 @@ void main() {
 
   group('LdEditorScreen responsive', () {
     Widget app() {
-      final project = _projectById('proj_ld_conveyor');
+      final project = _projectById('proj_ld_conveyor_line');
       final program = project.programs.firstWhere((p) => p.language == 'LadderLogic');
       return MaterialApp(
         home: LdEditorScreen(

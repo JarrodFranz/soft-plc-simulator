@@ -5,7 +5,7 @@ import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/screens/interaction_analysis_screen.dart';
 
 PlcProject _mimo() =>
-    DefaultProjects.all().firstWhere((p) => p.id == 'proj_mimo_two_zone');
+    DefaultProjects.all().firstWhere((p) => p.id == 'proj_process_lab');
 
 Widget _host(PlcProject p) => MaterialApp(
       home: InteractionAnalysisScreen(

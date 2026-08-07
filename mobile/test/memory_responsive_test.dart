@@ -146,7 +146,7 @@ void main() {
       // here are ~1.7x real rendering — assert the BEHAVIOR, not exact
       // breakpoints: mid width already readmits I/O Classification, and a
       // clearly-wide pane shows the full column set with actions intact.)
-      final mimo = DefaultProjects.all().firstWhere((p) => p.id == 'proj_mimo_two_zone');
+      final mimo = DefaultProjects.all().firstWhere((p) => p.id == 'proj_process_lab');
       await setSurface(tester, const Size(1300, 709));
       await tester.pumpWidget(app(mimo));
       await tester.pumpAndSettle();
@@ -165,7 +165,7 @@ void main() {
 
     testWidgets('table stretches to fill the pane (no dead space beside it)',
         (tester) async {
-      final mimo = DefaultProjects.all().firstWhere((p) => p.id == 'proj_mimo_two_zone');
+      final mimo = DefaultProjects.all().firstWhere((p) => p.id == 'proj_process_lab');
       await setSurface(tester, const Size(1300, 709));
       await tester.pumpWidget(app(mimo));
       await tester.pumpAndSettle();
