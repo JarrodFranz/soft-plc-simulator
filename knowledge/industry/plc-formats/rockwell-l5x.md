@@ -11,7 +11,7 @@ related:
   - knowledge:industry/iec61131/ladder-diagram
   - knowledge:industry/iec61131/custom-function-blocks
   - knowledge:industry/iec61131/function-block-diagram
-learnings: [CL-17]
+learnings: [CL-17, CL-19, CL-22]
 ---
 
 # Rockwell L5X
@@ -140,6 +140,40 @@ their IEC equivalents (`EQU`->`EQ`, `SourceA`/`SourceB`/`Dest`->`IN1`/`IN2`/`OUT
 `docs/iec61131/FUNCTION_BLOCK_DIAGRAM.md`'s L5X subsection for the full tables). That `GraphBody`
 then runs through the **same** `translateFbdBody` the PLCopen path uses, per-network,
 faithful-or-stub - producing a real, executing `FunctionBlockDiagram` program.
+
+**Sheet-merge identity collisions (CL-19).** The multi-sheet merge above indexes parsed elements by
+their L5X `ID` to build the component graph. An early version of this index was a plain node-list
+comprehension (`{for (n in nodes) n.localId: n}`): when two elements on one sheet legitimately share
+a raw `ID`, that pattern silently keeps only the LAST one, deletes the earlier element outright,
+re-points its wires onto the survivor, and the merged component then translates cleanly as the WRONG
+logic - no error, no stub, just wrong. The fix demotes a duplicate `ID` to a synthetic negative id
+before indexing (never re-registering the raw id), which trips the translator's `localId < 0` stub
+gate, so the duplicate's component visibly stubs with a warning-severity "duplicate ID"
+`ImportWarning` instead of silently overwriting real logic. The general lesson - any graphical-import
+merge algorithm must treat an identity collision as a stub-worthy defect, never silent
+last-write-wins - applies to every id-indexed merge step in this file and in the shared
+`weaklyConnectedComponents` machinery (`graph_segment.dart`), not just this one call site. Pinned by
+the duplicate-ID case in `mobile/test/import/l5x_parser_fbd_test.dart`.
+
+**Rockwell FBD interop specifics worth keeping as settled facts (CL-22):**
+- Logix emits `<Block Operand="...">` for ordinary instructions and a distinct `<Function>` element
+  for bit functions - both feed the same alias/translate pipeline (`_kL5xFbdTypeAliases`/
+  `_kL5xFbdPinAliases`) but are structurally different elements, not the same tag with different
+  attributes.
+- `SEL` and `CTUD` are Rockwell mnemonics that COLLIDE with IEC built-in block names, so they pass
+  the built-in allowlist without needing a type alias at all, and then die at pin assertion unless
+  their pins are ALSO aliased (`SelectorIn` -> `G`, etc. for `SEL`) - the type name matching an IEC
+  built-in is not evidence the pins line up.
+- Connector (`ICon`/`OCon`) names are unique within one Logix routine by construction, and
+  `_resolveL5xFbdConnectors` matches them the same way (name-based, routine-wide). A malformed
+  export that reuses one connector name for two independent producer/consumer pairs is out of spec
+  for Logix but not rejected on import: every producer of that name splices onto every consumer (a
+  cross-product), and the fused component then stubs deterministically at the translator's
+  `unresolved-pin` gate rather than silently wiring the wrong signal. Full 1:1 pairing (by sheet
+  proximity or declaration order) is deferred, tracked in `docs/DEFERRED.md`.
+- `OSRI`/`OSFI` map onto the IEC `R_TRIG`/`F_TRIG` blocks, with `InputBit` -> `CLK` and `OutputBit`
+  -> `Q` pin aliases - both are best-effort (Logix's separate storage/output bits have no 1:1 IEC
+  equivalent), flagged with a warning-severity breadcrumb rather than a silent lossy translation.
 
 One level down, `mapImportedFbs` now maps an AOI whose `Logic` routine is `Type="FBD"` the same
 way: its sheets translate into `FbDefinition.fbdBlocks`/`fbdWires`/`fbdNetworks` (a new triple that

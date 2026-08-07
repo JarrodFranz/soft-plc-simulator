@@ -533,7 +533,7 @@
         "import"
       ],
       "version": "2026-08",
-      "summary": "Documents the Rockwell L5X (RSLogix5000Content) project-exchange schema's structure alongside this app's exact import support matrix - the RLL compile instruction set, real shipped AOI/RLL-Logic-AOI execution, real shipped FBD routine and FBD-Logic-AOI execution, and the confirmed still-unshipped state of L5X SFC routine translation.",
+      "summary": "Documents the Rockwell L5X (RSLogix5000Content) project-exchange schema's structure alongside this app's exact import support matrix - the RLL compile instruction set, real shipped AOI/RLL-Logic-AOI execution, real shipped FBD routine and FBD-Logic-AOI execution, the confirmed still-unshipped state of L5X SFC routine translation, a sheet-merge identity-collision import pitfall, and Rockwell FBD interop specifics (Operand/Function elements, SEL/CTUD name collisions, connector name reuse, OSRI/OSFI mapping).",
       "related": [
         "knowledge:industry/plc-formats/index",
         "knowledge:industry/plc-formats/plcopen-tc6-xml",
@@ -542,7 +542,9 @@
         "knowledge:industry/iec61131/function-block-diagram"
       ],
       "learnings": [
-        "CL-17"
+        "CL-17",
+        "CL-19",
+        "CL-22"
       ],
       "priority": "normal"
     },
@@ -855,15 +857,19 @@
         "deferred-work",
         "refactor-safety",
         "snapshot-testing",
-        "whole-branch-review"
+        "whole-branch-review",
+        "recurring-defect-shapes"
       ],
       "version": "2026-08",
-      "summary": "The spec -> plan -> per-task implement/review -> whole-branch review -> fix wave -> browser verify -> PR pipeline used for every workstream on this project, why the two review tiers catch different classes of defect, the docs/DEFERRED.md convention for recording conscious scope cuts, and the byte-identical snapshot technique for proving a refactor moved data without changing it.",
+      "summary": "The spec -> plan -> per-task implement/review -> whole-branch review -> fix wave -> browser verify -> PR pipeline used for every workstream on this project, why the two review tiers catch different classes of defect, the docs/DEFERRED.md convention for recording conscious scope cuts, the byte-identical snapshot technique for proving a refactor moved data without changing it, and recurring defect shapes worth recognizing on sight.",
       "related": [
         "knowledge:practices/index",
-        "knowledge:practices/verification"
+        "knowledge:practices/verification",
+        "knowledge:industry/plc-formats/rockwell-l5x"
       ],
-      "learnings": [],
+      "learnings": [
+        "CL-20"
+      ],
       "priority": "normal"
     },
     {
@@ -909,21 +915,24 @@
         "privileged-port",
         "computer-use",
         "desktop-verify",
-        "coordinate-clicks"
+        "coordinate-clicks",
+        "mutation-testing"
       ],
       "version": "2026-08",
-      "summary": "The two verification methods proven on this project - headless Playwright against a no-DOM Flutter-web CanvasKit app (screenshot+console+network, coordinate clicks, viewport set, single-listener-on-port check) and per-protocol E2E lanes that prove each in-app host against a real third-party client - plus the widget-test fake-async pitfall and privileged-port classification that both depend on.",
+      "summary": "The two verification methods proven on this project - headless Playwright against a no-DOM Flutter-web CanvasKit app (screenshot+console+network, coordinate clicks, viewport set, single-listener-on-port check) and per-protocol E2E lanes that prove each in-app host against a real third-party client - plus the widget-test fake-async pitfall, privileged-port classification, and mutation-proving forwarded runtime parameters that these depend on.",
       "related": [
         "knowledge:practices/index",
         "knowledge:practices/development-process",
         "knowledge:app/protocol-hosting",
-        "knowledge:app/ui-performance"
+        "knowledge:app/ui-performance",
+        "knowledge:industry/plc-formats/rockwell-l5x"
       ],
       "learnings": [
         "CL-9",
         "CL-10",
         "CL-11",
-        "CL-16"
+        "CL-16",
+        "CL-21"
       ],
       "priority": "normal"
     }

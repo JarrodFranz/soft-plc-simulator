@@ -7,7 +7,9 @@
 > app/default-projects.md without the file actually citing either id - see
 > [../knowledge/app/tag-model.md](../knowledge/app/tag-model.md) and
 > [../knowledge/industry/iec61131/ladder-diagram.md](../knowledge/industry/iec61131/ladder-diagram.md)
-> for where those two learnings actually live).
+> for where those two learnings actually live; 2026-08-07 L5X FBD import pass: added CL-19..CL-22,
+> covering a graphical-import merge identity-collision pitfall, an in-place-mutation retarget-steal
+> pitfall, mutation-proving forwarding parameters, and Rockwell FBD interop specifics).
 
 This is the append-only log of learnings surfaced across sessions. See
 [HOW-TO-USE.md](./HOW-TO-USE.md) for how to read and write it, and
@@ -32,6 +34,7 @@ TL = tentative (single observation, apply with caution).
 | 2026-07-25-browser-verification-canvas-app | 2026-07-25 | Establish the headless-Playwright verification method for the Flutter-web CanvasKit app; diagnose why the in-app preview pane times out | CL-9, CL-16 | closed |
 | 2026-07-26-l5x-import-foundation | 2026-07-26 | Ship the Rockwell L5X import foundation; add PLCopen-vs-L5X dialect autodetection | CL-17 | closed |
 | 2026-08-06-default-projects-redo | 2026-08-06 | Rebuild the default-project catalog (7-project redo); fix a Continuous-task-starvation bug found via the Flagship default; pin the backfill ledger's never-overwrite rule; audit HMI layout and LD counter presets across all defaults | CL-3, CL-12, CL-13, CL-18 | closed |
+| 2026-08-07-l5x-fbd-import | 2026-08-07 | Ship L5X FBD routine + FBD-Logic AOI import (PR #20); whole-branch review found and fixed an identity-collision merge bug, a retarget-steal bug, and mutation-uncovered forwarding gaps; alias Rockwell FBD mnemonics/pins to IEC | CL-19, CL-20, CL-21, CL-22 | closed |
 
 ---
 
@@ -341,6 +344,124 @@ rebuilt to take a tag-bound preset. Surfaced while auditing the conveyor-line de
 
 **Knowledge base updated:**
 - [../knowledge/industry/iec61131/ladder-diagram.md](../knowledge/industry/iec61131/ladder-diagram.md)
+
+---
+
+### CL-19 - Graphical-import merges must treat identity collisions as stub-worthy, not last-write-wins
+
+**Confirmed in:** 2026-08-07-l5x-fbd-import
+**Applies to:** any graphical-import merge algorithm that indexes nodes by id (`l5x_parser.dart`'s
+`weaklyConnectedComponents` byId map, and the shared component-scan machinery in
+`graph_segment.dart`)
+**Rule:** Building a byId map from a node list as `{for (n in nodes) n.localId: n}` silently keeps
+only the last node with each id - an earlier duplicate is deleted outright, its wires re-point onto
+the survivor, and the merged component then translates cleanly as the wrong logic (no error, no
+stub, just wrong). Surfaced in L5X's multi-sheet FBD merge, where two elements on one sheet could
+legitimately share a raw `ID`. The fix: demote the duplicate to a synthetic negative id before
+indexing (never re-registering the raw id), so it trips the translator's `localId < 0` stub gate and
+its component visibly stubs with a "duplicate ID" warning, instead of silently overwriting the real
+element.
+
+**Wrong:**
+```dart
+final byId = {for (final n in nodes) n.localId: n}; // later duplicate wins, earlier one vanishes
+```
+
+**Correct:**
+```dart
+// demote the duplicate before indexing so the STUB gate fires instead of an overwrite
+final localId = duplicate ? (malformedId--) : parsed + idOffset;
+```
+**Knowledge base updated:**
+- [../knowledge/industry/plc-formats/rockwell-l5x.md](../knowledge/industry/plc-formats/rockwell-l5x.md)
+
+---
+
+### CL-20 - In-place retarget loops that rescan mutated state can steal a value from an earlier iteration
+
+**Confirmed in:** 2026-08-07-l5x-fbd-import
+**Applies to:** any in-place mutation loop that renames/retargets by string-matching against values
+the SAME loop is mutating (`fb_import.dart`'s AOI FBD-instance retarget, `ir_to_project.dart`'s
+mirrored program-FBD loop)
+**Rule:** A loop that retargets blocks by rescanning for "the current tag's original name" after
+earlier iterations already mutated bindings is order-dependent: if a later instance's original name
+happens to equal the name an earlier iteration just renamed to, the later iteration's match also
+captures the earlier, already-renamed block - both end up sharing one var (of the wrong type for one
+of them), sharing nested FB state. The fix is to build the match index over the BORN (pre-loop)
+values once, before the loop starts, and retarget from that frozen index - never re-scan live/
+mutated state mid-loop. Both retarget sites in this codebase had the same latent bug (`fb_import.
+dart`'s AOI arm and `ir_to_project.dart`'s mirror); a red-first test reproduced the steal at both
+sites before the fix.
+
+**Wrong:**
+```dart
+// rescans CURRENT (partially-mutated) bindings on every iteration
+for (final block in blocks) {
+  final match = blocks.where((b) => b.tagBinding == block.originalName); // may hit an already-renamed block
+  retarget(match, block.newName);
+}
+```
+
+**Correct:**
+```dart
+// index ORIGINAL bindings once, before any mutation happens
+final byOriginalBinding = {for (final b in blocks) b.originalName: b};
+for (final block in blocks) {
+  retarget(byOriginalBinding[block.originalName], block.newName);
+}
+```
+**Knowledge base updated:**
+- [../knowledge/practices/development-process.md](../knowledge/practices/development-process.md)
+
+---
+
+### CL-21 - Mutation-prove forwarding/threading parameters, including at the production call site
+
+**Confirmed in:** 2026-08-07-l5x-fbd-import
+**Applies to:** any optional-with-default parameter that threads runtime/context state through a
+call chain (`fbdRt`, `ldRt` forwarding in `fb_exec.dart`, `runScanTick`, `runScopedFbdBody`)
+**Rule:** An optional parameter with a default makes a dropped forward compile silently and pass an
+entire test suite that never actually exercises the forwarded value - a unit test constructing its
+own runtime object supplies its own default, masking the bug just as effectively as the production
+caller's own accidental omission would. The only reliable guard is a test proven to fail (mutation-
+verified) under each dropped hop individually, INCLUDING the production call site - a scan-level
+test, not only a narrower unit-level path. Review mutation-testing on this workstream found three
+uncovered forwarding hops this way: `runScanTick`'s `fbdRt: rt.fbd` (zero coverage before the fix),
+`executeFbInstance`'s `ldRt: ldRt` mirror into `runScopedFbdBody`, and the FBD self-reference
+depth-cap guard - all three closed with tests confirmed to fail when the forward was manually
+dropped.
+
+**Knowledge base updated:**
+- [../knowledge/practices/verification.md](../knowledge/practices/verification.md)
+
+---
+
+### CL-22 - Rockwell FBD interop specifics: Operand vs Function elements, SEL/CTUD name collisions, connector name reuse, OSRI/OSFI mapping
+
+**Confirmed in:** 2026-08-07-l5x-fbd-import
+**Applies to:** L5X FBD import (`l5x_parser.dart`'s `_kL5xFbdTypeAliases`/`_kL5xFbdPinAliases`,
+`_resolveL5xFbdConnectors`)
+**Rule:** Four Rockwell-specific FBD quirks worth keeping as settled facts, not re-derived each time:
+- Logix emits `<Block Operand="...">` for ordinary instructions and a distinct `<Function>` element
+  for bit functions - both feed the same alias/translate pipeline but are structurally different
+  elements, not the same tag with different attributes.
+- `SEL` and `CTUD` are Rockwell mnemonics that COLLIDE with IEC built-in block names, so they pass
+  the built-in allowlist without any alias needed and then die at pin assertion unless their pins
+  are also aliased (`SelectorIn` -> `G`, etc.) - the type name matching an IEC built-in is not
+  evidence the pins line up.
+- Connector (`ICon`/`OCon`) names are unique within one Logix routine by construction, and this
+  app's resolver matches them the same way (name-based, routine-wide). A malformed export that
+  reuses one connector name for two independent producer/consumer pairs is out of spec for Logix
+  but not rejected on import: every producer of that name splices onto every consumer (a
+  cross-product), and the fused component then stubs deterministically at the translator's
+  `unresolved-pin` gate rather than silently wiring the wrong signal. Full 1:1 pairing (by sheet
+  proximity or declaration order) is deferred - see `docs/DEFERRED.md`.
+- `OSRI`/`OSFI` map onto the IEC `R_TRIG`/`F_TRIG` blocks, with `InputBit` -> `CLK` and `OutputBit`
+  -> `Q` pin aliases - both are best-effort (Logix's separate storage/output bits have no 1:1 IEC
+  equivalent), flagged with a warning-severity breadcrumb rather than a silent lossy translation.
+
+**Knowledge base updated:**
+- [../knowledge/industry/plc-formats/rockwell-l5x.md](../knowledge/industry/plc-formats/rockwell-l5x.md)
 
 ---
 

@@ -3,12 +3,13 @@ id: knowledge:practices/development-process
 title: Development Process
 domain: practices
 version: "2026-08"
-topics: [spec, plan, code-review, two-tier-review, deferred-work, refactor-safety, snapshot-testing, whole-branch-review]
-summary: The spec -> plan -> per-task implement/review -> whole-branch review -> fix wave -> browser verify -> PR pipeline used for every workstream on this project, why the two review tiers catch different classes of defect, the docs/DEFERRED.md convention for recording conscious scope cuts, and the byte-identical snapshot technique for proving a refactor moved data without changing it.
+topics: [spec, plan, code-review, two-tier-review, deferred-work, refactor-safety, snapshot-testing, whole-branch-review, recurring-defect-shapes]
+summary: The spec -> plan -> per-task implement/review -> whole-branch review -> fix wave -> browser verify -> PR pipeline used for every workstream on this project, why the two review tiers catch different classes of defect, the docs/DEFERRED.md convention for recording conscious scope cuts, the byte-identical snapshot technique for proving a refactor moved data without changing it, and recurring defect shapes worth recognizing on sight.
 related:
   - knowledge:practices/index
   - knowledge:practices/verification
-learnings: []
+  - knowledge:industry/plc-formats/rockwell-l5x
+learnings: [CL-20]
 ---
 
 # Development Process
@@ -171,6 +172,27 @@ proof, and it is cheap: capture the snapshot once, assert equality forever after
 
 ---
 
+## 5. Recurring defect shapes found by review
+
+Some defects are not specific to one feature - they are a SHAPE of bug that recurs whenever code
+of a certain structure gets written, independent of what domain it's in. Recording the shape (not
+just the one instance) is what lets a later review recognize it faster the next time.
+
+**In-place retarget/rename loops that rescan mutated state can steal a value from an earlier
+iteration (CL-20).** A loop that renames or retargets items by string-matching against "the
+current item's original name" is order-dependent the moment it rescans state the SAME loop is
+mutating: if a later item's original name happens to equal the name an earlier iteration just
+renamed something else *to*, the later match also captures that already-renamed item. Both end up
+sharing one binding - of the wrong type for one of them, in the L5X FBD-import instance found on
+this workstream (`fb_import.dart`'s AOI FBD-instance retarget and its mirror in
+`ir_to_project.dart`, see [../industry/plc-formats/rockwell-l5x.md](../industry/plc-formats/rockwell-l5x.md)).
+The fix is structural, not case-specific: build the match index over the BORN (pre-loop) values
+ONCE before the loop starts, and retarget from that frozen index - never re-scan live/mutated state
+mid-loop. This shape can recur in any retarget/rename/dedupe loop, not just import code; watch for
+it whenever a loop's match condition reads a field the same loop also writes.
+
+---
+
 ## What this means practically
 
 ### "Why does this project review the same branch twice?"
@@ -203,3 +225,5 @@ No - strike it through in place and note what shipped it (commit/PR/feature name
 - [index.md](./index.md) - domain hub.
 - [verification.md](./verification.md) - the browser-verify and E2E-lane gates this pipeline
   runs before a PR is considered ready.
+- [../industry/plc-formats/rockwell-l5x.md](../industry/plc-formats/rockwell-l5x.md) - the L5X
+  FBD-import retarget-steal instance behind CL-20 (§5).

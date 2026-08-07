@@ -3,14 +3,15 @@ id: knowledge:practices/verification
 title: Verification Methods
 domain: practices
 version: "2026-08"
-topics: [playwright, headless-browser, flutter-web, canvaskit, e2e, widget-test, fake-async, privileged-port, computer-use, desktop-verify, coordinate-clicks]
-summary: The two verification methods proven on this project - headless Playwright against a no-DOM Flutter-web CanvasKit app (screenshot+console+network, coordinate clicks, viewport set, single-listener-on-port check) and per-protocol E2E lanes that prove each in-app host against a real third-party client - plus the widget-test fake-async pitfall and privileged-port classification that both depend on.
+topics: [playwright, headless-browser, flutter-web, canvaskit, e2e, widget-test, fake-async, privileged-port, computer-use, desktop-verify, coordinate-clicks, mutation-testing]
+summary: The two verification methods proven on this project - headless Playwright against a no-DOM Flutter-web CanvasKit app (screenshot+console+network, coordinate clicks, viewport set, single-listener-on-port check) and per-protocol E2E lanes that prove each in-app host against a real third-party client - plus the widget-test fake-async pitfall, privileged-port classification, and mutation-proving forwarded runtime parameters that these depend on.
 related:
   - knowledge:practices/index
   - knowledge:practices/development-process
   - knowledge:app/protocol-hosting
   - knowledge:app/ui-performance
-learnings: [CL-9, CL-10, CL-11, CL-16]
+  - knowledge:industry/plc-formats/rockwell-l5x
+learnings: [CL-9, CL-10, CL-11, CL-16, CL-21]
 ---
 
 # Verification Methods
@@ -294,6 +295,36 @@ browser window inherits the same problem plus the DOM-interaction limits of §2.
 
 ---
 
+## 7. Mutation-proving forwarded runtime parameters
+
+**An optional-with-default parameter that threads runtime/context state through a call chain can
+have a dropped forward compile silently and pass an entire test suite - the only reliable guard is
+a test proven to fail (mutation-verified) under each dropped hop individually, including the
+production call site, not just a narrower unit-level path** (CL-21).
+
+A function signature like `runScopedFbdBody(..., {FbdRuntime? fbdRt})` or `executeFbInstance(...,
+{LdExecRuntime? ldRt})` makes forwarding optional by construction: if a caller forgets `fbdRt:
+rt.fbd` or `ldRt: ldRt`, the callee still runs, just against its own default runtime instead of the
+caller's shared one. Nothing throws, nothing type-errors - and a unit test that constructs its own
+runtime object supplies its own default too, so it exercises the callee correctly in isolation
+while remaining blind to whether the PRODUCTION call site actually threads the real one through.
+This is why the L5X FBD-import workstream's review mutation-testing pass (see
+[../industry/plc-formats/rockwell-l5x.md](../industry/plc-formats/rockwell-l5x.md) §5) found three
+forwarding hops with a compiling, suite-passing, but functionally uncovered dropped-forward gap:
+`runScanTick`'s `fbdRt: rt.fbd` (zero coverage before the fix - a ladder rung calling an FBD-bodied
+AOI with a `TON` needs it to accumulate across ticks), `executeFbInstance`'s `ldRt: ldRt` mirror
+into `runScopedFbdBody` (an FBD-bodied AOI calling a ladder-bodied AOI), and the FBD self-reference
+depth-cap guard.
+
+The fix pattern is always the same: write (or extend) a SCAN-LEVEL test that exercises the
+production call chain end to end, assert on state that can only be correct if the forward actually
+happened (an accumulated timer value, a surviving edge-detect flag, a depth-cap trip), then
+manually delete the forward in the source and confirm that exact test fails. A test that was never
+run against the dropped-forward mutant is not proof the forward is covered, regardless of how green
+the rest of the suite is.
+
+---
+
 ## What this means practically
 
 ### "How do I verify a UI change is done?"
@@ -327,6 +358,12 @@ consistency, not wire correctness.
 Use the desktop computer-use harness (§6), not the web build - the web build's projects live
 in browser `localStorage` and are always fresh/default.
 
+### "My tests are all green but I dropped/forgot a forwarded runtime parameter - how would I even know?"
+You wouldn't, from a green suite alone - an optional-with-default parameter makes a dropped forward
+compile and pass silently (§7, CL-21). Write a scan-level test against the real production call
+chain, asserting on state only correct if the forward happened, then manually delete the forward
+and confirm that specific test fails.
+
 ---
 
 ## Related
@@ -334,3 +371,5 @@ in browser `localStorage` and are always fresh/default.
 - [index.md](./index.md) - domain hub.
 - [development-process.md](./development-process.md) - where verification fits in the
   overall pipeline (browser-verify is the gate immediately before PR).
+- [../industry/plc-formats/rockwell-l5x.md](../industry/plc-formats/rockwell-l5x.md) - the L5X
+  FBD-import workstream whose review mutation-testing pass surfaced CL-21 (§7).
