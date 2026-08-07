@@ -231,13 +231,42 @@ class FbDefinition {
   /// `renameFbDefinition` in `tag_resolver.dart`.
   List<LdRung> ladderRungs;
 
+  /// Native FBD body. Non-empty => this FB is FBD-BODIED: [stSource] is
+  /// ignored and these blocks/wires run scoped to the instance (see
+  /// `fb_exec.dart` and `fbd_exec.dart`'s `runScopedFbdBody`). Empty (the
+  /// default) => unchanged behaviour.
+  ///
+  /// BODY PRECEDENCE (single source of truth: `executeFbInstance`):
+  /// `ladderRungs.isNotEmpty` -> ladder; else `fbdBlocks.isNotEmpty` -> FBD;
+  /// else ST.
+  ///
+  /// NOTE: these blocks are a THIRD `FbdBlock` root in the project graph
+  /// (`PlcProgram.fbdBlocks` is the first, `ladderRungs` the second for LD
+  /// nodes). Any project-wide traversal — renames, reference scans,
+  /// validation — must visit all three; see `renameFbDefinition`.
+  ///
+  /// [fbdNetworks] carries header/comment metadata only: execution partitions
+  /// on `FbdBlock.network` and sorts the distinct indices, so unlike
+  /// `PlcProgram` there is no constructor-level `_normalizeFbdNetworks` here
+  /// (the import translator appends exactly one network per component, so the
+  /// lists are consistent by construction).
+  List<FbdBlock> fbdBlocks;
+  List<FbdWire> fbdWires;
+  List<FbdNetwork> fbdNetworks;
+
   FbDefinition({
     required this.name,
     List<FbVar>? vars,
     this.stSource = '',
     List<LdRung>? ladderRungs,
+    List<FbdBlock>? fbdBlocks,
+    List<FbdWire>? fbdWires,
+    List<FbdNetwork>? fbdNetworks,
   })  : vars = vars ?? [],
-        ladderRungs = ladderRungs ?? [];
+        ladderRungs = ladderRungs ?? [],
+        fbdBlocks = fbdBlocks ?? [],
+        fbdWires = fbdWires ?? [],
+        fbdNetworks = fbdNetworks ?? [];
 
   factory FbDefinition.fromJson(Map<String, dynamic> json) {
     return FbDefinition(
@@ -247,18 +276,35 @@ class FbDefinition {
       ladderRungs: (json['ladder_rungs'] as List? ?? [])
           .map((r) => LdRung.fromJson(r))
           .toList(),
+      fbdBlocks: (json['fbd_blocks'] as List? ?? [])
+          .map((b) => FbdBlock.fromJson(b))
+          .toList(),
+      fbdWires: (json['fbd_wires'] as List? ?? [])
+          .map((w) => FbdWire.fromJson(w))
+          .toList(),
+      fbdNetworks: (json['fbd_networks'] as List? ?? [])
+          .map((n) => FbdNetwork.fromJson(n))
+          .toList(),
     );
   }
 
-  // `ladder_rungs` is emitted ONLY when non-empty so an ST-bodied FB's JSON is
-  // byte-identical to what shipped before this feature (old projects reload
-  // unchanged, and diffs of existing projects stay clean).
+  // `ladder_rungs` / `fbd_blocks` / `fbd_wires` / `fbd_networks` are emitted
+  // ONLY when non-empty so an ST-bodied (or ladder-bodied) FB's JSON is
+  // byte-identical to what shipped before each feature (old projects reload
+  // unchanged, and diffs of existing projects stay clean). The key names are
+  // the SAME ones `PlcProgram` uses, so the element serializers are reused.
   Map<String, dynamic> toJson() => {
     'name': name,
     'vars': vars.map((v) => v.toJson()).toList(),
     'st_source': stSource,
     if (ladderRungs.isNotEmpty)
       'ladder_rungs': ladderRungs.map((r) => r.toJson()).toList(),
+    if (fbdBlocks.isNotEmpty)
+      'fbd_blocks': fbdBlocks.map((b) => b.toJson()).toList(),
+    if (fbdWires.isNotEmpty)
+      'fbd_wires': fbdWires.map((w) => w.toJson()).toList(),
+    if (fbdNetworks.isNotEmpty)
+      'fbd_networks': fbdNetworks.map((n) => n.toJson()).toList(),
   };
 }
 
