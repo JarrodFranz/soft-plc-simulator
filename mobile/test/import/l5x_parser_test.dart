@@ -224,7 +224,7 @@ void main() {
     expect(byName['Speed']!.scope, VarScope.global);
   });
 
-  test('routines -> program POUs (ST body; RLL/FBD/SFC stubbed)', () {
+  test('routines -> program POUs (ST body; RLL captured)', () {
     const xml = '''
 <RSLogix5000Content TargetType="Controller"><Controller Name="C">
   <Programs><Program Name="Main">

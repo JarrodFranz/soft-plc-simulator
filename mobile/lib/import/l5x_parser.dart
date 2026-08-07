@@ -173,20 +173,24 @@ String _stLines(XmlElement routine) {
   return lines.join('\n');
 }
 
-/// Upper bound on a usable L5X FBD element `ID`. Anything above it (or absent,
-/// unparseable, or negative) is treated as malformed and gets a unique
-/// negative synthetic id instead, reproducing `plcopen_parser.dart`'s
-/// `_graphBody` contract: distinct negative ids keep
-/// `weaklyConnectedComponents` from merging two unrelated malformed nodes, and
-/// the FBD translator's `localId < 0` gate still stubs their component.
-const int _kMaxL5xFbdId = 1 << 31;
+/// Upper bound on a usable L5X element `ID`, shared by the FBD and SFC
+/// builders. Anything above it (or absent, unparseable, or negative) is
+/// treated as malformed and gets a unique negative synthetic id instead,
+/// reproducing `plcopen_parser.dart`'s `_graphBody` contract: distinct
+/// negative ids keep `weaklyConnectedComponents` from merging two unrelated
+/// malformed nodes, and the FBD translator's `localId < 0` gate still stubs
+/// their component. On the SFC path the same rejection keeps a raw `ID` out
+/// of the synthetic-id namespace that branch connectors and the poison node
+/// draw from — see `_l5xSfcBody`.
+const int _kMaxL5xElementId = 1 << 31;
 
-/// L5X FBD elements that are pure annotations: they carry an `ID` (or link to
-/// one) but never participate in dataflow, so they are dropped entirely rather
-/// than kept as opaque stub nodes. Everything else unrecognized IS kept (see
-/// `_l5xFbdBody`), so a `<JSR>`/`<SBR>`/`<Ret>` network stubs visibly instead
-/// of silently disappearing.
-const Set<String> _kL5xFbdAnnotationElements = {'TextBox', 'Attachment'};
+/// L5X graphical elements that are pure annotations: they carry an `ID` (or
+/// link to one) but never participate in dataflow or control flow, so they are
+/// dropped entirely rather than kept as opaque stub nodes. Shared by the FBD
+/// and SFC builders. Everything else unrecognized IS surfaced (see
+/// `_l5xFbdBody` and `_l5xSfcBody`), so a `<JSR>`/`<SBR>`/`<Ret>` network or a
+/// `<Stop>` element stubs visibly instead of silently disappearing.
+const Set<String> _kL5xAnnotationElements = {'TextBox', 'Attachment'};
 
 /// Rockwell FBD block/function mnemonics that alias onto an IEC built-in.
 /// Applied to `<Block Type=>` / `<Function Type=>` only: an
@@ -511,7 +515,7 @@ GraphBody _l5xFbdBody(
       if (tag == 'Wire' || tag == 'FeedbackWire') {
         continue; // pass 2
       }
-      if (_kL5xFbdAnnotationElements.contains(tag)) {
+      if (_kL5xAnnotationElements.contains(tag)) {
         ignoredCount++;
         if (!ignoredKinds.contains(tag)) ignoredKinds.add(tag);
         continue;
@@ -530,7 +534,7 @@ GraphBody _l5xFbdBody(
       final int localId;
       if (parsed == null ||
           parsed < 0 ||
-          parsed > _kMaxL5xFbdId ||
+          parsed > _kMaxL5xElementId ||
           duplicate) {
         localId = malformedId--; // never offset
       } else {
@@ -747,6 +751,303 @@ GraphBody _l5xFbdBody(
   return GraphBody(nodes: nodes, connections: conns);
 }
 
+/// Joined `<STContent><Line>` text under [owner]'s direct [wrapper] child
+/// (`'Body'` for a `<Step>`/`<Action>`, `'Condition'` for a `<Transition>`),
+/// each line trimmed, joined with `\n`, then trimmed as a whole. Returns `''`
+/// when absent, empty or whitespace-only. Never throws.
+String _l5xSfcSt(XmlElement owner, String wrapper) {
+  final lines = <String>[];
+  for (final w in _children(owner, wrapper)) {
+    for (final st in _children(w, 'STContent')) {
+      for (final ln in _children(st, 'Line')) {
+        lines.add(ln.innerText.trim());
+      }
+    }
+  }
+  return lines.join('\n').trim();
+}
+
+/// Element kinds `_l5xSfcBody`'s link classifier can resolve an endpoint to.
+/// Unmappable elements (`<Stop>`, `<SbrRet>`, an unknown tag) are deliberately
+/// NOT registered here: they poison the chart, and a link naming one must take
+/// the `dangling link` path rather than resolve to a node that does not exist.
+///
+/// `branch` and `leg` join this enum with `<Branch>` support — until then
+/// `<Branch>`/`<Leg>` fall through pass 1's `default` arm and poison the chart,
+/// and declaring the two values early would only trip `unused_field`.
+enum _L5xSfcKind { step, transition }
+
+/// Parses one `<Routine Type="SFC">`'s `<SFCContent>` into the neutral
+/// [SfcBody] the shared `translateSfcBody` consumes — the SFC analog of
+/// [_l5xFbdBody]. [ownerLabel] is the human label used in warnings, e.g.
+/// `'Routine "Main_Seq"'`.
+///
+/// Pure, deterministic, NEVER THROWS: every attribute read is null-tolerant,
+/// document order (of elements, then of the `<DirectedLink>` list) is the sole
+/// tiebreaker, and an absent/empty `<SFCContent>` yields an empty body.
+///
+/// Emits exactly the IR shapes `plcopen_parser.dart`'s `_sfcBody` emits, so
+/// `translateSfcBody` and `ir_to_project`'s `body is SfcBody` arm need ZERO
+/// changes. `refBodies`/`graphicalRefs` are always empty (Logix has no external
+/// action/transition POUs) and `SfcNodeKind.jump` is never emitted (Logix
+/// expresses a loop-back as an ordinary `<DirectedLink>` to an earlier
+/// element, not as a distinct jump element).
+///
+/// MULTI-CONTAINER: every `<SFCContent>` of the routine merges into ONE body,
+/// in document order, with NO id or y offsetting — an SFC routine is a single
+/// chart with routine-unique `ID`s, and offsetting would break the absolute
+/// `<DirectedLink>` ids. A duplicate `ID` across containers is therefore a
+/// defect handled by the ID gate, not papered over.
+///
+/// NEVER SILENT: any element this builder cannot map, any structurally broken
+/// branch, any dangling link and any ID collision sets the routine-level
+/// `unrepresentable` flag, which appends a POISON NODE (a step carrying a
+/// self-edge) in pass 4. `translateSfcBody`'s step->step edge scan is
+/// unconditional over `body.edges` and precedes every warning it emits, so a
+/// poisoned body always stubs `complex-topology` with EXACTLY ONE warning —
+/// the same two-message shape the PLCopen SFC path produces for any stub. See
+/// `docs/superpowers/specs/2026-08-07-l5x-sfc-import-design.md` §4.
+SfcBody _l5xSfcBody(
+    XmlElement routine, List<ImportWarning> warnings, String ownerLabel) {
+  final nodes = <SfcNode>[];
+  final edges = <SfcEdge>[];
+  final actions = <SfcActionAssoc>[];
+  // The ONE routine-wide synthetic-id counter: malformed/duplicate ids, the
+  // branch connectors and the poison node all draw from it, so no two
+  // synthetic ids can collide. The gate's `parsed < 0` rejection below is what
+  // stops a RAW id from colliding with them.
+  var malformedId = -1;
+  var unrepresentable = false;
+  final ignoredKinds = <String>[];
+  var ignoredCount = 0;
+  // Assigned localIds of dropped <TextBox>/<Attachment>. Logix anchors an
+  // annotation to the element it comments on; that anchor is a documentation
+  // relationship, not control flow, so a link touching one is discarded
+  // WITHOUT poisoning.
+  //
+  // Keyed by the ACCEPTED localId, never by the raw attribute: an annotation
+  // is the one non-node kind whose id IS dereferenced, so it runs the same ID
+  // gate as everything else (see pass 1).
+  final annotationIds = <int>{};
+  // Raw `ID` -> assigned localId. Only ACCEPTED ids are registered: a rejected
+  // one must never resolve, or a link naming it would silently retarget onto
+  // the element that was demoted.
+  final assignedByRawId = <int, int>{};
+  // Assigned localId -> kind, read by the link classifier.
+  final kindById = <int, _L5xSfcKind>{};
+
+  /// The ID gate: absent / unparseable / negative / out-of-range / duplicate
+  /// all get a unique synthetic negative id, an info breadcrumb and the poison
+  /// flag. Duplicate severity stays `info` (unlike the FBD builder's
+  /// `warning`) because here the stub is whole-POU and the loud message
+  /// already exists twice — translator + mapper.
+  int gateId(XmlElement el) {
+    final raw = el.getAttribute('ID');
+    final parsed = int.tryParse(raw ?? '');
+    final duplicate =
+        parsed != null && parsed >= 0 && assignedByRawId.containsKey(parsed);
+    if (parsed == null ||
+        parsed < 0 ||
+        parsed > _kMaxL5xElementId ||
+        duplicate) {
+      unrepresentable = true;
+      warnings.add(ImportWarning(
+          severity: WarningSeverity.info,
+          message: duplicate
+              ? '$ownerLabel: <${el.name.local}> reuses a duplicate ID '
+                  '($parsed) — it was given a synthetic id and the chart is '
+                  'not translated.'
+              : '$ownerLabel: <${el.name.local}> has a malformed ID '
+                  '(${raw == null ? 'absent' : '"$raw"'}) — the chart is not '
+                  'translated.'));
+      return malformedId--;
+    }
+    assignedByRawId[parsed] = parsed; // no offsetting: localId IS the raw id
+    return parsed;
+  }
+
+  // ---- Pass 1 — register elements, in document order.
+  for (final content in _children(routine, 'SFCContent')) {
+    for (final el in content.childElements) {
+      final tag = el.name.local;
+      if (tag == 'DirectedLink') {
+        continue; // pass 2a
+      }
+      if (_kL5xAnnotationElements.contains(tag)) {
+        ignoredCount++;
+        if (!ignoredKinds.contains(tag)) ignoredKinds.add(tag);
+        // An annotation is not a node, but its id IS dereferenced (pass 2a
+        // discards a link anchored to one), so an annotation that CARRIES an
+        // `ID` MUST run the same ID gate as every other ID-bearing element.
+        // Ungated, a <TextBox> reusing a real element's `ID` would claim that
+        // id in `annotationIds` without a duplicate-ID warning and without
+        // poisoning, and pass 2a would then silently discard every link naming
+        // the REAL element — a chart that translates cleanly as the wrong
+        // logic, the exact CL-19 shape. Gated, the collision is an ordinary
+        // duplicate in either document order.
+        //
+        // An annotation with NO `ID` attribute is skipped entirely: it can
+        // never be named by a <DirectedLink>, so it can never swallow a link,
+        // and poisoning a whole chart over a cosmetic element that cannot
+        // change the logic would be a false positive.
+        if (el.getAttribute('ID') != null) annotationIds.add(gateId(el));
+        continue;
+      }
+      final localId = gateId(el);
+      final x = double.tryParse(el.getAttribute('X') ?? '') ?? 0;
+      final y = double.tryParse(el.getAttribute('Y') ?? '') ?? 0;
+      final name =
+          (el.getAttribute('Operand') ?? el.getAttribute('Name') ?? '').trim();
+      switch (tag) {
+        case 'Step':
+          {
+            nodes.add(SfcNode(
+              localId: localId,
+              kind: SfcNodeKind.step,
+              name: name,
+              initial: el.getAttribute('InitialStep') == 'true',
+              x: x,
+              y: y,
+            ));
+            kindById[localId] = _L5xSfcKind.step;
+            // Actions come from XML NESTING, not from a link (contrast
+            // PLCopen's <actionBlock> + connectionPointIn), so stepLocalId is
+            // always a real step id here.
+            final actionEls = _children(el, 'Action').toList();
+            if (actionEls.isEmpty) {
+              final inline = _l5xSfcSt(el, 'Body');
+              if (inline.isNotEmpty) {
+                actions.add(SfcActionAssoc(
+                    stepLocalId: localId,
+                    qualifier: 'N',
+                    source: SfcActInline(inline)));
+              }
+            } else {
+              for (final a in actionEls) {
+                final q = (a.getAttribute('Qualifier') ?? '').trim();
+                actions.add(SfcActionAssoc(
+                  stepLocalId: localId,
+                  qualifier: q.isEmpty ? 'N' : q,
+                  source: SfcActInline(_l5xSfcSt(a, 'Body')),
+                ));
+              }
+            }
+            break;
+          }
+        case 'Transition':
+          {
+            var cond = _l5xSfcSt(el, 'Condition');
+            // `conditionSt` is evaluated as a boolean EXPRESSION by sfc_exec,
+            // so a single trailing statement terminator would fail to parse.
+            if (cond.endsWith(';')) {
+              cond = cond.substring(0, cond.length - 1).trimRight();
+            }
+            nodes.add(SfcNode(
+              localId: localId,
+              kind: SfcNodeKind.transition,
+              name: name,
+              x: x,
+              y: y,
+              condition: cond.isEmpty ? SfcCondNone() : SfcCondInline(cond),
+            ));
+            kindById[localId] = _L5xSfcKind.transition;
+            break;
+          }
+        default:
+          {
+            // <Stop>, <SbrRet>, <JSR>, a top-level <Leg>, any future tag: no
+            // representable equivalent. Deliberately NOT registered in
+            // `kindById` and NOT emitted as a node, so nothing downstream can
+            // mistake it for a mappable element — the poison flag is what
+            // makes it visible.
+            unrepresentable = true;
+            warnings.add(ImportWarning(
+                severity: WarningSeverity.info,
+                message: '$ownerLabel: <$tag ID="${el.getAttribute('ID') ?? ''}"> '
+                    'has no representable equivalent — the chart is not '
+                    'translated.'));
+            break;
+          }
+      }
+    }
+  }
+
+  // ---- Pass 2a — collect and classify links, in document order.
+  final pending = <SfcEdge>[];
+  for (final content in _children(routine, 'SFCContent')) {
+    for (final el in _children(content, 'DirectedLink')) {
+      final fromAttr = el.getAttribute('FromID');
+      final toAttr = el.getAttribute('ToID');
+      final fromRaw = int.tryParse(fromAttr ?? '');
+      final toRaw = int.tryParse(toAttr ?? '');
+      final fromId = fromRaw == null ? null : assignedByRawId[fromRaw];
+      final toId = toRaw == null ? null : assignedByRawId[toRaw];
+      // (1) An annotation anchor is documentation, not control flow. Keyed off
+      // the ACCEPTED id: an annotation whose raw `ID` was rejected (malformed,
+      // out of range, or a duplicate) never registered in `assignedByRawId`,
+      // so it can never swallow another element's links — it poisoned the
+      // chart instead.
+      if ((fromId != null && annotationIds.contains(fromId)) ||
+          (toId != null && annotationIds.contains(toId))) {
+        continue;
+      }
+      final fromKind = fromId == null ? null : kindById[fromId];
+      final toKind = toId == null ? null : kindById[toId];
+      // (3) An endpoint naming no MAPPABLE element. The edge is still emitted
+      // against a fresh synthetic id: dropping it would silently delete a
+      // control path.
+      if (fromKind == null || toKind == null) {
+        unrepresentable = true;
+        warnings.add(ImportWarning(
+            severity: WarningSeverity.info,
+            message: '$ownerLabel: <DirectedLink FromID="${fromAttr ?? ''}" '
+                'ToID="${toAttr ?? ''}"> is a dangling link (endpoint names no '
+                'element) — the chart is not translated.'));
+        pending.add(SfcEdge(
+          fromLocalId: fromKind == null ? malformedId-- : fromId!,
+          toLocalId: toKind == null ? malformedId-- : toId!,
+        ));
+        continue;
+      }
+      // (6) An ordinary edge. (Task 2 inserts rules 2, 4 and 5 — the
+      // connector-endpoint cases — ahead of this.)
+      pending.add(SfcEdge(fromLocalId: fromId!, toLocalId: toId!));
+    }
+  }
+
+  // ---- Pass 2b — the remaining edges, in their original document order.
+  // (Task 2's pass 3 appends the connector nodes and their edges BEFORE this,
+  // so connector edges lead the list. Nothing in translateSfcBody depends on
+  // edge order; this is determinism and presentation, not semantics.)
+  edges.addAll(pending);
+
+  // ---- Pass 4 — finalize.
+  if (ignoredCount > 0) {
+    warnings.add(ImportWarning(
+        severity: WarningSeverity.info,
+        message: '$ownerLabel: $ignoredCount element(s) ignored '
+            '(${ignoredKinds.join(', ')}).'));
+  }
+  if (unrepresentable) {
+    // The poison node. `_build`'s step->step edge scan is unconditional over
+    // `body.edges` and runs before the succ/pred maps, before actions are
+    // grouped, and before any warning-emitting statement, so this ALWAYS
+    // throws `_SfcStub('complex-topology', 'step directly wired to step
+    // (missing transition)')` — position-independent, edge-order-independent,
+    // deterministic, and with no stray translator infos.
+    final pid = malformedId--;
+    nodes.add(SfcNode(
+        localId: pid, kind: SfcNodeKind.step, name: '#unrepresentable'));
+    edges.add(SfcEdge(fromLocalId: pid, toLocalId: pid));
+  }
+  return SfcBody(
+      nodes: nodes,
+      edges: edges,
+      actions: actions,
+      refBodies: const {},
+      graphicalRefs: const {});
+}
+
 VarScope _usageScope(String? usage) => switch (usage) {
       'Input' => VarScope.input,
       'Output' => VarScope.output,
@@ -869,8 +1170,8 @@ List<ImportedPou> _l5xAois(XmlElement? controller, List<ImportWarning> warnings)
 /// `Program_Routine`. ST inlines its lines; RLL captures each rung's neutral
 /// text + comment into a `NeutralLadderBody`; FBD parses its structured
 /// `<FBDContent>` into a `GraphBody` (translated per network by
-/// `ir_to_project`); SFC still becomes an empty graphical body (the mapper's
-/// existing whole-POU stub) + a count-carrying warning.
+/// `ir_to_project`); SFC parses its structured `<SFCContent>` into an
+/// `SfcBody` (translated whole-POU by `ir_to_project`).
 List<ImportedPou> _l5xRoutines(XmlElement? controller, List<ImportWarning> warnings) {
   final out = <ImportedPou>[];
   if (controller == null) return out;
@@ -912,12 +1213,15 @@ List<ImportedPou> _l5xRoutines(XmlElement? controller, List<ImportWarning> warni
                   body: _l5xFbdBody(r, warnings, 'Routine "$name"')));
               break;
             case 'SFC':
-              warnings.add(ImportWarning(severity: WarningSeverity.warning,
-                  message: 'Routine "$name" (SFC): graphical body not yet '
-                      'translated.'));
+              // <SFCContent> parses into a real SfcBody; ir_to_project's
+              // existing `body is SfcBody` arm translates it whole-POU
+              // (faithful-or-stub) via the shared translateSfcBody. A chart
+              // that does not translate keeps that arm's stub — no
+              // parser-level warning, so the message count matches the
+              // PLCopen SFC path exactly.
               out.add(ImportedPou(name: name, kind: PouKind.program,
                   lang: PouLanguage.sfc, localVars: const [],
-                  body: SfcBody(nodes: const [], edges: const [], actions: const [])));
+                  body: _l5xSfcBody(r, warnings, 'Routine "$name"')));
               break;
             default:
               warnings.add(ImportWarning(severity: WarningSeverity.info,
