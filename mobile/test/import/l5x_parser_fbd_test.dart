@@ -242,4 +242,220 @@ void main() {
     expect(pou.lang, PouLanguage.fbd);
     expect(pou.kind, PouKind.program);
   });
+
+  test('two sheets with OVERLAPPING raw ids merge with disjoint localIds', () {
+    final g = _graph(_parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="A" X="0" Y="0"/>
+        <ORef ID="1" Operand="B" X="100" Y="50"/>
+        <Wire FromID="0" ToID="1" ToParam="IN"/>
+      </Sheet>
+      <Sheet Number="2">
+        <IRef ID="0" Operand="C" X="0" Y="0"/>
+        <ORef ID="1" Operand="D" X="100" Y="10"/>
+        <Wire FromID="0" ToID="1" ToParam="IN"/>
+      </Sheet>'''));
+
+    expect(g.nodes.map((n) => n.localId).toSet(), hasLength(4));
+    // Sheet 1 keeps raw ids; sheet 2 is offset past the max assigned so far.
+    expect(_node(g, 0).attributes['variable'], 'A');
+    expect(_node(g, 2).attributes['variable'], 'C');
+    expect(_node(g, 3).attributes['variable'], 'D');
+    // Wires are sheet-local, so they follow their sheet's offset.
+    expect(g.connections.map((c) => '${c.fromLocalId}->${c.toLocalId}'),
+        ['0->1', '2->3']);
+    // Sheet 2 sits BELOW sheet 1 (maxY 50 + 200), so network numbering reads
+    // sheet by sheet instead of interleaving.
+    expect(_node(g, 2).y, 250);
+    expect(_node(g, 3).y, 260);
+
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 2);
+  });
+
+  test('sheets are visited in ascending Number order, not document order', () {
+    final g = _graph(_parse('''
+      <Sheet Number="2">
+        <IRef ID="0" Operand="Second" X="0" Y="0"/>
+      </Sheet>
+      <Sheet Number="1">
+        <IRef ID="0" Operand="First" X="0" Y="0"/>
+      </Sheet>'''));
+
+    // The Number="1" sheet is processed first, so it keeps the raw id.
+    expect(_node(g, 0).attributes['variable'], 'First');
+    expect(_node(g, 1).attributes['variable'], 'Second');
+  });
+
+  test('an unnumbered sheet falls back to its document-order position', () {
+    // Document order: Number="2", (none), Number="1". Keys: 2.0, 2.5, 1.0 ->
+    // processed 1, 2, unnumbered (the unnumbered one sits just after the
+    // neighbour it followed in the file).
+    final g = _graph(_parse('''
+      <Sheet Number="2">
+        <IRef ID="0" Operand="Two" X="0" Y="0"/>
+      </Sheet>
+      <Sheet>
+        <IRef ID="0" Operand="NoNumber" X="0" Y="0"/>
+      </Sheet>
+      <Sheet Number="1">
+        <IRef ID="0" Operand="One" X="0" Y="0"/>
+      </Sheet>'''));
+
+    expect(_node(g, 0).attributes['variable'], 'One');
+    expect(_node(g, 1).attributes['variable'], 'Two');
+    expect(_node(g, 2).attributes['variable'], 'NoNumber');
+  });
+
+  test('the synthetic-id counter is ROUTINE-wide across sheets', () {
+    final g = _graph(_parse('''
+      <Sheet Number="1">
+        <IRef Operand="BadOne"/>
+        <IRef ID="0" Operand="Fine"/>
+      </Sheet>
+      <Sheet Number="2">
+        <IRef ID="oops" Operand="BadTwo"/>
+        <IRef ID="0" Operand="AlsoFine"/>
+      </Sheet>'''));
+
+    final negatives =
+        g.nodes.where((n) => n.localId < 0).map((n) => n.localId).toList();
+    expect(negatives, hasLength(2));
+    expect(negatives.toSet(), hasLength(2)); // distinct, not both -1
+
+    // Each malformed element stubs its OWN component.
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.stubReasons['unsupported-element'], 2);
+  });
+
+  test('a matched OCon/ICon pair becomes a direct wire and the nodes vanish', () {
+    final g = _graph(_parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="Src" X="0" Y="0"/>
+        <Function ID="1" Type="NOT" X="50" Y="0"/>
+        <OCon ID="2" Name="Loop1" X="100" Y="0"/>
+        <Wire FromID="0" ToID="1" ToParam="IN"/>
+        <Wire FromID="1" FromParam="OUT" ToID="2"/>
+      </Sheet>
+      <Sheet Number="2">
+        <ICon ID="0" Name="Loop1" X="0" Y="0"/>
+        <ORef ID="1" Operand="Dst" X="50" Y="0"/>
+        <Wire FromID="0" ToID="1" ToParam="IN"/>
+      </Sheet>'''));
+
+    expect(g.nodes.any((n) => n.elementType == 'ICon'), isFalse);
+    expect(g.nodes.any((n) => n.elementType == 'OCon'), isFalse);
+
+    // Producer (NOT.OUT) is wired straight to the consumer (Dst.IN); both
+    // connector wires are gone.
+    final notId =
+        g.nodes.firstWhere((n) => n.attributes['typeName'] == 'NOT').localId;
+    final dstId =
+        g.nodes.firstWhere((n) => n.attributes['variable'] == 'Dst').localId;
+    final direct = g.connections
+        .where((c) => c.fromLocalId == notId && c.toLocalId == dstId)
+        .toList();
+    expect(direct, hasLength(1));
+    expect(direct.single.fromPin, 'OUT');
+    expect(direct.single.toPin, 'IN');
+    expect(g.connections, hasLength(2)); // Src->NOT plus the merged wire
+
+    // Merged into ONE component -> one real network. (The IEC type name `NOT`
+    // is deliberate: Task 6's alias table does not exist yet, so the fixture
+    // must already name an IEC built-in to translate here.)
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 1);
+    expect(tr.stubbedNetworkCount, 0);
+  });
+
+  test('UNNAMED connectors never match each other; both stub', () {
+    // Two blank-Name connectors are NOT the same connector. Splicing them
+    // would wire two unrelated networks together, so they must never enter the
+    // match maps: the nodes stay and their components stub.
+    final ir = _parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="Src" X="0" Y="0"/>
+        <OCon ID="1" Name="" X="50" Y="0"/>
+        <Wire FromID="0" ToID="1"/>
+      </Sheet>
+      <Sheet Number="2">
+        <ICon ID="0" X="0" Y="0"/>
+        <ORef ID="1" Operand="Dst" X="50" Y="0"/>
+        <Wire FromID="0" ToID="1" ToParam="IN"/>
+      </Sheet>''');
+    final g = _graph(ir);
+
+    expect(g.nodes.any((n) => n.elementType == 'OCon'), isTrue);
+    expect(g.nodes.any((n) => n.elementType == 'ICon'), isTrue);
+    // No splice happened: Src is not wired to Dst.
+    expect(g.connections.any((c) => c.fromLocalId == 0 && c.toLocalId == 3),
+        isFalse);
+
+    final w = ir.warnings
+        .where((x) =>
+            x.message.contains('unmatched connector') &&
+            x.message.contains('(unnamed)'))
+        .toList();
+    expect(w, hasLength(1));
+    expect(w.single.severity, WarningSeverity.info);
+
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 0);
+    expect(tr.stubReasons['unsupported-element'], 2);
+  });
+
+  test('connector CHAINING (an ICon feeding an OCon) routes to the unmatched path',
+      () {
+    // There is no producer/consumer pair to splice here, so both names take
+    // the unmatched path and their components stub.
+    final ir = _parse('''
+      <Sheet Number="1">
+        <ICon ID="0" Name="A" X="0" Y="0"/>
+        <OCon ID="1" Name="B" X="50" Y="0"/>
+        <Wire FromID="0" ToID="1"/>
+      </Sheet>
+      <Sheet Number="2">
+        <IRef ID="0" Operand="Src" X="0" Y="0"/>
+        <OCon ID="1" Name="A" X="50" Y="0"/>
+        <Wire FromID="0" ToID="1"/>
+      </Sheet>''');
+    final g = _graph(ir);
+
+    expect(g.nodes.where((n) => n.elementType == 'ICon'), hasLength(1));
+    expect(g.nodes.where((n) => n.elementType == 'OCon'), hasLength(2));
+    final names = ir.warnings
+        .where((x) => x.message.contains('unmatched connector'))
+        .map((x) => x.message)
+        .toList();
+    expect(names, hasLength(2)); // one for "A", one for "B"
+    expect(names.any((m) => m.contains('"A"')), isTrue);
+    expect(names.any((m) => m.contains('"B"')), isTrue);
+
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 0);
+  });
+
+  test('an unmatched connector is KEPT, warns, and stubs its component', () {
+    final ir = _parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="Src" X="0" Y="0"/>
+        <OCon ID="1" Name="Dangling" X="50" Y="0"/>
+        <Wire FromID="0" ToID="1"/>
+      </Sheet>''');
+    final g = _graph(ir);
+
+    expect(g.nodes.any((n) => n.elementType == 'OCon'), isTrue);
+    final w = ir.warnings
+        .where((x) => x.message.contains('unmatched connector'))
+        .toList();
+    expect(w, hasLength(1));
+    expect(w.single.severity, WarningSeverity.info);
+    expect(w.single.message, contains('Routine "Prog_Main"'));
+    expect(w.single.message, contains('Dangling'));
+
+    // R4: the ELEMENT-kind gate fires (not the pin gate).
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 0);
+    expect(tr.stubReasons['unsupported-element'], 1);
+  });
 }
