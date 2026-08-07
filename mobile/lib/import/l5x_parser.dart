@@ -767,8 +767,8 @@ List<ImportedPou> _l5xAois(XmlElement? controller, List<ImportWarning> warnings)
       final name = aoi.getAttribute('Name') ?? '';
       if (name.isEmpty) continue;
       // Logic routine: named "Logic" else the first routine. Resolved BEFORE
-      // the parameter loop because an RLL-logic AOI keeps EnableIn/EnableOut
-      // while every other logic language keeps the historic skip.
+      // the parameter loop because RLL- and FBD-logic AOIs keep
+      // EnableIn/EnableOut; ST/SFC keep the historic skip.
       XmlElement? logic;
       for (final rs in _children(aoi, 'Routines')) {
         for (final r in _children(rs, 'Routine')) {

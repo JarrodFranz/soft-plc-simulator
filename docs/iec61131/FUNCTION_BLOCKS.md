@@ -1,10 +1,11 @@
 # Custom (User-Defined) Function Blocks
 
 A **function block (FB)** definition is a reusable, project-level type: a
-typed interface (input/output/internal vars) plus a body — either Structured
-Text or a native **ladder** body. Instantiating one creates a struct-typed tag
-that holds the instance's state — so **every instance has independent state**,
-the same way two `TON` timers never share a preset/elapsed.
+typed interface (input/output/internal vars) plus a body — Structured Text, a
+native **ladder** body, or a native **FBD** body. Instantiating one creates a
+struct-typed tag that holds the instance's state — so **every instance has
+independent state**, the same way two `TON` timers never share a
+preset/elapsed.
 
 Implementation: `mobile/lib/models/project_model.dart` (`FbDefinition`,
 `FbVar`, `FbVarDir`, `PlcProject.fbDefinitions`), `mobile/lib/models/
@@ -90,6 +91,39 @@ whichever engine made the call (LD block, FBD block, or `scan_tick`).
 The FB editor does **not** view or edit ladder bodies yet — a ladder-bodied FB
 shows its (empty) ST source. Tracked in `docs/DEFERRED.md`.
 
+## FBD-bodied FBs
+
+An FB can also carry a native **FBD body**: `FbDefinition.fbdBlocks`/
+`fbdWires`/`fbdNetworks` (JSON keys `fbd_blocks`/`fbd_wires`/`fbd_networks`,
+each absent when empty) hold real `FbdBlock`/`FbdWire`/`FbdNetwork`s. Today
+these are produced only by the L5X importer, translating an AOI whose `Logic`
+routine is FBD (see `docs/import/L5X.md`); the FB editor does not create them.
+
+Body dispatch is a **three-way precedence**, quoted exactly from
+`executeFbInstance` (`mobile/lib/models/fb_exec.dart`), the single source of
+truth: `ladderRungs.isNotEmpty` → ladder, else `fbdBlocks.isNotEmpty` → FBD,
+else ST.
+
+Per-instance scoping mirrors the ladder path: `LdScope` rewrites a body tag
+path whose **root segment** is one of the FB's var names to
+`<instancePath>.<path>`; `CONST` literals are never rewritten (they carry no
+tag path to rewrite). Stateful FBD blocks (timers, counters, edges) key their
+runtime state `fb:<instancePath>|<blockId>` — disjoint from every program's
+own block-keyed state because a block id can never contain `:` or `|` (it is
+**not** a sanitized identifier; an AOI body's block id can itself contain a
+space, e.g. `AOI Ramp_n7`). A nested instance's state (an FB body calling
+another FB) nests under the outer instance's dotted path, e.g.
+`Outer.Inner`.
+
+`EnableIn` is re-asserted `true` immediately before every graphical-body
+call — ladder or FBD alike — for the same Rockwell-fidelity reason described
+above.
+
+The FB editor does **not** view or edit FBD bodies yet — an FBD-bodied FB
+shows its (empty) ST source, same as the ladder case. FB bodies (ladder and
+FBD alike) have **no online monitoring**: the scoped executors always pass
+`monitor: null`. Both tracked in `docs/DEFERRED.md`.
+
 ## What's deferred
 
 This is **native authoring** — defining and placing FBs by hand in-app.
@@ -105,7 +139,9 @@ all LD operand resolution uses) with an `<expression>` fallback for either
 dialect. The FBD import translator (see `docs/iec61131/FUNCTION_BLOCK_DIAGRAM.md`)
 routes an FBD `<block>` calling a custom FB to a real instance the same way the
 LD translator does, proven end-to-end in
-`mobile/test/import/import_fbd_e2e_test.dart`. Graphical-bodied FBs,
-FB-calling-FB nesting, ST bodies beyond the app's subset, and IEC *functions*
-(stateless POUs) all remain out of scope — tracked in `docs/DEFERRED.md`'s
-"Custom (user-defined) function blocks" section.
+`mobile/test/import/import_fbd_e2e_test.dart`. Graphical bodies (ladder and
+FBD) are import-produced only and not yet editable in the FB editor (see
+"Ladder-bodied FBs" and "FBD-bodied FBs" above). FB-calling-FB nesting, ST
+bodies beyond the app's subset, and IEC *functions* (stateless POUs) all
+remain out of scope — tracked in `docs/DEFERRED.md`'s "Custom (user-defined)
+function blocks" section.

@@ -58,7 +58,11 @@ directly in `fbd_pins.dart`'s own comment on `kFbdBuiltinBlockTypes`.
 
 Every stateful FBD block keys its state off `b.id` into `FbdRuntime`'s maps, all of which start
 **empty** and default via `?? initialValue` on first read - there is no equivalent of ladder's
-special-cased first-scan preload branch anywhere in FBD.
+special-cased first-scan preload branch anywhere in FBD. This is the **program** case; an
+FBD-bodied custom FB's body keys the same maps off `'fb:<instancePath>|<blockId>'` instead (see
+[custom-function-blocks.md](./custom-function-blocks.md) §4), so two instances of the same
+FBD-bodied FB never share timer/counter/edge state even though they share one set of body block
+ids.
 
 | Block | Start state | Preload? |
 |---|---|---|
@@ -107,7 +111,8 @@ is **conditional, not clamped-integral**: a candidate integral term is computed
 `raw` falls within `[0, 100]`, the candidate integral is committed; otherwise the integral is
 **frozen** at its previous value and `raw` is recomputed without the candidate term. The final
 `CV` is clamped to `[0, 100]`. **The 0-100 output range is hardcoded** - there is no `MIN`/`MAX`
-input pin to reconfigure it. State persists per `b.id` across scans.
+input pin to reconfigure it. State persists per `b.id` across scans (per `'fb:<instancePath>|
+<blockId>'` instead, for a PID inside an FBD-bodied custom FB - see §3).
 
 ---
 

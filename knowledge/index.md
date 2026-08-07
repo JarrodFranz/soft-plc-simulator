@@ -83,7 +83,7 @@ The four IEC 61131-3 languages plus tasks and custom function blocks.
 | [industry/iec61131/function-block-diagram.md](industry/iec61131/function-block-diagram.md) | Networks, dataflow evaluation, pin model, execution order, timer/counter/edge blocks, PID, SEL/LIMIT/Scale, custom-FB calls |
 | [industry/iec61131/sequential-function-chart.md](industry/iec61131/sequential-function-chart.md) | Steps/transitions, STEP_T, alternative vs parallel divergence, fork/join token semantics, one-shot and initial steps |
 | [industry/iec61131/task-scheduling.md](industry/iec61131/task-scheduling.md) | The 4 IEC task types, priority/dedup, watchdogs, free-run mode, System UDT, Continuous-starvation rule (CL-3) |
-| [industry/iec61131/custom-function-blocks.md](industry/iec61131/custom-function-blocks.md) | FB definitions (ST-bodied and ladder-bodied), instance state, pin bindings, nesting guard, name validation |
+| [industry/iec61131/custom-function-blocks.md](industry/iec61131/custom-function-blocks.md) | FB definitions (ST-bodied, ladder-bodied, or FBD-bodied), instance state, pin bindings, nesting guard, name validation |
 
 ## 3. `app/`
 

@@ -55,7 +55,7 @@ project. This means an LD or FBD program's writes are visible to an ST program's
 | Function Block Diagram | [function-block-diagram.md](./function-block-diagram.md) | Ascending-network same-scan chaining, per-block pin resolution, timer/counter preload gaps, the PID anti-windup algorithm, undocumented cycle handling |
 | Sequential Function Chart | [sequential-function-chart.md](./sequential-function-chart.md) | Multi-token active-step-set model, list-order-as-priority divergence, true AND parallel fork/join, `STEP_T`'s scan-dtMs accumulation |
 | Task Scheduling | [task-scheduling.md](./task-scheduling.md) | The four task types, the exact Continuous-starvation predicate, watchdog fault propagation, the reserved `System` UDT |
-| Custom Function Blocks | [custom-function-blocks.md](./custom-function-blocks.md) | ST-bodied vs ladder-bodied instances, the shared scope-rewrite rule, the max-call-depth guard, Rockwell `EnableIn` re-assertion |
+| Custom Function Blocks | [custom-function-blocks.md](./custom-function-blocks.md) | ST-bodied, ladder-bodied, and FBD-bodied instances, the shared scope-rewrite rule, the max-call-depth guard, Rockwell `EnableIn` re-assertion |
 
 ---
 

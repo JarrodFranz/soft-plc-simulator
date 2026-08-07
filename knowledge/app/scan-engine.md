@@ -115,7 +115,7 @@ Each IEC language executor owns its own runtime-state map(s), all living on
 | Executor | Runtime class | Keying |
 |---|---|---|
 | LD | `LdExecRuntime.prevBool` (`Map<String,bool>`) | `"$progName\|$rungIndex\|$nodeId"` |
-| FBD | `FbdRuntime` - 5 separate maps (`_elapsedMs`, `_pid`, `_counters`, `_prevClk`, `_pulse`) | block id (`FbdBlock.id`, unique within a project's FBD programs) |
+| FBD | `FbdRuntime` - 5 separate maps (`_elapsedMs`, `_pid`, `_counters`, `_prevClk`, `_pulse`) | block id (`FbdBlock.id`, unique within a project's FBD programs); an FBD-bodied custom FB's body instead keys `'fb:<instancePath>|<blockId>'`, disjoint from every program's own block ids |
 | SFC | `SfcRuntime.active` (`Map<String,Set<String>>`), `.stepElapsedMs` (`Map<String,int>`) | program name; `"<prog>|<stepId>"` |
 | ST | `StRuntime` | reserved/unused - FB instance data is stored directly on tags at `<instancePath>.<var>`, not in a runtime map |
 | Task scheduler | `TaskSchedulerRuntime.periodicAccumMs`, `.eventPrevTrigger` | task name |
@@ -128,6 +128,13 @@ state while letting one `LdExecRuntime` serve both a program's rungs and a ladde
 body - this is also why `executeFbdPrograms` is handed the LD runtime (`ldRt: rt.ld`) at
 `scan_tick.dart:81-82`: an FBD network can call a ladder-bodied FB, and that FB's edge/pulse
 state must be the same runtime the LD engine itself reads and writes.
+
+**FBD-bodied custom function blocks share the FBD engine's `FbdRuntime`** the same way, under
+the `'fb:<instancePath>|<blockId>'` prefix from the table above (`fbd_exec.dart`'s
+`runScopedFbdBody`) rather than a separate map. Neither engine's call site knows ahead of time
+whether the FB instance it's calling is ladder-bodied or FBD-bodied, so both an LD block call and
+an FBD block call to a custom FB thread **both** `ldRt` and `fbdRt` down through
+`executeFbInstance` uniformly - only the runtime matching the FB's actual body kind ends up used.
 
 ## 5. Edge memory
 

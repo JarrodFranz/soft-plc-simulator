@@ -265,7 +265,7 @@
         "aoi"
       ],
       "version": "2026-08",
-      "summary": "Documents IEC 61131-3 custom function blocks alongside this engine's exact instance-execution model - the ST-bodied/ladder-bodied body discriminator, the shared LdScope/StScope root-segment rewrite rule, the max-call-depth guard (_kMaxFbCallDepth = 16), and the Rockwell EnableIn re-assertion mechanism.",
+      "summary": "Documents IEC 61131-3 custom function blocks alongside this engine's exact instance-execution model - the ST/ladder/FBD three-way body discriminator, the shared LdScope/StScope root-segment rewrite rule, the max-call-depth guard (_kMaxFbCallDepth = 16), and the Rockwell EnableIn re-assertion mechanism.",
       "related": [
         "knowledge:industry/iec61131/index",
         "knowledge:industry/iec61131/ladder-diagram",
@@ -533,7 +533,7 @@
         "import"
       ],
       "version": "2026-08",
-      "summary": "Documents the Rockwell L5X (RSLogix5000Content) project-exchange schema's structure alongside this app's exact import support matrix - the RLL compile instruction set, real shipped AOI/RLL-Logic-AOI execution, and the confirmed still-unshipped state of L5X FBD and SFC routine translation.",
+      "summary": "Documents the Rockwell L5X (RSLogix5000Content) project-exchange schema's structure alongside this app's exact import support matrix - the RLL compile instruction set, real shipped AOI/RLL-Logic-AOI execution, real shipped FBD routine and FBD-Logic-AOI execution, and the confirmed still-unshipped state of L5X SFC routine translation.",
       "related": [
         "knowledge:industry/plc-formats/index",
         "knowledge:industry/plc-formats/plcopen-tc6-xml",
