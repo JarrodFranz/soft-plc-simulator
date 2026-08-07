@@ -56,3 +56,14 @@ The seven built-in demo projects live one-per-file in
 `mobile/lib/data/default_projects/`; `mobile/lib/data/default_projects.dart` is
 a barrel that keeps `DefaultProjects.all()` and its import path stable (see
 `docs/default-projects.md`).
+
+## Knowledge base
+
+`knowledge/` is the canonical, governed store of durable knowledge distilled
+from development (industry protocols / PLC formats / IEC 61131-3 under
+`knowledge/industry/`, app architecture under `knowledge/app/`, proven
+practices under `knowledge/practices/`). **Consult it before re-deriving
+wire-format, engine-semantics, or verification facts**, and maintain it per
+`knowledge/governance.md`: durable new findings go through `learning/registry.md`
+(CL/TL entries) and get merged into the relevant canonical file, indexed from
+its domain `index.md`.
