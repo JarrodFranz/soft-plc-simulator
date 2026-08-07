@@ -827,6 +827,10 @@ class _L5xSfcBranch {
 }
 
 /// Human name for a resolved endpoint kind, used inside branch cause clauses.
+/// Only `step` and `transition` are reachable today — a connector endpoint is
+/// consumed by pass 2a's rules (4)/(5) and an unresolvable one by rule (3), so
+/// the `branch`/`leg`/`null` arms are defence in depth for a future classifier
+/// change, not live formatting paths.
 String _l5xSfcKindName(_L5xSfcKind? k) => switch (k) {
       _L5xSfcKind.step => 'step',
       _L5xSfcKind.transition => 'transition',
@@ -855,6 +859,15 @@ String _l5xSfcKindName(_L5xSfcKind? k) => switch (k) {
 /// classifier derives the trunk role FROM the neighbour's kind, so `divIn` and
 /// `convOut` can only ever hold correctly-kinded nodes today. They are kept
 /// against a future classifier change and asserted absent by test.
+///
+/// STRUCTURAL CAVEAT, and the reason those checks are not the safety net they
+/// look like: validation re-tests the SAME kind predicate the classifier used
+/// to assign the bucket, so it can never catch a classifier misassignment —
+/// the whole safety argument rests on kind fully determining role. Any future
+/// relaxation of that (a third `BranchType`, or accepting a connector as the
+/// `otherKind`) breaks the equivalence and must bring an INDEPENDENT check
+/// with it; without one the misassignment fails SILENT — a chart that
+/// translates cleanly as the wrong logic, with every shape check green.
 void _l5xSfcValidateShape(_L5xSfcBranch br, Map<int, _L5xSfcKind> kindById,
     void Function(_L5xSfcBranch, String) defect) {
   final side = br.isSelection ? 'selection' : 'simultaneous';
@@ -988,6 +1001,12 @@ SfcBody _l5xSfcBody(
   // connector-adjacent (pass 2a) > emission-table cause > shape-validation
   // cause; first recorded wins. Emission happens in pass 3, in branch document
   // order, so message order is deterministic.
+  //
+  // Keyed by _L5xSfcBranch IDENTITY, which is sound only because a branch
+  // object is created once in pass 1 and never copied. If a future change ever
+  // rebuilds these objects, do NOT re-key this map onto a localId — put a
+  // `String? defectCause` field on _L5xSfcBranch instead, so the cause travels
+  // with the branch it describes and cannot be orphaned by the rebuild.
   final branchDefect = <_L5xSfcBranch, String>{};
   void defect(_L5xSfcBranch br, String cause) {
     branchDefect.putIfAbsent(br, () => cause);

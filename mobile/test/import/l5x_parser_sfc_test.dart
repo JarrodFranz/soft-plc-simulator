@@ -560,6 +560,38 @@ void main() {
       <DirectedLink FromID="10" ToID="9"/>
       <DirectedLink FromID="9" ToID="13"/>''';
 
+    // The SIMULTANEOUS mirror of the branch-id form: no <Leg> children at all,
+    // every branch-incident link routed through the <Branch> id. Selection and
+    // simultaneous swap which kind means "leg" and which means "trunk", so the
+    // kind-dominance rule has to be pinned on BOTH branch types — here
+    // `10 -> Step` must read as a leg head (divOut) and `Step -> 10` as a leg
+    // tail (convIn), which is precisely what the naive direction rule gets
+    // backwards.
+    const simultaneousChartBranchIdForm = '''
+      <Step ID="1" Operand="S0" InitialStep="true"/>
+      <Transition ID="2" Operand="T0"><Condition><STContent><Line Number="0"><![CDATA[G]]></Line></STContent></Condition></Transition>
+      <Branch ID="10" BranchType="Simultaneous"/>
+      <Step ID="3" Operand="S1"/>
+      <Transition ID="4" Operand="Ta"><Condition><STContent><Line Number="0"><![CDATA[A]]></Line></STContent></Condition></Transition>
+      <Step ID="5" Operand="S3"/>
+      <Step ID="6" Operand="S2"/>
+      <Transition ID="7" Operand="Tb"><Condition><STContent><Line Number="0"><![CDATA[B]]></Line></STContent></Condition></Transition>
+      <Step ID="8" Operand="S4"/>
+      <Transition ID="9" Operand="T5"><Condition><STContent><Line Number="0"><![CDATA[D]]></Line></STContent></Condition></Transition>
+      <Step ID="13" Operand="S6"/>
+      <DirectedLink FromID="1" ToID="2"/>
+      <DirectedLink FromID="2" ToID="10"/>
+      <DirectedLink FromID="10" ToID="3"/>
+      <DirectedLink FromID="10" ToID="6"/>
+      <DirectedLink FromID="3" ToID="4"/>
+      <DirectedLink FromID="4" ToID="5"/>
+      <DirectedLink FromID="6" ToID="7"/>
+      <DirectedLink FromID="7" ToID="8"/>
+      <DirectedLink FromID="5" ToID="10"/>
+      <DirectedLink FromID="8" ToID="10"/>
+      <DirectedLink FromID="10" ToID="9"/>
+      <DirectedLink FromID="9" ToID="13"/>''';
+
     test('a paired selection branch emits selDiv+selConv and exactly 6 branch edges', () {
       final (body, ws) = _build(_wrap(selectionChart));
 
@@ -633,6 +665,38 @@ void main() {
       expect(b.translated, a.translated);
       expect(b.steps.map((s) => '${s.id}|${s.name}|${s.isInitial}'),
           a.steps.map((s) => '${s.id}|${s.name}|${s.isInitial}'));
+      expect(
+          b.transitions.map((t) =>
+              '${t.id}|${t.kind}|${t.fromStepId}|${t.toStepId}|'
+              '${t.fromStepIds.join(',')}|${t.toStepIds.join(',')}|${t.conditionSt}'),
+          a.transitions.map((t) =>
+              '${t.id}|${t.kind}|${t.fromStepId}|${t.toStepId}|'
+              '${t.fromStepIds.join(',')}|${t.toStepIds.join(',')}|${t.conditionSt}'));
+    });
+
+    test('the leg-id and branch-id encodings agree for SIMULTANEOUS too', () {
+      // The selection equivalence test above pins the kind-dominance rule on
+      // ONE branch type only, and selection/simultaneous swap which neighbour
+      // kind means "leg". A direction-based reading of `<Branch>` endpoints
+      // would wire `10 -> S1` as a convergence outlet and `S3 -> 10` as a
+      // divergence inlet here — a chart that still passes every shape check,
+      // with the fork and the join inverted.
+      final (legForm, legWs) = _build(_wrap(simultaneousChart));
+      final (branchForm, branchWs) =
+          _build(_wrap(simultaneousChartBranchIdForm));
+
+      expect(_edgeKindMultiset(branchForm), _edgeKindMultiset(legForm));
+      expect(legWs, isEmpty);
+      expect(branchWs, isEmpty);
+
+      final a = translateSfcBody(legForm, pouName: 'P');
+      final b = translateSfcBody(branchForm, pouName: 'P');
+      expect(a.translated, isTrue);
+      expect(b.translated, a.translated);
+      expect(b.steps.map((s) => '${s.id}|${s.name}|${s.isInitial}'),
+          a.steps.map((s) => '${s.id}|${s.name}|${s.isInitial}'));
+      // fromStepIds/toStepIds are in the projection, so this pins the fork and
+      // the join — the two things a mis-assigned bucket would swap.
       expect(
           b.transitions.map((t) =>
               '${t.id}|${t.kind}|${t.fromStepId}|${t.toStepId}|'
