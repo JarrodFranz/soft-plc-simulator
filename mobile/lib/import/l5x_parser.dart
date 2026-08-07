@@ -459,9 +459,20 @@ GraphBody _l5xFbdBody(
   // Raw ids that a LATER element on the same sheet tried to reuse (see the
   // duplicate handling in pass 1).
   final duplicateRawIds = <String>[];
-  // Assigned localId -> the node's ROCKWELL type (pre-alias), so pass 2 can
-  // alias each wire's pins by its endpoint's source type.
+  // Assigned localId -> the node's ROCKWELL type (pre-alias). Populated for
+  // BOTH Block/Function AND AddOnInstruction nodes, but ONLY used to drive
+  // pin aliasing for ids also present in `aliasEligibleIds` — the
+  // EnableIn/EnableOut heads-up below reads it unconditionally (it applies to
+  // AOI calls too).
   final abTypeById = <int, String>{};
+  // localIds of Block/Function nodes ONLY. An AddOnInstruction's `Name` is a
+  // user type name and is NEVER aliased — not the type, and (this is the
+  // part a naive `abType`-string gate misses) not its PINS either: an AOI
+  // that happens to be named "SEL" must not get its wires silently rewritten
+  // to the built-in SEL's G/IN0/IN1 just because the strings match. Gating
+  // pin aliasing on ELEMENT KIND (via this set) rather than on the abType
+  // string keeps that true.
+  final aliasEligibleIds = <int>{};
   final verifyWarned = <String>{};
   final enableWarned = <String>{};
   // Sheet-merge state.
@@ -560,6 +571,7 @@ GraphBody _l5xFbdBody(
             final aliased = _kL5xFbdTypeAliases[abType] ?? abType;
             attrs['typeName'] = aliased;
             abTypeById[localId] = abType;
+            aliasEligibleIds.add(localId);
             if (_kL5xFbdBestEffortTypes.contains(abType)) {
               // IR-only breadcrumb: translateFbdBody copies attributes through
               // and only reads the keys it knows, so an unknown key is
@@ -581,7 +593,12 @@ GraphBody _l5xFbdBody(
           }
         case 'AddOnInstruction':
           {
-            // An AOI's `Name` is a user type name and is NEVER aliased.
+            // An AOI's `Name` is a user type name and is NEVER aliased — not
+            // the type, and not its PINS either, even when the name happens
+            // to match a built-in mnemonic (e.g. an AOI named "SEL"). Its
+            // localId is deliberately NOT added to `aliasEligibleIds`, so
+            // pass 2's pin aliasing skips it; `abTypeById` is still recorded
+            // (below) purely so the EnableIn/EnableOut heads-up can name it.
             elementType = 'block';
             attrs['typeName'] = (el.getAttribute('Name') ?? '').trim();
             if (attrs['typeName']!.isNotEmpty) {
@@ -689,9 +706,13 @@ GraphBody _l5xFbdBody(
 
       conns.add(IrConnection(
         fromLocalId: fromId,
-        fromPin: _aliasL5xFbdPin(abTypeById[fromId], rawFromPin),
+        fromPin: _aliasL5xFbdPin(
+            aliasEligibleIds.contains(fromId) ? abTypeById[fromId] : null,
+            rawFromPin),
         toLocalId: toId,
-        toPin: _aliasL5xFbdPin(abTypeById[toId], rawToPin),
+        toPin: _aliasL5xFbdPin(
+            aliasEligibleIds.contains(toId) ? abTypeById[toId] : null,
+            rawToPin),
       ));
     }
   }

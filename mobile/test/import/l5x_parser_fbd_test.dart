@@ -874,4 +874,62 @@ void main() {
     expect(tr.stubReasons['unsupported-block'], 1); // the SCL network
     expect(tr.unsupportedBlockTypes, contains('SCL'));
   });
+
+  test('an AddOnInstruction named "SEL" never gets pin-aliased (element KIND gates it)', () {
+    // A same-string coincidence: the AOI's user-defined Name happens to equal
+    // the Rockwell mnemonic SEL. Aliasing is gated on ELEMENT KIND
+    // (Block/Function only), not on the abType string, so this must NOT get
+    // its SelectorIn pin rewritten to the built-in SEL's "G" the way a real
+    // <Block Type="SEL"> would.
+    final g = _graph(_parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="Pick" X="0" Y="0"/>
+        <AddOnInstruction ID="1" Name="SEL" Operand="Sel_01" X="100" Y="0"/>
+        <Wire FromID="0" ToID="1" ToParam="SelectorIn"/>
+      </Sheet>'''));
+
+    expect(_node(g, 1).attributes['typeName'], 'SEL'); // Name, unaliased
+    expect(g.connections[0].toPin, 'SelectorIn'); // NOT rewritten to 'G'
+
+    // "SEL" happens to also be a real IEC built-in type name, so this passes
+    // the block-type allowlist and dies honestly on the pin gate instead —
+    // faithful-or-stub, not a silent wrong rewrite.
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 0);
+    expect(tr.stubReasons['unresolved-pin'], 1);
+  });
+
+  test('CTUD pins alias to CU/CD/R/LD/PV/QU/CV and the network translates', () {
+    final g = _graph(_parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="CountUp" X="0" Y="0"/>
+        <IRef ID="1" Operand="CountDown" X="0" Y="40"/>
+        <IRef ID="2" Operand="Rst" X="0" Y="80"/>
+        <IRef ID="3" Operand="Ld" X="0" Y="120"/>
+        <IRef ID="4" Operand="1000" X="0" Y="160"/>
+        <Block ID="5" Type="CTUD" Operand="Ctud_01" X="100" Y="0"/>
+        <ORef ID="6" Operand="AtMax" X="200" Y="0"/>
+        <ORef ID="7" Operand="CurCount" X="200" Y="40"/>
+        <Wire FromID="0" ToID="5" ToParam="CUEnable"/>
+        <Wire FromID="1" ToID="5" ToParam="CDEnable"/>
+        <Wire FromID="2" ToID="5" ToParam="Reset"/>
+        <Wire FromID="3" ToID="5" ToParam="Load"/>
+        <Wire FromID="4" ToID="5" ToParam="PRE"/>
+        <Wire FromID="5" FromParam="DN" ToID="6" ToParam="IN"/>
+        <Wire FromID="5" FromParam="ACC" ToID="7" ToParam="IN"/>
+      </Sheet>'''));
+
+    expect(_node(g, 5).attributes['typeName'], 'CTUD'); // IEC-identical name
+    expect(g.connections[0].toPin, 'CU'); // CUEnable -> CU
+    expect(g.connections[1].toPin, 'CD'); // CDEnable -> CD
+    expect(g.connections[2].toPin, 'R'); // Reset -> R
+    expect(g.connections[3].toPin, 'LD'); // Load -> LD
+    expect(g.connections[4].toPin, 'PV'); // PRE -> PV
+    expect(g.connections[5].fromPin, 'QU'); // DN -> QU
+    expect(g.connections[6].fromPin, 'CV'); // ACC -> CV
+
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 1);
+    expect(tr.stubbedNetworkCount, 0);
+  });
 }
