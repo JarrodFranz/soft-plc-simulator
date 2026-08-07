@@ -236,8 +236,12 @@ List<XmlElement> _l5xFbdSheets(XmlElement routine) {
 ///    maps (the caller does not register it) — two blank names are not the
 ///    same connector, and splicing them would wire unrelated networks together;
 ///  * CHAINED connectors (a wire whose source is an `ICon` and whose target is
-///    an `OCon`) have no real producer or consumer to splice, and splicing
-///    would leave a wire referencing a dropped connector node.
+///    an `OCon`) have no real producer or consumer to splice, as do the two
+///    malformed shapes with the same consequence — a wire OUT of an `OCon`
+///    (a sink) or INTO an `ICon` (a source). Splicing any of them would emit a
+///    direct wire whose endpoint is a connector node this function then drops,
+///    and the translator silently swallows a wire whose endpoint node does not
+///    exist, so the data path would vanish without a stub.
 /// Never throws.
 void _resolveL5xFbdConnectors(
     List<IrGraphNode> nodes,
@@ -253,16 +257,28 @@ void _resolveL5xFbdConnectors(
   final consumers = <String, List<IrConnection>>{};
   final chained = <String>{};
   for (final c in conns) {
-    final o = oconNames[c.toLocalId];
-    final i = iconNames[c.fromLocalId];
-    if (o != null && i != null) {
-      // Connector-to-connector chaining: both names route to unmatched.
-      chained.add(o);
-      chained.add(i);
+    // The two WELL-FORMED roles: a wire INTO an OCon produces for that name, a
+    // wire OUT OF an ICon consumes it.
+    final toO = oconNames[c.toLocalId];
+    final fromI = iconNames[c.fromLocalId];
+    // The two MALFORMED roles: an OCon is a sink, so nothing flows out of it,
+    // and an ICon is a source, so nothing flows into it. Either shape (like
+    // the ICon -> OCon chain) leaves the name with no real block to splice
+    // onto, and splicing anyway would emit a direct wire whose endpoint is a
+    // connector node this function then DROPS — a wire referencing a
+    // non-existent node, which the translator silently swallows (its component
+    // scan only keeps edges with both endpoints present). Route every such
+    // name to the unmatched path instead, so it stubs visibly.
+    final fromO = oconNames[c.fromLocalId];
+    final toI = iconNames[c.toLocalId];
+    if ((fromI != null && toO != null) || fromO != null || toI != null) {
+      for (final name in [toO, fromI, fromO, toI]) {
+        if (name != null) chained.add(name);
+      }
       continue;
     }
-    if (o != null) (producers[o] ??= []).add(c);
-    if (i != null) (consumers[i] ??= []).add(c);
+    if (toO != null) (producers[toO] ??= []).add(c);
+    if (fromI != null) (consumers[fromI] ??= []).add(c);
   }
 
   final matched = <String>{};
@@ -346,20 +362,31 @@ GraphBody _l5xFbdBody(
   final iconNames = <int, String>{};
   final oconNames = <int, String>{};
   var unnamedConnectors = 0;
+  // Raw ids that a LATER element on the same sheet tried to reuse (see the
+  // duplicate handling in pass 1).
+  final duplicateRawIds = <String>[];
   // Sheet-merge state.
   var idOffset = 0;
   var maxAssignedId = -1;
   var yBase = 0.0;
   // Nullable so the FIRST node's y seeds the running max instead of an assumed
-  // 0.0 (a sheet whose coordinates are all negative would otherwise make the
-  // next sheet's yBase overlap it).
+  // 0.0 (a sheet whose elements all sit at negative `Y` would otherwise be
+  // treated as reaching down to 0).
   double? maxYSeen;
   var firstSheet = true;
 
   for (final sheet in _l5xFbdSheets(routine)) {
     if (!firstSheet) {
       idOffset = maxAssignedId + 1;
-      yBase = (maxYSeen ?? 0) + 200;
+      // MONOTONIC: the base only ever grows. Taking the running max (rather
+      // than assigning `maxYSeen + 200` outright) keeps a sheet whose `Y`s are
+      // far more negative than the previous sheet's from pulling the base
+      // BACKWARDS, which would invert the sheet order outright. It is a layout
+      // hint for component ordering, not a hard separation guarantee: two
+      // sheets that both use negative coordinates can still overlap, which
+      // costs network ORDER only, never correctness of the graph itself.
+      final nextBase = (maxYSeen ?? 0) + 200;
+      if (nextBase > yBase) yBase = nextBase;
     }
     firstSheet = false;
     // Raw `ID` -> the localId actually assigned to that element, so pass 2
@@ -380,17 +407,32 @@ GraphBody _l5xFbdBody(
         continue;
       }
       final parsed = int.tryParse(el.getAttribute('ID') ?? '');
+      // A raw `ID` a previous element on this sheet already claimed. Letting
+      // the duplicate keep that id would DELETE a real element: two nodes
+      // sharing a localId collapse to one in `weaklyConnectedComponents`' byId
+      // map, the wires re-point onto the survivor, and the component then
+      // translates CLEANLY as the wrong logic. So the duplicate is demoted to
+      // a synthetic negative id (tripping the translator's `localId < 0` gate,
+      // which stubs its component visibly) and does NOT re-register the raw
+      // id, so wires keep resolving to the ORIGINAL element.
+      final duplicate =
+          parsed != null && parsed >= 0 && assignedByRawId.containsKey(parsed);
       final int localId;
-      if (parsed == null || parsed < 0 || parsed > _kMaxL5xFbdId) {
+      if (parsed == null ||
+          parsed < 0 ||
+          parsed > _kMaxL5xFbdId ||
+          duplicate) {
         localId = malformedId--; // never offset
       } else {
         localId = parsed + idOffset;
         if (localId > maxAssignedId) maxAssignedId = localId;
       }
-      // Recorded even when the element got a SYNTHETIC id (out-of-range `ID`),
-      // so a wire naming that raw id still resolves to the real (stubbing)
-      // node rather than to a placeholder.
-      if (parsed != null && parsed >= 0) {
+      if (duplicate) {
+        duplicateRawIds.add('$parsed');
+      } else if (parsed != null && parsed >= 0) {
+        // Recorded even when the element got a SYNTHETIC id (out-of-range
+        // `ID`), so a wire naming that raw id still resolves to the real
+        // (stubbing) node rather than to a placeholder.
         assignedByRawId[parsed] = localId;
       }
       final y = (double.tryParse(el.getAttribute('Y') ?? '') ?? 0) + yBase;
@@ -511,6 +553,16 @@ GraphBody _l5xFbdBody(
 
   _resolveL5xFbdConnectors(
       nodes, conns, iconNames, oconNames, warnings, ownerLabel);
+
+  if (duplicateRawIds.isNotEmpty) {
+    warnings.add(ImportWarning(
+        severity: WarningSeverity.warning,
+        message: '$ownerLabel: ${duplicateRawIds.length} element(s) reuse a '
+            'duplicate ID already used on the same sheet '
+            '(${duplicateRawIds.join(', ')}) — each duplicate was given a '
+            'synthetic id so its network is not translated, rather than '
+            'silently replacing the element that claimed the id first.'));
+  }
 
   if (unnamedConnectors > 0) {
     warnings.add(ImportWarning(

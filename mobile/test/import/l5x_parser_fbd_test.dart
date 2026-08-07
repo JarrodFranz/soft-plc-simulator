@@ -458,4 +458,184 @@ void main() {
     expect(tr.translatedNetworkCount, 0);
     expect(tr.stubReasons['unsupported-element'], 1);
   });
+
+  test('a DUPLICATE raw ID on one sheet stubs instead of DELETING an element', () {
+    // Both elements keeping ID="1" would collapse in weaklyConnectedComponents'
+    // `byId` map (last wins), the wires would re-point onto the survivor, and
+    // the component would translate CLEANLY as a MUL fed by the ADD's wires —
+    // a silently wrong graph. The duplicate is demoted to a synthetic id
+    // instead.
+    final ir = _parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="Src" X="0" Y="0"/>
+        <Block ID="1" Type="ADD" Operand="Add_01" X="50" Y="0"/>
+        <Block ID="1" Type="MUL" Operand="Mul_01" X="50" Y="40"/>
+        <ORef ID="2" Operand="Dst" X="100" Y="0"/>
+        <Wire FromID="0" ToID="1" ToParam="IN1"/>
+        <Wire FromID="1" FromParam="OUT" ToID="2" ToParam="IN"/>
+      </Sheet>''');
+    final g = _graph(ir);
+
+    // Neither element vanishes, and the FIRST one keeps the raw id, so the
+    // wires still resolve to it.
+    expect(g.nodes, hasLength(4));
+    expect(_node(g, 1).attributes['typeName'], 'ADD');
+    final dup = g.nodes.singleWhere((n) => n.localId < 0);
+    expect(dup.attributes['typeName'], 'MUL'); // kept, not silently replaced
+    expect(g.connections.map((c) => '${c.fromLocalId}->${c.toLocalId}'),
+        ['0->1', '1->2']);
+
+    final w =
+        ir.warnings.where((x) => x.message.contains('duplicate ID')).toList();
+    expect(w, hasLength(1));
+    expect(w.single.severity, WarningSeverity.warning);
+    expect(w.single.message, contains('Routine "Prog_Main"'));
+
+    // The duplicate's own component stubs on the malformed-id gate; the
+    // original Src->ADD->Dst network is untouched and still translates.
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.stubReasons['unsupported-element'], 1);
+    expect(tr.translatedNetworkCount, 1);
+  });
+
+  test('the sheet y offset only ever GROWS, so negative-Y sheets keep order', () {
+    // Sheet 1's max y is -450, so a raw `maxYSeen + 200` base would be -250 and
+    // would push sheet 2 UP to -650/-640 — above sheet 1, inverting the order.
+    final g = _graph(_parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="A" X="0" Y="-500"/>
+        <ORef ID="1" Operand="B" X="100" Y="-450"/>
+        <Wire FromID="0" ToID="1" ToParam="IN"/>
+      </Sheet>
+      <Sheet Number="2">
+        <IRef ID="0" Operand="C" X="0" Y="-400"/>
+        <ORef ID="1" Operand="D" X="100" Y="-390"/>
+        <Wire FromID="0" ToID="1" ToParam="IN"/>
+      </Sheet>'''));
+
+    final sheet1MaxY = [_node(g, 0).y, _node(g, 1).y].reduce((a, b) => a > b ? a : b);
+    final sheet2MinY = [_node(g, 2).y, _node(g, 3).y].reduce((a, b) => a < b ? a : b);
+    expect(sheet2MinY, greaterThan(sheet1MaxY)); // sheet 2 sits BELOW sheet 1
+    // The base never decreased, so sheet 2 keeps its own coordinates.
+    expect(_node(g, 2).y, -400);
+    expect(_node(g, 3).y, -390);
+  });
+
+  test('a wire OUT of an OCon never splices a wire onto a DROPPED node', () {
+    // "A" matches (Src -> OCon A / ICon A -> DstA), so its connector nodes are
+    // dropped. The malformed `OCon A -> OCon B` wire would otherwise register
+    // as B's producer, and B (which also has a consumer) would splice a direct
+    // wire FROM the dropped OCon A node — an endpoint that no longer exists,
+    // which the translator silently swallows, losing the path with no stub.
+    final ir = _parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="Src" X="0" Y="0"/>
+        <OCon ID="1" Name="A" X="50" Y="0"/>
+        <OCon ID="2" Name="B" X="100" Y="0"/>
+        <Wire FromID="0" ToID="1"/>
+        <Wire FromID="1" ToID="2"/>
+      </Sheet>
+      <Sheet Number="2">
+        <ICon ID="0" Name="A" X="0" Y="0"/>
+        <ORef ID="1" Operand="DstA" X="50" Y="0"/>
+        <Wire FromID="0" ToID="1" ToParam="IN"/>
+      </Sheet>
+      <Sheet Number="3">
+        <ICon ID="0" Name="B" X="0" Y="0"/>
+        <ORef ID="1" Operand="DstB" X="50" Y="0"/>
+        <Wire FromID="0" ToID="1" ToParam="IN"/>
+      </Sheet>''');
+    final g = _graph(ir);
+
+    // The structural invariant the old narrow guard broke: EVERY wire endpoint
+    // still names a node that exists.
+    final ids = g.nodes.map((n) => n.localId).toSet();
+    expect(
+        g.connections
+            .every((c) => ids.contains(c.fromLocalId) && ids.contains(c.toLocalId)),
+        isTrue);
+
+    // Both names took the unmatched path, so every connector node is KEPT.
+    expect(g.nodes.where((n) => n.elementType == 'OCon'), hasLength(2));
+    expect(g.nodes.where((n) => n.elementType == 'ICon'), hasLength(2));
+    final names = ir.warnings
+        .where((x) => x.message.contains('unmatched connector'))
+        .map((x) => x.message)
+        .toList();
+    expect(names, hasLength(2));
+    expect(names.any((m) => m.contains('"A"')), isTrue);
+    expect(names.any((m) => m.contains('"B"')), isTrue);
+
+    // Nothing translated silently: every affected network stubs.
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 0);
+    expect(tr.stubbedNetworkCount, greaterThan(0));
+  });
+
+  test('one producer FANS OUT to every ICon sharing the name', () {
+    final g = _graph(_parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="Src" X="0" Y="0"/>
+        <Function ID="1" Type="NOT" X="50" Y="0"/>
+        <OCon ID="2" Name="Fan" X="100" Y="0"/>
+        <Wire FromID="0" ToID="1" ToParam="IN"/>
+        <Wire FromID="1" FromParam="OUT" ToID="2"/>
+      </Sheet>
+      <Sheet Number="2">
+        <ICon ID="0" Name="Fan" X="0" Y="0"/>
+        <ORef ID="1" Operand="DstA" X="50" Y="0"/>
+        <ICon ID="2" Name="Fan" X="0" Y="40"/>
+        <ORef ID="3" Operand="DstB" X="50" Y="40"/>
+        <Wire FromID="0" ToID="1" ToParam="IN"/>
+        <Wire FromID="2" ToID="3" ToParam="IN"/>
+      </Sheet>'''));
+
+    expect(g.nodes.any((n) => n.elementType == 'ICon'), isFalse);
+    expect(g.nodes.any((n) => n.elementType == 'OCon'), isFalse);
+
+    final notId =
+        g.nodes.firstWhere((n) => n.attributes['typeName'] == 'NOT').localId;
+    final fanned =
+        g.connections.where((c) => c.fromLocalId == notId).map((c) => c.toPin);
+    expect(fanned, hasLength(2)); // one direct wire per consumer
+    expect(fanned.every((p) => p == 'IN'), isTrue);
+    expect(g.connections, hasLength(3)); // Src->NOT plus the two merged wires
+
+    // Src, NOT, DstA and DstB are now ONE component -> one real network.
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 1);
+    expect(tr.stubbedNetworkCount, 0);
+  });
+
+  test('a REUSED connector name cross-products and stubs on the pin gate', () {
+    // Matching is name-based and routine-wide, so two producers of "Dup" both
+    // splice onto the single consumer. That is a deterministic, VISIBLE
+    // degradation: the two wires claim the same input slot, so the fused
+    // component stubs on the pin gate instead of one source silently
+    // overwriting the other in the executor.
+    final g = _graph(_parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="SrcA" X="0" Y="0"/>
+        <OCon ID="1" Name="Dup" X="50" Y="0"/>
+        <Wire FromID="0" ToID="1"/>
+      </Sheet>
+      <Sheet Number="2">
+        <IRef ID="0" Operand="SrcB" X="0" Y="0"/>
+        <OCon ID="1" Name="Dup" X="50" Y="0"/>
+        <Wire FromID="0" ToID="1"/>
+      </Sheet>
+      <Sheet Number="3">
+        <ICon ID="0" Name="Dup" X="0" Y="0"/>
+        <ORef ID="1" Operand="Dst" X="50" Y="0"/>
+        <Wire FromID="0" ToID="1" ToParam="IN"/>
+      </Sheet>'''));
+
+    final dstId =
+        g.nodes.firstWhere((n) => n.attributes['variable'] == 'Dst').localId;
+    expect(g.connections.where((c) => c.toLocalId == dstId), hasLength(2));
+
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 0);
+    expect(tr.stubReasons['unresolved-pin'], 1);
+  });
 }
