@@ -53,11 +53,10 @@ void _reassertEnableIn(PlcProject p, FbDefinition fb, String instanceName) {
 /// [readOnly] is the engine's read-only tag set (signal-generator/simulated
 /// test tags). It is threaded into a GRAPHICAL body (ladder or FBD) so an FB
 /// coil / TAG_OUTPUT targeting one of those globals is dropped, exactly as a
-/// program coil would be. Instance
-/// members are never affected — those paths are `<instance>.<var>`, which no
-/// readOnly entry names. The ST path still ignores it (unchanged). Omitting it
-/// keeps the pre-existing ungated behaviour, so every existing caller compiles
-/// and behaves identically.
+/// program coil would be. Instance members are never affected — those paths
+/// are `<instance>.<var>`, which no readOnly entry names. The ST path still
+/// ignores it (unchanged). Omitting it keeps the pre-existing ungated
+/// behaviour, so every existing caller compiles and behaves identically.
 ///
 /// Pure/deterministic; never throws.
 Map<String, dynamic> executeFbInstance(

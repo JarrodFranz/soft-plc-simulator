@@ -297,4 +297,115 @@ void main() {
     // fbdRt all the way down; with a dropped fbdRt the inner TON restarts.
     expect(readPath(p, 'O1.Out'), isTrue);
   });
+
+  test('an FBD-bodied AOI calling a ladder-bodied AOI keeps the inner edge state', () {
+    // The MIRROR of the test above, covering `executeFbInstance`'s FBD arm
+    // forwarding `ldRt: ldRt` into `runScopedFbdBody`.
+    //
+    // NOTE the inner body uses a RISING-EDGE CONTACT, not a TON: a ladder
+    // timer's accumulator lives in the instance TAG (`<base>.ACC`), so it
+    // survives regardless of the runtime and would not detect a dropped
+    // forward. `LdExecRuntime.prevBool` — edge contacts and pulse coils — is
+    // the only ladder state a dropped `ldRt` actually loses.
+    final inner = FbDefinition(name: 'Inner', vars: [
+      FbVar(name: 'In', dataType: 'BOOL', direction: FbVarDir.input),
+      FbVar(name: 'Out', dataType: 'BOOL', direction: FbVarDir.output),
+    ], ladderRungs: [
+      LdRung(rungIndex: 0, nodes: [
+        LdNode(id: 'L', kind: LdKind.leftRail),
+        LdNode(id: 'c', kind: LdKind.contact, variable: 'In', modifier: 'rising'),
+        LdNode(id: 'o', kind: LdKind.coil, variable: 'Out', modifier: 'set'),
+        LdNode(id: 'R', kind: LdKind.rightRail),
+      ], wires: [
+        LdWire(fromId: 'L', toId: 'c'),
+        LdWire(fromId: 'c', toId: 'o'),
+        LdWire(fromId: 'o', toId: 'R'),
+      ]),
+    ]);
+    // FBD body: In -> nested ladder-bodied AOI -> Out.
+    final outer = FbDefinition(name: 'Outer', vars: [
+      FbVar(name: 'In', dataType: 'BOOL', direction: FbVarDir.input),
+      FbVar(name: 'Out', dataType: 'BOOL', direction: FbVarDir.output),
+      FbVar(name: 'Nested', dataType: 'Inner', direction: FbVarDir.internal),
+    ], fbdBlocks: [
+      FbdBlock(id: 'o_ti', type: 'TAG_INPUT', title: 'In', tagBinding: 'In'),
+      FbdBlock(id: 'o_fb', type: 'Inner', title: 'Inner', tagBinding: 'Nested'),
+      FbdBlock(id: 'o_to', type: 'TAG_OUTPUT', title: 'Out', tagBinding: 'Out'),
+    ], fbdWires: [
+      FbdWire(fromBlockId: 'o_ti', fromPin: 'OUT', toBlockId: 'o_fb', toPin: 'In'),
+      FbdWire(fromBlockId: 'o_fb', fromPin: 'Out', toBlockId: 'o_to', toPin: 'IN'),
+    ]);
+    final defaults = PlcProject(
+        id: 'd', name: 'd', controllerName: 'c',
+        tags: [], structDefs: [], programs: [], tasks: [], hmis: [],
+        fbDefinitions: [inner, outer]);
+    final p = PlcProject(
+      id: 'p', name: 'P', controllerName: 'C',
+      tags: [
+        PlcTag(name: 'O1', path: 'O1', dataType: 'Outer',
+            value: defaultValueFor(defaults, 'Outer', 0), ioType: 'Internal'),
+      ],
+      structDefs: [], programs: [], tasks: [], hmis: [],
+      fbDefinitions: [inner, outer],
+    );
+
+    final ldRt = LdExecRuntime();
+    final fbdRt = FbdRuntime();
+    // Call 1 with In=false records prev=false for the inner edge contact.
+    executeFbInstance(p, outer, 'O1', {'In': false},
+        dtMs: 100, ldRt: ldRt, fbdRt: fbdRt);
+    expect(readPath(p, 'O1.Out'), isFalse);
+    // Call 2 with In=true is a RISING EDGE only if that prev survived — i.e.
+    // only if executeFbInstance -> runScopedFbdBody -> _evalBlock ->
+    // executeFbInstance -> runScopedLdBody carried ldRt all the way down.
+    // With a dropped ldRt the ephemeral runtime seeds prev := true, no edge
+    // fires, and the set-coil never latches.
+    executeFbInstance(p, outer, 'O1', {'In': true},
+        dtMs: 100, ldRt: ldRt, fbdRt: fbdRt);
+    expect(readPath(p, 'O1.Out'), isTrue);
+  });
+
+  test('a self-calling FBD FB is depth-capped instead of overflowing the stack', () {
+    // The FBD analog of fb_ladder_exec_test.dart's ladder depth-cap test: both
+    // bodies share the one `_fbCallDepth` guard in fb_exec.dart. Not reachable
+    // via import (the FB registry only holds FBs defined EARLIER in the file),
+    // but reachable from hand-edited/legacy JSON. Never-throws.
+    //
+    // `Self` is declared BOOL (not 'Loop') so building the instance's default
+    // value does not itself recurse — the self-reference lives in the block's
+    // `type`, which is what the executor dispatches on.
+    final loop = FbDefinition(name: 'Loop', vars: [
+      FbVar(name: 'X', dataType: 'BOOL', direction: FbVarDir.input),
+      FbVar(name: 'Self', dataType: 'BOOL', direction: FbVarDir.internal),
+    ], fbdBlocks: [
+      FbdBlock(id: 'x', type: 'TAG_INPUT', title: 'X', tagBinding: 'X'),
+      FbdBlock(id: 'self', type: 'Loop', title: 'Loop', tagBinding: 'Self'),
+    ], fbdWires: [
+      FbdWire(fromBlockId: 'x', fromPin: 'OUT', toBlockId: 'self', toPin: 'X'),
+    ]);
+    final p = projFor([loop], ['L1']);
+    // Repeated well past the cap: the depth counter must BALANCE back to 0
+    // after EVERY capped call, because the cap is a re-armable guard, not a
+    // one-shot fuse. An unbalanced ++/-- would let the counter creep past the
+    // cap and silently no-op every later FB call in the session.
+    for (var i = 0; i < 20; i++) { // > fb_exec's private cap of 16
+      expect(
+          () => executeFbInstance(p, loop, 'L1', {'X': true},
+              dtMs: 100, fbdRt: FbdRuntime()),
+          returnsNormally);
+    }
+    // The guard re-armed: an ordinary FBD-bodied FB still executes afterwards.
+    final ok = FbDefinition(name: 'Ok', vars: [
+      FbVar(name: 'Out', dataType: 'BOOL', direction: FbVarDir.output),
+    ], fbdBlocks: [
+      FbdBlock(id: 'k', type: 'CONST', title: 'CONST', tagBinding: 'TRUE'),
+      FbdBlock(id: 'o', type: 'TAG_OUTPUT', title: 'Out', tagBinding: 'Out'),
+    ], fbdWires: [
+      FbdWire(fromBlockId: 'k', fromPin: 'OUT', toBlockId: 'o', toPin: 'IN'),
+    ]);
+    final p2 = projFor([ok], ['K1']);
+    expect(
+        executeFbInstance(p2, ok, 'K1', {}, dtMs: 100, fbdRt: FbdRuntime())['Out'],
+        isTrue);
+  });
 }
