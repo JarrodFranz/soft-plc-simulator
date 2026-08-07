@@ -23,6 +23,11 @@ String _act(int id, String name, String st) =>
 /// Idle -T2(Start)-> Charge -selection(ModeA | ModeB)-> PathA | PathB
 ///   -> Prep -T14(Go, fork)-> {Mix1, Mix2} -> {MixADone, MixBDone}
 ///   -T28(Go, join)-> Done
+///
+/// The Mix2 leg's closing transition (T26) is gated on `Go2` rather than
+/// `Go`, so the two fork legs can be made to arrive at the join at
+/// different scans -- proving the join actually waits for EVERY source,
+/// not just any one of them.
 final String _kChartXml = '''
 <?xml version="1.0" encoding="utf-8"?>
 <RSLogix5000Content TargetType="Controller"><Controller Name="SfcE2E">
@@ -37,6 +42,7 @@ final String _kChartXml = '''
     <Tag Name="B_On" DataType="BOOL"><Data Format="Decorated"><DataValue Value="0"/></Data></Tag>
     <Tag Name="M1" DataType="BOOL"><Data Format="Decorated"><DataValue Value="0"/></Data></Tag>
     <Tag Name="M2" DataType="BOOL"><Data Format="Decorated"><DataValue Value="0"/></Data></Tag>
+    <Tag Name="Go2" DataType="BOOL"><Data Format="Decorated"><DataValue Value="0"/></Data></Tag>
   </Tags>
   <Programs><Program Name="Main"><Tags/><Routines>
     <Routine Name="Seq" Type="SFC"><SFCContent>
@@ -69,7 +75,7 @@ final String _kChartXml = '''
       <Step ID="23001" X="60" Y="440" Operand="Mix2">
         ${_act(1230, 'DoM2', 'M2 := TRUE;')}
       </Step>
-      ${_t(26, 'M2Done', 'Go')}
+      ${_t(26, 'M2Done', 'Go2')}
       <Step ID="27" X="60" Y="520" Operand="MixBDone"/>
       ${_t(28, 'Join', 'Go')}
       <Step ID="29" X="0" Y="600" Operand="Done"/>
@@ -167,9 +173,13 @@ void main() {
     tick();
     expect(active(), {idOf('Charge')});
 
-    // Scan 3: Charge acts; the selection picks the leg whose condition is
-    // true (first-true-wins over ModeA then ModeB).
+    // Scan 3: Charge acts; ModeA AND ModeB are both true, contesting the
+    // selection. First-true-wins in document order (PickA's Transition
+    // precedes PickB's) means only PathA is picked -- this actually
+    // exercises the `consumed` set (a regression that dropped it would
+    // wrongly activate both PathA and PathB here).
     writePath(p, 'ModeA', true);
+    writePath(p, 'ModeB', true);
     tick();
     expect(readPath(p, 'Charging'), true);
     expect(active(), {idOf('PathA')});
@@ -185,13 +195,32 @@ void main() {
     tick();
     expect(active(), {idOf('Mix1'), idOf('Mix2')});
 
-    // Scan 6: both parallel actions run, both legs advance.
+    // Scan 6: both parallel actions run. Mix1's closing transition (Go,
+    // already true) fires; Mix2's (Go2, still false) does not -- the legs
+    // arrive at the join at different times.
     tick();
     expect(readPath(p, 'M1'), true);
     expect(readPath(p, 'M2'), true);
+    expect(active(), {idOf('MixADone'), idOf('Mix2')});
+
+    // Scan 7: still only one leg has arrived (Go2 is still false) -- the
+    // join must NOT fire yet. This is the point a join regressed from
+    // `every(...)` to `any(...)` would wrongly activate Done, since
+    // MixADone alone is already in the snapshot.
+    tick();
+    expect(active(), {idOf('MixADone'), idOf('Mix2')});
+
+    // Now let the second leg close.
+    writePath(p, 'Go2', true);
+
+    // Scan 8: Mix2's leg closes, activating MixBDone. The join still can't
+    // fire this same scan -- it evaluates against the START-of-scan
+    // snapshot, which didn't yet contain MixBDone.
+    tick();
     expect(active(), {idOf('MixADone'), idOf('MixBDone')});
 
-    // Scan 7: the join waits for BOTH, then fires.
+    // Scan 9: NOW both MixADone and MixBDone are in the snapshot -- the
+    // join fires.
     tick();
     expect(active(), {idOf('Done')});
   });
