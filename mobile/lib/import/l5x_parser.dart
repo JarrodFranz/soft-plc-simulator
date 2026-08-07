@@ -173,6 +173,182 @@ String _stLines(XmlElement routine) {
   return lines.join('\n');
 }
 
+/// Upper bound on a usable L5X FBD element `ID`. Anything above it (or absent,
+/// unparseable, or negative) is treated as malformed and gets a unique
+/// negative synthetic id instead, reproducing `plcopen_parser.dart`'s
+/// `_graphBody` contract: distinct negative ids keep
+/// `weaklyConnectedComponents` from merging two unrelated malformed nodes, and
+/// the FBD translator's `localId < 0` gate still stubs their component.
+const int _kMaxL5xFbdId = 1 << 31;
+
+/// L5X FBD elements that are pure annotations: they carry an `ID` (or link to
+/// one) but never participate in dataflow, so they are dropped entirely rather
+/// than kept as opaque stub nodes. Everything else unrecognized IS kept (see
+/// `_l5xFbdBody`), so a `<JSR>`/`<SBR>`/`<Ret>` network stubs visibly instead
+/// of silently disappearing.
+const Set<String> _kL5xFbdAnnotationElements = {'TextBox', 'Attachment'};
+
+/// Builds the vendor-neutral [GraphBody] for one L5X FBD routine body
+/// (`<FBDContent><Sheet>...`), shared by the program-routine arm and the AOI
+/// arm. [ownerLabel] is the human label used in warnings, e.g.
+/// `'Routine "Prog_Main"'` or `'AOI "Pump"'`.
+///
+/// Emits EXACTLY the IR attribute keys `plcopen_parser.dart`'s `_graphBody`
+/// emits (`variable`, `typeName`, `instanceName`), so `translateFbdBody` needs
+/// no changes. `hasNegatedPin` is never emitted: Logix FBD has no pin
+/// inversion (`BNOT` is an explicit element).
+///
+/// Two passes per sheet — nodes first, then wires — because pin aliasing needs
+/// the endpoint node's type to be known, and because a wire endpoint is
+/// resolved through the node pass's `assignedByRawId` map (an endpoint that
+/// names no element gets a `danglingWire` placeholder node so the wire is
+/// never silently dropped). Never throws: every attribute read is null-tolerant
+/// and an absent/empty `<FBDContent>` yields an empty body.
+GraphBody _l5xFbdBody(
+    XmlElement routine, List<ImportWarning> warnings, String ownerLabel) {
+  final nodes = <IrGraphNode>[];
+  final conns = <IrConnection>[];
+  // ROUTINE-WIDE (not per-sheet) synthetic-id counter: a malformed-id element
+  // on sheet 1 and one on sheet 2 must still get distinct ids.
+  var malformedId = -1;
+  final ignoredKinds = <String>[];
+  var ignoredCount = 0;
+
+  for (final content in _children(routine, 'FBDContent')) {
+    for (final sheet in _children(content, 'Sheet')) {
+      // Raw `ID` -> the localId actually assigned to that element, so pass 2
+      // can resolve a wire endpoint to a REAL node (including one that was
+      // given a synthetic negative id for an out-of-range `ID`). Wire
+      // endpoints are sheet-local, so this map is per sheet.
+      final assignedByRawId = <int, int>{};
+
+      // Pass 1 — nodes.
+      for (final el in sheet.childElements) {
+        final tag = el.name.local;
+        if (tag == 'Wire' || tag == 'FeedbackWire') {
+          continue; // pass 2
+        }
+        if (_kL5xFbdAnnotationElements.contains(tag)) {
+          ignoredCount++;
+          if (!ignoredKinds.contains(tag)) ignoredKinds.add(tag);
+          continue;
+        }
+        final parsed = int.tryParse(el.getAttribute('ID') ?? '');
+        final localId = (parsed == null || parsed < 0 || parsed > _kMaxL5xFbdId)
+            ? malformedId--
+            : parsed;
+        if (parsed != null && parsed >= 0) {
+          assignedByRawId[parsed] = localId;
+        }
+        final attrs = <String, String>{};
+        final String elementType;
+        switch (tag) {
+          case 'IRef':
+            {
+              elementType = 'inVariable';
+              attrs['variable'] = (el.getAttribute('Operand') ?? '').trim();
+              break;
+            }
+          case 'ORef':
+            {
+              elementType = 'outVariable';
+              attrs['variable'] = (el.getAttribute('Operand') ?? '').trim();
+              break;
+            }
+          case 'Block':
+            {
+              elementType = 'block';
+              attrs['typeName'] = (el.getAttribute('Type') ?? '').trim();
+              final operand = (el.getAttribute('Operand') ?? '').trim();
+              if (operand.isNotEmpty) attrs['instanceName'] = operand;
+              break;
+            }
+          case 'Function':
+            {
+              elementType = 'block';
+              attrs['typeName'] = (el.getAttribute('Type') ?? '').trim();
+              break;
+            }
+          case 'AddOnInstruction':
+            {
+              // An AOI's `Name` is a user type name and is NEVER aliased.
+              elementType = 'block';
+              attrs['typeName'] = (el.getAttribute('Name') ?? '').trim();
+              final operand = (el.getAttribute('Operand') ?? '').trim();
+              if (operand.isNotEmpty) attrs['instanceName'] = operand;
+              break;
+            }
+          case 'ICon':
+          case 'OCon':
+            {
+              elementType = tag;
+              attrs['connectorName'] = (el.getAttribute('Name') ?? '').trim();
+              break;
+            }
+          default:
+            {
+              // Kept, NOT ignored: the raw element name is not one of the
+              // translator's known elementType strings, so this node's whole
+              // component stubs as `unsupported-element` instead of vanishing.
+              elementType = tag;
+              break;
+            }
+        }
+        nodes.add(IrGraphNode(
+          localId: localId,
+          elementType: elementType,
+          x: double.tryParse(el.getAttribute('X') ?? '') ?? 0,
+          y: double.tryParse(el.getAttribute('Y') ?? '') ?? 0,
+          attributes: attrs,
+        ));
+      }
+
+      // Resolves one wire endpoint to a real node id. An endpoint that names
+      // no element on this sheet (absent, unparseable, negative, or an id no
+      // element carries) gets a fresh `danglingWire` PLACEHOLDER node instead
+      // of dropping the wire: dropping it would silently delete a data path
+      // and let the consumer's component translate as though that input were
+      // simply unwired. The placeholder's negative id + unknown elementType
+      // make the consumer's component stub (`unsupported-element`).
+      int resolveEndpoint(String? raw) {
+        final parsed = int.tryParse(raw ?? '');
+        final hit = parsed == null ? null : assignedByRawId[parsed];
+        if (hit != null) {
+          return hit;
+        }
+        final id = malformedId--;
+        nodes.add(IrGraphNode(localId: id, elementType: 'danglingWire'));
+        return id;
+      }
+
+      // Pass 2 — wires. `<FeedbackWire>` (a wire closing a feedback loop)
+      // carries the identical attribute set as `<Wire>` and maps the same way;
+      // the cyclic graph it creates is handled by the executor's existing
+      // dataflow-cycle fallback.
+      for (final el in sheet.childElements) {
+        final tag = el.name.local;
+        if (tag != 'Wire' && tag != 'FeedbackWire') {
+          continue;
+        }
+        conns.add(IrConnection(
+          fromLocalId: resolveEndpoint(el.getAttribute('FromID')),
+          fromPin: el.getAttribute('FromParam'),
+          toLocalId: resolveEndpoint(el.getAttribute('ToID')),
+          toPin: el.getAttribute('ToParam'),
+        ));
+      }
+    }
+  }
+
+  if (ignoredCount > 0) {
+    warnings.add(ImportWarning(
+        severity: WarningSeverity.info,
+        message: '$ownerLabel: $ignoredCount element(s) ignored '
+            '(${ignoredKinds.join(', ')}).'));
+  }
+  return GraphBody(nodes: nodes, connections: conns);
+}
+
 VarScope _usageScope(String? usage) => switch (usage) {
       'Input' => VarScope.input,
       'Output' => VarScope.output,
@@ -277,10 +453,10 @@ List<ImportedPou> _l5xAois(XmlElement? controller, List<ImportWarning> warnings)
 
 /// Maps each `<Routine>` in each `<Program>` to a program POU named
 /// `Program_Routine`. ST inlines its lines; RLL captures each rung's neutral
-/// text + comment into a `NeutralLadderBody` (the mapper still emits the
-/// existing whole-POU LD stub — a compiler consumes this body in a later
-/// task); FBD/SFC become empty graphical bodies (the mapper's existing
-/// whole-POU stub) + a count-carrying warning.
+/// text + comment into a `NeutralLadderBody`; FBD parses its structured
+/// `<FBDContent>` into a `GraphBody` (translated per network by
+/// `ir_to_project`); SFC still becomes an empty graphical body (the mapper's
+/// existing whole-POU stub) + a count-carrying warning.
 List<ImportedPou> _l5xRoutines(XmlElement? controller, List<ImportWarning> warnings) {
   final out = <ImportedPou>[];
   if (controller == null) return out;
@@ -313,12 +489,13 @@ List<ImportedPou> _l5xRoutines(XmlElement? controller, List<ImportWarning> warni
                   body: NeutralLadderBody(rungs: rungs)));
               break;
             case 'FBD':
-              warnings.add(ImportWarning(severity: WarningSeverity.warning,
-                  message: 'Routine "$name" (FBD): graphical body not yet '
-                      'translated.'));
+              // The structured <FBDContent> parses into a real GraphBody;
+              // `ir_to_project`'s existing FBD arm translates it per network
+              // (faithful-or-stub). A routine where NOTHING translates keeps
+              // today's whole-POU stub via that arm's existing `else`.
               out.add(ImportedPou(name: name, kind: PouKind.program,
                   lang: PouLanguage.fbd, localVars: const [],
-                  body: GraphBody(nodes: const [], connections: const [])));
+                  body: _l5xFbdBody(r, warnings, 'Routine "$name"')));
               break;
             case 'SFC':
               warnings.add(ImportWarning(severity: WarningSeverity.warning,
