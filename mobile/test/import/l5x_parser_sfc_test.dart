@@ -121,6 +121,24 @@ bool _hasInfo(List<ImportWarning> ws, String needle) =>
 SfcNode _nodeAt(SfcBody b, int localId) =>
     b.nodes.firstWhere((n) => n.localId == localId);
 
+/// Projects a body's edges onto `(kindOf(from), kindOf(to))` pairs, sorted.
+/// Connector `localId`s are allocation-order dependent and the two `<Branch>`
+/// encodings differ in element count, so THIS — not literal IR equality — is
+/// what "the two encodings agree" means (§9).
+List<String> _edgeKindMultiset(SfcBody b) {
+  final kinds = {for (final n in b.nodes) n.localId: n.kind};
+  return [
+    for (final e in b.edges)
+      '${kinds[e.fromLocalId]?.name ?? 'missing'}'
+          '->${kinds[e.toLocalId]?.name ?? 'missing'}'
+  ]..sort();
+}
+
+/// A one-line `<Transition>` with an inline ST condition.
+String _t(int id, String name, String cond) =>
+    '<Transition ID="$id" Operand="$name"><Condition><STContent>'
+    '<Line Number="0"><![CDATA[$cond]]></Line></STContent></Condition></Transition>';
+
 void main() {
   group('L5X SFC: happy paths (§1, §6)', () {
     test('a linear chart becomes 2 steps, 1 transition and 2 edges', () {
@@ -460,6 +478,670 @@ void main() {
       expect(tr.translated, isFalse);
       expect(tr.stubReason, 'no-initial'); // NOT complex-topology
       expect(tr.warnings.single.message, contains('chart has no steps'));
+    });
+  });
+
+  group('L5X SFC: branch synthesis — the happy shapes (§3)', () {
+    // S0 -> B(legs 11,12) -> legs open with T1/T2, close with T3/T4 -> S5.
+    // Trunk links name the BRANCH id, leg links name LEG ids — i.e. the
+    // paired encoding's natural shape, in which every branch mixes both forms
+    // by construction. (This fixture is also the "both forms in one branch"
+    // case of §9: the deleted mixed-convention rule would have poisoned it.)
+    const selectionChart = '''
+      <Step ID="1" Operand="S0" InitialStep="true"/>
+      <Branch ID="10" BranchType="Selection"><Leg ID="11"/><Leg ID="12"/></Branch>
+      <Transition ID="2" Operand="T1"><Condition><STContent><Line Number="0"><![CDATA[A]]></Line></STContent></Condition></Transition>
+      <Step ID="3" Operand="S1"/>
+      <Transition ID="4" Operand="T3"><Condition><STContent><Line Number="0"><![CDATA[C]]></Line></STContent></Condition></Transition>
+      <Transition ID="5" Operand="T2"><Condition><STContent><Line Number="0"><![CDATA[B]]></Line></STContent></Condition></Transition>
+      <Step ID="6" Operand="S2"/>
+      <Transition ID="7" Operand="T4"><Condition><STContent><Line Number="0"><![CDATA[D]]></Line></STContent></Condition></Transition>
+      <Step ID="8" Operand="S5"/>
+      <DirectedLink FromID="1" ToID="10"/>
+      <DirectedLink FromID="11" ToID="2"/>
+      <DirectedLink FromID="12" ToID="5"/>
+      <DirectedLink FromID="2" ToID="3"/>
+      <DirectedLink FromID="3" ToID="4"/>
+      <DirectedLink FromID="4" ToID="11"/>
+      <DirectedLink FromID="5" ToID="6"/>
+      <DirectedLink FromID="6" ToID="7"/>
+      <DirectedLink FromID="7" ToID="12"/>
+      <DirectedLink FromID="10" ToID="8"/>''';
+
+    // The same chart with EVERY branch-incident link routed through the
+    // <Branch> id — no <Leg> id appears as an endpoint anywhere, and the
+    // branch declares no <Leg> children at all.
+    const selectionChartBranchIdForm = '''
+      <Step ID="1" Operand="S0" InitialStep="true"/>
+      <Branch ID="10" BranchType="Selection"/>
+      <Transition ID="2" Operand="T1"><Condition><STContent><Line Number="0"><![CDATA[A]]></Line></STContent></Condition></Transition>
+      <Step ID="3" Operand="S1"/>
+      <Transition ID="4" Operand="T3"><Condition><STContent><Line Number="0"><![CDATA[C]]></Line></STContent></Condition></Transition>
+      <Transition ID="5" Operand="T2"><Condition><STContent><Line Number="0"><![CDATA[B]]></Line></STContent></Condition></Transition>
+      <Step ID="6" Operand="S2"/>
+      <Transition ID="7" Operand="T4"><Condition><STContent><Line Number="0"><![CDATA[D]]></Line></STContent></Condition></Transition>
+      <Step ID="8" Operand="S5"/>
+      <DirectedLink FromID="1" ToID="10"/>
+      <DirectedLink FromID="10" ToID="2"/>
+      <DirectedLink FromID="10" ToID="5"/>
+      <DirectedLink FromID="2" ToID="3"/>
+      <DirectedLink FromID="3" ToID="4"/>
+      <DirectedLink FromID="4" ToID="10"/>
+      <DirectedLink FromID="5" ToID="6"/>
+      <DirectedLink FromID="6" ToID="7"/>
+      <DirectedLink FromID="7" ToID="10"/>
+      <DirectedLink FromID="10" ToID="8"/>''';
+
+    // S0 -> T0 -> B(legs 11,12) -> legs open with S1/S2, close with S3/S4
+    // -> T5 -> S6. Selection diverges into TRANSITIONS; simultaneous is the
+    // mirror and diverges into STEPS — the one fact synthesis must get right.
+    const simultaneousChart = '''
+      <Step ID="1" Operand="S0" InitialStep="true"/>
+      <Transition ID="2" Operand="T0"><Condition><STContent><Line Number="0"><![CDATA[G]]></Line></STContent></Condition></Transition>
+      <Branch ID="10" BranchType="Simultaneous"><Leg ID="11"/><Leg ID="12"/></Branch>
+      <Step ID="3" Operand="S1"/>
+      <Transition ID="4" Operand="Ta"><Condition><STContent><Line Number="0"><![CDATA[A]]></Line></STContent></Condition></Transition>
+      <Step ID="5" Operand="S3"/>
+      <Step ID="6" Operand="S2"/>
+      <Transition ID="7" Operand="Tb"><Condition><STContent><Line Number="0"><![CDATA[B]]></Line></STContent></Condition></Transition>
+      <Step ID="8" Operand="S4"/>
+      <Transition ID="9" Operand="T5"><Condition><STContent><Line Number="0"><![CDATA[D]]></Line></STContent></Condition></Transition>
+      <Step ID="13" Operand="S6"/>
+      <DirectedLink FromID="1" ToID="2"/>
+      <DirectedLink FromID="2" ToID="10"/>
+      <DirectedLink FromID="11" ToID="3"/>
+      <DirectedLink FromID="12" ToID="6"/>
+      <DirectedLink FromID="3" ToID="4"/>
+      <DirectedLink FromID="4" ToID="5"/>
+      <DirectedLink FromID="6" ToID="7"/>
+      <DirectedLink FromID="7" ToID="8"/>
+      <DirectedLink FromID="5" ToID="11"/>
+      <DirectedLink FromID="8" ToID="12"/>
+      <DirectedLink FromID="10" ToID="9"/>
+      <DirectedLink FromID="9" ToID="13"/>''';
+
+    test('a paired selection branch emits selDiv+selConv and exactly 6 branch edges', () {
+      final (body, ws) = _build(_wrap(selectionChart));
+
+      final div = body.nodes.firstWhere((n) => n.kind == SfcNodeKind.selDiv);
+      final conv = body.nodes.firstWhere((n) => n.kind == SfcNodeKind.selConv);
+      expect(div.localId, lessThan(0));
+      expect(conv.localId, lessThan(0));
+      expect(div.localId == conv.localId, isFalse);
+
+      // Connector edges LEAD the list (pass 3 before pass 2b), in
+      // divIn / divOut / convIn / convOut order.
+      expect(body.edges.take(6).map((e) => '${e.fromLocalId}->${e.toLocalId}'), [
+        '1->${div.localId}',
+        '${div.localId}->2',
+        '${div.localId}->5',
+        '4->${conv.localId}',
+        '7->${conv.localId}',
+        '${conv.localId}->8',
+      ]);
+      expect(body.edges, hasLength(10)); // 6 branch + 4 intra-leg
+      expect(ws, isEmpty);
+
+      final tr = translateSfcBody(body, pouName: 'P');
+      expect(tr.translated, isTrue);
+      expect(tr.transitions.map((t) => t.kind).toSet(), {'single'});
+      expect(
+          tr.transitions.map((t) => '${t.fromStepId}->${t.toStepId}').toSet(),
+          {'P_s1->P_s3', 'P_s3->P_s8', 'P_s1->P_s6', 'P_s6->P_s8'});
+    });
+
+    test('a paired simultaneous branch emits simDiv+simConv, a fork and a join', () {
+      final (body, ws) = _build(_wrap(simultaneousChart));
+
+      final div = body.nodes.firstWhere((n) => n.kind == SfcNodeKind.simDiv);
+      final conv = body.nodes.firstWhere((n) => n.kind == SfcNodeKind.simConv);
+      expect(body.edges.take(6).map((e) => '${e.fromLocalId}->${e.toLocalId}'), [
+        '2->${div.localId}',
+        '${div.localId}->3',
+        '${div.localId}->6',
+        '5->${conv.localId}',
+        '8->${conv.localId}',
+        '${conv.localId}->9',
+      ]);
+      expect(body.edges, hasLength(12)); // 6 branch + 6 ordinary
+      expect(ws, isEmpty);
+
+      final tr = translateSfcBody(body, pouName: 'P');
+      expect(tr.translated, isTrue);
+      final fork = tr.transitions.firstWhere((t) => t.kind == 'parallelFork');
+      expect(fork.fromStepId, 'P_s1');
+      expect(fork.toStepIds.toSet(), {'P_s3', 'P_s6'});
+      final join = tr.transitions.firstWhere((t) => t.kind == 'parallelJoin');
+      expect(join.fromStepIds.toSet(), {'P_s5', 'P_s8'});
+      expect(join.toStepId, 'P_s13');
+      expect(tr.transitions.where((t) => t.kind == 'parallelFork'), hasLength(1));
+      expect(tr.transitions.where((t) => t.kind == 'parallelJoin'), hasLength(1));
+    });
+
+    test('the leg-id and branch-id encodings produce the same chart', () {
+      // NOT literal IR equality: connector ids are allocation-order dependent
+      // and the fixtures differ in element count.
+      final (legForm, legWs) = _build(_wrap(selectionChart));
+      final (branchForm, branchWs) = _build(_wrap(selectionChartBranchIdForm));
+
+      expect(_edgeKindMultiset(branchForm), _edgeKindMultiset(legForm));
+      expect(legWs, isEmpty);
+      expect(branchWs, isEmpty);
+
+      final a = translateSfcBody(legForm, pouName: 'P');
+      final b = translateSfcBody(branchForm, pouName: 'P');
+      expect(b.translated, a.translated);
+      expect(b.steps.map((s) => '${s.id}|${s.name}|${s.isInitial}'),
+          a.steps.map((s) => '${s.id}|${s.name}|${s.isInitial}'));
+      expect(
+          b.transitions.map((t) =>
+              '${t.id}|${t.kind}|${t.fromStepId}|${t.toStepId}|'
+              '${t.fromStepIds.join(',')}|${t.toStepIds.join(',')}|${t.conditionSt}'),
+          a.transitions.map((t) =>
+              '${t.id}|${t.kind}|${t.fromStepId}|${t.toStepId}|'
+              '${t.fromStepIds.join(',')}|${t.toStepIds.join(',')}|${t.conditionSt}'));
+    });
+
+    test('a <Branch> with no <Leg> children at all translates (there is no mode switch)', () {
+      // Directly pins the deletion of the "no Leg id => fallback mode" gate.
+      final (body, ws) = _build(_wrap(selectionChartBranchIdForm));
+      expect(ws, isEmpty);
+      expect(translateSfcBody(body, pouName: 'P').translated, isTrue);
+    });
+
+    test('BOTH link forms in one branch translate (the mixed-convention regression)', () {
+      // In the paired encoding a branch's TRUNK links must name the <Branch>
+      // id while its LEG links name <Leg> ids, so EVERY paired branch mixes
+      // both forms by construction. The deleted "mixed convention => poison"
+      // rule would have stubbed this — the common case, and the headline
+      // fixture of the spec itself. This test exists so that rule can never be
+      // reintroduced silently.
+      final (body, ws) = _build(_wrap(selectionChart));
+      expect(_hasInfo(ws, 'branch shape not representable'), isFalse,
+          reason: _infos(ws).toString());
+      expect(body.nodes.where((n) => n.name == '#unrepresentable'), isEmpty);
+      expect(translateSfcBody(body, pouName: 'P').translated, isTrue);
+    });
+
+    test('a diverge-only branch emits the divergence and drops the convergence', () {
+      final (body, ws) = _build(_wrap('''
+        <Step ID="1" Operand="S0" InitialStep="true"/>
+        <Branch ID="10" BranchType="Selection"><Leg ID="11"/><Leg ID="12"/></Branch>
+        ${_t(2, 'T1', 'A')}
+        <Step ID="3" Operand="S1"/>
+        ${_t(4, 'T2', 'B')}
+        <Step ID="5" Operand="S2"/>
+        <DirectedLink FromID="1" ToID="10"/>
+        <DirectedLink FromID="11" ToID="2"/>
+        <DirectedLink FromID="12" ToID="4"/>
+        <DirectedLink FromID="2" ToID="3"/>
+        <DirectedLink FromID="4" ToID="5"/>'''));
+
+      expect(body.nodes.where((n) => n.kind == SfcNodeKind.selDiv), hasLength(1));
+      expect(body.nodes.where((n) => n.kind == SfcNodeKind.selConv), isEmpty);
+      expect(ws, isEmpty);
+      expect(translateSfcBody(body, pouName: 'P').translated, isTrue);
+    });
+
+    test('a converge-only branch emits the convergence and drops the divergence', () {
+      final (body, ws) = _build(_wrap('''
+        <Step ID="1" Operand="S1" InitialStep="true"/>
+        ${_t(2, 'T1', 'A')}
+        <Step ID="3" Operand="S2"/>
+        ${_t(4, 'T2', 'B')}
+        <Branch ID="10" BranchType="Selection"><Leg ID="11"/><Leg ID="12"/></Branch>
+        <Step ID="5" Operand="S5"/>
+        <DirectedLink FromID="1" ToID="2"/>
+        <DirectedLink FromID="2" ToID="11"/>
+        <DirectedLink FromID="3" ToID="4"/>
+        <DirectedLink FromID="4" ToID="12"/>
+        <DirectedLink FromID="10" ToID="5"/>'''));
+
+      expect(body.nodes.where((n) => n.kind == SfcNodeKind.selConv), hasLength(1));
+      expect(body.nodes.where((n) => n.kind == SfcNodeKind.selDiv), isEmpty);
+      expect(ws, isEmpty);
+      expect(translateSfcBody(body, pouName: 'P').translated, isTrue);
+    });
+
+    test('loop-back legs are not a special case (ordinary edges + row 2)', () {
+      // A leg tail wired to an upstream step instead of back into the branch
+      // never touches a branch or leg id, so it is an ordinary edge and the
+      // branch's own bits land on the diverge-only row.
+      final (body, ws) = _build(_wrap('''
+        <Step ID="1" Operand="S0" InitialStep="true"/>
+        <Branch ID="10" BranchType="Selection"><Leg ID="11"/><Leg ID="12"/></Branch>
+        ${_t(2, 'T1', 'A')}
+        <Step ID="3" Operand="S1"/>
+        ${_t(4, 'T2', 'B')}
+        <Step ID="5" Operand="S2"/>
+        ${_t(6, 'BackA', 'C')}
+        ${_t(7, 'BackB', 'D')}
+        <DirectedLink FromID="1" ToID="10"/>
+        <DirectedLink FromID="11" ToID="2"/>
+        <DirectedLink FromID="12" ToID="4"/>
+        <DirectedLink FromID="2" ToID="3"/>
+        <DirectedLink FromID="4" ToID="5"/>
+        <DirectedLink FromID="3" ToID="6"/>
+        <DirectedLink FromID="6" ToID="1"/>
+        <DirectedLink FromID="5" ToID="7"/>
+        <DirectedLink FromID="7" ToID="1"/>'''));
+
+      expect(ws, isEmpty, reason: _infos(ws).toString());
+      expect(body.nodes.where((n) => n.kind == SfcNodeKind.selDiv), hasLength(1));
+      expect(body.nodes.where((n) => n.kind == SfcNodeKind.selConv), isEmpty);
+      final tr = translateSfcBody(body, pouName: 'P');
+      expect(tr.translated, isTrue);
+      expect(tr.transitions.map((t) => t.kind).toSet(), {'single'});
+      // Both loop-backs land on the initial step.
+      expect(
+          tr.transitions
+              .where((t) => t.toStepId == 'P_s1')
+              .map((t) => t.fromStepId)
+              .toSet(),
+          {'P_s3', 'P_s5'});
+    });
+
+    test('a single-leg branch translates as an ordinary linear path', () {
+      final (body, ws) = _build(_wrap('''
+        <Step ID="1" Operand="S0" InitialStep="true"/>
+        <Branch ID="10" BranchType="Selection"><Leg ID="11"/></Branch>
+        ${_t(2, 'T1', 'A')}
+        <Step ID="3" Operand="S1"/>
+        ${_t(4, 'T2', 'B')}
+        <Step ID="5" Operand="S2"/>
+        <DirectedLink FromID="1" ToID="10"/>
+        <DirectedLink FromID="11" ToID="2"/>
+        <DirectedLink FromID="2" ToID="3"/>
+        <DirectedLink FromID="3" ToID="4"/>
+        <DirectedLink FromID="4" ToID="11"/>
+        <DirectedLink FromID="10" ToID="5"/>'''));
+
+      expect(ws, isEmpty); // faithful, if pointless — no warning, no stub
+      final tr = translateSfcBody(body, pouName: 'P');
+      expect(tr.translated, isTrue);
+      expect(tr.transitions.map((t) => t.kind).toSet(), {'single'});
+    });
+
+    test('STEP-SEPARATED nested branches TRANSLATE (nesting per se is supported)', () {
+      // The intuitive-but-false claim is "nested branches stub". An inner
+      // branch whose inlet is the intervening step is an ordinary selDiv with
+      // a single step inflow; upstream/downstreamSteps resolve each transition
+      // through exactly ONE connector to exactly one step.
+      final (body, ws) = _build(_wrap('''
+        <Step ID="1" Operand="S0" InitialStep="true"/>
+        <Branch ID="30" BranchType="Selection"><Leg ID="31"/><Leg ID="32"/></Branch>
+        ${_t(20, 'T1', 'A')}
+        <Step ID="2" Operand="S1"/>
+        <Branch ID="40" BranchType="Selection"><Leg ID="41"/><Leg ID="42"/></Branch>
+        ${_t(23, 'T5', 'C')}
+        <Step ID="4" Operand="S5"/>
+        ${_t(25, 'T7', 'E')}
+        ${_t(24, 'T6', 'D')}
+        <Step ID="5" Operand="S6"/>
+        ${_t(26, 'T8', 'F')}
+        <Step ID="6" Operand="S7"/>
+        ${_t(27, 'T9', 'G')}
+        ${_t(21, 'T2', 'B')}
+        <Step ID="3" Operand="S2"/>
+        ${_t(22, 'T4', 'H')}
+        <Step ID="7" Operand="S9"/>
+        <DirectedLink FromID="1" ToID="30"/>
+        <DirectedLink FromID="31" ToID="20"/>
+        <DirectedLink FromID="32" ToID="21"/>
+        <DirectedLink FromID="20" ToID="2"/>
+        <DirectedLink FromID="2" ToID="40"/>
+        <DirectedLink FromID="41" ToID="23"/>
+        <DirectedLink FromID="42" ToID="24"/>
+        <DirectedLink FromID="23" ToID="4"/>
+        <DirectedLink FromID="24" ToID="5"/>
+        <DirectedLink FromID="4" ToID="25"/>
+        <DirectedLink FromID="5" ToID="26"/>
+        <DirectedLink FromID="25" ToID="41"/>
+        <DirectedLink FromID="26" ToID="42"/>
+        <DirectedLink FromID="40" ToID="6"/>
+        <DirectedLink FromID="6" ToID="27"/>
+        <DirectedLink FromID="27" ToID="31"/>
+        <DirectedLink FromID="21" ToID="3"/>
+        <DirectedLink FromID="3" ToID="22"/>
+        <DirectedLink FromID="22" ToID="32"/>
+        <DirectedLink FromID="30" ToID="7"/>'''));
+
+      expect(ws, isEmpty);
+      expect(body.nodes.where((n) => n.kind == SfcNodeKind.selDiv), hasLength(2));
+      expect(body.nodes.where((n) => n.kind == SfcNodeKind.selConv), hasLength(2));
+      final tr = translateSfcBody(body, pouName: 'P');
+      expect(tr.translated, isTrue);
+      expect(tr.transitions, hasLength(8));
+      expect(tr.transitions.map((t) => t.kind).toSet(), {'single'});
+      expect(
+          tr.transitions.every((t) =>
+              t.fromStepId.isNotEmpty && t.toStepId.isNotEmpty),
+          isTrue);
+    });
+
+    test('BranchFlow is read but not trusted: a mismatch warns, the links win', () {
+      final (body, ws) = _build(_wrap(
+          selectionChart.replaceFirst('BranchType="Selection"',
+              'BranchType="Selection" BranchFlow="Diverge"')));
+
+      expect(_hasInfo(ws, 'branch flow mismatch'), isTrue, reason: _infos(ws).toString());
+      expect(_hasInfo(ws, 'branch shape not representable'), isFalse);
+      expect(body.nodes.where((n) => n.kind == SfcNodeKind.selDiv), hasLength(1));
+      expect(body.nodes.where((n) => n.kind == SfcNodeKind.selConv), hasLength(1));
+      expect(translateSfcBody(body, pouName: 'P').translated, isTrue);
+    });
+
+    test('a raw ID="-1" can never collide with a branch connector (Critical 2)', () {
+      // Without §2's `parsed < 0` gate the step would keep localId -1, which
+      // is exactly divId of the first branch: byId is last-write-wins while
+      // stepNodes/succ/pred keep BOTH, so the chart would translate cleanly
+      // with zero warnings AS THE WRONG LOGIC.
+      final (body, ws) = _build(_wrap('''
+        <Step ID="-1" Operand="Neg" InitialStep="true"/>
+        <Step ID="1" Operand="S0"/>
+        <Branch ID="10" BranchType="Selection"><Leg ID="11"/></Branch>
+        ${_t(2, 'T1', 'A')}
+        <Step ID="3" Operand="S1"/>
+        <DirectedLink FromID="1" ToID="10"/>
+        <DirectedLink FromID="11" ToID="2"/>
+        <DirectedLink FromID="2" ToID="3"/>'''));
+
+      final neg = body.nodes.firstWhere((n) => n.name == 'Neg');
+      final div = body.nodes.firstWhere((n) => n.kind == SfcNodeKind.selDiv);
+      expect(neg.localId, lessThan(0));
+      expect(neg.localId == div.localId, isFalse);
+      expect(_hasInfo(ws, 'malformed ID'), isTrue);
+      final tr = translateSfcBody(body, pouName: 'P');
+      expect(tr.translated, isFalse, reason: 'the gate must make this LOUD');
+      expect(tr.stubReason, 'complex-topology');
+    });
+  });
+
+  group('L5X SFC: the 4-bit emission decision table (§3)', () {
+    /// A selection-branch fixture in which each of the four buckets is set
+    /// independently, through the BRANCH id — the only form in which every
+    /// bit is independently settable.
+    String bits(bool divIn, bool divOut, bool convIn, bool convOut) => _wrap('''
+      <Step ID="1" Operand="S1" InitialStep="true"/>
+      ${_t(2, 'T1', 'A')}
+      ${_t(3, 'T2', 'B')}
+      <Step ID="4" Operand="S2"/>
+      <Branch ID="10" BranchType="Selection"><Leg ID="11"/><Leg ID="12"/></Branch>
+      ${divIn ? '<DirectedLink FromID="1" ToID="10"/>' : ''}
+      ${divOut ? '<DirectedLink FromID="10" ToID="2"/>' : ''}
+      ${convIn ? '<DirectedLink FromID="3" ToID="10"/>' : ''}
+      ${convOut ? '<DirectedLink FromID="10" ToID="4"/>' : ''}''');
+
+    // Every one of the 16 combinations is named: 3 well-formed shapes and the
+    // 13 defect rows, each with its own cause clause.
+    const rows = <(bool, bool, bool, bool, bool, bool, String?)>[
+      //div in, div out, conv in, conv out, emit div, emit conv, cause
+      (true, true, true, true, true, true, null),
+      (true, true, false, false, true, false, null),
+      (false, false, true, true, false, true, null),
+      (true, true, true, false, true, true, 'convergence has no outlet'),
+      (true, true, false, true, true, true, 'convergence has no inlet'),
+      (true, false, true, true, true, true, 'divergence has no legs'),
+      (false, true, true, true, true, true, 'divergence has no inlet'),
+      (true, false, false, false, true, false, 'divergence has no legs'),
+      (false, true, false, false, true, false, 'divergence has no inlet'),
+      (false, false, true, false, false, true, 'convergence has no outlet'),
+      (false, false, false, true, false, true, 'convergence has no inlet'),
+      (true, false, true, false, true, true, 'divergence has no legs'),
+      (true, false, false, true, true, true, 'divergence has no legs'),
+      (false, true, true, false, true, true, 'divergence has no inlet'),
+      (false, true, false, true, true, true, 'divergence has no inlet'),
+      (false, false, false, false, false, false, 'branch has no links'),
+    ];
+
+    for (final r in rows) {
+      final (dIn, dOut, cIn, cOut, emitDiv, emitConv, cause) = r;
+      test('bits $dIn/$dOut/$cIn/$cOut -> '
+          '${cause ?? 'no defect'}', () {
+        final (body, ws) = _build(bits(dIn, dOut, cIn, cOut));
+
+        expect(body.nodes.where((n) => n.kind == SfcNodeKind.selDiv),
+            hasLength(emitDiv ? 1 : 0));
+        expect(body.nodes.where((n) => n.kind == SfcNodeKind.selConv),
+            hasLength(emitConv ? 1 : 0));
+
+        final shape = _infos(ws)
+            .where((m) => m.contains('branch shape not representable ('))
+            .toList();
+        if (cause == null) {
+          expect(shape, isEmpty, reason: shape.toString());
+        } else {
+          // A poisoned branch still emits its connectors, so the element
+          // count stays honest — but exactly ONE cause is reported.
+          expect(shape, hasLength(1));
+          expect(shape.single,
+              contains('branch shape not representable ($cause)'));
+          final tr = translateSfcBody(body, pouName: 'P');
+          expect(tr.translated, isFalse);
+          expect(tr.stubReason, 'complex-topology');
+        }
+      });
+    }
+  });
+
+  group('L5X SFC: branch shape validation and its cause clauses (§3, §8)', () {
+    test('a selection leg headed by a step', () {
+      final (_, ws) = _build(_wrap('''
+        <Step ID="1" Operand="S0" InitialStep="true"/>
+        <Step ID="4" Operand="S2"/>
+        <Branch ID="10" BranchType="Selection"><Leg ID="11"/></Branch>
+        <DirectedLink FromID="1" ToID="10"/>
+        <DirectedLink FromID="11" ToID="4"/>'''));
+      expect(
+          _hasInfo(ws, 'branch shape not representable '
+              '(selection leg head is a step, expected transition)'),
+          isTrue,
+          reason: _infos(ws).toString());
+    });
+
+    test('a selection leg tailed by a step', () {
+      final (_, ws) = _build(_wrap('''
+        <Step ID="1" Operand="S0" InitialStep="true"/>
+        <Step ID="4" Operand="S2"/>
+        <Branch ID="10" BranchType="Selection"><Leg ID="11"/></Branch>
+        <DirectedLink FromID="1" ToID="11"/>
+        <DirectedLink FromID="10" ToID="4"/>'''));
+      expect(
+          _hasInfo(ws, 'branch shape not representable '
+              '(selection leg tail is a step, expected transition)'),
+          isTrue,
+          reason: _infos(ws).toString());
+    });
+
+    test('a simultaneous leg headed by a transition', () {
+      final (_, ws) = _build(_wrap('''
+        ${_t(2, 'T0', 'A')}
+        ${_t(3, 'T1', 'B')}
+        <Branch ID="10" BranchType="Simultaneous"><Leg ID="11"/></Branch>
+        <DirectedLink FromID="2" ToID="10"/>
+        <DirectedLink FromID="11" ToID="3"/>'''));
+      expect(
+          _hasInfo(ws, 'branch shape not representable '
+              '(simultaneous leg head is a transition, expected step)'),
+          isTrue,
+          reason: _infos(ws).toString());
+    });
+
+    test('a simultaneous leg tailed by a transition', () {
+      final (_, ws) = _build(_wrap('''
+        ${_t(2, 'T0', 'A')}
+        ${_t(3, 'T1', 'B')}
+        <Branch ID="10" BranchType="Simultaneous"><Leg ID="11"/></Branch>
+        <DirectedLink FromID="2" ToID="11"/>
+        <DirectedLink FromID="10" ToID="3"/>'''));
+      expect(
+          _hasInfo(ws, 'branch shape not representable '
+              '(simultaneous leg tail is a transition, expected step)'),
+          isTrue,
+          reason: _infos(ws).toString());
+    });
+
+    test('two trunk-ins on a selection divergence', () {
+      final (_, ws) = _build(_wrap('''
+        <Step ID="1" Operand="S0" InitialStep="true"/>
+        <Step ID="5" Operand="S0b"/>
+        ${_t(2, 'T1', 'A')}
+        <Branch ID="10" BranchType="Selection"><Leg ID="11"/></Branch>
+        <DirectedLink FromID="1" ToID="10"/>
+        <DirectedLink FromID="5" ToID="10"/>
+        <DirectedLink FromID="10" ToID="2"/>'''));
+      expect(
+          _hasInfo(ws, 'branch shape not representable '
+              '(selection divergence has 2 inlets, expected 1)'),
+          isTrue,
+          reason: _infos(ws).toString());
+    });
+
+    test('two trunk-outs on a selection convergence', () {
+      final (_, ws) = _build(_wrap('''
+        ${_t(2, 'T1', 'A')}
+        <Step ID="4" Operand="S2"/>
+        <Step ID="5" Operand="S3"/>
+        <Branch ID="10" BranchType="Selection"><Leg ID="11"/></Branch>
+        <DirectedLink FromID="2" ToID="10"/>
+        <DirectedLink FromID="10" ToID="4"/>
+        <DirectedLink FromID="10" ToID="5"/>'''));
+      expect(
+          _hasInfo(ws, 'branch shape not representable '
+              '(selection convergence has 2 outlets, expected 1)'),
+          isTrue,
+          reason: _infos(ws).toString());
+    });
+
+    test('two trunk-ins on a simultaneous divergence', () {
+      final (_, ws) = _build(_wrap('''
+        ${_t(2, 'T0', 'A')}
+        ${_t(3, 'T0b', 'B')}
+        <Step ID="4" Operand="S1"/>
+        <Branch ID="10" BranchType="Simultaneous"><Leg ID="11"/></Branch>
+        <DirectedLink FromID="2" ToID="10"/>
+        <DirectedLink FromID="3" ToID="10"/>
+        <DirectedLink FromID="10" ToID="4"/>'''));
+      expect(
+          _hasInfo(ws, 'branch shape not representable '
+              '(simultaneous divergence has 2 inlets, expected 1)'),
+          isTrue,
+          reason: _infos(ws).toString());
+    });
+
+    test('two trunk-outs on a simultaneous convergence', () {
+      final (_, ws) = _build(_wrap('''
+        <Step ID="1" Operand="S1" InitialStep="true"/>
+        ${_t(2, 'T5', 'A')}
+        ${_t(3, 'T5b', 'B')}
+        <Branch ID="10" BranchType="Simultaneous"><Leg ID="11"/></Branch>
+        <DirectedLink FromID="1" ToID="10"/>
+        <DirectedLink FromID="10" ToID="2"/>
+        <DirectedLink FromID="10" ToID="3"/>'''));
+      expect(
+          _hasInfo(ws, 'branch shape not representable '
+              '(simultaneous convergence has 2 outlets, expected 1)'),
+          isTrue,
+          reason: _infos(ws).toString());
+    });
+
+    test('connector-adjacent nesting poisons with its own cause', () {
+      final (_, ws) = _build(_wrap('''
+        <Step ID="1" Operand="S0" InitialStep="true"/>
+        <Branch ID="10" BranchType="Selection"><Leg ID="11"/></Branch>
+        <Branch ID="20" BranchType="Selection"><Leg ID="21"/></Branch>
+        <DirectedLink FromID="1" ToID="10"/>
+        <DirectedLink FromID="11" ToID="20"/>'''));
+      expect(
+          _hasInfo(ws, 'branch shape not representable '
+              '(branch is directly adjacent to another branch)'),
+          isTrue,
+          reason: _infos(ws).toString());
+    });
+
+    test('a <Branch> nested inside a <Leg> is unregistered -> dangling link', () {
+      // Pins the §2 recursion policy: pass 1 walks the DIRECT children of each
+      // <SFCContent>, plus a <Branch>'s direct <Leg> children, and no further.
+      final (_, ws) = _build(_wrap('''
+        <Step ID="1" Operand="S0" InitialStep="true"/>
+        ${_t(2, 'T1', 'A')}
+        <Branch ID="10" BranchType="Selection">
+          <Leg ID="11"><Branch ID="20" BranchType="Selection"><Leg ID="21"/></Branch></Leg>
+          <Leg ID="12"/>
+        </Branch>
+        <DirectedLink FromID="1" ToID="10"/>
+        <DirectedLink FromID="20" ToID="2"/>'''));
+      expect(_hasInfo(ws, 'dangling link'), isTrue, reason: _infos(ws).toString());
+    });
+
+    test('an unrecognized BranchType poisons and synthesizes nothing', () {
+      for (final (attr, shown) in const [
+        ('', ''),
+        (' BranchType="Parallel"', 'Parallel'),
+      ]) {
+        final (body, ws) = _build(_wrap('''
+          <Step ID="1" Operand="S0" InitialStep="true"/>
+          ${_t(2, 'T1', 'A')}
+          <Branch ID="10"$attr><Leg ID="11"/></Branch>
+          <DirectedLink FromID="1" ToID="10"/>
+          <DirectedLink FromID="11" ToID="2"/>'''));
+
+        expect(_hasInfo(ws, 'branch type "$shown"'), isTrue,
+            reason: _infos(ws).toString());
+        expect(
+            body.nodes.any((n) => const [
+                  SfcNodeKind.selDiv,
+                  SfcNodeKind.selConv,
+                  SfcNodeKind.simDiv,
+                  SfcNodeKind.simConv
+                ].contains(n.kind)),
+            isFalse);
+        // Links touching it are discarded, NOT reported as dangling: the
+        // branch-type breadcrumb is the one actionable cause.
+        expect(_hasInfo(ws, 'dangling link'), isFalse);
+        expect(translateSfcBody(body, pouName: 'P').translated, isFalse);
+      }
+    });
+
+    test('the four inlet/outlet KIND causes are unreachable by construction', () {
+      // §3's classifier derives the trunk role FROM the neighbour's kind, so
+      // divIn/convOut can only ever hold correctly-kinded nodes. The checks
+      // exist as defence in depth against a future classifier change.
+      //
+      // DOCUMENTATION ONLY — the enforcing assertion lives in `_build`, so it
+      // rides on every fixture in this file including all 16 emission rows and
+      // all 8 shape fixtures. A version of this test that only walked
+      // well-formed charts would pass with the kind checks deleted outright,
+      // which is why it must not be the only home for the claim.
+      final fixtures = <String>[
+        _wrap('''
+          <Step ID="1" Operand="S0" InitialStep="true"/>
+          <Branch ID="10" BranchType="Selection"><Leg ID="11"/></Branch>
+          ${_t(2, 'T1', 'A')}
+          <Step ID="3" Operand="S1"/>
+          ${_t(4, 'T2', 'B')}
+          <Step ID="5" Operand="S2"/>
+          <DirectedLink FromID="1" ToID="10"/>
+          <DirectedLink FromID="11" ToID="2"/>
+          <DirectedLink FromID="2" ToID="3"/>
+          <DirectedLink FromID="3" ToID="4"/>
+          <DirectedLink FromID="4" ToID="11"/>
+          <DirectedLink FromID="10" ToID="5"/>'''),
+        _wrap('''
+          ${_t(2, 'T0', 'A')}
+          <Branch ID="10" BranchType="Simultaneous"><Leg ID="11"/></Branch>
+          <Step ID="3" Operand="S1"/>
+          ${_t(4, 'T5', 'B')}
+          <DirectedLink FromID="2" ToID="10"/>
+          <DirectedLink FromID="11" ToID="3"/>
+          <DirectedLink FromID="3" ToID="11"/>
+          <DirectedLink FromID="10" ToID="4"/>'''),
+      ];
+      for (final f in fixtures) {
+        final (_, ws) = _build(f);
+        expect(_infos(ws).any((m) => m.contains('divergence inlet is a')), isFalse);
+        expect(_infos(ws).any((m) => m.contains('convergence outlet is a')), isFalse);
+      }
     });
   });
 }

@@ -772,10 +772,149 @@ String _l5xSfcSt(XmlElement owner, String wrapper) {
 /// NOT registered here: they poison the chart, and a link naming one must take
 /// the `dangling link` path rather than resolve to a node that does not exist.
 ///
-/// `branch` and `leg` join this enum with `<Branch>` support — until then
-/// `<Branch>`/`<Leg>` fall through pass 1's `default` arm and poison the chart,
-/// and declaring the two values early would only trip `unused_field`.
-enum _L5xSfcKind { step, transition }
+/// `branch` and `leg` are NOT node kinds: a `<Branch>` is synthesized into a
+/// PAIR of connector nodes (see [_L5xSfcBranch]) and a `<Leg>` is only ever a
+/// link ENDPOINT. They live here because the classifier resolves an endpoint to
+/// one of these five outcomes.
+enum _L5xSfcKind { step, transition, branch, leg }
+
+/// Per-`<Branch>` synthesis state. L5X models a branch as ONE element with
+/// `<Leg>` children plus a flat `<DirectedLink>` list; the neutral IR (and
+/// IEC 61131-3, and `sfc_exec`) models it as TWO connector nodes, an opening
+/// divergence and a closing convergence, with ordinary edges between them and
+/// the elements on each leg. This class holds the synthesized pair's reserved
+/// ids and the four link buckets §3's decision table reads.
+///
+/// Leg MEMBERSHIP is never computed: only each leg's head and tail matter, and
+/// both fall straight out of the endpoint classifier.
+class _L5xSfcBranch {
+  _L5xSfcBranch({
+    required this.rawId,
+    required this.divId,
+    required this.convId,
+    required this.divKind,
+    required this.convKind,
+    required this.flow,
+  });
+
+  /// The raw `ID` attribute text, used verbatim in warnings.
+  final String rawId;
+
+  /// Reserved at REGISTRATION (pass 1), from the routine-wide synthetic-id
+  /// counter, for every branch with a recognized `BranchType` — even when one
+  /// side is later dropped. That makes id allocation a pure function of
+  /// document order, independent of the link list.
+  final int divId, convId;
+  final SfcNodeKind divKind, convKind;
+
+  /// `BranchFlow`, READ BUT NOT TRUSTED: emission is derived from link
+  /// topology, so an export that splits a branch into separate `Diverge` and
+  /// `Converge` elements and one that emits a single paired element both work
+  /// without a mode switch.
+  final String? flow;
+
+  /// Node ids feeding / fed by each synthesized connector.
+  final List<int> divIn = [], divOut = [], convIn = [], convOut = [];
+
+  /// §3's emission rule, in full: a side is emitted whenever EITHER of its
+  /// bits is set, and dropped when both are clear. (All 16 rows of the
+  /// decision table satisfy this; a side with exactly one bit set is emitted
+  /// AND recorded as a defect, so the element count stays honest.)
+  bool get emitDiv => divIn.isNotEmpty || divOut.isNotEmpty;
+  bool get emitConv => convIn.isNotEmpty || convOut.isNotEmpty;
+
+  bool get isSelection => divKind == SfcNodeKind.selDiv;
+}
+
+/// Human name for a resolved endpoint kind, used inside branch cause clauses.
+String _l5xSfcKindName(_L5xSfcKind? k) => switch (k) {
+      _L5xSfcKind.step => 'step',
+      _L5xSfcKind.transition => 'transition',
+      _L5xSfcKind.branch => 'branch',
+      _L5xSfcKind.leg => 'leg',
+      null => 'unknown element',
+    };
+
+/// §3's shape validation for one branch, run only on EMITTED connectors and
+/// only when the emission table found no defect, so one defect can never be
+/// reported twice. Asserts the neighbour kinds `translateSfcBody`'s
+/// `upstreamSteps`/`downstreamSteps` require:
+///
+///   selDiv  <- exactly one step;  -> transitions
+///   selConv <- transitions;       -> exactly one step
+///   simDiv  <- exactly one transition; -> steps
+///   simConv <- steps;             -> exactly one transition
+///
+/// Why validate here rather than letting `translateSfcBody` catch it: the
+/// translator's gates are reached ONLY from a transition's pred/succ walk, so
+/// a malformed connector that is on no transition's walk would be IGNORED and
+/// the steps behind it would become unreachable islands that vanish without a
+/// word. The translator's own gates remain as a backstop.
+///
+/// The four inlet/outlet KIND checks are DEFENCE IN DEPTH: §3's unified
+/// classifier derives the trunk role FROM the neighbour's kind, so `divIn` and
+/// `convOut` can only ever hold correctly-kinded nodes today. They are kept
+/// against a future classifier change and asserted absent by test.
+void _l5xSfcValidateShape(_L5xSfcBranch br, Map<int, _L5xSfcKind> kindById,
+    void Function(_L5xSfcBranch, String) defect) {
+  final side = br.isSelection ? 'selection' : 'simultaneous';
+  // Selection diverges into TRANSITIONS and converges out to a STEP;
+  // simultaneous is the mirror. That asymmetry is the single fact synthesis
+  // must get right.
+  final trunkKind =
+      br.isSelection ? _L5xSfcKind.step : _L5xSfcKind.transition;
+  final legKind =
+      br.isSelection ? _L5xSfcKind.transition : _L5xSfcKind.step;
+
+  if (br.emitDiv) {
+    if (br.divIn.length != 1) {
+      defect(br, '$side divergence has ${br.divIn.length} inlets, expected 1');
+      return;
+    }
+    final inletKind = kindById[br.divIn.single];
+    if (inletKind != trunkKind) {
+      defect(
+          br,
+          '$side divergence inlet is a ${_l5xSfcKindName(inletKind)}, '
+          'expected ${_l5xSfcKindName(trunkKind)}');
+      return;
+    }
+    for (final n in br.divOut) {
+      final k = kindById[n];
+      if (k != legKind) {
+        defect(
+            br,
+            '$side leg head is a ${_l5xSfcKindName(k)}, '
+            'expected ${_l5xSfcKindName(legKind)}');
+        return;
+      }
+    }
+  }
+  if (br.emitConv) {
+    for (final n in br.convIn) {
+      final k = kindById[n];
+      if (k != legKind) {
+        defect(
+            br,
+            '$side leg tail is a ${_l5xSfcKindName(k)}, '
+            'expected ${_l5xSfcKindName(legKind)}');
+        return;
+      }
+    }
+    if (br.convOut.length != 1) {
+      defect(br, '$side convergence has ${br.convOut.length} outlets, expected 1');
+      return;
+    }
+    final outletKind = kindById[br.convOut.single];
+    if (outletKind != trunkKind) {
+      defect(
+          br,
+          '$side convergence outlet is a ${_l5xSfcKindName(outletKind)}, '
+          'expected ${_l5xSfcKindName(trunkKind)}');
+      return;
+    }
+  }
+}
 
 /// Parses one `<Routine Type="SFC">`'s `<SFCContent>` into the neutral
 /// [SfcBody] the shared `translateSfcBody` consumes — the SFC analog of
@@ -835,6 +974,25 @@ SfcBody _l5xSfcBody(
   final assignedByRawId = <int, int>{};
   // Assigned localId -> kind, read by the link classifier.
   final kindById = <int, _L5xSfcKind>{};
+  // Branch bookkeeping. `branches` is document order — the order every branch
+  // warning and every connector node/edge is emitted in.
+  final branches = <_L5xSfcBranch>[];
+  final branchByLocalId = <int, _L5xSfcBranch>{};
+  final legToBranch = <int, _L5xSfcBranch>{};
+  // localIds belonging to a branch (or leg) whose `BranchType` was not
+  // recognized. A link touching one is discarded whole: that branch already
+  // emitted the one actionable breadcrumb, and N `dangling link` messages
+  // would bury it.
+  final unrecognizedIds = <int>{};
+  // At most ONE `branch shape not representable` cause per branch. Precedence:
+  // connector-adjacent (pass 2a) > emission-table cause > shape-validation
+  // cause; first recorded wins. Emission happens in pass 3, in branch document
+  // order, so message order is deterministic.
+  final branchDefect = <_L5xSfcBranch, String>{};
+  void defect(_L5xSfcBranch br, String cause) {
+    branchDefect.putIfAbsent(br, () => cause);
+    unrepresentable = true;
+  }
 
   /// The ID gate: absent / unparseable / negative / out-of-range / duplicate
   /// all get a unique synthetic negative id, an info breadcrumb and the poison
@@ -953,6 +1111,62 @@ SfcBody _l5xSfcBody(
             kindById[localId] = _L5xSfcKind.transition;
             break;
           }
+        case 'Branch':
+          {
+            // No 1:1 IR node — a <Branch> is synthesized into a PAIR of
+            // connector nodes in pass 3, wired from link topology.
+            final rawId = el.getAttribute('ID') ?? '';
+            final type = (el.getAttribute('BranchType') ?? '').trim();
+            final divKind = switch (type) {
+              'Selection' => SfcNodeKind.selDiv,
+              'Simultaneous' => SfcNodeKind.simDiv,
+              _ => null,
+            };
+            if (divKind == null) {
+              unrepresentable = true;
+              warnings.add(ImportWarning(
+                  severity: WarningSeverity.info,
+                  message: '$ownerLabel: <Branch ID="$rawId"> branch type '
+                      '"$type" not recognized — the chart is not translated.'));
+              // The branch AND its legs are registered as unrecognized (the
+              // legs still run the ID gate, so duplicate detection stays
+              // honest), which makes every incident link a silent discard
+              // rather than N `dangling link` breadcrumbs burying the one
+              // actionable cause.
+              unrecognizedIds.add(localId);
+              for (final leg in _children(el, 'Leg')) {
+                unrecognizedIds.add(gateId(leg));
+              }
+              break; // no connectors synthesized
+            }
+            final convKind = divKind == SfcNodeKind.selDiv
+                ? SfcNodeKind.selConv
+                : SfcNodeKind.simConv;
+            // Two ids from the ONE routine-wide counter, reserved in
+            // document order.
+            final divId = malformedId--;
+            final convId = malformedId--;
+            final br = _L5xSfcBranch(
+              rawId: rawId,
+              divId: divId,
+              convId: convId,
+              divKind: divKind,
+              convKind: convKind,
+              flow: el.getAttribute('BranchFlow')?.trim(),
+            );
+            branches.add(br);
+            branchByLocalId[localId] = br;
+            kindById[localId] = _L5xSfcKind.branch;
+            // A <Leg>'s `ID` is a LINK ENDPOINT, not a node. The walk stops
+            // here: a <Branch> nested as a child of a <Leg> is never
+            // registered, so any link naming it dangles -> visible stub.
+            for (final leg in _children(el, 'Leg')) {
+              final legId = gateId(leg);
+              legToBranch[legId] = br;
+              kindById[legId] = _L5xSfcKind.leg;
+            }
+            break;
+          }
         default:
           {
             // <Stop>, <SbrRet>, <JSR>, a top-level <Leg>, any future tag: no
@@ -991,11 +1205,20 @@ SfcBody _l5xSfcBody(
           (toId != null && annotationIds.contains(toId))) {
         continue;
       }
+      // (2) A link touching an unrecognized-BranchType branch (or its legs).
+      // That branch already emitted the one actionable breadcrumb plus the
+      // poison flag; N `dangling link` messages would bury it.
+      if ((fromId != null && unrecognizedIds.contains(fromId)) ||
+          (toId != null && unrecognizedIds.contains(toId))) {
+        continue;
+      }
       final fromKind = fromId == null ? null : kindById[fromId];
       final toKind = toId == null ? null : kindById[toId];
       // (3) An endpoint naming no MAPPABLE element. The edge is still emitted
       // against a fresh synthetic id: dropping it would silently delete a
-      // control path.
+      // control path. A resolvable connector side uses the DIRECTION fallback
+      // purely so the edge has an endpoint — the body is already poisoned, so
+      // no reading of that edge can matter.
       if (fromKind == null || toKind == null) {
         unrepresentable = true;
         warnings.add(ImportWarning(
@@ -1003,20 +1226,158 @@ SfcBody _l5xSfcBody(
             message: '$ownerLabel: <DirectedLink FromID="${fromAttr ?? ''}" '
                 'ToID="${toAttr ?? ''}"> is a dangling link (endpoint names no '
                 'element) — the chart is not translated.'));
+        int side(int? id, _L5xSfcKind? kind, bool isFrom) {
+          if (kind == null) return malformedId--;
+          if (kind == _L5xSfcKind.leg) {
+            final b = legToBranch[id]!;
+            return isFrom ? b.divId : b.convId;
+          }
+          if (kind == _L5xSfcKind.branch) {
+            final b = branchByLocalId[id]!;
+            return isFrom ? b.divId : b.convId;
+          }
+          return id!;
+        }
+
         pending.add(SfcEdge(
-          fromLocalId: fromKind == null ? malformedId-- : fromId!,
-          toLocalId: toKind == null ? malformedId-- : toId!,
-        ));
+            fromLocalId: side(fromId, fromKind, true),
+            toLocalId: side(toId, toKind, false)));
         continue;
       }
-      // (6) An ordinary edge. (Task 2 inserts rules 2, 4 and 5 — the
-      // connector-endpoint cases — ahead of this.)
+      final fromConn =
+          fromKind == _L5xSfcKind.branch || fromKind == _L5xSfcKind.leg;
+      final toConn = toKind == _L5xSfcKind.branch || toKind == _L5xSfcKind.leg;
+      // (4) CONNECTOR-ADJACENT: a leg head or tail that is ITSELF a branch,
+      // giving a div->div / conv->conv / div->conv edge with no step or
+      // transition between. upstream/downstreamSteps see through only ONE
+      // connector, so a connector chain has no representable resolution. No
+      // edge is emitted (there is no non-arbitrary connector id to attach it
+      // to); the cause clause is the loud, named record of the link.
+      if (fromConn && toConn) {
+        final br = fromKind == _L5xSfcKind.leg
+            ? legToBranch[fromId]!
+            : branchByLocalId[fromId]!;
+        defect(br, 'branch is directly adjacent to another branch');
+        continue;
+      }
+      // (5) Exactly one connector endpoint: §3's unified endpoint classifier.
+      // There is deliberately NO mode switch and no mixed-convention rule — in
+      // the paired encoding a branch's TRUNK links must name the <Branch> id
+      // while its LEG links name <Leg> ids, so every paired branch mixes both
+      // forms by construction.
+      if (fromConn || toConn) {
+        final connKind = fromConn ? fromKind : toKind;
+        final connId = fromConn ? fromId! : toId!;
+        final otherKind = fromConn ? toKind : fromKind;
+        final otherId = fromConn ? toId! : fromId!;
+        final br = connKind == _L5xSfcKind.leg
+            ? legToBranch[connId]!
+            : branchByLocalId[connId]!;
+        if (connKind == _L5xSfcKind.leg) {
+          // LEG endpoints resolve BY DIRECTION. Unambiguous: a leg id can only
+          // ever mean "the branch-side end of this leg", and which end is
+          // fixed by the arrow.
+          if (fromConn) {
+            br.divOut.add(otherId);
+          } else {
+            br.convIn.add(otherId);
+          }
+        } else {
+          // BRANCH endpoints resolve BY THE OTHER ENDPOINT'S KIND. The naive
+          // direction rule agrees on every trunk link but is strictly worse on
+          // a leg-role link expressed through the branch id: it would read
+          // `FromID == B -> T1` as a convergence outlet and wire conv -> T1, a
+          // silently wrong chart that still passes every shape check.
+          final legKind = br.isSelection
+              ? _L5xSfcKind.transition // selection legs open/close on transitions
+              : _L5xSfcKind.step; // simultaneous legs open/close on steps
+          final isLegRole = otherKind == legKind;
+          if (fromConn) {
+            (isLegRole ? br.divOut : br.convOut).add(otherId);
+          } else {
+            (isLegRole ? br.convIn : br.divIn).add(otherId);
+          }
+        }
+        continue;
+      }
+      // (6) An ordinary edge.
       pending.add(SfcEdge(fromLocalId: fromId!, toLocalId: toId!));
     }
   }
 
+  // ---- Pass 3 — synthesize branch connectors (§3), in branch document order.
+  // Connector nodes and their edges are appended BEFORE the ordinary edges, so
+  // a single ordered edge list falls out.
+  for (final br in branches) {
+    final emitDiv = br.emitDiv;
+    final emitConv = br.emitConv;
+    // The 4-bit emission decision table, in full. Every one of the 16
+    // combinations is covered: a side with exactly one bit set is a defect, a
+    // branch no link touches is a defect, and where two causes could apply the
+    // DIVERGENCE-side cause wins (deterministic, and it is the upstream defect
+    // — the one a user fixes first).
+    if (!emitDiv && !emitConv) {
+      defect(br, 'branch has no links');
+    } else if (emitDiv && (br.divIn.isEmpty || br.divOut.isEmpty)) {
+      defect(
+          br,
+          br.divIn.isNotEmpty
+              ? 'divergence has no legs'
+              : 'divergence has no inlet');
+    } else if (emitConv && (br.convIn.isEmpty || br.convOut.isEmpty)) {
+      defect(
+          br,
+          br.convIn.isNotEmpty
+              ? 'convergence has no outlet'
+              : 'convergence has no inlet');
+    }
+    if (!branchDefect.containsKey(br)) {
+      _l5xSfcValidateShape(br, kindById, defect);
+    }
+    // BranchFlow contradicting the derived topology is a breadcrumb, not a
+    // defect: the links are what the chart actually says.
+    if ((br.flow == 'Diverge' && emitConv) ||
+        (br.flow == 'Converge' && emitDiv)) {
+      warnings.add(ImportWarning(
+          severity: WarningSeverity.info,
+          message: '$ownerLabel: <Branch ID="${br.rawId}"> branch flow '
+              'mismatch: BranchFlow="${br.flow}" but the links describe '
+              '${emitDiv && emitConv ? 'both a divergence and a convergence' : emitDiv ? 'a divergence' : 'a convergence'}'
+              ' — the links win.'));
+    }
+    if (emitDiv) {
+      nodes.add(SfcNode(localId: br.divId, kind: br.divKind));
+    }
+    if (emitConv) {
+      nodes.add(SfcNode(localId: br.convId, kind: br.convKind));
+    }
+    if (emitDiv) {
+      for (final n in br.divIn) {
+        edges.add(SfcEdge(fromLocalId: n, toLocalId: br.divId));
+      }
+      for (final n in br.divOut) {
+        edges.add(SfcEdge(fromLocalId: br.divId, toLocalId: n));
+      }
+    }
+    if (emitConv) {
+      for (final n in br.convIn) {
+        edges.add(SfcEdge(fromLocalId: n, toLocalId: br.convId));
+      }
+      for (final n in br.convOut) {
+        edges.add(SfcEdge(fromLocalId: br.convId, toLocalId: n));
+      }
+    }
+    final cause = branchDefect[br];
+    if (cause != null) {
+      warnings.add(ImportWarning(
+          severity: WarningSeverity.info,
+          message: '$ownerLabel: <Branch ID="${br.rawId}"> branch shape not '
+              'representable ($cause) — the chart is not translated.'));
+    }
+  }
+
   // ---- Pass 2b — the remaining edges, in their original document order.
-  // (Task 2's pass 3 appends the connector nodes and their edges BEFORE this,
+  // (Pass 3 above appended the connector nodes and their edges BEFORE this,
   // so connector edges lead the list. Nothing in translateSfcBody depends on
   // edge order; this is determinism and presentation, not semantics.)
   edges.addAll(pending);
