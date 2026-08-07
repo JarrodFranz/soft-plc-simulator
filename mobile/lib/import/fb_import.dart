@@ -67,9 +67,11 @@ FbVarDir _dir(VarScope scope) => switch (scope) {
 /// `fbd` POU is translated by [translateFbdBody] into the FB's native
 /// `fbdBlocks`/`fbdWires`/`fbdNetworks` — but ONLY when [dialect] is
 /// `ImportDialect.l5x`. A PLCopen FBD `functionBlock` keeps the existing
-/// "graphical body — not imported" warning byte-for-byte, pending
-/// PLCopen-specific validation (see docs/DEFERRED.md). Other graphical bodies
-/// are still skipped with that warning. Names are sanitized and
+/// "graphical body — not imported" warning byte-for-byte: its sheets have not
+/// been validated against this translator, so the gate holds it to the old
+/// behaviour rather than silently widening the L5X work to another vendor.
+/// Other graphical bodies are still skipped with that warning too. Names are
+/// sanitized and
 /// collision-resolved against [structs] + the FBs built so far (via
 /// `fbNameValidationError`), avoiding reserved block types, builtin
 /// composites, struct names, and `kSystemTagName`. Pure; never throws.
@@ -219,6 +221,24 @@ FbImportResult mapImportedFbs(
         // Either way the nested instance lives INSIDE the AOI struct, so
         // LdScope rewrites the call block's tagBinding to
         // `<instance>.<localTag>` and each instance gets its own nested state.
+        //
+        // ORIGINAL tagBinding -> the call block(s) that named it, indexed ONCE
+        // BEFORE any retarget. Rescanning `tr.blocks` per instance tag would
+        // let tag N — whose original name happens to equal the name tag N-1
+        // was just renamed to — drag N-1's block onto N's var (wrong type,
+        // shared state). Indexing up front pins every block to the name it
+        // was BORN with. Only blocks whose TYPE is a registered FB are
+        // indexed: a TAG_INPUT/CONST binding that coincidentally matches must
+        // never be retargeted.
+        final byBinding = <String, List<FbdBlock>>{};
+        for (final b in tr.blocks) {
+          if (registry.containsKey(b.type)) {
+            (byBinding[b.tagBinding] ??= <FbdBlock>[]).add(b);
+          }
+        }
+        // Names this loop itself minted, so a LATER instance can never reuse
+        // one (see the reuse gate below).
+        final synthesized = <String>{};
         for (final it in tr.instanceTags) {
           final original = it.name;
           // The instance name came from the L5X `Operand` attribute, which is
@@ -240,10 +260,23 @@ FbImportResult mapImportedFbs(
               break;
             }
           }
-          if (existing != null && existing.dataType != it.dataType) {
-            // The name collides with an UNRELATED var of another type (often a
-            // consequence of the sanitize above). Dedupe rather than reuse it:
-            // reusing would point the call block at a member of the wrong type.
+          // Two reasons NOT to reuse a same-named var. Reuse is only ever for
+          // a var the AOI itself DECLARED (its LocalTag typed as the nested
+          // AOI); anything else gets its own member.
+          final clash = existing == null
+              ? null
+              : synthesized.contains(vname)
+                  // Minted by an earlier iteration for a DIFFERENT nested
+                  // instance — sharing it would share that instance's state.
+                  ? 'already backs another nested instance'
+                  : existing.dataType != it.dataType
+                      // An UNRELATED var of another type (often a consequence
+                      // of the sanitize above); reusing it would point the
+                      // call block at a member of the wrong type.
+                      ? 'is typed "${existing.dataType}" but backs a '
+                          '"${it.dataType}" call block'
+                      : null;
+          if (clash != null) {
             final base = vname;
             var i = 2;
             while (vars.any((v) => v.name == '${base}_$i')) {
@@ -251,25 +284,21 @@ FbImportResult mapImportedFbs(
             }
             vname = '${base}_$i';
             warnings.add(ImportWarning(severity: WarningSeverity.info,
-                message: 'Function block "$name": local "$base" is typed '
-                    '"${existing.dataType}" but backs a "${it.dataType}" call '
-                    'block — the nested instance was given its own local '
-                    '"$vname" (a reference to "$base" may not resolve).'));
+                message: 'Function block "$name": local "$base" $clash — the '
+                    'nested instance was given its own local "$vname" (a '
+                    'reference to "$base" may not resolve).'));
             existing = null;
           }
           if (existing == null) {
             vars.add(FbVar(name: vname, dataType: it.dataType,
                 direction: FbVarDir.internal, initialValue: it.value));
+            synthesized.add(vname);
           }
           if (vname != original) {
-            // Retarget the call block(s) that named the instance, mirroring
-            // ir_to_project's instance-tag retarget loop. Only blocks whose
-            // TYPE is a registered FB may be retargeted: a TAG_INPUT/CONST
-            // binding that coincidentally matches must not be.
-            for (final b in tr.blocks) {
-              if (registry.containsKey(b.type) && b.tagBinding == original) {
-                b.tagBinding = vname;
-              }
+            // Retarget the call block(s) that were BORN with this name,
+            // mirroring ir_to_project's instance-tag retarget loop.
+            for (final b in byBinding[original] ?? const <FbdBlock>[]) {
+              b.tagBinding = vname;
             }
           }
         }

@@ -305,8 +305,21 @@ ImportResult mapImportedProject(ImportedProject ir,
       if (tr.translatedNetworkCount > 0) {
         // Merge custom-FB instance tags with the SAME sanitize + dedup + node-
         // retarget loop the LD arm uses, but retargeting FbdBlock.tagBinding.
-        // Only blocks whose type is a registered FB may be retargeted (a
-        // TAG_INPUT/CONST binding that coincidentally matches must NOT be).
+        //
+        // ORIGINAL tagBinding -> the call block(s) that named it, indexed ONCE
+        // BEFORE any retarget. Rescanning tr.blocks per instance tag would let
+        // tag N — whose original name happens to equal the name tag N-1 was
+        // just renamed to — drag N-1's block onto N's tag, leaving two blocks
+        // sharing one FB instance and N-1's tag bound to nothing. Indexing up
+        // front pins every block to the name it was BORN with. Only blocks
+        // whose type is a registered FB are indexed (a TAG_INPUT/CONST binding
+        // that coincidentally matches must NOT be retargeted).
+        final byBinding = <String, List<FbdBlock>>{};
+        for (final b in tr.blocks) {
+          if (fbRes.registry.containsKey(b.type)) {
+            (byBinding[b.tagBinding] ??= <FbdBlock>[]).add(b);
+          }
+        }
         for (final it in tr.instanceTags) {
           final original = it.name;
           var name = _sanitizeIdentifier(original);
@@ -326,10 +339,8 @@ ImportResult mapImportedProject(ImportedProject ir,
             name = renamed;
           }
           if (name != original) {
-            for (final b in tr.blocks) {
-              if (fbRes.registry.containsKey(b.type) && b.tagBinding == original) {
-                b.tagBinding = name;
-              }
+            for (final b in byBinding[original] ?? const <FbdBlock>[]) {
+              b.tagBinding = name;
             }
           }
           used.add(name);

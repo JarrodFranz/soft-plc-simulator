@@ -791,11 +791,14 @@ List<ImportedPou> _l5xAois(XmlElement? controller, List<ImportWarning> warnings)
           if (pn.isEmpty) continue;
           if (pn == 'EnableIn' || pn == 'EnableOut') {
             if (!keepsEnableParams) continue; // ST/SFC AOIs: historic skip
-            // Rockwell RLL AOI logic commonly does XIC(EnableIn)/OTE(EnableOut).
+            // Both graphical logic languages reference these routinely: RLL
+            // does XIC(EnableIn)/OTE(EnableOut), FBD wires them as sheet pins.
             // Retained as INTERNAL vars so those references resolve per
-            // instance via LdScope instead of falling through to absent
-            // globals. The body only runs when the call executes, so
+            // instance via the scoped executor instead of falling through to
+            // absent globals. The body only runs when the call executes, so
             // EnableIn = true during execution is the faithful mapping.
+            // ST/SFC-logic AOIs keep the historic skip (see
+            // `keepsEnableParams`).
             vars.add(ImportedVar(name: pn, baseType: 'BOOL',
                 scope: VarScope.local, initialValue: pn == 'EnableIn'));
             continue;
