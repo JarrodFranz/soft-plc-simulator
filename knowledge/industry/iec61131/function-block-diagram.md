@@ -130,15 +130,15 @@ clobbered.
 
 ---
 
-## 7. Cycle handling - undocumented in the shipped docs
+## 7. Cycle handling - now documented in `docs/fbd-networks.md`
 
 If a network's dataflow graph has a cycle, the topological worklist stabilizes with some blocks
 never marked `done`; those remaining blocks are then evaluated **exactly once anyway**, reading
 whatever upstream values happen to be cached (an unresolved cyclic peer's output reads as `null`
 via `resolveInput`, since it hasn't been evaluated yet this pass). This guarantees the scan
 terminates but produces **one stale/undefined pass through the cycle per scan tick**, not an error
-and not a "solved" cyclic network. Neither `docs/iec61131/FUNCTION_BLOCK_DIAGRAM.md` nor
-`docs/fbd-networks.md` documents this behavior at all - flag it if extending either doc.
+and not a "solved" cyclic network. **Corrected 2026-08-07:** this is now documented in
+`docs/fbd-networks.md`'s "Dataflow cycles: one stale pass per scan" subsection.
 
 ---
 

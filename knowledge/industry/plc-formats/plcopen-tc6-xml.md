@@ -4,7 +4,7 @@ title: PLCopen TC6 XML
 domain: industry/plc-formats
 version: "2026-08"
 topics: [plcopen, tc6, xml, project-exchange-format, iec-61131-3, import]
-summary: Documents the PLCopen TC6 XML project-exchange schema's structure and dialect variance alongside this app's exact import support matrix - dialect-agnostic descendant parsing, the authoritative elementary-type table, and the corrected finding that FBD/SFC bodies translate for real today, not as an empty stub as the shipped feature doc still claims.
+summary: Documents the PLCopen TC6 XML project-exchange schema's structure and dialect variance alongside this app's exact import support matrix - dialect-agnostic descendant parsing, the authoritative elementary-type table, and the confirmed finding that FBD/SFC bodies translate for real today, not as an empty stub (docs/import/plcopen.md corrected 2026-08-07 to match).
 related:
   - knowledge:industry/plc-formats/index
   - knowledge:industry/plc-formats/rockwell-l5x
@@ -155,26 +155,20 @@ destination, an FB-call input pin unresolved or off the interface).
 
 ---
 
-## 7. Correction: FBD and SFC translate for real today, not as an empty stub
+## 7. FBD and SFC translate for real today, not as an empty stub (corrected 2026-08-07)
 
-**The shipped feature documentation for this import path (`docs/import/plcopen.md`) is stale on
-this point, and the correction matters enough to record here explicitly.** That document states
-(as of this writing) that an FBD or SFC POU is "not rendered into the app's own FBD/SFC editors
-yet" and always lands as an empty stub program with a warning, describing per-language graphical
-translation as future work.
-
-**The code has already shipped both.** `ir_to_project.dart`'s FBD arm calls the real per-network
-translator and adds a genuine `FunctionBlockDiagram` program (with populated blocks/wires/networks)
-whenever `translatedNetworkCount > 0` - only a POU where *every* network fails to translate still
-falls into the description-only empty-stub path the doc describes. The SFC arm behaves the same
-way at the whole-chart level: a genuine `SequentialFunctionChart` program is added whenever the
-chart translates at all; only a fully-untranslatable chart stubs.
+`ir_to_project.dart`'s FBD arm calls the real per-network translator and adds a genuine
+`FunctionBlockDiagram` program (with populated blocks/wires/networks) whenever
+`translatedNetworkCount > 0` - only a POU where *every* network fails to translate falls into the
+description-only empty-stub path. The SFC arm behaves the same way at the whole-chart level: a
+genuine `SequentialFunctionChart` program is added whenever the chart translates at all; only a
+fully-untranslatable chart stubs.
 
 **Net effect**: for PLCopen input specifically, FBD/SFC graphical bodies are materially more
-capable than the currently-shipped doc claims - most real-world FBD/SFC content, not just LD, comes
-in as an editable native program. The doc should be corrected to describe per-network/per-chart
-faithful-or-stub behavior (matching how LD is already documented) rather than a blanket "not
-translated yet."
+capable than a blanket "not translated yet" claim would suggest - most real-world FBD/SFC content,
+not just LD, comes in as an editable native program. `docs/import/plcopen.md` was corrected
+2026-08-07 to describe this per-network/per-chart faithful-or-stub behavior (matching how LD is
+already documented) instead of the earlier, stale "always an empty stub" description.
 
 This does **not** extend to the Rockwell L5X import path, where FBD/SFC genuinely are still an
 empty stub today - see [rockwell-l5x.md](./rockwell-l5x.md) §5 for why the same underlying

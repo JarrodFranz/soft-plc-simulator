@@ -92,11 +92,11 @@ Confirmed by `kLdBuiltinBlockTypes` and `executeRung`'s block dispatch:
 - **Custom FB call blocks**: `power[n.id] = inP` unconditionally - an FB instance call "never
   breaks the rung," regardless of what its outputs are.
 
-> `docs/iec61131/LADDER_LOGIC.md`'s "Supported Instructions" list names only
-> XIC/XIO/OTE/OTL/OTU/parallel-branches/TON/TOF. It omits compare blocks, math/MOVE blocks, `TP`,
-> `CTU`, `CTD`, `CTUD`, and custom-FB blocks entirely, even though the executor fully implements
-> all of them. This is a coverage gap in that doc, not a contradiction - nothing it says is wrong,
-> it's simply far short of what `ld_exec.dart` actually runs. Flag this if extending that doc.
+> **Corrected 2026-08-07:** `docs/iec61131/LADDER_LOGIC.md`'s "Supported Instructions" list
+> previously named only XIC/XIO/OTE/OTL/OTU/parallel-branches/TON/TOF - it omitted compare blocks,
+> math/MOVE blocks, `TP`, `CTU`, `CTD`, `CTUD`, edge contacts/coils, and custom-FB blocks entirely,
+> even though the executor fully implements all of them. The list now names every block type above,
+> matching `ld_exec.dart` and `kLdBuiltinBlockTypes`.
 
 ---
 

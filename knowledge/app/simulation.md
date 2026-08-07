@@ -51,9 +51,11 @@ int _fnv1a(String s) {
 `applySimRules(PlcProject p, List<SimRule> rules, int dtMs, SimRuntime rt)`
 (`sim_engine.dart:138-268`) runs every enabled rule unconditionally each scan (see
 [scan-engine.md](./scan-engine.md) §1 for where in the tick). `SimRule.behavior` is a string
-switched on eight cases - three more than `DECISIONS.md` ADR-008 lists (`pulse`, `ramp`,
-`integrate`, `delayedSet`, `setWhileCondition` only; `firstOrderLag`, `deadTime`, and `noise`
-were added later and the ADR text was never updated - treat the code, not the ADR, as current):
+switched on eight cases - three more than `DECISIONS.md` ADR-008's original decision text lists
+(`pulse`, `ramp`, `integrate`, `delayedSet`, `setWhileCondition` only). **Corrected 2026-08-07:**
+`firstOrderLag`, `deadTime`, and `noise` were added later; ADR-008 now carries a dated addendum
+noting the three additions (ADRs are historical records, so the original decision text is left
+unchanged) - treat the code, plus the addendum, as current:
 
 | Behavior | Semantics |
 |---|---|

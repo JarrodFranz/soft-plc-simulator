@@ -86,17 +86,23 @@ There are two equivalent ways to clear a fault and resume scanning:
    state immediately and resets the scan-time min/max stats for the next
    run.
 2. **`System.AlarmReset`** — the reserved `System` tag's one writable
-   control field. Any writer (HMI button, an external protocol write, or
-   program logic) can set `System.AlarmReset` to `true`. A background
-   supervisor poll (running independently of the scan loop, so it keeps
-   working even while the scan loop itself is halted by a fault) checks
-   this field roughly every 200 ms; if it is `true` while a fault is
-   active, the fault clears and the flag self-resets to `false` — a level
-   write behaves like a one-shot rising-edge reset, so each `true` write
-   triggers exactly one recovery. Because the supervisor runs independently
-   of the (potentially stopped) scan loop, `System.AlarmReset` can recover
-   a faulted controller purely from the outside (SCADA/HMI) without the
-   in-app Clear Fault button ever being touched.
+   control field. Any **in-app** writer (an HMI button, or program logic
+   calling `writePath` directly) can set `System.AlarmReset` to `true`.
+   This does **not** include external protocol writes: `isExternallyWritable`
+   (`mobile/lib/models/tag_write_gate.dart`) refuses any write whose root tag
+   is `System`, with no per-field carve-out, so every hosted protocol's write
+   handler refuses `System.AlarmReset` exactly as it would `System.Fault` —
+   the field is writable only from in-app UI/logic code, never from a SCADA/
+   HMI client connected over a hosted protocol. A background supervisor poll
+   (running independently of the scan loop, so it keeps working even while
+   the scan loop itself is halted by a fault) checks this field roughly
+   every 200 ms; if it is `true` while a fault is active, the fault clears
+   and the flag self-resets to `false` — a level write behaves like a
+   one-shot rising-edge reset, so each `true` write triggers exactly one
+   recovery. Because the supervisor runs independently of the (potentially
+   stopped) scan loop, `System.AlarmReset` can recover a faulted controller
+   from any in-app writer without the Clear Fault button ever being touched
+   — but only from inside the app, not from an external protocol client.
 
 Clearing a fault does **not** automatically resume Running — the operator
 (or logic) still restarts the scan loop explicitly, same as a normal

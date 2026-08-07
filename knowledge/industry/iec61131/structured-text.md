@@ -127,13 +127,14 @@ auto-bound to an instance tag) or from **LD** (`pinBindings` on a block node) - 
 program body. See [custom-function-blocks.md](./custom-function-blocks.md) and
 [function-block-diagram.md](./function-block-diagram.md).
 
-> **Documentation contradiction found (report this if you own `docs/iec61131/STRUCTURED_TEXT.md`):**
-> that file's own code sample shows `TON_1(IN := Motor_Run, PT := T#5s, Q => Timer_Done);` as if it
-> were valid ST executed by this engine. It is not - the ST parser has no call-statement grammar,
-> and the doc's own sibling file `FUNCTION_BLOCKS.md` states the opposite directly: *"ST has no
-> FB-call syntax in the app's subset, so the call lives in FBD."* The code (`st_exec.dart`) sides
-> with `FUNCTION_BLOCKS.md`. The ST doc's sample is not executable as written and should be
-> corrected or removed at the source.
+> **Corrected 2026-08-07:** `docs/iec61131/STRUCTURED_TEXT.md`'s own code sample previously showed
+> `TON_1(IN := Motor_Run, PT := T#5s, Q => Timer_Done);` as if it were valid ST executed by this
+> engine. It was not - the ST parser has no call-statement grammar, and the doc's own sibling file
+> `FUNCTION_BLOCKS.md` states the opposite directly: *"ST has no FB-call syntax in the app's
+> subset, so the call lives in FBD."* The code (`st_exec.dart`) sides with `FUNCTION_BLOCKS.md`.
+> The doc's sample now reads a timer's output back into a tag (`Timer_Done := TON_1.Q;`, a plain
+> assignment, no call syntax) and states the no-FB-call rule explicitly with a pointer to
+> `FUNCTION_BLOCKS.md`.
 
 ---
 

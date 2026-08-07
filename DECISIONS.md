@@ -89,6 +89,7 @@
 - **Decision**: A per-project list of **SimRules** (behaviours: `pulse`, `ramp`, `integrate`, `delayedSet`, `setWhileCondition`; AND-combined conditions with literal or tag operands) applied each scan by a pure engine, edited in a dedicated Simulated I/O screen.
 - **Rationale**: Rates are **per-second** (scan-speed independent); rules are visible, editable, and per-rule toggleable; manual forcing always overrides; the hardcoded physics migrated into default rules with behavior parity.
 - **Consequences**: Only rate/condition behaviours are expressible (no random jitter primitive); OR/grouped conditions deferred.
+- **Addendum (2026-08-07)**: Since accepted, three further behaviors shipped: `firstOrderLag` (exponential lag toward a source or fixed target), `deadTime` (pure transport-delay FIFO), and `noise` (uniform/gaussian/pink measurement noise plus an independent drift term) — bringing the total to eight `SimRule` behaviors (`mobile/lib/models/sim_engine.dart`). The "no random jitter primitive" consequence above is superseded by `noise`, which is a deterministic PRNG seeded from the rule's `id` (see `docs/simulation/PROCESS_SIMULATION.md`), not true jitter. OR/grouped conditions remain deferred.
 
 ---
 

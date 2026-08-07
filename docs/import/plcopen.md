@@ -57,25 +57,41 @@ PLCopen TC6 .xml file  --detect--> parse --> map -->  preview  -->  NEW project
   a POU with at least one translated rung is a real program, with any
   remaining stubbed rungs still called out by warning.
 
-## What's captured but not yet translated (FBD/SFC)
+## FBD and SFC POUs → real, translated diagrams
 
 A `<pou>` whose body is `<FBD>` or `<SFC>` (Function Block Diagram,
-Sequential Function Chart) is **not** rendered into the app's own FBD/SFC
-editors yet. Its graphical body (every element's type, position, and
-connections) is captured **losslessly** internally, but the program that
-lands in the new project is a **stub**: an empty
-`FunctionBlockDiagram`/`SequentialFunctionChart` program named after the
-original POU, with a description noting how many graphical elements were
-captured and that the body isn't translated yet. Each stub raises a
-**warning** in the import preview so it's never silently lossy-by surprise.
+Sequential Function Chart) is translated into the app's own FBD/SFC editors,
+the same way LD is — **faithful-or-stub**, at a different granularity per
+language:
 
-Re-importing the same file once a per-language graphical translator ships
-will turn these stubs into real, editable diagrams — the capture already
-holds everything a translator needs (node types, positions, and the
-connection graph, including each wire's **pin identity** — which
-`formalParameter` input/output pin of a multi-input block it attaches to),
-so no new import work will be required upstream of the translator when it
-lands.
+- **`<FBD>` → per-network translation.** Each weakly-connected component of
+  the diagram becomes one native `FbdNetwork` (built-in blocks, `TAG_INPUT`/
+  `TAG_OUTPUT`/`CONST` pseudo-blocks, custom-FB call routing, wire pin
+  identity). A network that fails to translate (an unsupported element type,
+  a negated pin, a compound expression, an unknown block type, an
+  unresolved pin) degrades to an empty network with an explanatory comment
+  and a warning — but the POU still lands as a real, editable program as
+  long as at least one network translated. See
+  `docs/iec61131/FUNCTION_BLOCK_DIAGRAM.md`'s "FBD import" section for the
+  exact support matrix.
+- **`<SFC>` → whole-chart translation.** The entire chart (steps, N-qualified
+  actions, linear/selection/simultaneous transitions, jump steps) becomes
+  one native `SequentialFunctionChart` program. Unlike FBD, this is
+  faithful-or-stub at the **whole-POU** level, not per-element: any
+  unsupported topology or condition anywhere in the chart (a wired
+  transition condition, a condition/action referencing a graphical body,
+  complex/unknown topology, no initial step) falls the entire POU back to a
+  stub; an unrepresentable step action alone degrades to a no-op with a
+  warning instead of stubbing the chart. See
+  `docs/iec61131/SEQUENTIAL_FUNCTION_CHART.md`'s "SFC import" section for
+  the exact support matrix.
+
+A POU whose graphical body translates to nothing usable still lands as a
+**stub** — an empty `FunctionBlockDiagram`/`SequentialFunctionChart` program
+named after the original POU, with a description noting how many graphical
+elements were captured. Every stub raises a **warning** in the import
+preview so it's never silently lossy-by-surprise, exactly like a fully-
+stubbed LD rung.
 
 ## Autodetect (no format picker)
 
@@ -125,10 +141,16 @@ graphical-stub/collision warnings in amber. Nothing is created until you tap
 
 ## Deferred (not in this release)
 
-- **FBD/SFC graphical translators.** Turning the captured FBD/SFC graph into
-  real editable FBD/SFC bodies (rather than a stub) — a later workstream,
-  re-importable against the same file once it ships. (Ladder Diagram already
-  has a per-rung translator; see above.)
+- **FBD negated pins, `inOutVariable`, `connector`/`continuation`, and
+  `label`/`jump`.** These specific FBD constructs have no native equivalent
+  yet and stub the network they appear in (per-network translation itself
+  has shipped; see above and `docs/DEFERRED.md`'s "FBD & SFC graphical
+  translators" section for the full, current list of narrower gaps).
+- **SFC stored/pulse/timed action qualifiers (S/R/P/L/D/SD/DS/SL), wired
+  transition conditions, and graphical (LD/FBD) transition/action bodies.**
+  Only the `N` (non-stored) action qualifier and inline/referenced-ST
+  conditions translate today (whole-chart translation itself has shipped;
+  see above and `docs/DEFERRED.md` for the full list).
 - **Other vendor formats.** Rockwell L5X, Siemens TIA Portal exports, and any
   other non-PLCopen dialect are not recognized yet — only PLCopen TC6 XML is
   autodetected today.

@@ -44,6 +44,30 @@ different network or a network is deleted) and by the demo below. This
 means a network's dependency graph is fully self-contained; the executor
 never has to look outside the current network to resolve an input.
 
+## Dataflow cycles: one stale pass per scan
+
+FBD is dataflow, and the standard, unqualified topology is acyclic — a
+block runs once every block feeding its input pins has already run within
+that network's pass. If a network's wiring **does** contain a cycle (a loop
+of blocks feeding each other, directly or through a chain), the executor
+does not detect, reject, or reroute it: the topological worklist resolves
+every block it can, and once no further progress is possible (the remaining
+blocks all have at least one still-unresolved dependency), each leftover
+block is evaluated **exactly once anyway**, reading whatever its cyclic
+peers' outputs happen to be cached as — `null` for any peer that hasn't run
+yet this pass. This guarantees the scan always terminates (no infinite
+loop, no hang), but it means a cyclic network does not "solve" to a
+converged value; it produces one stale/undefined pass through the loop per
+scan tick, every tick, indefinitely.
+
+Practical consequence: don't wire a cycle expecting iterative convergence
+(e.g. an algebraic loop solved to a fixed point) — this engine has no such
+solver. If a design genuinely needs feedback across one scan (not within
+one), route it explicitly through a tag write/read pair spanning two
+networks instead (see "Cross-network data flow" below) — that pattern is
+well-defined and scan-lag-free when the producer's network index precedes
+the consumer's.
+
 ## Cross-network data flow: through tags, not wires
 
 Since wires can't cross a network boundary, one network hands a value to

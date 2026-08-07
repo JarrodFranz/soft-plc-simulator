@@ -148,18 +148,19 @@ older project never opens without the newest status fields. Because `isExternall
 refusal is **root-name-based**, it refuses *every* path under `System.*` from an external
 protocol write - including `System.AlarmReset`, the one field described as writable.
 
-**Doc-vs-code note:** `docs/task-scheduling.md` (lines 88-99) states *"`System.AlarmReset` -
-the reserved `System` tag's one writable control field. Any writer (HMI button, an external
-protocol write, or program logic) can set `System.AlarmReset` to `true`."* The code does not
-support the "external protocol write" case: `isExternallyWritable` is gated on the root tag
-name alone, with no per-field carve-out, so any protocol handler consulting it (all of them,
-per §5) refuses a write to `System.AlarmReset` exactly as it would `System.Fault`. Grepping
-every `AlarmReset`-writing call site (`tag_inspector_dock.dart`, `memory_manager_screen.dart`,
-`workspace_shell.dart`) confirms `AlarmReset` is writable **only from in-app UI code**, which
-calls `writePath` directly and bypasses the protocol write-gate entirely -
-`system_tags.dart:76`'s own tag description, `'SoftPLC system status (read-only; AlarmReset
-writable)'`, is consistent with UI/local writability, not external. Treat the code as
-authoritative: `System.AlarmReset` cannot be set from any of the nine protocol hosts today.
+**Corrected 2026-08-07:** `docs/task-scheduling.md`'s "Clearing a fault" section previously
+claimed *"`System.AlarmReset` - the reserved `System` tag's one writable control field. Any
+writer (HMI button, an external protocol write, or program logic) can set `System.AlarmReset`
+to `true`."* The code does not support the "external protocol write" case: `isExternallyWritable`
+is gated on the root tag name alone, with no per-field carve-out, so any protocol handler
+consulting it (all of them, per §5) refuses a write to `System.AlarmReset` exactly as it would
+`System.Fault`. Grepping every `AlarmReset`-writing call site (`tag_inspector_dock.dart`,
+`memory_manager_screen.dart`, `workspace_shell.dart`) confirms `AlarmReset` is writable **only
+from in-app UI code**, which calls `writePath` directly and bypasses the protocol write-gate
+entirely - `system_tags.dart:76`'s own tag description, `'SoftPLC system status (read-only;
+AlarmReset writable)'`, is consistent with UI/local writability, not external. The doc now
+states this explicitly. Treat the code as authoritative: `System.AlarmReset` cannot be set from
+any of the nine protocol hosts today.
 
 ## 7. `HmiComponent` has no position field (CL-13)
 
