@@ -14,7 +14,15 @@ void main() {
     final actual = const JsonEncoder.withIndent('  ').convert(p.toJson());
     final expected =
         File('test/defaults/all_water_snapshot.json').readAsStringSync();
-    expect(actual, expected,
+    // Normalize line endings before comparing: a Windows checkout can
+    // rewrite the fixture's LF to CRLF (see .gitattributes in this
+    // directory, which now pins it to eol=lf as belt-and-suspenders). The
+    // byte-identity guarantee this test protects is about JSON *content*,
+    // not platform line endings, so strip \r from both sides — a genuine
+    // content difference still fails this comparison.
+    final actualNormalized = actual.replaceAll('\r\n', '\n');
+    final expectedNormalized = expected.replaceAll('\r\n', '\n');
+    expect(actualNormalized, expectedNormalized,
         reason: 'the water plant must be moved verbatim — no data changes');
   });
 }

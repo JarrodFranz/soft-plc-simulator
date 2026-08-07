@@ -1,0 +1,5 @@
+# Snapshot fixtures here are compared byte-for-byte against Dart's
+# JsonEncoder output (which always emits LF). Pin them to LF so Windows
+# checkouts (core.autocrlf=true) never rewrite them to CRLF and break the
+# comparison — see all_water_test.dart.
+*_snapshot.json text eol=lf
