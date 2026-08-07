@@ -2,7 +2,7 @@
 
 **Status:** design complete, ready to plan
 **Date:** 2026-08-07
-**Branch base:** `main` @ `2fdc6cc`
+**Branch base:** `main` @ `9a0338a`
 **Predecessors:** `2026-07-26-sfc-import-translator-design.md` (the neutral SFC
 translator), `2026-07-26-l5x-import-foundation-design.md`,
 `2026-08-04-l5x-fbd-import-design.md` (the immediately preceding sub-project,
@@ -11,6 +11,15 @@ whose conventions this one mirrors).
 ## Changelog
 
 - 2026-08-07 — initial design.
+- 2026-08-07 — updated after design review: unified endpoint classifier
+  (the "mixed convention" rule is **deleted**, not amended — §3), FBD-parity ID
+  gate rejecting negative/out-of-range raw `ID`s (§2), connector-adjacent
+  vs. step-separated nesting corrected (step-separated nesting **translates**
+  — §3/§9/§11), empty-body action degrade (§6), implementable pass order
+  1 → 2a → 3 → 2b → 4 (§2), 4-bit branch-emission decision table with cause
+  clauses on every `branch shape not representable` message (§3/§8), a
+  dialect-neutral poison-ordering invariant test plus a one-line coupling
+  comment in `sfc_translate.dart` (§9/§12), and assorted citation fixes.
 
 ---
 
@@ -56,9 +65,9 @@ SFC path (see §7).
 - **AOI SFC logic.** Studio 5000 does not permit SFC as an Add-On Instruction
   `Logic` language (AOIs accept Ladder / FBD / Structured Text only). L5X SFC
   translation therefore targets **routines only**. `_l5xAois`' existing `else`
-  arm — which emits `AOI "$name" logic is SFC — interface imported, logic not
-  yet translated.` — is **kept as defensive dead-path handling** and gets no
-  SFC branch. `keepsEnableParams` stays `false` for a non-RLL/non-FBD AOI, so
+  arm — whose literal message is `AOI "$name" logic is ${logicType ?? '?'} —
+  interface imported, logic not yet translated.` — is **kept as defensive
+  dead-path handling** and gets no SFC branch. `keepsEnableParams` stays `false` for a non-RLL/non-FBD AOI, so
   `EnableIn`/`EnableOut` keep their historic skip. `docs/import/L5X.md`'s
   "SFC AOI logic" bullet is **corrected** to state the Studio 5000 restriction
   rather than implying the feature is merely unshipped (§10).
@@ -66,11 +75,15 @@ SFC path (see §7).
   this repo confirms or denies it. It is safe either way — if a real export
   ever carries an SFC-bodied AOI, the dead path still produces a clean
   interface-only FB + info warning, exactly as today.)*
-- Any change to `sfc_translate.dart`, `import_ir.dart`, `ir_to_project.dart`,
-  `models/sfc_exec.dart`, or `models/project_model.dart`. **Zero.**
+- Any **behavioural** change to `sfc_translate.dart`, and any change at all to
+  `import_ir.dart`, `ir_to_project.dart`, `models/sfc_exec.dart`, or
+  `models/project_model.dart`. The single edit to `sfc_translate.dart` is a
+  **one-line comment** above the step→step edge scan recording that import
+  builders depend on it preceding every warning emission (§9/§12) — zero
+  behaviour change, zero signature change.
 - New `ImportReport` fields. `translatedSfcCount`, `stubbedSfcCount` and
   `sfcStubReasons` already exist, are dialect-agnostic, and are already
-  rendered by `screens/import_xml_preview.dart:108`.
+  rendered by `screens/import_xml_preview.dart:106-108`.
 
 ---
 
@@ -100,13 +113,21 @@ SFC path (see §7).
    `translateSfcBody` + mapper pair — identical to the PLCopen path, and the
    reason the parser's own warning-severity message is deleted (§7).
 5. **Annotations are dropped and counted.** `<TextBox>` / `<Attachment>` carry
-   no logic; they are ignored at parse with one info warning per routine,
-   mirroring `_l5xFbdBody`'s `_kL5xFbdAnnotationElements` handling.
-6. **Synthetic ids are routine-wide and negative.** Malformed/duplicate L5X
-   `ID`s and the synthesized branch connectors draw from one descending
-   negative counter per routine, so they can never collide with each other nor
-   with a real (non-negative) L5X `ID`. Mirrors `_l5xFbdBody`'s routine-wide
-   `malformedId` counter.
+   no logic; they are ignored at parse with one info warning per routine.
+   The existing FBD constant `_kL5xFbdAnnotationElements` is **renamed to
+   `_kL5xAnnotationElements`** and shared by both builders (pure rename, no
+   member change), and the SFC builder **reuses the FBD message shape
+   verbatim** — `'$ownerLabel: $ignoredCount element(s) ignored
+   (${ignoredKinds.join(', ')}).'` (`l5x_parser.dart:741-745`) — so the
+   assertable substring is `element(s) ignored`, identical across dialects.
+6. **Synthetic ids are routine-wide, negative, and unique.** Malformed,
+   out-of-range, duplicate and absent L5X `ID`s, the synthesized branch
+   connectors (§3) and the poison node (§4) all draw from **one** descending
+   counter per routine, starting at `-1` — mirroring `_l5xFbdBody`'s
+   routine-wide `malformedId` counter. Because a raw `ID` is only ever
+   accepted when it is **non-negative and ≤ `_kMaxL5xElementId`** (§2), no
+   synthetic id can collide with a real one, and because there is exactly one
+   counter, no two synthetic ids can collide with each other.
 7. **Pure, deterministic, never-throws.** The builder returns a body for every
    input, including malformed XML fragments. Document order is the tiebreaker
    everywhere, so two runs over one file produce byte-identical IR.
@@ -165,6 +186,14 @@ POUs and no graphically-wired transition condition, so `SfcBody.refBodies` and
 ST` paths are therefore dead for L5X input — kept in the translator (PLCopen
 needs them), asserted unreachable by an L5X test.
 
+**`SfcNodeKind.jump` is likewise never emitted.** Logix expresses a loop-back
+as an ordinary `<DirectedLink>` to an earlier element, not as a distinct jump
+element, so the builder has nothing to map onto it and the translator's
+`jump to unknown step` path is dead for L5X input. This is an §8 invariant
+(`no node of kind jump appears in an L5X-built `SfcBody``) precisely because a
+future "unknown element → jump with an impossible name" shortcut is the
+tempting-but-wrong alternative §4 rejects.
+
 ---
 
 ## §2 — The builder: `_l5xSfcBody`
@@ -188,54 +217,118 @@ ids, which are absolute. A duplicate `ID` across containers is therefore a
 defect, handled by the duplicate-ID rule below rather than papered over — the
 direct application of CL-19 to this file.
 
-**Pass 1 — elements.** For each child element of each `<SFCContent>`:
+### The ID gate (mirrors `_l5xFbdBody` verbatim)
 
-1. `<TextBox>` / `<Attachment>` → increment `ignoredCount`, record the tag in
-   `ignoredKinds`, `continue`. (One info warning at the end, deduped by kind.)
-2. Resolve the element's id:
-   - `ID` absent or not parseable as an int → **synthetic negative id** +
-     info warning (`malformed ID`) + **poison**.
-   - `ID` already claimed by an earlier element → the *later* claimant gets a
-     **synthetic negative id** (the raw id is never re-registered, so earlier
-     links keep pointing at the first claimant) + info warning
-     (`duplicate ID`) + **poison**.
-     *Deviation from the FBD table, deliberate:* FBD raises duplicate-ID to
-     `WarningSeverity.warning` because there the stub is per-network and the
-     routine may still translate, so the collision needs its own loud message.
-     Here the stub is whole-POU and the loud message already exists twice
-     (translator + mapper), so the breadcrumb stays `info` per north-star 4.
-3. Dispatch on tag: `Step` / `Transition` → node (below); `Branch` → deferred
-   to pass 3 (§3), registering `ID` and each `<Leg ID>` in the endpoint tables;
-   `Leg` encountered as a top-level child (malformed) → poison; anything else
-   ID-bearing → **poison** + info warning `no representable equivalent`.
-4. `<Step>` → `SfcNode(kind: step, …)`; collect its actions (§6); check its
-   timing attributes (§5).
-   `<Transition>` → `SfcNode(kind: transition, condition: …)` (§6).
+Every element's raw `ID` runs through the **same four-way rejection** the FBD
+builder uses at `l5x_parser.dart:528-536`:
+
+```dart
+final parsed = int.tryParse(el.getAttribute('ID') ?? '');
+final duplicate =
+    parsed != null && parsed >= 0 && assignedByRawId.containsKey(parsed);
+final int localId;
+if (parsed == null || parsed < 0 || parsed > _kMaxL5xElementId || duplicate) {
+  localId = malformedId--;          // synthetic, negative, unique
+  // + info warning (`malformed ID` / `duplicate ID`) + POISON
+} else {
+  localId = parsed;
+  assignedByRawId[parsed] = localId;
+}
+```
+
+`_kMaxL5xFbdId` (`l5x_parser.dart:182`, `1 << 31`) is **renamed to
+`_kMaxL5xElementId`** and shared by both builders (pure rename).
+
+**Why `parsed < 0` is not optional here, and is in fact a correctness gate
+rather than hygiene.** A `<Step ID="-1">` would otherwise register `localId ==
+-1` in the *same* namespace as the descending synthetic counter that §3's
+branch connectors and §4's poison node draw from. With one valid branch in the
+chart, `-1` is exactly `divId` of the first branch, and the collision does
+**not** poison anything: `_build`'s `byId` map is last-write-wins (the
+connector shadows the step), while `stepNodes` is built by filtering
+`body.nodes` (so **both** survive), and `succ`/`pred` merge the two nodes'
+edges under one key. The result is a chart that translates **cleanly, with zero
+warnings, as the wrong logic** — the precise CL-19 failure mode this file is
+supposed to be immune to. The gate is what makes north-star 6's uniqueness
+claim true.
+
+**Duplicate-ID severity — deviation from the FBD table, deliberate.** FBD
+raises duplicate-ID to `WarningSeverity.warning` because there the stub is
+per-network and the routine may still translate, so the collision needs its own
+loud message. Here the stub is whole-POU and the loud message already exists
+twice (translator + mapper), so the breadcrumb stays `info` per north-star 4.
+
+### Pass structure
+
+Branch-incident link classification (§3) needs **both** a complete element/kind
+table **and** the full link list before it can decide anything, and connector
+edges must be emitted before the remaining edges so a single ordered edge list
+falls out. So the builder runs five phases, not four. Within every phase,
+**document order** (of elements, then of the `<DirectedLink>` list) is the sole
+tiebreaker, which is what makes the output byte-identical run to run.
+
+**Pass 1 — register elements.** For each child element of each `<SFCContent>`:
+
+1. `<TextBox>` / `<Attachment>` (`_kL5xAnnotationElements`) → increment
+   `ignoredCount`, record the tag in `ignoredKinds`, record the raw `ID` in
+   `annotationIds`, `continue`. Registering the id is what lets pass 2a
+   distinguish an annotation anchor from a dangling link.
+2. Run the ID gate above.
+3. Dispatch on tag:
+   - `<Step>` → `SfcNode(kind: step, …)`; collect its actions (§6); check its
+     timing attributes (§5).
+   - `<Transition>` → `SfcNode(kind: transition, condition: …)` (§6).
+   - `<Branch>` → **no node yet**; register `ID` in `branchById` (with its
+     `BranchType`/`BranchFlow`) and each direct `<Leg ID>` child in
+     `legToBranch`, running the ID gate on each leg id too.
+   - `<Leg>` appearing as a *top-level* `<SFCContent>` child (i.e. not under a
+     `<Branch>`) → **poison** + info warning `no representable equivalent`.
+   - anything else ID-bearing → **poison** + info warning
+     `no representable equivalent`, naming the raw tag and id.
+4. Record `kindById[localId]` (`step` / `transition` / `branch` / `leg` /
+   `annotation`) — pass 2a's classifier reads it.
 
 Nodes are appended in document order; `initial`, `name`, `x`, `y` are read as
 per §1. `name` prefers `Operand`, falls back to `Name`, else `''` (the
 translator then synthesizes `s<localId>`).
 
-**Pass 2 — links.** For each `<DirectedLink>`, resolve `FromID` and `ToID`
-through the endpoint resolver (§3) and emit one `SfcEdge`. An endpoint that
-resolves to nothing (absent, unparseable, or naming no registered element/leg)
-→ info warning `dangling link` + **poison**, and the edge is **still emitted**
-against a synthetic id so nothing is silently dropped.
+**Recursion policy — flat, one level.** Pass 1 walks the **direct** children of
+each `<SFCContent>`, plus the direct `<Leg>` children of a `<Branch>`. It does
+**not** descend further. A `<Branch>` nested as a child of a `<Leg>` element
+(rather than as a sibling wired by links) is therefore never registered, so any
+link naming it resolves to nothing → `dangling link` → **poison**. That is an
+acceptable outcome (visible stub, never silent), and it is stated here rather
+than left implicit because "does the walk recurse?" is the first question an
+implementer asks. Recursive registration is a §11 deferred row, gated on a real
+export showing Logix actually nests that way.
+
+**Pass 2a — collect and classify links.** Read every `<DirectedLink>` into a
+list in document order. For each, resolve both endpoints through §3's unified
+classifier. Links **incident to a branch or leg id** are bucketed into that
+branch's `divIn` / `divOut` / `convIn` / `convOut` sets and held back; all
+others are kept as ordinary pending edges. An endpoint that resolves to nothing
+→ info warning `dangling link` + **poison**, with the edge **still emitted**
+against a fresh synthetic id so nothing is silently dropped.
 
 **One exception, deliberate:** a link whose endpoint names a **dropped
-annotation** (`<TextBox>`/`<Attachment>`) is discarded whole, with **no**
+annotation** (its id is in `annotationIds`) is discarded whole, with **no**
 `dangling link` warning and **no** poison. Logix anchors an annotation to the
 element it comments on, and that anchor is a documentation relationship, not a
 control-flow edge — poisoning a chart because it is well commented would be
-absurd. This requires pass 1 to register annotation ids in a separate
-`annotationIds` set rather than forgetting them.
+absurd.
 
-**Pass 3 — branch synthesis** (§3), which appends the synthesized connector
-nodes and rewrites nothing already emitted.
+**Pass 3 — synthesize branch connectors** (§3): decide emission per side from
+the bucketed sets, run shape validation, append the connector `SfcNode`s and
+the edges that touch them.
 
-**Pass 4 — finalize.** Emit the annotation info warning if
-`ignoredCount > 0`; if the poison flag is set, append the poison node + its
-self-edge (§4). Return
+**Pass 2b — emit remaining edges.** Append the pending non-branch edges from
+pass 2a, in their original document order. (Numbered `2b` because it is the
+back half of pass 2, deferred only so connector edges lead the list; nothing
+in `translateSfcBody` depends on edge order, so this is presentation and
+determinism, not semantics.)
+
+**Pass 4 — finalize.** Emit the annotation info warning if `ignoredCount > 0`;
+if the poison flag is set, append the poison node + its self-edge (§4). Return
 `SfcBody(nodes:, edges:, actions:, refBodies: const {}, graphicalRefs: const {})`.
 
 ---
@@ -273,7 +366,8 @@ fact the synthesis must get right.
 ### Allocation
 
 For each `<Branch ID=B BranchType=T>`, reserve **two** synthetic negative ids
-up front: `divId(B)` and `convId(B)`. Kinds:
+from the routine-wide counter (north-star 6): `divId(B)` and `convId(B)`.
+Kinds:
 
 - `T == "Selection"` → `selDiv` / `selConv`
 - `T == "Simultaneous"` → `simDiv` / `simConv`
@@ -287,84 +381,127 @@ both work without a mode switch. A `BranchFlow` that contradicts the derived
 topology is recorded as an info warning (`branch flow mismatch`) and the
 derived topology wins — it is the thing the links actually say.
 
-### Endpoint resolution
+### The unified endpoint classifier
 
-One function drives everything. For a `<DirectedLink FromID="f" ToID="t">`:
+There is **one** rule, applied always. There is deliberately **no** "primary
+encoding vs. fallback encoding" mode switch and **no** mixed-convention
+detection — those were an earlier design and are wrong, because in the paired
+encoding a branch's *trunk* links must name the `<Branch>` id while its *leg*
+links name `<Leg>` ids, so **every paired branch mixes both forms by
+construction** and a mixed-convention poison rule would stub the common case
+(including this spec's own headline fixture).
 
-```
-resolveFrom(id) = id is a Branch B      -> convId(B)   // leaving the branch structure
-                | id is a Leg of B      -> divId(B)    // divergence feeds this leg's head
-                | id is a Step/Transition -> that node's id
-                | otherwise             -> dangling (poison)
+For a `<DirectedLink FromID="f" ToID="t">`, each endpoint is classified
+independently:
 
-resolveTo(id)   = id is a Branch B      -> divId(B)    // entering the branch structure
-                | id is a Leg of B      -> convId(B)   // this leg's tail feeds convergence
-                | id is a Step/Transition -> that node's id
-                | otherwise             -> dangling (poison)
-```
+| Endpoint names… | Role |
+|---|---|
+| a `<Step>` or `<Transition>` | that node's `localId`; the link is an ordinary edge on that side |
+| a `<Leg>` of branch `B`, as `FromID` | `divId(B)` — the divergence feeds this leg's head |
+| a `<Leg>` of branch `B`, as `ToID` | `convId(B)` — this leg's tail feeds the convergence |
+| a `<Branch>` `B` | **the other endpoint's node kind decides** — see the kind table below |
+| an annotation | link discarded whole (§2), no warning, no poison |
+| nothing | `dangling link` → **poison** |
 
-This is deliberately direction-asymmetric, and it is what makes leg membership
-a non-problem: **the builder never needs to know which elements are inside a
-leg** — only each leg's head and tail, and those fall straight out of the two
-`Leg`-endpoint rules. It also makes nesting fall out for free (a leg whose head
-is another `<Branch>` produces a `divId(B1) → divId(B2)` edge, which the shape
-check below rejects).
+**Leg endpoints resolve by direction** (rows 2–3). This is unambiguous: a leg
+id can only ever mean "the branch-side end of this leg", and which end is
+fixed by the arrow.
 
-**Fallback convention.** If, for a given branch, **no `Leg` id appears as a
-link endpoint** (i.e. the export wires legs to the `<Branch>` id directly),
-classify each branch-incident link by the **other endpoint's element kind**,
-using the branch type's expected pattern from the table above:
+**Branch endpoints resolve by the other endpoint's kind** (row 4), using the
+branch type's expected pattern from the translator table:
 
-| Branch type | link direction | other endpoint is a… | role |
+| Branch type | link direction | other endpoint is a… | Role |
 |---|---|---|---|
-| Selection | `ToID == B` | `Step` | trunk-in → `divId(B)` inflow |
-| Selection | `ToID == B` | `Transition` | leg tail → `convId(B)` inflow |
-| Selection | `FromID == B` | `Transition` | leg head → `divId(B)` outflow |
-| Selection | `FromID == B` | `Step` | trunk-out → `convId(B)` outflow |
-| Simultaneous | `ToID == B` | `Transition` | trunk-in → `divId(B)` inflow |
-| Simultaneous | `ToID == B` | `Step` | leg tail → `convId(B)` inflow |
-| Simultaneous | `FromID == B` | `Step` | leg head → `divId(B)` outflow |
-| Simultaneous | `FromID == B` | `Transition` | trunk-out → `convId(B)` outflow |
+| Selection | `ToID == B` | `Step` | trunk-in → `divIn` |
+| Selection | `ToID == B` | `Transition` | leg tail → `convIn` |
+| Selection | `FromID == B` | `Transition` | leg head → `divOut` |
+| Selection | `FromID == B` | `Step` | trunk-out → `convOut` |
+| Simultaneous | `ToID == B` | `Transition` | trunk-in → `divIn` |
+| Simultaneous | `ToID == B` | `Step` | leg tail → `convIn` |
+| Simultaneous | `FromID == B` | `Step` | leg head → `divOut` |
+| Simultaneous | `FromID == B` | `Transition` | trunk-out → `convOut` |
+| either | either | another `<Branch>` or `<Leg>` id — i.e. connector-adjacent nesting, since both sides resolve to connectors with nothing between | **poison**, cause `branch is directly adjacent to another branch` |
+| either | either | unresolvable | `dangling link` → **poison** |
 
-The kinds are unambiguous in both branch types, which is why this fallback is
-sound rather than a guess. A branch that mixes both conventions (some links via
-`Leg` ids, some via the `Branch` id) → **poison** + info warning
-`mixed branch link convention`.
+**Why the kind rule and not a direction rule for `<Branch>` endpoints.** The
+naive alternative — "`ToID == B` means div, `FromID == B` means conv", the
+mirror of the leg rule — agrees with the kind rule on **every trunk link in
+both encodings**, so it costs nothing there. But it is strictly worse on a
+**leg-role link expressed via the branch id** (a converge-only `<Branch>` with
+no `<Leg>` children, or any exporter that wires leg tails to `B` directly):
+there the direction rule would classify a leg tail as `convIn`… and a leg
+*head* link `FromID == B → T1` as `convOut`, wiring `conv → T1` — a silently
+wrong chart that still passes every shape check. The kind rule reads
+`FromID == B → Transition` as a **leg head** and yields `div → T1`, which is
+right. Since the kind rule dominates everywhere and ties nowhere, it is the
+only rule.
 
-### Emission
+The kinds are unambiguous in both branch types (selection diverges into
+transitions and converges out to a step; simultaneous is the mirror), which is
+what makes this a decision rather than a guess.
 
-After all links are classified, for each branch side:
+**Leg membership is never computed.** Only each leg's head and tail matter, and
+both fall straight out of the table. The builder has no notion of "the elements
+inside leg 2".
 
-- **both an inflow and an outflow** → emit the connector node and its edges.
-- **neither** → drop the node silently, **provided the branch's other side was
-  emitted**. This is the whole point of deriving emission from topology: a
-  `Diverge`-only `<Branch>` element leaves the conv side empty, and a
-  `Converge`-only one leaves the div side empty. Dropping an entirely unused
-  synthetic node loses nothing.
-- **both sides empty** — a `<Branch>` with no incident links at all → the
-  element carries structure the chart never wires up → **poison** + info
-  warning `branch shape not representable`. Silently dropping it would erase a
-  declared branch, which north-star 3 forbids.
-- **exactly one of the two** → structurally broken (a divergence with an inflow
-  but no legs, or legs with nowhere to go) → **poison** + info warning
-  `branch shape not representable`. The node is still emitted so the element
-  count stays honest.
+### Emission — the 4-bit decision table
+
+Pass 2a leaves each branch with four booleans: `divIn`, `divOut`, `convIn`,
+`convOut` (each "is this set non-empty"). Emission is a total function of
+those 4 bits — every one of the 16 combinations is named, so there is no
+"provided the other side was emitted" hand-waving:
+
+| `divIn` | `divOut` | `convIn` | `convOut` | Shape | Outcome |
+|:-:|:-:|:-:|:-:|---|---|
+| 1 | 1 | 1 | 1 | paired diverge + converge (the common case) | emit **both** connectors |
+| 1 | 1 | 0 | 0 | diverge-only `<Branch>` (`BranchFlow="Diverge"`, or legs that never re-merge) | emit **div only**; conv dropped |
+| 0 | 0 | 1 | 1 | converge-only `<Branch>` (`BranchFlow="Converge"`) | emit **conv only**; div dropped |
+| 1 | 1 | 1 | 0 | legs re-merge but the merge goes nowhere | emit both, **poison**, cause `convergence has no outlet` |
+| 1 | 1 | 0 | 1 | a merge outlet with nothing merging into it | emit both, **poison**, cause `convergence has no inlet` |
+| 1 | 0 | 1 | 1 | divergence with no legs | emit both, **poison**, cause `divergence has no legs` |
+| 0 | 1 | 1 | 1 | legs with no source | emit both, **poison**, cause `divergence has no inlet` |
+| 1 | 0 | 0 | 0 | trunk enters, nothing leaves | emit div, **poison**, cause `divergence has no legs` |
+| 0 | 1 | 0 | 0 | legs with no source | emit div, **poison**, cause `divergence has no inlet` |
+| 0 | 0 | 1 | 0 | legs merge into nothing | emit conv, **poison**, cause `convergence has no outlet` |
+| 0 | 0 | 0 | 1 | outlet with nothing merging | emit conv, **poison**, cause `convergence has no inlet` |
+| 1 | 0 | 1 | 0 | both sides half-wired | emit both, **poison**, cause `divergence has no legs` |
+| 1 | 0 | 0 | 1 | both sides half-wired | emit both, **poison**, cause `divergence has no legs` |
+| 0 | 1 | 1 | 0 | both sides half-wired | emit both, **poison**, cause `divergence has no inlet` |
+| 0 | 1 | 0 | 1 | both sides half-wired | emit both, **poison**, cause `divergence has no inlet` |
+| 0 | 0 | 0 | 0 | a `<Branch>` no link touches | emit **neither**, **poison**, cause `branch has no links` |
+
+Reading of the table: a side is **emitted** whenever either of its bits is set,
+**dropped** when both are clear *and* the other side is well-formed, and any
+side with exactly one bit set is a defect. Poisoned branches still emit their
+connectors so the element count stays honest. Where two causes could apply, the
+**divergence-side cause wins** (deterministic, and it is the upstream defect —
+the one a user fixes first).
+
+**Loop-back leg** (a leg tail wired to an upstream step instead of back into
+the branch) is not a special case: that link never touches a branch/leg id, so
+it is an ordinary edge, and the branch's own bits land on row 2 (diverge-only)
+if no leg closes, or row 1 if some do.
 
 ### Shape validation (before emission)
 
-For each emitted connector, assert the neighbour kinds from the translator
-table; violations → **poison** + info warning
-`branch shape not representable` naming the branch `ID` and the offending
-neighbour:
+For each **emitted** connector, assert the neighbour kinds from the translator
+table; violations → **poison** + info warning naming the branch `ID`, the
+offending neighbour, and the cause:
 
-- `selDiv`: **exactly one** inflow, and it is a `step`; every outflow is a
-  `transition`.
-- `selConv`: every inflow is a `transition`; **exactly one** outflow, and it is
-  a `step`.
-- `simDiv`: **exactly one** inflow, and it is a `transition`; every outflow is
-  a `step`.
-- `simConv`: every inflow is a `step`; **exactly one** outflow, and it is a
-  `transition`.
+| Connector | Assertion | Cause clause on failure |
+|---|---|---|
+| `selDiv` | exactly one inflow, a `step` | `selection divergence inlet is a <kind>, expected step` / `selection divergence has N inlets, expected 1` |
+| `selDiv` | every outflow is a `transition` | `selection leg head is a <kind>, expected transition` |
+| `selConv` | every inflow is a `transition` | `selection leg tail is a <kind>, expected transition` |
+| `selConv` | exactly one outflow, a `step` | `selection convergence outlet is a <kind>, expected step` |
+| `simDiv` | exactly one inflow, a `transition` | `simultaneous divergence inlet is a <kind>, expected transition` |
+| `simDiv` | every outflow is a `step` | `simultaneous leg head is a <kind>, expected step` |
+| `simConv` | every inflow is a `step` | `simultaneous leg tail is a <kind>, expected step` |
+| `simConv` | exactly one outflow, a `transition` | `simultaneous convergence outlet is a <kind>, expected transition` |
+
+Every message is `branch shape not representable (<cause>)`, so the stable
+substring stays assertable while each §9 case pins its own cause and one defect
+can never be mistaken for another.
 
 Why validate here rather than letting `translateSfcBody` catch it: the
 translator's gates are reached **only from a transition's pred/succ walk**. A
@@ -374,7 +511,7 @@ the steps behind it would become unreachable islands that vanish without a
 word. Validating the shape at synthesis time is what makes north-star 3 total
 for branches. The translator's own gates remain as a backstop.
 
-### Cases that are explicitly fine
+### Cases that are explicitly fine (they translate)
 
 - **Single-leg branch.** A `selDiv` with one outflow transition, or a `simDiv`
   with one outflow step, translates as an ordinary linear path (`upstreamSteps`
@@ -382,17 +519,29 @@ for branches. The translator's own gates remain as a backstop.
   faithful, if pointless, chart.
 - **Selection branch with unequal leg lengths.** Irrelevant: only heads and
   tails are used.
-- **Loop-back leg** (a leg tail wired to an upstream step rather than back into
-  the branch). It never becomes a `convId` inflow; it is just an ordinary edge.
-  The conv side then has no inflow and is dropped or poisoned per the emission
-  rule above depending on whether *any* leg closes.
+- **Step-separated nested branches — these TRANSLATE, and correctly.** A branch
+  whose leg contains a step which then opens a second branch is the ordinary
+  way real charts nest, and the IR handles it with no special support: the
+  inner branch's `selDiv` sees that intervening step as its single inflow,
+  every shape check passes, and `upstreamSteps`/`downstreamSteps` resolve each
+  transition through exactly one connector to exactly one step. Nothing about
+  nesting per se is unsupported. §9 pins this with a happy-path test precisely
+  because "nested branches stub" is the intuitive-but-false claim.
+- **Loop-back leg.** See the emission table.
 
 ### Cases that stub (visibly)
 
-Nested branches (`div→div`, `conv→conv`, `div→conv` edges), a leg head of the
-wrong kind, more than one trunk-in or trunk-out, an unrecognized `BranchType`,
-a mixed link convention, a branch side with exactly one of inflow/outflow, and
-a `<Branch>` with no incident links at all.
+**Connector-adjacent** branches — a leg head or tail that is *itself* a
+`<Branch>`, producing a `div→div`, `conv→conv` or `div→conv` edge with no step
+or transition between the two connectors. `upstreamSteps`/`downstreamSteps`
+only see through **one** connector (their `selDiv`/`simConv` arms require every
+predecessor to be a `step`, and a connector is not), so a connector chain has
+no representable resolution. Caught by the classifier's connector row and by
+shape validation; cause `branch is directly adjacent to another branch`.
+
+Also stubbing: a leg head or tail of the wrong kind, more than one trunk-in or
+trunk-out, an unrecognized `BranchType`, any of the defect rows of the emission
+table, and a `<Branch>` no link touches.
 
 ---
 
@@ -415,6 +564,12 @@ final pid = malformedId--;                       // synthetic negative
 nodes.add(SfcNode(localId: pid, kind: SfcNodeKind.step, name: '#unrepresentable'));
 edges.add(SfcEdge(fromLocalId: pid, toLocalId: pid));   // step -> step
 ```
+
+`malformedId` is the **one** routine-wide counter of north-star 6, initialised
+to `-1` and post-decremented — exactly `_l5xFbdBody`'s `var malformedId = -1;`
+(`l5x_parser.dart:449`). §3's `divId`/`convId` and §2's malformed/duplicate ids
+draw from this same counter, which is why no two synthetic ids can collide;
+§2's `parsed < 0` gate is what stops a raw `ID` from colliding with them.
 
 **Why this is airtight.** `_build`'s step→step edge scan
 (`sfc_translate.dart:50-55`) is **unconditional over `body.edges`** — it runs
@@ -503,6 +658,18 @@ condition (`AND`? replace?), which needs a real corpus to decide.
    single implicit `N`-qualified inline action.
 3. Else, no actions (`actionSt` = `''`).
 
+**An action with an empty or absent body** must not vanish. `SfcActInline('')`
+reaches `_actionSt`, whose `if (s.text.isNotEmpty)` guard drops it **without a
+warning** — the one silent-loss hole left in the otherwise-loud action path,
+and one the builder must close because only the builder knows the action
+existed. So: an `<Action>` whose `<Body><STContent>` is missing, empty, or
+whitespace-only is **not** emitted as an `SfcActionAssoc`; instead the builder
+emits one `WarningSeverity.info` naming the step and the action, assertable
+substring `action has no body`. This is a **per-action degrade, not a poison** —
+an empty action is a documentation stub in the source chart, not a structural
+defect, and taking down a 40-step chart for one would violate north-star 1's
+action-granularity rule.
+
 **Non-`N` qualifiers** (`S`, `R`, `P`, `L`, `D`, `SD`, `DS`, `SL`) reach the
 translator untouched and hit its existing per-action degrade: skipped, chart
 still translates, one info warning with the verbatim substring
@@ -550,11 +717,15 @@ count-carrying warning") is rewritten to match the FBD sentence next to it.
 
 **Message-count contract after this change**, asserted by a regression test:
 
-| Outcome | Messages |
+All three rows are scoped to **messages naming this POU** — an import carrying
+other routines legitimately produces warnings of its own, so the tests filter
+on the POU name rather than counting the whole list:
+
+| Outcome | Messages naming this POU |
 |---|---|
-| SFC routine translates | zero warning-severity messages; only builder/translator `info` breadcrumbs, if any |
-| SFC routine stubs | exactly **two** warning-severity messages — `translateSfcBody`'s `SFC POU "…": not translated (<detail>).` and the mapper's `POU "…" (SequentialFunctionChart): graphical body not yet translated (N elements captured) …` — identical to the PLCopen path |
-| `parseL5x` alone, any SFC routine | **zero** warning-severity messages from the SFC arm |
+| SFC routine translates | **zero** warning-severity messages naming this POU; only builder/translator `info` breadcrumbs, if any |
+| SFC routine stubs | exactly **two** warning-severity messages naming this POU — `translateSfcBody`'s `SFC POU "…": not translated (<detail>).` and the mapper's `POU "…" (SequentialFunctionChart): graphical body not yet translated (N elements captured) …` — identical to the PLCopen path |
+| `parseL5x` alone, any SFC routine | **zero** warning-severity messages naming this POU |
 
 ---
 
@@ -567,18 +738,35 @@ fragment.
 
 | Situation | Severity | Assertable substring | Consequence |
 |---|---|---|---|
-| `<TextBox>` / `<Attachment>` present | info | `annotation elements ignored` | dropped; one warning per routine, kinds deduped |
-| Unknown ID-bearing element (`<Stop>`, `<SbrRet>`, `<JSR>`, future) | info | `no representable equivalent` | **poison** → whole-POU stub |
-| `ID` absent or unparseable | info | `malformed ID` | synthetic negative id + **poison** |
+| `<TextBox>` / `<Attachment>` present | info | `element(s) ignored` (FBD message shape, reused verbatim) | dropped; one warning per routine, kinds deduped |
+| Unknown ID-bearing element (`<Stop>`, `<SbrRet>`, `<JSR>`, top-level `<Leg>`, future) | info | `no representable equivalent` | **poison** → whole-POU stub |
+| `ID` absent, unparseable, **negative**, or **> `_kMaxL5xElementId`** | info | `malformed ID` | synthetic negative id + **poison** |
 | `ID` reused by a later element | info | `duplicate ID` | later claimant gets a synthetic id (raw id never re-registered) + **poison** |
 | `<DirectedLink>` endpoint names nothing | info | `dangling link` | edge kept against a synthetic id + **poison** |
 | `<DirectedLink>` endpoint names a dropped annotation | — | (none) | link discarded whole; no poison — an annotation anchor is documentation, not control flow |
 | `BranchType` absent/unrecognized | info | `branch type` | **poison**; no connectors synthesized |
-| Branch side with inflow xor outflow; wrong neighbour kind; nesting; >1 trunk; `<Branch>` with no incident links | info | `branch shape not representable` | **poison** |
-| Branch mixes `Leg`-id and `Branch`-id link conventions | info | `mixed branch link convention` | **poison** |
+| Any branch defect: an emission-table defect row, a wrong-kind leg head/tail, >1 trunk-in or trunk-out, connector-adjacent nesting, or a `<Branch>` no link touches | info | `branch shape not representable (` **+ a cause clause** | **poison** |
 | `BranchFlow` contradicts derived topology | info | `branch flow mismatch` | derived topology wins; no stub |
 | Step `Preset` / `LimitHigh` / `LimitLow` meaningful | info | `timing attribute` | dropped; chart still translates |
 | `<Action IsBoolean="true">` | info | `boolean action` | action skipped; chart still translates |
+| `<Action>` with empty/absent body | info | `action has no body` | action skipped; chart still translates |
+
+**Cause clauses** carried inside `branch shape not representable (<cause>)` —
+each is asserted by its own §9 case, so no two branch defects share a
+message:
+
+`divergence has no inlet` · `divergence has no legs` ·
+`convergence has no inlet` · `convergence has no outlet` ·
+`branch has no links` · `branch is directly adjacent to another branch` ·
+`selection divergence inlet is a <kind>, expected step` ·
+`selection divergence has N inlets, expected 1` ·
+`selection leg head is a <kind>, expected transition` ·
+`selection leg tail is a <kind>, expected transition` ·
+`selection convergence outlet is a <kind>, expected step` ·
+`simultaneous divergence inlet is a <kind>, expected transition` ·
+`simultaneous leg head is a <kind>, expected step` ·
+`simultaneous leg tail is a <kind>, expected step` ·
+`simultaneous convergence outlet is a <kind>, expected transition`
 
 **Inherited verbatim from `translateSfcBody` (unchanged, no L5X-specific text)**
 
@@ -598,9 +786,20 @@ fragment.
 
 **Invariants asserted by test**
 
+- **`localId` uniqueness.** No two `SfcNode`s in a built body share a
+  `localId` — across real ids, malformed/duplicate synthetics, branch
+  connectors and the poison node alike. This is the invariant Critical 2 exists
+  to protect: a shared `localId` makes `_build`'s `byId` last-write-wins while
+  `stepNodes`/`succ`/`pred` keep both, which translates cleanly as wrong logic.
+  Asserted directly (`nodes.map((n) => n.localId).toSet().length ==
+  nodes.length`) on every fixture in the suite, not just the malformed ones.
+- **Every synthetic `localId` is negative and every real one is in
+  `[0, _kMaxL5xElementId]`** — the two ranges cannot overlap, which is what
+  makes the uniqueness invariant hold by construction rather than by luck.
 - No negative `localId` ever reaches a `SfcStep.id` / `SfcTransition.id`: a
   poisoned body always stubs, and branch connectors never become steps or
   transitions. (Guards against a program id like `Main_Seq_s-3`.)
+- **No node of kind `jump`** appears in an L5X-built `SfcBody` (§1).
 - A poisoned body emits **zero** translator info warnings (the edge scan
   precedes all of them).
 - `SfcBody.refBodies` and `.graphicalRefs` are empty for every L5X input.
@@ -623,35 +822,93 @@ fixtures written to §1's asserted schema)
 - `Operand` → `name`; `X`/`Y` → `x`/`y`; missing `Operand` → `''`.
 
 *Branch synthesis (§3) — the heart of the suite*
-- Selection branch, 2 legs, paired diverge+converge → `selDiv` + `selConv`
-  nodes; edges `step→selDiv`, `selDiv→t1`, `selDiv→t2`, `t3→selConv`,
-  `t4→selConv`, `selConv→step`.
-- Simultaneous branch, 2 legs → `simDiv` + `simConv` with the transition/step
-  positions swapped per the §3 table.
-- Diverge-only `<Branch>` (no leg tails, no trunk-out) → only the div node
-  emitted, conv node dropped, **no** poison.
-- Converge-only `<Branch>` → mirror image.
-- Fallback convention: same charts wired via the `<Branch>` `ID` with no `Leg`
-  ids as endpoints → identical IR.
-- Mixed convention within one branch → poison.
+
+- **Selection branch, 2 legs, paired diverge+converge.** Elements: `S0` →
+  branch `B` (legs `L1`,`L2`) → legs open with `T1`,`T2`, close with `T3`,`T4`
+  → `S5`. Expected `selDiv` + `selConv` nodes and exactly these **6** edges:
+  `S0→selDiv`, `selDiv→T1`, `selDiv→T2`, `T3→selConv`, `T4→selConv`,
+  `selConv→S5`.
+- **Simultaneous branch, 2 legs — written out in full** (not "swapped per the
+  table"): `S0` → `T0` → branch `B` → legs open with `S1`,`S2`, close with
+  `S3`,`S4` → `T5` → `S6`. Expected `simDiv` + `simConv` and exactly these
+  **6** branch edges: `T0→simDiv`, `simDiv→S1`, `simDiv→S2`, `S3→simConv`,
+  `S4→simConv`, `simConv→T5` (plus the ordinary `S0→T0`, `T5→S6`, and the
+  intra-leg edges). Translates to one `parallelFork` and one `parallelJoin`.
+- **Encoding equivalence.** The same two charts wired via the `<Branch>` `ID`
+  for the leg links (no `<Leg>` ids as endpoints anywhere) must produce the
+  **same edge multiset over `(fromKind, toKind)` pairs, modulo connector
+  `localId` values** — not literally "identical IR", since connector ids are
+  allocation-order-dependent and the fixtures differ in element count. A
+  small helper that projects `edges` onto `(kindOf(from), kindOf(to))` and
+  compares as a multiset is what makes this assertable; both encodings must
+  also produce the same `SfcTranslation` (same step/transition ids, kinds and
+  `fromStepIds`/`toStepIds` sets).
+- **`<Branch>` with no `<Leg>` children at all**, all four roles wired through
+  the branch id — legal under the branch-id form — translates identically to
+  the leg-id form. (Directly pins the deletion of the "no Leg id ⇒ fallback
+  mode" gate: there is no mode, so this fixture needs no special handling.)
+- **Both forms in one branch** (trunk via `B`, legs via `L1`/`L2` — i.e. the
+  paired encoding's natural shape) → **translates**. This is the fixture the
+  deleted mixed-convention rule would have poisoned; it exists to make that
+  regression impossible to reintroduce silently.
+- Diverge-only `<Branch>` (emission row 2) → div node only, conv dropped, no
+  poison, chart translates.
+- Converge-only `<Branch>` (row 3) → mirror image.
 - Single-leg branch → connectors emitted, no warning, translates.
-- Nested branch (a leg head that is another `<Branch>`) → poison.
-- Selection leg headed by a `<Step>` (wrong kind) → poison.
-- Two trunk-ins on one branch side → poison.
-- `<Branch>` with `<Leg>` children but no incident `<DirectedLink>` → poison.
+- **Step-separated nested selection branches → TRANSLATE** (happy path, not a
+  stub): outer selection branch whose leg 1 contains `T1 → S1 → ` an inner
+  selection branch. Assert `translated == true`, both `selDiv`s present, and
+  every transition resolving to exactly one upstream and one downstream step.
+  Pins Major 3.
+- **Connector-adjacent nesting → poison**, cause `branch is directly adjacent
+  to another branch`: a leg head that is *itself* a `<Branch>`, producing a
+  `selDiv→selDiv` edge with nothing between.
+- `<Branch>` nested as a *child of a `<Leg>`* (not a sibling) → unregistered by
+  the flat walk → `dangling link` → poison. Pins the §2 recursion policy.
+- Selection leg headed by a `<Step>` (wrong kind) → poison, cause
+  `selection leg head is a step, expected transition`.
+- Simultaneous leg headed by a `<Transition>` → poison, cause
+  `simultaneous leg head is a transition, expected step`.
+- Two trunk-ins on one branch side → poison, cause
+  `selection divergence has 2 inlets, expected 1`.
+- One case per **defect row of the emission table** (13 rows), each asserting
+  its own cause clause: `divergence has no inlet`, `divergence has no legs`,
+  `convergence has no inlet`, `convergence has no outlet`, `branch has no
+  links`. Including the all-zero row (`<Branch>` with `<Leg>` children but no
+  incident `<DirectedLink>`).
+- One case per **shape-validation row** (8 rows), each asserting its own cause
+  clause — the four wrong-inlet/outlet-kind causes and the four wrong-leg-
+  head/tail-kind causes of §8's list, plus the arity cause. Together with the
+  row above this makes every §8 cause clause reachable from a named test, so no
+  two branch defects can be confused for one another.
 - `BranchType` missing / `"Parallel"` → poison, substring `branch type`.
 - `BranchFlow="Diverge"` on a paired branch → info `branch flow mismatch`,
   both connectors still emitted, no stub.
 
-*Malformed input*
-- `<Step>` with no `ID`, with `ID="abc"`, and two elements sharing `ID="7"` →
-  synthetic negative ids, correct substring per case, poison in all three; the
-  **first** claimant of a duplicated id keeps the raw id and its inbound links.
+*Malformed input — the ID gate (§2)*
+- `<Step>` with no `ID`; with `ID="abc"`; **with `ID="-1"`**; **with
+  `ID="99999999999"`** (> `_kMaxL5xElementId`); and two elements sharing
+  `ID="7"` → synthetic negative id in all five, `malformed ID` /
+  `duplicate ID` substring per case, poison in all five. The **first** claimant
+  of a duplicated id keeps the raw id and its inbound links.
+- **The `ID="-1"` collision case, explicitly:** a chart containing both
+  `<Step ID="-1">` and one well-formed branch must **stub**, and the built body
+  must satisfy the `localId`-uniqueness invariant. Without the `parsed < 0`
+  gate this fixture translates cleanly as the wrong chart with zero warnings —
+  it is the regression test for Critical 2 and must fail loudly if the gate is
+  ever removed.
 - `<DirectedLink ToID="999">` naming nothing → `dangling link`, edge kept.
-- `<Stop>` / `<SbrRet>` / `<Frobnicate ID="9">` → `no representable
-  equivalent` naming the raw tag and id.
+- `<Stop>` / `<SbrRet>` / `<Frobnicate ID="9">` / a top-level `<Leg>` →
+  `no representable equivalent` naming the raw tag and id.
 - Two `<SFCContent>` containers merging; a cross-container duplicate id →
   duplicate-ID path.
+
+*Empty and absent content*
+- `<Routine Type="SFC">` with **no** `<SFCContent>`, and with an **empty**
+  `<SFCContent/>` → an empty body, **not** a poisoned one: the stub reason must
+  be `no-initial` (`chart has no steps`) and the message count exactly the
+  two of §7. Guards against a "when in doubt, poison" drift that would
+  mislabel an empty routine as a topology defect.
 
 *Poison-mechanism invariants (§4)*
 - Any poisoned body: `translateSfcBody(...).translated == false`,
@@ -660,10 +917,12 @@ fixtures written to §1's asserted schema)
 - Poison fires even when the poisoned element is on no path at all (isolated
   `<Stop>` with no links).
 - Exactly one poison node regardless of how many defects were found.
+- `localId` uniqueness and the "no `jump` node" invariant (§8) asserted over
+  **every** fixture in the file via a shared helper, not per-test.
 
 *Annotations*
-- `<TextBox>` + `<Attachment>` → not nodes, one info warning,
-  `annotation elements ignored`.
+- `<TextBox>` + `<Attachment>` → not nodes, one info warning, substring
+  `element(s) ignored`, kinds deduped and listed.
 - A `<DirectedLink>` anchored to a `<TextBox>` → link discarded, **no**
   `dangling link` warning, **no** poison, chart still translates. (Guards the
   §2 exception against a naive "unknown endpoint ⇒ poison" refactor.)
@@ -672,6 +931,11 @@ fixtures written to §1's asserted schema)
 - `Qualifier="S"` → chart still translates, `actionSt` omits it, translator's
   `N only` warning present.
 - `IsBoolean="true"` → skipped, `boolean action`.
+- **`<Action>` with an absent `<Body>`, and with a whitespace-only
+  `<STContent>`** → skipped, one info warning per action naming step + action,
+  substring `action has no body`, chart still **translates** (no poison).
+  Pins Major 4 — without it the action vanishes silently inside `_actionSt`'s
+  `isNotEmpty` guard.
 - `Preset="0"` → **no** warning; `Preset="5000"` and
   `PresetUsesExpr="true"` → one `timing attribute` warning each, naming the
   step.
@@ -681,6 +945,29 @@ fixtures written to §1's asserted schema)
   == WarningSeverity.warning)` is **empty**; after `mapImportedProject`,
   exactly two warning-severity messages exist for that POU, matching §7's
   table. Pins the deleted parser warning against reintroduction.
+
+**Modified: `mobile/test/import/sfc_translate_test.dart`** — one **dialect-
+neutral** invariant test, added here rather than in the L5X file because the
+property belongs to the translator, not to a dialect:
+
+> *"a body with a step self-edge stubs `complex-topology` with exactly one
+> warning and zero infos — import builders depend on this scan preceding every
+> warning"*
+
+Construct an `SfcBody` directly (no parser): one self-edged step, plus a
+non-`N` action and an unnamed-initial step that *would* each emit an info
+warning if the edge scan did not pre-empt them. Assert `translated == false`,
+`stubReason == 'complex-topology'`, `warnings.length == 1`, and that the single
+warning is `WarningSeverity.warning`. This is the guard that makes §4's
+mechanism safe to depend on: reorder `_build` and this test fails, in the file
+the reordering happens in.
+
+**Modified: `mobile/lib/import/sfc_translate.dart`** — one **comment line**
+above the step→step edge scan naming the dependency (`// Import builders
+(l5x_parser's SFC poison node) depend on this scan preceding every warning
+emission below — see docs/.../2026-08-07-l5x-sfc-import-design.md §4.`).
+Comment-only: no behaviour, signature, or output change, so north-star 2's
+zero-change reuse still holds for everything that matters.
 
 **Modified: `mobile/test/import/l5x_parser_test.dart`**
 Only the test **named** `routines -> program POUs (ST body; RLL/FBD/SFC
@@ -710,9 +997,11 @@ before assuming no other expectation moves.
 
 **Backward-compatibility sweep.** Full `flutter test` from `mobile/`, plus
 `flutter analyze` clean. Every PLCopen SFC test (`sfc_body_test.dart`,
-`sfc_translate_test.dart`, `import_sfc_e2e_test.dart`), every L5X test, and
-`corpus_import_test.dart` must be byte-identical in outcome — the only
-non-parser file touched is `l5x_parser.dart`.
+`sfc_translate_test.dart` — apart from its one *added* invariant test —
+`import_sfc_e2e_test.dart`), every L5X test, and `corpus_import_test.dart` must
+be byte-identical in outcome. The only behavioural source change is
+`l5x_parser.dart`; `sfc_translate.dart` receives a comment line and nothing
+else.
 
 ---
 
@@ -767,7 +1056,8 @@ non-parser file touched is `l5x_parser.dart`.
 | `IsBoolean` actions | later | Skipped with an info warning. Needs a set-on-activate / reset-on-deactivate action model the native `SfcStep` does not have. |
 | Non-`N` action qualifiers, L5X side | later | Rides the existing cross-dialect row (`S`/`R`/`P`/`L`/`D`/`SD`/`DS`/`SL` degrade to no-op); listed here so the L5X matrix is self-contained. |
 | SFC-bodied AOIs | later | Believed impossible in Studio 5000; the defensive interface-only path stays. Revisit only if a real export contradicts it. |
-| Nested branches | later | Poisoned (whole-POU stub). Representing a branch inside a branch needs connector-chaining support in `translateSfcBody`, which is out of scope for a parser sub-project. |
+| **Connector-adjacent / chained branches** | later | Only *connector-adjacent* branches stub — a leg head or tail that is itself a `<Branch>`, giving a `div→div`/`conv→conv`/`div→conv` edge. **Step-separated nesting already translates** and needs nothing (§3). Chaining would need `upstreamSteps`/`downstreamSteps` to see through more than one connector, which is a `translateSfcBody` change and out of scope for a parser sub-project. |
+| Recursive `<SFCContent>` walk | later | Pass 1 is flat (direct children of `<SFCContent>`, plus a `<Branch>`'s direct `<Leg>` children). A `<Branch>` nested *inside* a `<Leg>` element is unregistered → `dangling link` → visible stub. Make the walk recursive if a real export shows Logix nests that way. |
 
 ---
 
@@ -775,18 +1065,20 @@ non-parser file touched is `l5x_parser.dart`.
 
 1. **§1 and §3 are asserted, not verified.** Specifically: whether one
    `<Branch>` element spans both divergence and convergence, and whether
-   `<Leg ID>` values appear as `<DirectedLink>` endpoints. §3's dual-convention
-   design (Leg-endpoint primary, kind-based fallback) plus topology-derived
-   emission is built to absorb both plausible encodings — but a *third*
-   encoding would invalidate the crux.
+   `<Leg ID>` values appear as `<DirectedLink>` endpoints. §3's unified
+   classifier (leg endpoints by direction, branch endpoints by the other
+   endpoint's kind) plus the topology-derived emission table is built to absorb
+   both plausible encodings *without a mode switch* — but a *third* encoding
+   would invalidate the crux.
 2. **The poison mechanism depends on statement ordering inside
    `translateSfcBody`.** Its guarantee — one warning, `complex-topology`, no
    stray infos — holds because the step→step edge scan sits above every
-   warning-emitting statement in `_build`. Nothing in `sfc_translate.dart`
-   documents or enforces that ordering. §9's poison-invariant tests are the
-   only guard; a reviewer should decide whether a comment in
-   `sfc_translate.dart` naming the L5X dependency is worth the "zero changes"
-   deviation (this spec says no — a test that fails loudly beats a comment).
+   warning-emitting statement in `_build`. This is now guarded on **both**
+   sides: a dialect-neutral invariant test lives in `sfc_translate_test.dart`
+   (so a reordering fails in the file being reordered, not in a distant L5X
+   test), and a one-line comment in `sfc_translate.dart` names the dependency.
+   A reviewer should still confirm that comment-plus-test is the right cost —
+   it is the one deviation from "zero changes to `sfc_translate.dart`".
 3. **Whole-POU stubbing may be too coarse for real Logix charts.** A single
    `<Stop>` or one unrecognized element takes down a 40-step chart. That is the
    established SFC contract and the honest one, but if the corpus follow-up
@@ -805,17 +1097,19 @@ green base, and tasks 3–4 harden and prove it.
 
 | # | Task | Model · Effort |
 |---|---|---|
-| 1 | `_l5xSfcBody` core: container walk, element dispatch, ids (malformed/duplicate), steps, transitions, conditions, directed links, annotations; the `_l5xRoutines` SFC arm swap + parser-warning deletion; the `l5x_parser_test.dart` rename + the grep sweep for other SFC expectations. Linear-chart parser tests. | opus · medium |
-| 2 | **Branch → div/conv synthesis (§3)**: allocation, endpoint resolver, both link conventions, topology-derived emission, shape validation, nesting/degenerate/trunk-count cases. Full branch test matrix. | **opus · high** |
-| 3 | The never-silent surface (§4/§5/§6): poison node + its invariants, `<Stop>`/unknown elements, dangling links, step timing gate, boolean actions, non-`N` degrades; the warning-severity conformance suite (exact substrings from §8) and the double-warning regression test. | sonnet · medium |
+| 1 | `_l5xSfcBody` core: container walk, pass 1 element registration, **the full ID gate** (absent / unparseable / negative / out-of-range / duplicate) with the `_kMaxL5xFbdId` → `_kMaxL5xElementId` and `_kL5xFbdAnnotationElements` → `_kL5xAnnotationElements` renames, steps, transitions, conditions, pass 2a/2b links, annotations; the `_l5xRoutines` SFC arm swap + parser-warning deletion; the `l5x_parser_test.dart` rename + the grep sweep for other SFC expectations. Linear-chart and ID-gate parser tests (incl. the `ID="-1"` collision regression). | opus · medium |
+| 2 | **Branch → div/conv synthesis (§3)**: allocation, the **unified endpoint classifier** (leg-by-direction, branch-by-other-endpoint-kind — one rule, no mode switch), the 4-bit emission decision table, shape validation with cause clauses, connector-adjacent vs. step-separated nesting, degenerate/trunk-count cases. Full branch test matrix incl. the encoding-equivalence multiset comparison and the step-separated-nesting **happy path**. | **opus · high** |
+| 3 | The never-silent surface (§4/§5/§6): poison node + its invariants (uniqueness, no-`jump`), `<Stop>`/unknown elements, dangling links, annotation anchors, step timing gate, boolean actions, empty-body actions, non-`N` degrades; the warning-severity conformance suite (exact substrings + cause clauses from §8), the empty-`<SFCContent>` → `no-initial` case, and the double-warning regression test. Plus the `sfc_translate_test.dart` dialect-neutral invariant test and the `sfc_translate.dart` coupling comment. | sonnet · medium |
 | 4 | `import_l5x_sfc_e2e_test.dart` (parse → map → scan, selection + simultaneous + stub document) and the full-suite backward-compatibility sweep + `flutter analyze`. | opus · medium |
 | 5 | Docs (§10): `docs/import/L5X.md`, `docs/DEFERRED.md`, `knowledge/industry/plc-formats/rockwell-l5x.md` §5 + front-matter + matrix, `docs/iec61131/SEQUENTIAL_FUNCTION_CHART.md` L5X subsection. | sonnet · low |
 
-**Files touched (implementation)** — exactly one:
-`mobile/lib/import/l5x_parser.dart`.
+**Files touched (implementation)**: `mobile/lib/import/l5x_parser.dart` (all
+behaviour) and `mobile/lib/import/sfc_translate.dart` (**one comment line**,
+task 3).
 
 **Files touched (tests)**: `mobile/test/import/l5x_parser_sfc_test.dart` (new),
 `mobile/test/import/import_l5x_sfc_e2e_test.dart` (new),
+`mobile/test/import/sfc_translate_test.dart` (one added invariant test),
 `mobile/test/import/l5x_parser_test.dart` (rename only).
 
 **Files touched (docs)**: the four in §10.
