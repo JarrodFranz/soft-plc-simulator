@@ -5,6 +5,7 @@ import 'ld_graph.dart';
 import 'ld_monitor.dart';
 import 'tag_resolver.dart';
 import 'fb_exec.dart';
+import 'fbd_exec.dart';
 
 /// Prev-scan state for edge contacts and pulse coils, keyed by
 /// "program|rungIndex|nodeId".
@@ -91,7 +92,8 @@ const List<String> kLdBuiltinBlockTypes = [
 /// Executes every LadderLogic program in [p], rungs top-to-bottom, once.
 /// Writes are immediately visible to later rungs (seal-in works).
 void executeLdPrograms(PlcProject p, int dtMs, LdExecRuntime rt,
-    {Set<String>? only, Set<String>? readOnly, LdMonitor? monitor}) {
+    {Set<String>? only, Set<String>? readOnly, LdMonitor? monitor,
+    FbdRuntime? fbdRt}) {
   for (final prog in p.programs) {
     if (prog.language != 'LadderLogic') {
       continue;
@@ -104,7 +106,7 @@ void executeLdPrograms(PlcProject p, int dtMs, LdExecRuntime rt,
         if (readOnly == null || !readOnly.contains(path)) {
           _forceAwareWrite(p, path, v);
         }
-      }, monitor: monitor, readOnly: readOnly);
+      }, monitor: monitor, readOnly: readOnly, fbdRt: fbdRt);
     }
   }
 }
@@ -117,7 +119,8 @@ void executeLdPrograms(PlcProject p, int dtMs, LdExecRuntime rt,
 /// custom-FB call's body so an FB coil is gated exactly like a program coil.
 void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
     LdExecRuntime rt, void Function(String path, dynamic value) write,
-    {LdMonitor? monitor, LdScope? scope, Set<String>? readOnly}) {
+    {LdMonitor? monitor, LdScope? scope, Set<String>? readOnly,
+    FbdRuntime? fbdRt}) {
   // EVERY tag path this rung touches goes through `sp`. With no scope it is
   // the identity, so program-rung execution is byte-identical to before this
   // feature; inside an FB body it maps the FB's own var names into the
@@ -440,13 +443,15 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
             // The instance name is scoped too: a nested call's instance var
             // lives inside the outer instance ('Inner' -> 'A1.Inner'), which
             // also keeps its 'fb:<path>' runtime keys disjoint.
-            // This rung's own dtMs + runtime flow into the FB body: a ladder
+            // This rung's own dtMs + runtimes flow into the FB body: a ladder
             // body's timers advance with the scan and its edge/pulse state
-            // persists (keys are 'fb:<instance>'-prefixed, so they can never
-            // collide with this program's rung keys). Nested AOI-in-AOI
-            // recursion reuses the same runtime for the same reason.
+            // persists, and an FBD-bodied FB's timers/counters/edges live in
+            // the scan's [fbdRt] (keys are 'fb:<instance>'-prefixed, so they
+            // can never collide with this program's rung keys). Nested
+            // AOI-in-AOI recursion reuses the same runtimes for the same
+            // reason.
             final outputs = executeFbInstance(p, fb, sp(n.variable), inputs,
-                dtMs: dtMs, ldRt: rt, readOnly: readOnly);
+                dtMs: dtMs, ldRt: rt, fbdRt: fbdRt, readOnly: readOnly);
             outputs.forEach((name, value) {
               final tag = n.pinBindings[name];
               if (tag != null && tag.isNotEmpty && value != null) {
@@ -530,13 +535,13 @@ void executeRung(PlcProject p, String progName, LdRung rung, int dtMs,
 /// Placeholder rungs (rails + one wire) execute as harmless no-ops. Never
 /// throws. (The ladder analog of `runScopedStBody` in st_exec.dart.)
 void runScopedLdBody(PlcProject p, List<LdRung> rungs, LdScope scope, int dtMs,
-    LdExecRuntime rt, {Set<String>? readOnly}) {
+    LdExecRuntime rt, {Set<String>? readOnly, FbdRuntime? fbdRt}) {
   final progKey = 'fb:${scope.instancePath}';
   for (final rung in rungs) {
     executeRung(p, progKey, rung, dtMs, rt, (path, v) {
       if (readOnly == null || !readOnly.contains(path)) {
         _forceAwareWrite(p, path, v);
       }
-    }, scope: scope, readOnly: readOnly); // inherited by nested FB calls
+    }, scope: scope, readOnly: readOnly, fbdRt: fbdRt); // inherited by nested FB calls
   }
 }

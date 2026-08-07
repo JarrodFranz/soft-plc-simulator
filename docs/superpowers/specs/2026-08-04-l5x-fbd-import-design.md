@@ -6,6 +6,12 @@
 
 ## Changelog
 
+- **2026-08-07** — Task 9 fix-wave (final whole-branch review, Minor #3):
+  added the duplicate-raw-ID-on-one-sheet row to the §8 severity table
+  (`WarningSeverity.warning`, substring `"duplicate ID"`). This case was
+  implemented during the Task 5 fix round but the spec's error-handling
+  table was never updated to match; the row above documents post-approval,
+  shipped behavior rather than a new design decision.
 - **2026-08-07** — freshness review: fixed a test-behavior inversion (§7/§9),
   reworked the element whitelist into an ignore/keep split with `FeedbackWire`
   and `JSR`/`SBR`/`Ret` handling (§4/§8/§9), corrected the R2 import premise,
@@ -590,6 +596,7 @@ FbImportResult mapImportedFbs(List<ImportedPou> pous, {
 | Any other unrecognized element with an `ID` (`<JSR>`, `<SBR>`, `<Ret>`, future unknowns) | Kept as a node, `elementType` = raw tag name → component stubs (`unsupported-element`) |
 | `<FeedbackWire>` | Mapped to `IrConnection` exactly like `<Wire>` (same attributes); a feedback loop it creates hits the existing dataflow-cycle fallback below, not a special case |
 | Malformed/absent `ID` | Unique negative synthetic id → that component stubs (`unsupported-element`) |
+| Duplicate raw `ID` reused on the same sheet | Second-and-later claimant given a synthetic id → that component stubs (`unsupported-element`) + `WarningSeverity.warning` warning naming the duplicate ids (substring `"duplicate ID"`) |
 | Multiple wires into one input pin | Existing `claimedInputSlots` gate → `unresolved-pin` |
 | Dataflow cycle inside an FB body | `_runFbdBody`'s existing cycle fallback evaluates once with cached values; scan always terminates |
 | FBD FB that (cyclically) calls itself | `_kMaxFbCallDepth` returns `{}` beyond depth 16 |

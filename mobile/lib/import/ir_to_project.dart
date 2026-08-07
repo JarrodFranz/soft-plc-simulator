@@ -124,7 +124,8 @@ ImportResult mapImportedProject(ImportedProject ir,
   // name instead of silently falling back to a scalar default. The registry
   // + rename map also feed the LD translator further down so custom-FB calls
   // route to the right definition.
-  final fbRes = mapImportedFbs(ir.pous, structs: structs, dutNames: dutNames, warnings: warnings);
+  final fbRes = mapImportedFbs(ir.pous, structs: structs, dutNames: dutNames,
+      warnings: warnings, dialect: ir.dialect);
   final fbTypeNames = fbRes.renameMap.values.toSet();
 
   // scratch2 knows every struct (including nested ones) and FB definition, so
@@ -186,10 +187,13 @@ ImportResult mapImportedProject(ImportedProject ir,
   var stubbedRungCount = 0;
   final unsupportedLdBlockTypes = <String>{};
   final ldStubReasons = <String, int>{};
-  var translatedFbdNetworkCount = 0;
-  var stubbedFbdNetworkCount = 0;
-  final unsupportedFbdBlockTypes = <String>{};
-  final fbdStubReasons = <String, int>{};
+  // AOI FBD bodies translated by `mapImportedFbs` are FBD networks too — seed
+  // the FBD counters with them so the preview's EXISTING FBD fields cover both
+  // program routines and AOI bodies (no new report fields, no new preview UI).
+  var translatedFbdNetworkCount = fbRes.translatedFbdNetworkCount;
+  var stubbedFbdNetworkCount = fbRes.stubbedFbdNetworkCount;
+  final unsupportedFbdBlockTypes = <String>{...fbRes.unsupportedFbdBlockTypes};
+  final fbdStubReasons = <String, int>{...fbRes.fbdStubReasons};
   var translatedSfcCount = 0;
   var stubbedSfcCount = 0;
   final sfcStubReasons = <String, int>{};
@@ -301,8 +305,21 @@ ImportResult mapImportedProject(ImportedProject ir,
       if (tr.translatedNetworkCount > 0) {
         // Merge custom-FB instance tags with the SAME sanitize + dedup + node-
         // retarget loop the LD arm uses, but retargeting FbdBlock.tagBinding.
-        // Only blocks whose type is a registered FB may be retargeted (a
-        // TAG_INPUT/CONST binding that coincidentally matches must NOT be).
+        //
+        // ORIGINAL tagBinding -> the call block(s) that named it, indexed ONCE
+        // BEFORE any retarget. Rescanning tr.blocks per instance tag would let
+        // tag N — whose original name happens to equal the name tag N-1 was
+        // just renamed to — drag N-1's block onto N's tag, leaving two blocks
+        // sharing one FB instance and N-1's tag bound to nothing. Indexing up
+        // front pins every block to the name it was BORN with. Only blocks
+        // whose type is a registered FB are indexed (a TAG_INPUT/CONST binding
+        // that coincidentally matches must NOT be retargeted).
+        final byBinding = <String, List<FbdBlock>>{};
+        for (final b in tr.blocks) {
+          if (fbRes.registry.containsKey(b.type)) {
+            (byBinding[b.tagBinding] ??= <FbdBlock>[]).add(b);
+          }
+        }
         for (final it in tr.instanceTags) {
           final original = it.name;
           var name = _sanitizeIdentifier(original);
@@ -322,10 +339,8 @@ ImportResult mapImportedProject(ImportedProject ir,
             name = renamed;
           }
           if (name != original) {
-            for (final b in tr.blocks) {
-              if (fbRes.registry.containsKey(b.type) && b.tagBinding == original) {
-                b.tagBinding = name;
-              }
+            for (final b in byBinding[original] ?? const <FbdBlock>[]) {
+              b.tagBinding = name;
             }
           }
           used.add(name);

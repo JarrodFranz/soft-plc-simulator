@@ -4,7 +4,7 @@ title: Rockwell L5X
 domain: industry/plc-formats
 version: "2026-08"
 topics: [rockwell, l5x, rslogix5000, studio-5000, aoi, rll, add-on-instruction, import]
-summary: Documents the Rockwell L5X (RSLogix5000Content) project-exchange schema's structure alongside this app's exact import support matrix - the RLL compile instruction set, real shipped AOI/RLL-Logic-AOI execution, and the confirmed still-unshipped state of L5X FBD and SFC routine translation.
+summary: Documents the Rockwell L5X (RSLogix5000Content) project-exchange schema's structure alongside this app's exact import support matrix - the RLL compile instruction set, real shipped AOI/RLL-Logic-AOI execution, real shipped FBD routine and FBD-Logic-AOI execution, and the confirmed still-unshipped state of L5X SFC routine translation.
 related:
   - knowledge:industry/plc-formats/index
   - knowledge:industry/plc-formats/plcopen-tc6-xml
@@ -20,12 +20,12 @@ learnings: [CL-17]
 > **Origin:** the Rockwell L5X (`RSLogix5000Content`) project-exchange schema as exported by
 > Studio 5000 / RSLogix 5000, distilled against this app's parser
 > (`mobile/lib/import/l5x_parser.dart`), RLL compiler (`mobile/lib/import/rll_compile.dart`),
-> FB mapper (`mobile/lib/import/fb_import.dart`), and the parked design spec
-> `docs/superpowers/specs/2026-08-04-l5x-fbd-import-design.md` (design rationale only, not
-> behavioral authority - see the note in §5).
-> **Read this before:** importing a Studio 5000 L5X export, extending RLL compilation, or checking
-> whether L5X FBD/SFC support has shipped (it has not, as of this version - verify against source
-> before assuming otherwise, since this is exactly the kind of claim that goes stale fastest).
+> FBD translator (`mobile/lib/import/fbd_translate.dart`, shared with the PLCopen path), and FB
+> mapper (`mobile/lib/import/fb_import.dart`).
+> **Read this before:** importing a Studio 5000 L5X export, extending RLL or FBD translation, or
+> checking whether L5X SFC support has shipped (it has not, as of this version - verify against
+> source before assuming otherwise, since this is exactly the kind of claim that goes stale
+> fastest).
 
 ---
 
@@ -106,12 +106,13 @@ logic per instance**, with independent timers/counters/edge state per instance -
 interface-only no-op. See [../iec61131/custom-function-blocks.md](../iec61131/custom-function-blocks.md)
 for the general instance-execution model this plugs into.
 
-`EnableIn`/`EnableOut` are retained as **internal** vars specifically for RLL-Logic AOIs (`EnableIn`
-defaults `true`, `EnableOut` defaults `false`) - ST/FBD/SFC-logic AOIs keep the historic skip of
-these two params. `EnableIn` is **re-asserted `true` on every call**, immediately before the body's
-rungs run, so a body containing `OTU(EnableIn)` (Rockwell RLL commonly gates on `XIC(EnableIn)`)
-doesn't permanently latch the instance off across calls - this mechanism lives in the general FB
-executor, not the importer; see
+`EnableIn`/`EnableOut` are retained as **internal** vars for RLL-Logic AND FBD-Logic AOIs alike
+(`EnableIn` defaults `true`, `EnableOut` defaults `false`) - only ST/SFC-logic AOIs keep the
+historic skip of these two params. `EnableIn` is **re-asserted `true` on every call**, immediately
+before the body's rungs (or FBD networks - see §5) run, so a body containing `OTU(EnableIn)`
+(Rockwell RLL commonly gates on `XIC(EnableIn)`; FBD sheets wire it as a pin) doesn't permanently
+latch the instance off across calls - this mechanism lives in the general FB executor, not the
+importer; see
 [../iec61131/custom-function-blocks.md](../iec61131/custom-function-blocks.md) §3.
 
 If **no** rung of an AOI's ladder compiles, the FB falls back to an interface-only no-op plus a
@@ -123,46 +124,53 @@ convention lists dependencies first, so this is rare in practice).
 
 ---
 
-## 5. FBD and SFC in L5X - confirmed still fully unshipped
+## 5. FBD ships, SFC does not
 
-**This is a finding worth stating plainly because it's easy to assume otherwise: the same
-per-network FBD translator and whole-chart SFC translator that are proven and shipped for PLCopen
-input (see [plcopen-tc6-xml.md](./plcopen-tc6-xml.md) §7) are NOT reachable from L5X input today.**
-The L5X parser's `FBD` and `SFC` routine-type cases each construct a **permanently empty** graph
-structure (no nodes, no connections) regardless of the routine's actual `<FBDContent>` or SFC
-content in the source file, attach a warning naming the routine, and stop - the parser never reads
-`<FBDContent>`, never reads a `<Sheet>` element, and has no L5X-specific SFC content reader at all.
-Since the translator downstream sees zero nodes either way, the POU always falls through to the
-description-only whole-POU stub.
+**FBD routine and FBD-Logic AOI translation are real and shipped, reusing the same per-network
+translator PLCopen input goes through (see [plcopen-tc6-xml.md](./plcopen-tc6-xml.md) §7). SFC
+translation is still not reachable from L5X input.**
 
-The same is true one level down: an AOI whose `Logic` routine is FBD- or SFC-typed imports its
-*interface* (parameters + local tags) as a real `FbDefinition`, but the logic itself is not
-translated - a warning names the AOI and its logic language.
+A `<Routine Type="FBD">`'s `<FBDContent><Sheet>` elements parse into the neutral `GraphBody` IR
+(`_l5xFbdBody` in `l5x_parser.dart`): every `<Sheet>` merges into one body in ascending `<Sheet
+Number>` order (each sheet after the first gets its element ids and Y coordinate offset, so
+network numbering reads sheet-by-sheet); `ICon`/`OCon` connectors resolve to their matching
+producer/consumer by name, routine-wide, at parse time; and Rockwell mnemonics/pins alias onto
+their IEC equivalents (`EQU`->`EQ`, `SourceA`/`SourceB`/`Dest`->`IN1`/`IN2`/`OUT`, and more - see
+[../iec61131/function-block-diagram.md](../iec61131/function-block-diagram.md) §6 and
+`docs/iec61131/FUNCTION_BLOCK_DIAGRAM.md`'s L5X subsection for the full tables). That `GraphBody`
+then runs through the **same** `translateFbdBody` the PLCopen path uses, per-network,
+faithful-or-stub - producing a real, executing `FunctionBlockDiagram` program.
+
+One level down, `mapImportedFbs` now maps an AOI whose `Logic` routine is `Type="FBD"` the same
+way: its sheets translate into `FbDefinition.fbdBlocks`/`fbdWires`/`fbdNetworks` (a new triple that
+did not exist on `FbDefinition` before this shipped), and the FB executor
+(`mobile/lib/models/fb_exec.dart`'s `executeFbInstance`) runs that body per instance via the
+scoped FBD executor `runScopedFbdBody` (`fbd_exec.dart`), keying stateful-block runtime state
+`'fb:<instancePath>|<blockId>'` - see
+[../iec61131/custom-function-blocks.md](../iec61131/custom-function-blocks.md) §1/§4 for the
+general three-way body-precedence model this plugs into. `EnableIn`/`EnableOut` are retained as
+internal vars for FBD-Logic AOIs exactly as for RLL-Logic AOIs (§4), and `EnableIn` is
+re-asserted `true` before every call.
+
+SFC stays unshipped, unchanged from before: the L5X parser's `SFC` routine-type case still
+constructs a **permanently empty** graph structure regardless of the routine's actual SFC content,
+attaches a warning naming the routine, and stops - there is no L5X-specific SFC content reader.
+The same is true one level down: an AOI whose `Logic` routine is SFC-typed still imports its
+*interface* only, with a warning naming the AOI.
 
 | L5X body kind | Support |
 |---|---|
 | `RLL` routine | Real, per-rung compile (§3) |
 | `ST` routine | Real, verbatim text carry |
+| `FBD` routine | Real, per-network translate via the shared `translateFbdBody` (this section) |
+| `SFC` routine | **Whole-POU stub, always empty** - parser has no L5X SFC content reader |
 | `RLL`-Logic AOI | Real, per-instance execution (§4) |
 | `ST`-Logic AOI | Real, ST body carried, `EnableIn`/`EnableOut` historic skip |
-| `FBD` routine | **Whole-POU stub, always empty** - parser never reads `<FBDContent>` |
-| `SFC` routine | **Whole-POU stub, always empty** - parser has no L5X SFC content reader |
-| `FBD`-Logic AOI | Interface-only import, logic not translated |
+| `FBD`-Logic AOI | Real, per-instance execution via the FBD-bodied `FbDefinition` (this section) |
 | `SFC`-Logic AOI | Interface-only import, logic not translated |
 
-**Design-rationale note, not behavioral authority**: a design spec exists
-(`docs/superpowers/specs/2026-08-04-l5x-fbd-import-design.md`, status "Approved (brainstorm)")
-proposing to add an `_l5xFbdBody` parser front-end that reuses the already-proven PLCopen
-`translateFbdBody` verbatim (multi-sheet merge with per-sheet localId/y offsetting, `ICon`/`OCon`
-connector resolution at parse time, Rockwell mnemonic and pin aliasing such as `EQU`->`EQ` and
-`SourceA`->`IN1`), plus a scoped FBD executor and a new `fbdBlocks`/`fbdWires`/`fbdNetworks` triple
-on `FbDefinition` (which does not exist on that class today - confirmed by direct inspection: it
-currently has only `stSource` and `ladderRungs`). Treat this spec as a roadmap for what L5X FBD
-import will look like when it ships, not as a description of current behavior - it explicitly
-records its own local test corpus as containing **zero** real FBD content (every fixture would be
-handcrafted), which is itself a sign this workstream hadn't started implementation as of the spec's
-writing. L5X SFC routine translation is an even earlier-stage, separate deferred sub-project with
-no design spec at all yet.
+Proven end-to-end (parse -> map -> translate -> execute), including both the routine and AOI
+paths, in `mobile/test/import/import_l5x_aoi_fbd_e2e_test.dart`.
 
 ---
 
@@ -192,14 +200,18 @@ sites. All three share a 65535-element clamp-with-warning, mirroring PLCopen's a
 
 ## What this means practically
 
-### "I imported an L5X file with FBD routines - why did they come in empty, when PLCopen FBD imports for real?"
-This is expected, not a regression: L5X FBD is genuinely unshipped (§5), even though the underlying
-translator that PLCopen uses is proven-capable. The two paths are not at parity - check the design
-spec for the roadmap, but don't assume it reflects current behavior.
+### "I imported an L5X file with FBD routines - do they translate for real now, same as PLCopen?"
+Yes - as of this version, an L5X `FBD` routine parses and translates through the same
+`translateFbdBody` the PLCopen path uses, faithful-or-stub per network (§5). A network still stubs
+(with an explanatory comment plus a warning) when it hits an unmapped block/pin, a wired
+`EnableIn`/`EnableOut`, a dotted operand, or one of the other stub reasons in
+[../iec61131/function-block-diagram.md](../iec61131/function-block-diagram.md) - that is normal
+faithful-or-stub degradation, not a sign FBD import is unshipped.
 
-### "My AOI's RLL logic runs, but its FBD logic doesn't - is that inconsistent?"
-No - RLL-Logic AOI execution is real and shipped (§4); FBD-Logic AOI execution is not (§5). This is
-the same asymmetry as routine-level FBD import.
+### "My AOI's RLL logic runs, and now its FBD logic runs too - what about SFC?"
+RLL-Logic and FBD-Logic AOI execution are both real and shipped (§4, §5). SFC-Logic AOIs are still
+interface-only - their `Logic` routine imports as parameters + local tags on the `FbDefinition`,
+but the logic itself is not translated (§5).
 
 ### "Why did my multi-dimensional array tag collapse to one dimension?"
 By design - only the first dimension token imports; the rest are dropped, with an info warning on
@@ -213,8 +225,8 @@ already registered from earlier in the file; a forward reference to a later-defi
 
 ## Related
 
-- [plcopen-tc6-xml.md](./plcopen-tc6-xml.md) - the other supported dialect; contrast the FBD/SFC support gap directly with §7 there, and see the shared type-normalization table.
+- [plcopen-tc6-xml.md](./plcopen-tc6-xml.md) - the other supported dialect; contrast the remaining SFC support gap directly with §7 there, and see the shared type-normalization table and the `translateFbdBody` translator both dialects now share.
 - [../iec61131/ladder-diagram.md](../iec61131/ladder-diagram.md) - the native rung model RLL compiles into.
-- [../iec61131/custom-function-blocks.md](../iec61131/custom-function-blocks.md) - the general FB instance-execution model AOIs plug into, including the `EnableIn` re-assertion mechanism.
-- [../iec61131/function-block-diagram.md](../iec61131/function-block-diagram.md) - the native network model L5X FBD would target once it ships.
+- [../iec61131/custom-function-blocks.md](../iec61131/custom-function-blocks.md) - the general FB instance-execution model AOIs plug into, including the `EnableIn` re-assertion mechanism and the ladder/FBD body precedence.
+- [../iec61131/function-block-diagram.md](../iec61131/function-block-diagram.md) - the native network model L5X FBD now targets.
 - [index.md](./index.md) - domain hub.

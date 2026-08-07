@@ -390,6 +390,72 @@ void main() {
       expect(res.report.stubbedFbdNetworkCount, 0);
     });
 
+    test('an instance-tag rename never cascades onto a block an EARLIER tag moved', () {
+      // A global 'S1' forces the first instance tag to rename S1 -> S1_1 —
+      // which is exactly the name the SECOND call block still carries. If the
+      // retarget rescans every block for the second tag's ORIGINAL name it
+      // drags the first block along, leaving both blocks on one instance tag
+      // (shared FB state) and the first tag bound to nothing.
+      final ir = ImportedProject(
+        name: 'FbdProj', types: const [], warnings: const [],
+        globalVars: [
+          ImportedVar(name: 'S1', baseType: 'BOOL', scope: VarScope.global),
+          ImportedVar(name: 'A', baseType: 'BOOL', scope: VarScope.global),
+          ImportedVar(name: 'Q', baseType: 'BOOL', scope: VarScope.global),
+          ImportedVar(name: 'A2', baseType: 'BOOL', scope: VarScope.global),
+          ImportedVar(name: 'Q2', baseType: 'BOOL', scope: VarScope.global),
+        ],
+        pous: [
+          ImportedPou(
+            name: 'Scaler', kind: PouKind.functionBlock, lang: PouLanguage.st,
+            localVars: [
+              ImportedVar(name: 'In', baseType: 'BOOL', scope: VarScope.input),
+              ImportedVar(name: 'Out', baseType: 'BOOL', scope: VarScope.output),
+            ],
+            body: TextBody('Out := In;'),
+          ),
+          ImportedPou(
+            name: 'Logic', kind: PouKind.program, lang: PouLanguage.fbd,
+            localVars: const [],
+            body: GraphBody(nodes: [
+              IrGraphNode(localId: 1, elementType: 'inVariable', y: 0,
+                  attributes: const {'variable': 'A'}),
+              IrGraphNode(localId: 2, elementType: 'block', x: 60, y: 0,
+                  attributes: const {'typeName': 'Scaler', 'instanceName': 'S1'}),
+              IrGraphNode(localId: 3, elementType: 'outVariable', x: 120, y: 0,
+                  attributes: const {'variable': 'Q'}),
+              IrGraphNode(localId: 4, elementType: 'inVariable', y: 200,
+                  attributes: const {'variable': 'A2'}),
+              IrGraphNode(localId: 5, elementType: 'block', x: 60, y: 200,
+                  attributes: const {'typeName': 'Scaler', 'instanceName': 'S1_1'}),
+              IrGraphNode(localId: 6, elementType: 'outVariable', x: 120, y: 200,
+                  attributes: const {'variable': 'Q2'}),
+            ], connections: [
+              IrConnection(fromLocalId: 1, toLocalId: 2, toPin: 'In'),
+              IrConnection(fromLocalId: 2, toLocalId: 3, fromPin: 'Out'),
+              IrConnection(fromLocalId: 4, toLocalId: 5, toPin: 'In'),
+              IrConnection(fromLocalId: 5, toLocalId: 6, fromPin: 'Out'),
+            ]),
+          ),
+        ],
+      );
+      final res = mapImportedProject(ir, projectName: 'FbdProj', projectId: 'x');
+      final prog = res.project.programs.firstWhere((p) => p.name == 'Logic');
+      final calls = prog.fbdBlocks.where((b) => b.type == 'Scaler').toList();
+      expect(calls, hasLength(2));
+      // Two call blocks, two DISTINCT instance tags, each really present.
+      expect(calls[0].tagBinding, isNot(calls[1].tagBinding));
+      for (final b in calls) {
+        expect(
+            res.project.tags
+                .where((t) => t.name == b.tagBinding && t.dataType == 'Scaler'),
+            hasLength(1));
+      }
+      // The colliding global keeps its own name and type.
+      expect(res.project.tags.where((t) => t.name == 'S1' && t.dataType == 'BOOL'),
+          hasLength(1));
+    });
+
     test('FBD POU with nothing translatable keeps the whole-POU stub', () {
       final ir = ImportedProject(
         name: 'FbdStub', types: const [], warnings: const [], globalVars: const [],

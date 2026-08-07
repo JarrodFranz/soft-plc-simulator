@@ -127,4 +127,89 @@ void main() {
     expect(outer.vars.firstWhere((v) => v.name == 'Drive').dataType, 'BOOL');
     expect(inner.ladderRungs.single.nodes.any((n) => n.kind == LdKind.coil), isTrue);
   });
+
+  test('an FBD-bodied FbDefinition round-trips blocks, wires and networks', () {
+    final fb = FbDefinition(name: 'Ramp', vars: [
+      FbVar(name: 'In', dataType: 'BOOL', direction: FbVarDir.input),
+      FbVar(name: 'Out', dataType: 'BOOL', direction: FbVarDir.output),
+    ], fbdBlocks: [
+      FbdBlock(id: 'n0', type: 'TAG_INPUT', title: 'In', tagBinding: 'In', x: 10, y: 20),
+      FbdBlock(id: 'n1', type: 'TON', title: 'TON', x: 110, y: 20),
+      FbdBlock(id: 'n2', type: 'TAG_OUTPUT', title: 'Out', tagBinding: 'Out', x: 210, y: 20, network: 1),
+    ], fbdWires: [
+      FbdWire(fromBlockId: 'n0', fromPin: 'OUT', toBlockId: 'n1', toPin: 'IN'),
+      FbdWire(fromBlockId: 'n1', fromPin: 'Q', toBlockId: 'n2', toPin: 'IN'),
+    ], fbdNetworks: [
+      FbdNetwork(comment: 'net one'),
+      FbdNetwork(comment: 'net two'),
+    ]);
+
+    final rt = FbDefinition.fromJson(fb.toJson());
+    expect(rt.fbdBlocks.map((b) => b.id), ['n0', 'n1', 'n2']);
+    expect(rt.fbdBlocks[0].tagBinding, 'In');
+    expect(rt.fbdBlocks[0].x, 10);
+    expect(rt.fbdBlocks[2].network, 1);
+    expect(rt.fbdWires, hasLength(2));
+    expect(rt.fbdWires[1].fromPin, 'Q');
+    expect(rt.fbdWires[1].toPin, 'IN');
+    expect(rt.fbdNetworks.map((n) => n.comment), ['net one', 'net two']);
+    expect(rt.ladderRungs, isEmpty);
+    expect(rt.stSource, ''); // FBD-bodied FBs carry no ST source
+  });
+
+  test('ST- and ladder-bodied FbDefinitions serialize with NO fbd_* keys', () {
+    final st = FbDefinition(name: 'Scaler', stSource: 'Out := In * 2.0;', vars: [
+      FbVar(name: 'In', dataType: 'FLOAT64', direction: FbVarDir.input),
+    ]);
+    expect(st.toJson().keys.toList(), ['name', 'vars', 'st_source']);
+
+    final ld = FbDefinition(name: 'Latch', ladderRungs: [
+      LdRung(rungIndex: 0, nodes: [
+        LdNode(id: 'L', kind: LdKind.leftRail),
+        LdNode(id: 'R', kind: LdKind.rightRail),
+      ], wires: [LdWire(fromId: 'L', toId: 'R')]),
+    ]);
+    final ldJson = ld.toJson();
+    expect(ldJson.containsKey('fbd_blocks'), isFalse);
+    expect(ldJson.containsKey('fbd_wires'), isFalse);
+    expect(ldJson.containsKey('fbd_networks'), isFalse);
+    expect(ldJson.keys.toList(), ['name', 'vars', 'st_source', 'ladder_rungs']);
+  });
+
+  test('legacy JSON without fbd_* keys loads with an empty FBD body', () {
+    final rt = FbDefinition.fromJson({
+      'name': 'Old',
+      'vars': [
+        {'name': 'In', 'data_type': 'BOOL', 'direction': 'input', 'initial_value': null},
+      ],
+      'st_source': 'Out := In;',
+    });
+    expect(rt.fbdBlocks, isEmpty);
+    expect(rt.fbdWires, isEmpty);
+    expect(rt.fbdNetworks, isEmpty);
+    expect(rt.stSource, 'Out := In;');
+  });
+
+  test('renameFbDefinition retargets call blocks inside an FB FBD body (third root)', () {
+    final inner = FbDefinition(name: 'B', vars: [
+      FbVar(name: 'In', dataType: 'BOOL', direction: FbVarDir.input),
+      FbVar(name: 'Out', dataType: 'BOOL', direction: FbVarDir.output),
+    ]);
+    final outer = FbDefinition(name: 'A', vars: [
+      FbVar(name: 'Nested', dataType: 'B', direction: FbVarDir.internal),
+    ], fbdBlocks: [
+      FbdBlock(id: 'a0', type: 'B', title: 'B', tagBinding: 'Nested'),
+    ]);
+    final p = PlcProject(
+        id: 'p', name: 'P', controllerName: 'C',
+        tags: [], structDefs: [], programs: [], tasks: [], hmis: [],
+        fbDefinitions: [inner, outer]);
+
+    renameFbDefinition(p, 'B', 'B_1');
+
+    expect(outer.fbdBlocks.single.type, 'B_1');
+    expect(outer.fbdBlocks.single.tagBinding, 'Nested'); // the var name is untouched
+    expect(outer.vars.single.dataType, 'B_1');
+    expect(inner.name, 'B_1');
+  });
 }

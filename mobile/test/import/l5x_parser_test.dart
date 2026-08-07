@@ -160,7 +160,7 @@ void main() {
         w.message.contains('LadderAoi') && w.message.contains('not yet translated')), isFalse);
   });
 
-  test('an FBD-logic AOI still imports interface-only with a warning (unchanged)', () {
+  test('an FBD-logic AOI imports a GraphBody body and keeps EnableIn/EnableOut', () {
     const xml = '''
 <RSLogix5000Content TargetType="Controller"><Controller Name="C">
   <AddOnInstructionDefinitions>
@@ -170,17 +170,32 @@ void main() {
         <Parameter Name="EnableOut" DataType="BOOL" Usage="Output" Visible="false"/>
         <Parameter Name="X" DataType="BOOL" Usage="Input" Visible="true"/>
       </Parameters>
-      <Routines><Routine Name="Logic" Type="FBD"/></Routines>
+      <Routines><Routine Name="Logic" Type="FBD"><FBDContent>
+        <Sheet Number="1">
+          <IRef ID="0" Operand="X" X="0" Y="0"/>
+          <Block ID="1" Type="BNOT" X="50" Y="0"/>
+          <ORef ID="2" Operand="EnableOut" X="100" Y="0"/>
+          <Wire FromID="0" FromParam="OUT" ToID="1" ToParam="In"/>
+          <Wire FromID="1" FromParam="Out" ToID="2" ToParam="IN"/>
+        </Sheet>
+      </FBDContent></Routine></Routines>
     </AddOnInstructionDefinition>
   </AddOnInstructionDefinitions>
 </Controller></RSLogix5000Content>''';
     final ir = parseL5x(xml);
     final pou = ir.pous.single;
-    expect(pou.lang, PouLanguage.st);
-    expect((pou.body as TextBody).source, '');
-    expect(pou.localVars.map((v) => v.name), ['X']); // EnableIn/Out still skipped
+    expect(pou.lang, PouLanguage.fbd);
+    expect(pou.body, isA<GraphBody>());
+    expect((pou.body as GraphBody).nodes, hasLength(3));
+    // EnableIn/EnableOut are retained as internal BOOLs (parameter-loop order).
+    expect(pou.localVars.map((v) => v.name), ['EnableIn', 'EnableOut', 'X']);
+    expect(pou.localVars[0].scope, VarScope.local);
+    expect(pou.localVars[0].initialValue, true);
+    expect(pou.localVars[1].initialValue, false);
     expect(ir.warnings.any((w) =>
-        w.message.contains('GraphAoi') && w.message.contains('not yet translated')), isTrue);
+        w.message.contains('GraphAoi') && w.message.contains('not yet translated')),
+        isFalse);
+    expect(ir.dialect, ImportDialect.l5x);
   });
 
   test('controller + program tags -> ImportedVar with scalar values', () {

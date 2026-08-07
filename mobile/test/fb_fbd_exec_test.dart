@@ -91,4 +91,52 @@ void main() {
     expect(readPath(p, 'CV1'), equals(6.0)); // 3 * 2
     expect(readPath(p, 'CV2'), equals(14.0)); // 7 * 2
   });
+
+  test('an FBD-bodied FB called from an FBD program keeps state across scans', () {
+    final fb = FbDefinition(name: 'Ramp', vars: [
+      FbVar(name: 'In', dataType: 'BOOL', direction: FbVarDir.input),
+      FbVar(name: 'Out', dataType: 'BOOL', direction: FbVarDir.output),
+    ], fbdBlocks: [
+      FbdBlock(id: 'ti', type: 'TAG_INPUT', title: 'In', tagBinding: 'In'),
+      FbdBlock(id: 'pt', type: 'CONST', title: 'CONST', tagBinding: '1000'),
+      FbdBlock(id: 'ton', type: 'TON', title: 'TON'),
+      FbdBlock(id: 'to', type: 'TAG_OUTPUT', title: 'Out', tagBinding: 'Out'),
+    ], fbdWires: [
+      FbdWire(fromBlockId: 'ti', fromPin: 'OUT', toBlockId: 'ton', toPin: 'IN'),
+      FbdWire(fromBlockId: 'pt', fromPin: 'OUT', toBlockId: 'ton', toPin: 'PT'),
+      FbdWire(fromBlockId: 'ton', fromPin: 'Q', toBlockId: 'to', toPin: 'IN'),
+    ]);
+    final defaults = PlcProject(
+        id: 'd', name: 'd', controllerName: 'c',
+        tags: [], structDefs: [], programs: [], tasks: [], hmis: [],
+        fbDefinitions: [fb]);
+
+    final prog = PlcProgram(name: 'F1', language: 'FunctionBlockDiagram');
+    prog.fbdBlocks.addAll([
+      FbdBlock(id: 'g_in', type: 'TAG_INPUT', title: 'Src', tagBinding: 'Src'),
+      FbdBlock(id: 'g_fb', type: 'Ramp', title: 'Ramp', tagBinding: 'R1'),
+      FbdBlock(id: 'g_out', type: 'TAG_OUTPUT', title: 'Dst', tagBinding: 'Dst'),
+    ]);
+    prog.fbdWires.addAll([
+      FbdWire(fromBlockId: 'g_in', fromPin: 'OUT', toBlockId: 'g_fb', toPin: 'In'),
+      FbdWire(fromBlockId: 'g_fb', fromPin: 'Out', toBlockId: 'g_out', toPin: 'IN'),
+    ]);
+
+    final p = PlcProject(
+      id: 'p', name: 'p', controllerName: 'c',
+      tags: [
+        _tag('Src', 'BOOL', true),
+        _tag('Dst', 'BOOL', false),
+        PlcTag(name: 'R1', path: 'R1', dataType: 'Ramp',
+            value: defaultValueFor(defaults, 'Ramp', 0), ioType: 'Internal'),
+      ],
+      structDefs: [], programs: [prog], tasks: [], hmis: [], fbDefinitions: [fb],
+    );
+
+    final rt = FbdRuntime();
+    executeFbdPrograms(p, 500, rt);
+    expect(readPath(p, 'Dst'), isFalse);
+    executeFbdPrograms(p, 500, rt);
+    expect(readPath(p, 'Dst'), isTrue); // fbdRt threaded into the FB body
+  });
 }

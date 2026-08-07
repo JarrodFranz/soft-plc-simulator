@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:soft_plc_mobile/models/project_model.dart';
 import 'package:soft_plc_mobile/models/ld_graph.dart';
 import 'package:soft_plc_mobile/models/ld_exec.dart';
+import 'package:soft_plc_mobile/models/fbd_exec.dart';
 import 'package:soft_plc_mobile/models/tag_resolver.dart';
 
 FbDefinition _scalerFb() => FbDefinition(
@@ -127,5 +128,68 @@ void main() {
 
     expect(() => executeLdPrograms(p, 500, LdExecRuntime()), returnsNormally);
     expect(_b(p, 'Out'), isTrue); // power still passes through
+  });
+
+  test('an FBD-bodied FB called from a LADDER program keeps state across scans', () {
+    final fb = FbDefinition(name: 'Ramp', vars: [
+      FbVar(name: 'In', dataType: 'BOOL', direction: FbVarDir.input),
+      FbVar(name: 'Out', dataType: 'BOOL', direction: FbVarDir.output),
+    ], fbdBlocks: [
+      FbdBlock(id: 'ti', type: 'TAG_INPUT', title: 'In', tagBinding: 'In'),
+      FbdBlock(id: 'pt', type: 'CONST', title: 'CONST', tagBinding: '1000'),
+      FbdBlock(id: 'ton', type: 'TON', title: 'TON'),
+      FbdBlock(id: 'to', type: 'TAG_OUTPUT', title: 'Out', tagBinding: 'Out'),
+    ], fbdWires: [
+      FbdWire(fromBlockId: 'ti', fromPin: 'OUT', toBlockId: 'ton', toPin: 'IN'),
+      FbdWire(fromBlockId: 'pt', fromPin: 'OUT', toBlockId: 'ton', toPin: 'PT'),
+      FbdWire(fromBlockId: 'ton', fromPin: 'Q', toBlockId: 'to', toPin: 'IN'),
+    ]);
+    final defaults = PlcProject(
+        id: 'd', name: 'd', controllerName: 'c',
+        tags: [], structDefs: [], programs: [], tasks: [], hmis: [],
+        fbDefinitions: [fb]);
+
+    LdRung callRung(int i, String inst, String src, String dst) =>
+        LdRung(rungIndex: i, nodes: [
+          LdNode(id: 'L$i', kind: LdKind.leftRail),
+          LdNode(id: 'b$i', kind: LdKind.block, blockType: 'Ramp', variable: inst,
+              pinBindings: {'In': src, 'Out': dst}),
+          LdNode(id: 'R$i', kind: LdKind.rightRail),
+        ], wires: [
+          LdWire(fromId: 'L$i', toId: 'b$i'),
+          LdWire(fromId: 'b$i', toId: 'R$i'),
+        ]);
+
+    final prog = PlcProgram(name: 'Main', language: 'LadderLogic', rungs: [
+      callRung(0, 'R1', 'Src1', 'Dst1'),
+      callRung(1, 'R2', 'Src2', 'Dst2'),
+    ]);
+    PlcTag t(String n, dynamic v) =>
+        PlcTag(name: n, path: n, dataType: 'BOOL', value: v, ioType: 'Internal');
+    final p = PlcProject(
+      id: 'p', name: 'P', controllerName: 'C',
+      tags: [
+        t('Src1', true), t('Src2', false), t('Dst1', false), t('Dst2', false),
+        for (final i in ['R1', 'R2'])
+          PlcTag(name: i, path: i, dataType: 'Ramp',
+              value: defaultValueFor(defaults, 'Ramp', 0), ioType: 'Internal'),
+      ],
+      structDefs: [], programs: [prog], tasks: [], hmis: [], fbDefinitions: [fb],
+    );
+
+    final ldRt = LdExecRuntime();
+    final fbdRt = FbdRuntime();
+    executeLdPrograms(p, 500, ldRt, fbdRt: fbdRt);
+    expect(readPath(p, 'Dst1'), isFalse); // ET 500 < PT 1000
+    executeLdPrograms(p, 500, ldRt, fbdRt: fbdRt);
+    expect(readPath(p, 'Dst1'), isTrue); // state survived the scan boundary
+    expect(readPath(p, 'Dst2'), isFalse); // instance 2 never driven
+
+    // Now drive instance 2: it starts its own timer from zero.
+    writePath(p, 'Src2', true);
+    executeLdPrograms(p, 500, ldRt, fbdRt: fbdRt);
+    expect(readPath(p, 'Dst2'), isFalse);
+    executeLdPrograms(p, 500, ldRt, fbdRt: fbdRt);
+    expect(readPath(p, 'Dst2'), isTrue);
   });
 }

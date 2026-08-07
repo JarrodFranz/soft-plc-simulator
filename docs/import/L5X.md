@@ -88,16 +88,51 @@ Only the `Logic` routine runs; `Prescan`/`Postscan`/`EnableInFalse` are not
 executed. Proven end-to-end in
 `mobile/test/import/import_l5x_aoi_ladder_e2e_test.dart`.
 
+## FBD routines translate
+
+A `<Routine Type="FBD">` now becomes a real, executing `FunctionBlockDiagram`
+program — its `<FBDContent><Sheet>` elements parse into the neutral
+`GraphBody` (multi-sheet merge, `ICon`/`OCon` connector resolution, Rockwell
+type + pin aliasing), then translate through the same `translateFbdBody`
+PLCopen uses, per-network, faithful-or-stub. Element mapping, the type/pin
+alias tables, and the full stub-reason list live in
+`docs/iec61131/FUNCTION_BLOCK_DIAGRAM.md`'s "L5X (Rockwell) FBD import"
+section.
+
+## FBD-Logic AOIs execute
+
+An `<AddOnInstructionDefinition>` whose `Logic` routine is `Type="FBD"` now
+imports as an **FBD-bodied function block**: its sheets parse and translate
+the same way an FBD routine does, and the result lands in
+`FbDefinition.fbdBlocks`/`fbdWires`/`fbdNetworks`, so every AOI-typed tag
+runs the AOI's FBD logic per instance (see
+`docs/iec61131/FUNCTION_BLOCKS.md`'s "FBD-bodied FBs").
+
+`EnableIn`/`EnableOut` are **retained as internal BOOLs** for FBD-Logic AOIs
+exactly as for RLL-Logic AOIs (`EnableIn` defaults `true`, `EnableOut`
+`false`), since Rockwell FBD sheets commonly wire them as sheet pins.
+`EnableIn` is **re-asserted `true` on every call**, immediately before the
+body's networks run, for the same reason as the ladder case (see "RLL-Logic
+AOIs execute" above). As with RLL, an AOI's FBD logic calling an AOI defined
+*later* in the same file stubs that reference — the callee must precede the
+caller.
+
+If **nothing** in an AOI's FBD sheets translates, the FB falls back to the
+previous interface-only no-op plus a warning naming the AOI, same as the RLL
+case. Only the `Logic` routine runs. Proven end-to-end (parse → map →
+translate → execute) in
+`mobile/test/import/import_l5x_aoi_fbd_e2e_test.dart`.
+
 ## What's captured but not yet translated
 
-- **FBD and SFC routines** are captured as a whole-POU stub (same shape as
-  the PLCopen importer's graphical-POU stub) with a warning naming the
-  routine. Re-importing once each L5X-specific graphical translator ships
-  will turn these into real programs.
-- **FBD/SFC AOI logic** (an AOI whose `Logic` routine is FBD or SFC) imports
-  the AOI's *interface* (parameters + local tags) as a real `FbDefinition`,
-  but the logic itself is not translated — a warning names the AOI and its
-  logic language. (RLL AOI logic now executes — see below.)
+- **SFC routines** are captured as a whole-POU stub (same shape as the
+  PLCopen importer's graphical-POU stub) with a warning naming the routine.
+  Re-importing once the L5X SFC translator ships will turn these into real
+  programs. (FBD routines now translate — see above.)
+- **SFC AOI logic** (an AOI whose `Logic` routine is SFC) imports the AOI's
+  *interface* (parameters + local tags) as a real `FbDefinition`, but the
+  logic itself is not translated — a warning names the AOI and its logic
+  language. (RLL and FBD AOI logic now execute — see above.)
 
 ## Autodetect (no format picker)
 
@@ -124,15 +159,37 @@ currently open project is never modified.
 
 Tracked in `docs/DEFERRED.md`'s **L5X import** section:
 
-- **FBD-bodied AOI logic** — blocked on the L5X FBD front-end (sub-project 4);
-  it will reuse the same scoped-FB infrastructure with a scoped FBD executor.
-  (The RLL half shipped — see "RLL-Logic AOIs execute" above.)
 - **AOI auxiliary routines** — only the main `Logic` routine executes;
   `Prescan`/`Postscan`/`EnableInFalse` are ignored.
 - **AOI-in-AOI forward references** — the callee must precede the caller in
   the file.
-- **L5X FBD routine translation** — sub-project 4.
-- **L5X SFC routine translation** — sub-project 5.
+- **L5X SFC routine translation** — sub-project 5. (FBD routine translation
+  shipped in sub-project 4 — see "FBD routines translate" above.)
+- **AB FBD block synthesis** — unmapped Rockwell FBD blocks (`SCL`, `PIDE`,
+  `MOV`, `MOD`, `ESEL`, …) stub their network rather than synthesizing onto a
+  native equivalent.
+- **`TONR`/`TOFR` fidelity** — mapped best-effort to `TON`/`TOF`; retentive
+  accumulation and the `Reset` pin are not modeled.
+- **`<TextBox>`/`<Attachment>` FBD annotations** — dropped at parse, not
+  imported as documentation.
+- **`EnableIn`/`EnableOut` pass-through on wired pins** — a *wired*
+  `EnableIn`/`EnableOut` pin on a Rockwell FBD block stubs its network; no
+  IEC-side enable/condition semantics are synthesized.
+- **FB editor support for FBD bodies** — an FBD-bodied `FbDefinition` shows
+  its (empty) ST source; there is no view/edit UI for `fbdBlocks` (same gap
+  as ladder bodies).
+- **FB-body online monitoring** — scoped ladder and FBD bodies pass
+  `monitor: null`, so imported AOI bodies have no live pin/element values.
+- **PLCopen FBD-bodied `functionBlock` POUs** — the executor supports them;
+  only the dialect gate withholds them, pending PLCopen-specific validation.
+- **Dotted/member operands in FBD refs** — an `IRef`/`ORef` naming
+  `Timer1.DN` stubs.
+- **Backing-tag fidelity for FBD `Block` elements** — a
+  `<Block Type="TONR" Operand="T1">`'s state lives in the translator-managed
+  `FbdRuntime`, not in the `T1` TIMER tag.
+- **Full 1:1 `ICon`/`OCon` pairing** — connector matching is name-based and
+  routine-wide; an export that reuses one connector name for two independent
+  producer/consumer pairs cross-products instead of pairing 1:1.
 - **BIT-overlay member aliasing** — a UDT member that overlays a bit of
   another member (`Target`/`BitNumber`) imports as a plain `BOOL`, not a live
   alias of that bit.

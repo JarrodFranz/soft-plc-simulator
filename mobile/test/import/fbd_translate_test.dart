@@ -47,6 +47,19 @@ void main() {
     expect(tr.wires, hasLength(3));
   });
 
+  test('minted block ids never contain ":" or "|" even from an unsanitized pouName', () {
+    // pouName is a raw POU/routine name (not run through `_sanitize`); the
+    // scoped runtime state key 'fb:<instancePath>|<blockId>' is only
+    // disjoint-by-construction if the blockId half can't smuggle in the
+    // scheme prefix or the separator.
+    final body = GraphBody(nodes: [_in(1, 'A'), _out(2, 'Q')],
+        connections: [_c(1, 2)]);
+    final tr = translateFbdBody(body, pouName: 'fb:Weird|Name');
+    expect(tr.blocks, isNotEmpty);
+    expect(tr.blocks.every((b) => !b.id.contains(':') && !b.id.contains('|')),
+        isTrue);
+  });
+
   test('two components -> two layout-ordered networks', () {
     final body = GraphBody(nodes: [
       _in(1, 'A', y: 0), _out(2, 'B', x: 60, y: 0),      // top component

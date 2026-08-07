@@ -5,27 +5,31 @@ import 'fbd_monitor.dart';
 import 'fb_exec.dart';
 import 'ld_exec.dart';
 
-/// Per-block timer state for stateful FBD blocks (TON/TOF), keyed by block id
-/// (block ids are unique within a project's FBD programs). Cleared on project
-/// switch.
+/// Per-block state for stateful FBD blocks (TON/TOF, PID, counters, edge
+/// detectors, TP). Keyed by `'<stateKeyPrefix><blockId>'`: program execution
+/// uses an EMPTY prefix, so the key is the bare block id (unique within a
+/// project's FBD programs, unchanged); a scoped FB body uses
+/// `'fb:<instancePath>|'`, so two instances of the same FBD-bodied FB never
+/// share timer/counter/edge state even though they share one set of body block
+/// ids (see `runScopedFbdBody`). Cleared on project switch.
 class FbdRuntime {
   final Map<String, num> _elapsedMs = {};
 
-  /// Per-block PID state keyed by block id: `[integral, prevError]`.
+  /// Per-block PID state keyed by state key: `[integral, prevError]`.
   final Map<String, List<double>> _pid = {};
 
-  /// Per-block counter state keyed by block id: `[cv, prevCU, prevCD]`. The
+  /// Per-block counter state keyed by state key: `[cv, prevCU, prevCD]`. The
   /// prev-CU/prev-CD levels are stored as 0/1 so a rising edge is detected as
   /// "input true now AND stored prev level 0". CTU only tracks/uses prevCU,
   /// CTD only prevCD, CTUD uses both.
   final Map<String, List<num>> _counters = {};
 
   /// Per-block previous CLK level for edge detectors (R_TRIG/F_TRIG), keyed
-  /// by block id. Defaults to false on first read (see `_prevClk[b.id] ??
+  /// by state key. Defaults to false on first read (see `_prevClk[stateKey] ??
   /// false` at call sites), so a CLK already true on scan 1 is a rising edge.
   final Map<String, bool> _prevClk = {};
 
-  /// Per-block pulse-timer (TP) state keyed by block id: `[et, running,
+  /// Per-block pulse-timer (TP) state keyed by state key: `[et, running,
   /// prevIN]`. `running`/`prevIN` stored as 0/1.
   final Map<String, List<num>> _pulse = {};
 
@@ -167,6 +171,15 @@ dynamic _compare(String op, List<dynamic> inputs) {
 /// [ldRt] flows through to the custom-FB branch (`executeFbInstance`), so a
 /// ladder-bodied FB instance's timers/counters/edges share the caller's
 /// runtime instead of an ephemeral per-call one.
+/// [stateKey] is the key under which this block's stateful data lives in [rt]
+/// (`_elapsedMs`/`_pid`/`_counters`/`_prevClk`/`_pulse`). Program execution
+/// passes the bare `b.id` (unchanged); a scoped FB body passes
+/// `'fb:<instancePath>|<blockId>'`, which is disjoint by construction because
+/// sanitized tag/instance names can contain neither ':' nor '|'.
+/// [scope] rewrites the THREE tag paths a block can reach (TAG_INPUT read,
+/// TAG_OUTPUT write + its readOnly gate, custom-FB instance path) into the
+/// instance's namespace. `scope == null` (program execution) is the identity.
+/// A CONST's `tagBinding` is a LITERAL, not a path, and is never rewritten.
 /// Never throws.
 Map<String, dynamic> _evalBlock(
   PlcProject p,
@@ -176,7 +189,10 @@ Map<String, dynamic> _evalBlock(
   FbdRuntime rt,
   Set<String>? readOnly,
   LdExecRuntime? ldRt,
+  String stateKey,
+  LdScope? scope,
 ) {
+  String sp(String path) => scope == null ? path : scope.rewrite(path);
   // Custom function block instance: `inputs` is aligned with
   // `fbdInputPinsFor(p, b)` (the FB's INPUT-var names, in order). Pair them
   // up positionally to build the named-input map `executeFbInstance` expects;
@@ -200,15 +216,18 @@ Map<String, dynamic> _evalBlock(
       inputMap[inNames[i]] = v;
     }
     // A ladder-bodied FB needs the scan's dtMs (timers) and a persistent
-    // LdExecRuntime (edge/pulse). An ST-bodied FB ignores both. `readOnly`
-    // gates the ladder body's coils on globals, matching the gate this
-    // function's own TAG_OUTPUT branch already applies.
-    return executeFbInstance(p, fb, b.tagBinding, inputMap,
-        dtMs: dtMs, ldRt: ldRt, readOnly: readOnly);
+    // LdExecRuntime (edge/pulse); an FBD-bodied FB needs this same FbdRuntime
+    // so its own timers/counters/edges survive the scan boundary (its state
+    // keys are 'fb:<instancePath>|'-prefixed, so they can never collide with
+    // this body's own block keys). An ST-bodied FB ignores both. `readOnly`
+    // gates the body's writes on globals, matching the gate this function's
+    // own TAG_OUTPUT branch already applies.
+    return executeFbInstance(p, fb, sp(b.tagBinding), inputMap,
+        dtMs: dtMs, ldRt: ldRt, fbdRt: rt, readOnly: readOnly);
   }
   switch (b.type) {
     case 'TAG_INPUT':
-      return {'OUT': b.tagBinding.isEmpty ? null : readPath(p, b.tagBinding)};
+      return {'OUT': b.tagBinding.isEmpty ? null : readPath(p, sp(b.tagBinding))};
     case 'CONST':
       return {'OUT': _parseConst(b.tagBinding)};
     case 'AND':
@@ -289,7 +308,7 @@ Map<String, dynamic> _evalBlock(
       {
         final inVal = inputs.isNotEmpty ? _truthy(inputs[0]) ?? false : false;
         final pt = (inputs.length > 1 && inputs[1] is num) ? (inputs[1] as num) : 0;
-        num et = rt._elapsedMs[b.id] ?? 0;
+        num et = rt._elapsedMs[stateKey] ?? 0;
         bool q;
         if (b.type == 'TON') {
           if (inVal) {
@@ -315,7 +334,7 @@ Map<String, dynamic> _evalBlock(
             q = et < pt;
           }
         }
-        rt._elapsedMs[b.id] = et;
+        rt._elapsedMs[stateKey] = et;
         return {'Q': q, 'ET': et};
       }
     case 'PID':
@@ -329,7 +348,7 @@ Map<String, dynamic> _evalBlock(
 
         final dt = dtMs / 1000.0;
         final e = sp - pv;
-        final state = rt._pid[b.id] ?? [0.0, 0.0];
+        final state = rt._pid[stateKey] ?? [0.0, 0.0];
         final integral = state[0];
         final prevError = state[1];
         final deriv = dt <= 0 ? 0.0 : (e - prevError) / dt;
@@ -348,7 +367,7 @@ Map<String, dynamic> _evalBlock(
           raw = kp * e + ki * integral + kd * deriv;
         }
         final cv = raw.clamp(0.0, 100.0);
-        rt._pid[b.id] = [integ, e];
+        rt._pid[stateKey] = [integ, e];
         return {'CV': cv};
       }
     case 'CTU':
@@ -358,7 +377,7 @@ Map<String, dynamic> _evalBlock(
         final r = inputs.length > 1 ? _truthy(inputs[1]) ?? false : false;
         final pv = _asNum(inputs.length > 2 ? inputs[2] : null).toInt();
 
-        final state = rt._counters[b.id] ?? [0, 0, 0];
+        final state = rt._counters[stateKey] ?? [0, 0, 0];
         num cv = state[0];
         final prevCU = state[1];
 
@@ -367,7 +386,7 @@ Map<String, dynamic> _evalBlock(
         } else if (cu && prevCU == 0) {
           cv = cv + 1;
         }
-        rt._counters[b.id] = [cv, cu ? 1 : 0, state[2]];
+        rt._counters[stateKey] = [cv, cu ? 1 : 0, state[2]];
         final q = cv >= pv;
         return {'Q': q, 'CV': cv.toInt()};
       }
@@ -378,7 +397,7 @@ Map<String, dynamic> _evalBlock(
         final ld = inputs.length > 1 ? _truthy(inputs[1]) ?? false : false;
         final pv = _asNum(inputs.length > 2 ? inputs[2] : null).toInt();
 
-        final state = rt._counters[b.id] ?? [0, 0, 0];
+        final state = rt._counters[stateKey] ?? [0, 0, 0];
         num cv = state[0];
         final prevCD = state[2];
 
@@ -390,7 +409,7 @@ Map<String, dynamic> _evalBlock(
         if (cv < 0) {
           cv = 0;
         }
-        rt._counters[b.id] = [cv, state[1], cd ? 1 : 0];
+        rt._counters[stateKey] = [cv, state[1], cd ? 1 : 0];
         final q = cv <= 0;
         return {'Q': q, 'CV': cv.toInt()};
       }
@@ -403,7 +422,7 @@ Map<String, dynamic> _evalBlock(
         final ld = inputs.length > 3 ? _truthy(inputs[3]) ?? false : false;
         final pv = _asNum(inputs.length > 4 ? inputs[4] : null).toInt();
 
-        final state = rt._counters[b.id] ?? [0, 0, 0];
+        final state = rt._counters[stateKey] ?? [0, 0, 0];
         num cv = state[0];
         final prevCU = state[1];
         final prevCD = state[2];
@@ -424,7 +443,7 @@ Map<String, dynamic> _evalBlock(
         if (cv < 0) {
           cv = 0;
         }
-        rt._counters[b.id] = [cv, cu ? 1 : 0, cd ? 1 : 0];
+        rt._counters[stateKey] = [cv, cu ? 1 : 0, cd ? 1 : 0];
         final qu = cv >= pv;
         final qd = cv <= 0;
         return {'QU': qu, 'QD': qd, 'CV': cv.toInt()};
@@ -432,17 +451,17 @@ Map<String, dynamic> _evalBlock(
     case 'R_TRIG':
       {
         final clk = inputs.isNotEmpty ? _truthy(inputs[0]) ?? false : false;
-        final prev = rt._prevClk[b.id] ?? false;
+        final prev = rt._prevClk[stateKey] ?? false;
         final q = clk && !prev;
-        rt._prevClk[b.id] = clk;
+        rt._prevClk[stateKey] = clk;
         return {'Q': q};
       }
     case 'F_TRIG':
       {
         final clk = inputs.isNotEmpty ? _truthy(inputs[0]) ?? false : false;
-        final prev = rt._prevClk[b.id] ?? false;
+        final prev = rt._prevClk[stateKey] ?? false;
         final q = !clk && prev;
-        rt._prevClk[b.id] = clk;
+        rt._prevClk[stateKey] = clk;
         return {'Q': q};
       }
     case 'TP':
@@ -451,7 +470,7 @@ Map<String, dynamic> _evalBlock(
         final inVal = inputs.isNotEmpty ? _truthy(inputs[0]) ?? false : false;
         final pt = _asNum(inputs.length > 1 ? inputs[1] : null);
 
-        final state = rt._pulse[b.id] ?? [0, 0, 0];
+        final state = rt._pulse[stateKey] ?? [0, 0, 0];
         num et = state[0];
         num running = state[1];
         final prevIN = state[2];
@@ -472,7 +491,7 @@ Map<String, dynamic> _evalBlock(
           et = 0;
         }
 
-        rt._pulse[b.id] = [et, running, inVal ? 1 : 0];
+        rt._pulse[stateKey] = [et, running, inVal ? 1 : 0];
         final q = running == 1;
         return {'Q': q, 'ET': et};
       }
@@ -482,8 +501,12 @@ Map<String, dynamic> _evalBlock(
       }
       final v = inputs.first;
       if (v != null && b.tagBinding.isNotEmpty) {
-        if (readOnly == null || !readOnly.contains(b.tagBinding)) {
-          _forceAwareWrite(p, b.tagBinding, v);
+        // The readOnly gate is applied to the REWRITTEN path, so an instance
+        // member ('Inst.Out') is never gated while a global coil target still
+        // is — the same semantics the ladder scoped executor uses.
+        final target = sp(b.tagBinding);
+        if (readOnly == null || !readOnly.contains(target)) {
+          _forceAwareWrite(p, target, v);
         }
       }
       return {};
@@ -518,23 +541,167 @@ String _resolvedToPin(PlcProject p, FbdWire w, FbdBlock? toBlock) {
   return ins.isNotEmpty ? ins.first : '';
 }
 
-/// Executes every FunctionBlockDiagram program: partitions the program's
-/// blocks by `network` and evaluates the networks in ascending index order
+/// Executes ONE FBD body (a program's or an FB instance's): partitions
+/// [blocks] by `network` and evaluates the networks in ascending index order
 /// (IEC 61131-3 network-ordered execution), running the same dependency
 /// (topological) worklist scoped to each network's blocks in turn — a block
 /// after all blocks feeding any of its input pins — producing a
-/// `Map<String,dynamic>` of output-pin values per block. An input pin's
-/// value is resolved from the wire targeting `(block, pin)`, read from the
-/// source block's named output in the cache. Arithmetic/comparator operand
-/// order follows the registry's pin order (`IN1`, `IN2`, ... / `MN`, `IN`,
-/// `MX`), not wire-insertion order. TON/TOF are executed statefully
-/// (per-block state in [rt]), producing both `Q` and `ET` outputs.
-/// TAG_OUTPUT writes its `IN` force-aware, immediately, so a later network
-/// in the same scan reads the updated tag via its own TAG_INPUT (this is how
-/// data flows across networks — wires never cross a network boundary).
-/// Cycles terminate deterministically without hanging. Never throws. When
-/// [monitor] is supplied, every evaluated block's output-pin values are
-/// recorded into it, keyed by `monitor.keyFor(prog.name, block.id, pin)`.
+/// `Map<String,dynamic>` of output-pin values per block. An input pin's value
+/// is resolved from the wire targeting `(block, pin)`, read from the source
+/// block's named output in the cache. Arithmetic/comparator operand order
+/// follows the registry's pin order (`IN1`, `IN2`, ... / `MN`, `IN`, `MX`), not
+/// wire-insertion order. TON/TOF are executed statefully (per-block state in
+/// [rt], keyed by `'$stateKeyPrefix<blockId>'`). TAG_OUTPUT writes its `IN`
+/// force-aware, immediately, so a later network in the same body reads the
+/// updated tag via its own TAG_INPUT (this is how data flows across networks —
+/// wires never cross a network boundary). Cycles terminate deterministically
+/// without hanging. Never throws. When [monitor] is supplied, every evaluated
+/// block's output-pin values are recorded into it, keyed by
+/// `monitor.keyFor(monitorProgName, block.id, pin)`.
+///
+/// [scope] + [stateKeyPrefix] are what make this reusable for an FB body:
+/// with both at their defaults (`null` / `''`) behaviour is byte-identical to
+/// the pre-extraction program path.
+void _runFbdBody(
+  PlcProject p,
+  List<FbdBlock> blocks,
+  List<FbdWire> wires,
+  int dtMs,
+  FbdRuntime rt, {
+  Set<String>? readOnly,
+  LdExecRuntime? ldRt,
+  FbdMonitor? monitor,
+  String monitorProgName = '',
+  LdScope? scope,
+  String stateKeyPrefix = '',
+}) {
+  if (blocks.isEmpty) {
+    return;
+  }
+  final byId = <String, FbdBlock>{};
+  for (final b in blocks) {
+    byId[b.id] = b;
+  }
+
+  // Networks execute in ascending index order. Wires are intra-network
+  // (a block's deps are always in its own network), so scoping is just
+  // filtering `blocks` by network — the worklist below is otherwise
+  // identical to the pre-network-aware single-pass version. A one-network
+  // body (all blocks `network == 0`) runs exactly one pass.
+  final netIndices = blocks.map((b) => b.network).toSet().toList()..sort();
+  for (final net in netIndices) {
+    final netBlocks = blocks.where((b) => b.network == net).toList();
+    final netIds = netBlocks.map((b) => b.id).toSet();
+
+    // For each block, the ordered list of (fromBlockId, fromPin) feeding
+    // each of its input pins in registry order (null entry = unconnected
+    // input).
+    final inputWireFor = <String, List<FbdWire?>>{};
+    for (final b in netBlocks) {
+      final pins = fbdInputPinsFor(p, b);
+      inputWireFor[b.id] = List<FbdWire?>.filled(pins.length, null);
+    }
+    for (final w in wires) {
+      if (!netIds.contains(w.toBlockId) || !netIds.contains(w.fromBlockId)) {
+        continue;
+      }
+      final toBlock = byId[w.toBlockId];
+      final fromBlock = byId[w.fromBlockId];
+      if (toBlock == null || fromBlock == null) {
+        continue;
+      }
+      final toPin = _resolvedToPin(p, w, toBlock);
+      if (toPin.isEmpty) {
+        continue;
+      }
+      final pins = fbdInputPinsFor(p, toBlock);
+      final idx = pins.indexOf(toPin);
+      if (idx < 0) {
+        continue;
+      }
+      inputWireFor[toBlock.id]![idx] = w;
+    }
+
+    // Dependency ids (source block ids) per block, for the topological pass.
+    final depsOf = <String, List<String>>{};
+    for (final b in netBlocks) {
+      depsOf[b.id] = [
+        for (final w in inputWireFor[b.id]!)
+          if (w != null) w.fromBlockId,
+      ];
+    }
+
+    final cache = <String, Map<String, dynamic>>{};
+    final done = <String>{};
+
+    dynamic resolveInput(FbdWire? w) {
+      if (w == null) {
+        return null;
+      }
+      final fromBlock = byId[w.fromBlockId];
+      final fromPin = _resolvedFromPin(p, w, fromBlock);
+      final outMap = cache[w.fromBlockId];
+      if (outMap == null || fromPin.isEmpty) {
+        return null;
+      }
+      return outMap[fromPin];
+    }
+
+    List<dynamic> orderedInputs(FbdBlock b) =>
+        inputWireFor[b.id]!.map(resolveInput).toList();
+
+    void recordMonitor(FbdBlock b) {
+      if (monitor == null) {
+        return;
+      }
+      final out = cache[b.id];
+      if (out == null) {
+        return;
+      }
+      out.forEach((pin, val) =>
+          monitor.pinValue[monitor.keyFor(monitorProgName, b.id, pin)] = val);
+    }
+
+    Map<String, dynamic> evaluate(FbdBlock b) => _evalBlock(p, b,
+        orderedInputs(b), dtMs, rt, readOnly, ldRt, '$stateKeyPrefix${b.id}',
+        scope);
+
+    // Evaluate blocks whose dependencies are all resolved; repeat until
+    // stable (topological worklist).
+    bool progressed = true;
+    while (progressed) {
+      progressed = false;
+      for (final b in netBlocks) {
+        if (done.contains(b.id)) {
+          continue;
+        }
+        final deps = depsOf[b.id]!;
+        if (!deps.every(done.contains)) {
+          continue;
+        }
+        cache[b.id] = evaluate(b);
+        recordMonitor(b);
+        done.add(b.id);
+        progressed = true;
+      }
+    }
+    // Any block left unresolved is in a cycle: evaluate once with whatever
+    // is cached so the scan always terminates.
+    for (final b in netBlocks) {
+      if (done.contains(b.id)) {
+        continue;
+      }
+      cache[b.id] = evaluate(b);
+      recordMonitor(b);
+      done.add(b.id);
+    }
+  }
+}
+
+/// Executes every FunctionBlockDiagram program in [p] (see [_runFbdBody] for
+/// the per-body semantics). Unscoped, empty state-key prefix: network
+/// partitioning, the topological worklist, the cycle fallback, monitor keys
+/// and runtime keys are byte-identical to before the scoped-body extraction.
 void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? only, Set<String>? readOnly, FbdMonitor? monitor, LdExecRuntime? ldRt}) {
   for (final prog in p.programs) {
     if (prog.language != 'FunctionBlockDiagram' || prog.fbdBlocks.isEmpty) {
@@ -543,123 +710,33 @@ void executeFbdPrograms(PlcProject p, int dtMs, FbdRuntime rt, {Set<String>? onl
     if (only != null && !only.contains(prog.name)) {
       continue;
     }
-    final byId = <String, FbdBlock>{};
-    for (final b in prog.fbdBlocks) {
-      byId[b.id] = b;
-    }
-
-    // Networks execute in ascending index order. Wires are intra-network
-    // (a block's deps are always in its own network), so scoping is just
-    // filtering prog.fbdBlocks by network — the worklist below is otherwise
-    // identical to the pre-network-aware single-pass version. A one-network
-    // program (all blocks `network == 0`) runs exactly one pass, byte
-    // identical to before.
-    final netIndices = prog.fbdBlocks.map((b) => b.network).toSet().toList()
-      ..sort();
-    for (final net in netIndices) {
-      final netBlocks =
-          prog.fbdBlocks.where((b) => b.network == net).toList();
-      final netIds = netBlocks.map((b) => b.id).toSet();
-
-      // For each block, the ordered list of (fromBlockId, fromPin) feeding
-      // each of its input pins in registry order (null entry = unconnected
-      // input).
-      final inputWireFor = <String, List<FbdWire?>>{};
-      for (final b in netBlocks) {
-        final pins = fbdInputPinsFor(p, b);
-        inputWireFor[b.id] = List<FbdWire?>.filled(pins.length, null);
-      }
-      for (final w in prog.fbdWires) {
-        if (!netIds.contains(w.toBlockId) || !netIds.contains(w.fromBlockId)) {
-          continue;
-        }
-        final toBlock = byId[w.toBlockId];
-        final fromBlock = byId[w.fromBlockId];
-        if (toBlock == null || fromBlock == null) {
-          continue;
-        }
-        final toPin = _resolvedToPin(p, w, toBlock);
-        if (toPin.isEmpty) {
-          continue;
-        }
-        final pins = fbdInputPinsFor(p, toBlock);
-        final idx = pins.indexOf(toPin);
-        if (idx < 0) {
-          continue;
-        }
-        inputWireFor[toBlock.id]![idx] = w;
-      }
-
-      // Dependency ids (source block ids) per block, for the topological
-      // pass.
-      final depsOf = <String, List<String>>{};
-      for (final b in netBlocks) {
-        depsOf[b.id] = [
-          for (final w in inputWireFor[b.id]!)
-            if (w != null) w.fromBlockId,
-        ];
-      }
-
-      final cache = <String, Map<String, dynamic>>{};
-      final done = <String>{};
-
-      dynamic resolveInput(FbdWire? w) {
-        if (w == null) {
-          return null;
-        }
-        final fromBlock = byId[w.fromBlockId];
-        final fromPin = _resolvedFromPin(p, w, fromBlock);
-        final outMap = cache[w.fromBlockId];
-        if (outMap == null || fromPin.isEmpty) {
-          return null;
-        }
-        return outMap[fromPin];
-      }
-
-      List<dynamic> orderedInputs(FbdBlock b) =>
-          inputWireFor[b.id]!.map(resolveInput).toList();
-
-      void recordMonitor(FbdBlock b) {
-        if (monitor == null) {
-          return;
-        }
-        final out = cache[b.id];
-        if (out == null) {
-          return;
-        }
-        out.forEach((pin, val) =>
-            monitor.pinValue[monitor.keyFor(prog.name, b.id, pin)] = val);
-      }
-
-      // Evaluate blocks whose dependencies are all resolved; repeat until
-      // stable (topological worklist).
-      bool progressed = true;
-      while (progressed) {
-        progressed = false;
-        for (final b in netBlocks) {
-          if (done.contains(b.id)) {
-            continue;
-          }
-          final deps = depsOf[b.id]!;
-          if (!deps.every(done.contains)) {
-            continue;
-          }
-          cache[b.id] = _evalBlock(p, b, orderedInputs(b), dtMs, rt, readOnly, ldRt);
-          recordMonitor(b);
-          done.add(b.id);
-          progressed = true;
-        }
-      }
-      // Any block left unresolved is in a cycle: evaluate once with whatever
-      // is cached so the scan always terminates.
-      for (final b in netBlocks) {
-        if (done.contains(b.id)) {
-          continue;
-        }
-        cache[b.id] = _evalBlock(p, b, orderedInputs(b), dtMs, rt, readOnly, ldRt);
-        recordMonitor(b);
-        done.add(b.id);
-      }
-    }
+    _runFbdBody(p, prog.fbdBlocks, prog.fbdWires, dtMs, rt,
+        readOnly: readOnly, ldRt: ldRt, monitor: monitor,
+        monitorProgName: prog.name);
   }
+}
+
+/// Executes one FBD FB body scoped to a single instance: every tag path goes
+/// through [scope] (bare references to the FB's own vars resolve against
+/// `<instancePath>.<var>`, everything else falls through global) and every
+/// stateful block's runtime state is keyed `'fb:<instancePath>|<blockId>'`, so
+/// two instances of the same FBD-bodied FB have disjoint timer/counter/edge
+/// state even though they share one set of body block ids. That prefix is also
+/// disjoint from every program block id: a block id is `'<pouName>_n<localId>'`
+/// (or an editor-assigned id) and can never contain ':' or '|', so no
+/// prefixed key can collide with a program's. (Note the id is NOT a sanitized
+/// identifier — an AOI body's pouName is e.g. `'AOI Ramp'`, with a space —
+/// the argument rests only on ':' and '|' never occurring.)
+/// Online monitoring is deliberately not wired up for FB bodies
+/// (`monitor: null`) — see docs/DEFERRED.md. The FBD analog of
+/// `runScopedLdBody` (ld_exec.dart). Never throws.
+void runScopedFbdBody(PlcProject p, List<FbdBlock> blocks, List<FbdWire> wires,
+    LdScope scope, int dtMs, FbdRuntime rt,
+    {Set<String>? readOnly, LdExecRuntime? ldRt}) {
+  _runFbdBody(p, blocks, wires, dtMs, rt,
+      readOnly: readOnly,
+      ldRt: ldRt,
+      monitor: null,
+      scope: scope,
+      stateKeyPrefix: 'fb:${scope.instancePath}|');
 }

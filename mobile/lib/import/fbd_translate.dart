@@ -134,7 +134,12 @@ FbdTranslation translateFbdBody(
 }
 
 /// Deterministic block id for a node: unique within the POU (localIds are).
-String _blockId(String pouName, int localId) => '${pouName}_n$localId';
+/// `pouName` is not run through `_sanitize` upstream (it's a raw POU/routine
+/// name), so strip `:`/`|` here too: `fbd_exec.dart`'s scoped state key
+/// (`'fb:<instancePath>|<blockId>'`) is only disjoint-by-construction if
+/// NEITHER half can contain the `|` separator (or `:`, the scheme prefix).
+String _blockId(String pouName, int localId) =>
+    '${pouName.replaceAll(RegExp(r'[:|]'), '_')}_n$localId';
 
 /// Translates one component's nodes to native blocks + wires, or throws
 /// [_FbdStub]. Instance-name dedup reservations are staged in a LOCAL set
