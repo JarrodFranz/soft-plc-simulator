@@ -638,4 +638,240 @@ void main() {
     expect(tr.translatedNetworkCount, 0);
     expect(tr.stubReasons['unresolved-pin'], 1);
   });
+
+  test('type + pin aliasing turns a Rockwell compare into a real IEC network', () {
+    final g = _graph(_parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="Level" X="0" Y="0"/>
+        <IRef ID="1" Operand="50" X="0" Y="40"/>
+        <Block ID="2" Type="GRT" Operand="Grt_01" X="100" Y="0"/>
+        <ORef ID="3" Operand="HiAlarm" X="200" Y="0"/>
+        <Wire FromID="0" ToID="2" ToParam="SourceA"/>
+        <Wire FromID="1" ToID="2" ToParam="SourceB"/>
+        <Wire FromID="2" FromParam="Dest" ToID="3" ToParam="IN"/>
+      </Sheet>'''));
+
+    expect(_node(g, 2).attributes['typeName'], 'GT'); // GRT -> GT
+    expect(g.connections[0].toPin, 'IN1'); // SourceA -> IN1
+    expect(g.connections[1].toPin, 'IN2'); // SourceB -> IN2
+    expect(g.connections[2].fromPin, 'OUT'); // Dest -> OUT
+
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 1);
+    expect(tr.stubbedNetworkCount, 0);
+  });
+
+  test('BAND/BNOT (real <Function> elements) alias their type and In<k>/Out pins', () {
+    // Bit functions are stateless, so real exports carry them as <Function>
+    // elements with no Operand - the element kind this test deliberately uses.
+    final g = _graph(_parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="A" X="0" Y="0"/>
+        <IRef ID="1" Operand="B" X="0" Y="40"/>
+        <Function ID="2" Type="BAND" X="100" Y="0"/>
+        <Function ID="3" Type="BNOT" X="200" Y="0"/>
+        <ORef ID="4" Operand="Out" X="300" Y="0"/>
+        <Wire FromID="0" ToID="2" ToParam="In1"/>
+        <Wire FromID="1" ToID="2" ToParam="In2"/>
+        <Wire FromID="2" FromParam="Out" ToID="3" ToParam="In"/>
+        <Wire FromID="3" FromParam="Out" ToID="4" ToParam="IN"/>
+      </Sheet>'''));
+
+    expect(_node(g, 2).attributes['typeName'], 'AND');
+    expect(_node(g, 3).attributes['typeName'], 'NOT');
+    expect(g.connections[0].toPin, 'IN1');
+    expect(g.connections[1].toPin, 'IN2');
+    expect(g.connections[2].fromPin, 'OUT');
+    expect(g.connections[2].toPin, 'IN');
+
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 1);
+  });
+
+  test('an AddOnInstruction Name is never aliased, though the same word IS on a Function', () {
+    final g = _graph(_parse('''
+      <Sheet Number="1">
+        <AddOnInstruction ID="0" Name="BAND" Operand="Inst1"/>
+        <Function ID="1" Type="BAND"/>
+      </Sheet>'''));
+    // Discriminating pair: the identical word aliases on a <Function> and does
+    // NOT on an <AddOnInstruction>, so this cannot pass vacuously.
+    expect(_node(g, 0).attributes['typeName'], 'BAND');
+    expect(_node(g, 1).attributes['typeName'], 'AND');
+  });
+
+  test('SEL/OSRI pins alias instead of dying uninventoried in _assertPin', () {
+    final g = _graph(_parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="Pick" X="0" Y="0"/>
+        <IRef ID="1" Operand="Lo" X="0" Y="40"/>
+        <IRef ID="2" Operand="Hi" X="0" Y="80"/>
+        <Block ID="3" Type="SEL" Operand="Sel_01" X="100" Y="0"/>
+        <ORef ID="4" Operand="Picked" X="200" Y="0"/>
+        <Wire FromID="0" ToID="3" ToParam="SelectorIn"/>
+        <Wire FromID="1" ToID="3" ToParam="In1"/>
+        <Wire FromID="2" ToID="3" ToParam="In2"/>
+        <Wire FromID="3" FromParam="Out" ToID="4" ToParam="IN"/>
+      </Sheet>
+      <Sheet Number="2">
+        <IRef ID="0" Operand="Pulse" X="0" Y="0"/>
+        <Block ID="1" Type="OSRI" Operand="Osr_01" X="100" Y="0"/>
+        <ORef ID="2" Operand="Edge" X="200" Y="0"/>
+        <Wire FromID="0" ToID="1" ToParam="InputBit"/>
+        <Wire FromID="1" FromParam="OutputBit" ToID="2" ToParam="IN"/>
+      </Sheet>'''));
+
+    // SEL keeps its type (it IS an IEC built-in name) but its pins are
+    // Rockwell's: SelectorIn -> G, In1 -> IN0 (selector false), In2 -> IN1,
+    // Out -> OUT. Without the map these die in _assertPin UNINVENTORIED.
+    expect(_node(g, 3).attributes['typeName'], 'SEL');
+    expect(g.connections[0].toPin, 'G');
+    expect(g.connections[1].toPin, 'IN0');
+    expect(g.connections[2].toPin, 'IN1');
+    expect(g.connections[3].fromPin, 'OUT');
+    // OSRI -> R_TRIG with InputBit -> CLK, OutputBit -> Q.
+    final osri = g.nodes.firstWhere((n) => n.attributes['abOriginal'] == 'OSRI');
+    expect(osri.attributes['typeName'], 'R_TRIG');
+    expect(g.connections[4].toPin, 'CLK');
+    expect(g.connections[5].fromPin, 'Q');
+
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 2);
+    expect(tr.stubbedNetworkCount, 0);
+  });
+
+  test('TONR maps to TON with abOriginal + a prominent verify warning', () {
+    final ir = _parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="Run" X="0" Y="0"/>
+        <IRef ID="1" Operand="1000" X="0" Y="40"/>
+        <Block ID="2" Type="TONR" Operand="T1" X="100" Y="0"/>
+        <ORef ID="3" Operand="Done" X="200" Y="0"/>
+        <Wire FromID="0" ToID="2" ToParam="TimerEnable"/>
+        <Wire FromID="1" ToID="2" ToParam="PRE"/>
+        <Wire FromID="2" FromParam="DN" ToID="3" ToParam="IN"/>
+      </Sheet>''');
+    final g = _graph(ir);
+
+    expect(_node(g, 2).attributes['typeName'], 'TON');
+    expect(_node(g, 2).attributes['abOriginal'], 'TONR');
+    expect(g.connections[0].toPin, 'IN'); // TimerEnable -> IN
+    expect(g.connections[1].toPin, 'PT'); // PRE -> PT
+    expect(g.connections[2].fromPin, 'Q'); // DN -> Q
+
+    final verify =
+        ir.warnings.where((w) => w.message.contains('verify')).toList();
+    expect(verify, hasLength(1));
+    expect(verify.single.severity, WarningSeverity.warning); // NOT info
+    expect(verify.single.message, contains('Routine "Prog_Main"'));
+    expect(verify.single.message, contains('TONR'));
+
+    // translateFbdBody ignores the unknown `abOriginal` key.
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 1);
+  });
+
+  test('a wired TONR Reset pin stubs that network (unresolved-pin)', () {
+    final g = _graph(_parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="Run" X="0" Y="0"/>
+        <IRef ID="1" Operand="Rst" X="0" Y="40"/>
+        <Block ID="2" Type="TONR" Operand="T1" X="100" Y="0"/>
+        <Wire FromID="0" ToID="2" ToParam="TimerEnable"/>
+        <Wire FromID="1" ToID="2" ToParam="Reset"/>
+      </Sheet>'''));
+
+    expect(g.connections[1].toPin, 'Reset'); // passes through verbatim
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 0);
+    expect(tr.stubReasons['unresolved-pin'], 1);
+  });
+
+  test('a WIRED EnableIn on a built-in warns and stubs; unwired costs nothing', () {
+    final ir = _parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="Gate" X="0" Y="0"/>
+        <IRef ID="1" Operand="A" X="0" Y="40"/>
+        <IRef ID="2" Operand="B" X="0" Y="80"/>
+        <Function ID="3" Type="BAND" X="100" Y="0"/>
+        <Wire FromID="0" ToID="3" ToParam="EnableIn"/>
+        <Wire FromID="1" ToID="3" ToParam="In1"/>
+        <Wire FromID="2" ToID="3" ToParam="In2"/>
+      </Sheet>''');
+    final g = _graph(ir);
+
+    expect(g.connections[0].toPin, 'EnableIn'); // left unaliased
+    final w = ir.warnings
+        .where((x) => x.message.contains('EnableIn/EnableOut wired'))
+        .toList();
+    expect(w, hasLength(1));
+    expect(w.single.severity, WarningSeverity.info);
+
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 0);
+    expect(tr.stubReasons['unresolved-pin'], 1);
+
+    // The unwired case (the common one) produces no node, warning or stub.
+    final clean = _parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="A" X="0" Y="0"/>
+        <IRef ID="1" Operand="B" X="0" Y="40"/>
+        <Function ID="2" Type="BAND" X="100" Y="0"/>
+        <ORef ID="3" Operand="Out" X="200" Y="0"/>
+        <Wire FromID="0" ToID="2" ToParam="In1"/>
+        <Wire FromID="1" ToID="2" ToParam="In2"/>
+        <Wire FromID="2" FromParam="Out" ToID="3" ToParam="IN"/>
+      </Sheet>''');
+    expect(
+        clean.warnings.any((x) => x.message.contains('EnableIn/EnableOut wired')),
+        isFalse);
+    expect(translateFbdBody(_graph(clean), pouName: 'Prog_Main')
+        .translatedNetworkCount, 1);
+  });
+
+  test('a wired EnableIn on an AddOnInstruction call warns too (the common case)', () {
+    // The most common real occurrence of a wired EnableIn is an AOI call, not
+    // an aliased built-in: for an FBD-Logic AOI, EnableIn/EnableOut are
+    // INTERNAL vars and therefore not pins, so the network stubs identically.
+    final ir = _parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="Gate" X="0" Y="0"/>
+        <AddOnInstruction ID="1" Name="Ramp" Operand="R1" X="100" Y="0"/>
+        <Wire FromID="0" ToID="1" ToParam="EnableIn"/>
+      </Sheet>''');
+    final w = ir.warnings
+        .where((x) => x.message.contains('EnableIn/EnableOut wired'))
+        .toList();
+    expect(w, hasLength(1));
+    expect(w.single.severity, WarningSeverity.info);
+    expect(w.single.message, contains('Ramp'));
+  });
+
+  test('an unmapped Rockwell block stubs and is inventoried, while a mapped one aliases', () {
+    final g = _graph(_parse('''
+      <Sheet Number="1">
+        <IRef ID="0" Operand="Raw" X="0" Y="0"/>
+        <Block ID="1" Type="SCL" Operand="S1" X="100" Y="0"/>
+        <Wire FromID="0" ToID="1" ToParam="In"/>
+      </Sheet>
+      <Sheet Number="2">
+        <IRef ID="0" Operand="A" X="0" Y="0"/>
+        <IRef ID="1" Operand="B" X="0" Y="40"/>
+        <Block ID="2" Type="GRT" Operand="Grt_02" X="100" Y="0"/>
+        <ORef ID="3" Operand="Hi" X="200" Y="0"/>
+        <Wire FromID="0" ToID="2" ToParam="SourceA"/>
+        <Wire FromID="1" ToID="2" ToParam="SourceB"/>
+        <Wire FromID="2" FromParam="Dest" ToID="3" ToParam="IN"/>
+      </Sheet>'''));
+
+    // Discriminating pair in ONE routine: the aliasable GRT is rewritten, the
+    // unmapped SCL is not, so "unchanged" cannot pass vacuously.
+    expect(_node(g, 1).attributes['typeName'], 'SCL');
+    expect(g.nodes.any((n) => n.attributes['typeName'] == 'GT'), isTrue);
+
+    final tr = translateFbdBody(g, pouName: 'Prog_Main');
+    expect(tr.translatedNetworkCount, 1); // the GRT network
+    expect(tr.stubReasons['unsupported-block'], 1); // the SCL network
+    expect(tr.unsupportedBlockTypes, contains('SCL'));
+  });
 }

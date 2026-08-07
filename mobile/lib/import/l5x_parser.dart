@@ -188,6 +188,100 @@ const int _kMaxL5xFbdId = 1 << 31;
 /// of silently disappearing.
 const Set<String> _kL5xFbdAnnotationElements = {'TextBox', 'Attachment'};
 
+/// Rockwell FBD block/function mnemonics that alias onto an IEC built-in.
+/// Applied to `<Block Type=>` / `<Function Type=>` only: an
+/// `<AddOnInstruction Name=>` is a user type name and is never aliased.
+/// `TONR`/`TOFR` are BEST-EFFORT (retentive accumulation and the `Reset` pin
+/// are not modeled) and carry an extra verify warning.
+const Map<String, String> _kL5xFbdTypeAliases = {
+  'EQU': 'EQ',
+  'NEQ': 'NE',
+  'GEQ': 'GE',
+  'LEQ': 'LE',
+  'GRT': 'GT',
+  'LES': 'LT',
+  'BAND': 'AND',
+  'BOR': 'OR',
+  'BNOT': 'NOT',
+  'TONR': 'TON',
+  'TOFR': 'TOF',
+  // Logix one-shots map exactly onto the IEC edge detectors.
+  'OSRI': 'R_TRIG',
+  'OSFI': 'F_TRIG',
+};
+
+/// Pin renames keyed by the ROCKWELL (pre-alias) type name. Rockwell FBD wires
+/// carry `SourceA`/`SourceB`/`Dest` (math + compares) and `In<k>`/`Out` (bit
+/// functions); `_assertPin` compares literally against the IEC registry
+/// (`fbd_pins.dart`), so without these a type-only alias would make EVERY
+/// math/compare network stub with `unresolved-pin` (spec resolution R1).
+/// Math types are listed even though their TYPE is unchanged.
+const Map<String, Map<String, String>> _kL5xFbdPinAliases = {
+  'ADD': {'SourceA': 'IN1', 'SourceB': 'IN2', 'Dest': 'OUT'},
+  'SUB': {'SourceA': 'IN1', 'SourceB': 'IN2', 'Dest': 'OUT'},
+  'MUL': {'SourceA': 'IN1', 'SourceB': 'IN2', 'Dest': 'OUT'},
+  'DIV': {'SourceA': 'IN1', 'SourceB': 'IN2', 'Dest': 'OUT'},
+  'EQU': {'SourceA': 'IN1', 'SourceB': 'IN2', 'Dest': 'OUT'},
+  'NEQ': {'SourceA': 'IN1', 'SourceB': 'IN2', 'Dest': 'OUT'},
+  'GEQ': {'SourceA': 'IN1', 'SourceB': 'IN2', 'Dest': 'OUT'},
+  'LEQ': {'SourceA': 'IN1', 'SourceB': 'IN2', 'Dest': 'OUT'},
+  'GRT': {'SourceA': 'IN1', 'SourceB': 'IN2', 'Dest': 'OUT'},
+  'LES': {'SourceA': 'IN1', 'SourceB': 'IN2', 'Dest': 'OUT'},
+  'BNOT': {'In': 'IN', 'Out': 'OUT'},
+  'TONR': {'TimerEnable': 'IN', 'PRE': 'PT', 'Preset': 'PT', 'DN': 'Q', 'ACC': 'ET'},
+  'TOFR': {'TimerEnable': 'IN', 'PRE': 'PT', 'Preset': 'PT', 'DN': 'Q', 'ACC': 'ET'},
+  // SEL and CTUD keep their IEC-identical TYPE names, so they pass
+  // `kFbdBuiltinBlockTypes` and would otherwise die in `_assertPin` with
+  // `unresolved-pin` and NO inventory entry. IEC SEL is
+  // `OUT = G ? IN1 : IN0`; Logix SEL is `Out = SelectorIn ? In2 : In1`.
+  'SEL': {'SelectorIn': 'G', 'In1': 'IN0', 'In2': 'IN1', 'Out': 'OUT'},
+  // CTUD is BEST-EFFORT (like TONR/TOFR): the mapped pins are the ones whose
+  // meaning is unambiguous; anything else passes through and stubs.
+  'CTUD': {
+    'CUEnable': 'CU',
+    'CDEnable': 'CD',
+    'Reset': 'R',
+    'Load': 'LD',
+    'PRE': 'PV',
+    'ACC': 'CV',
+    'DN': 'QU',
+  },
+  'OSRI': {'InputBit': 'CLK', 'OutputBit': 'Q'},
+  'OSFI': {'InputBit': 'CLK', 'OutputBit': 'Q'},
+};
+
+/// Extensible bit functions whose pins are `In<k>`/`Out` (mapped by regex to
+/// `IN<k>`/`OUT`).
+const Set<String> _kL5xFbdBitFunctions = {'BAND', 'BOR'};
+
+final RegExp _kL5xFbdBitFunctionPin = RegExp(r'^In(\d+)$');
+
+/// Rewrites a Rockwell pin name to its IEC equivalent, given the endpoint
+/// node's ROCKWELL type. Anything unmapped (including `EnableIn`/`EnableOut`)
+/// passes through VERBATIM and, if it is not a real IEC pin, `_assertPin`
+/// stubs that network — faithful-or-stub preserved.
+String? _aliasL5xFbdPin(String? abType, String? pin) {
+  if (pin == null || pin.isEmpty || abType == null) {
+    return pin;
+  }
+  final mapped = _kL5xFbdPinAliases[abType]?[pin];
+  if (mapped != null) {
+    return mapped;
+  }
+  if (_kL5xFbdBitFunctions.contains(abType)) {
+    if (pin == 'Out') return 'OUT';
+    final m = _kL5xFbdBitFunctionPin.firstMatch(pin);
+    if (m != null) return 'IN${m.group(1)}';
+  }
+  return pin;
+}
+
+/// Aliases whose IEC target is only an APPROXIMATION of the Rockwell block, so
+/// each carries an `abOriginal` breadcrumb and a prominent verify warning.
+/// (`TONR`/`TOFR` lose retentive accumulation and the `Reset` pin;
+/// `OSRI`/`OSFI` lose Logix's separate storage/output bits.)
+const Set<String> _kL5xFbdBestEffortTypes = {'TONR', 'TOFR', 'OSRI', 'OSFI'};
+
 /// The `<Sheet>` elements of an FBD routine body, in ascending `<Sheet
 /// Number>` order. A sheet without a `Number` (the schema allows it, though
 /// real exports always carry one) keeps its DOCUMENT-order position relative
@@ -365,6 +459,11 @@ GraphBody _l5xFbdBody(
   // Raw ids that a LATER element on the same sheet tried to reuse (see the
   // duplicate handling in pass 1).
   final duplicateRawIds = <String>[];
+  // Assigned localId -> the node's ROCKWELL type (pre-alias), so pass 2 can
+  // alias each wire's pins by its endpoint's source type.
+  final abTypeById = <int, String>{};
+  final verifyWarned = <String>{};
+  final enableWarned = <String>{};
   // Sheet-merge state.
   var idOffset = 0;
   var maxAssignedId = -1;
@@ -454,17 +553,30 @@ GraphBody _l5xFbdBody(
             break;
           }
         case 'Block':
-          {
-            elementType = 'block';
-            attrs['typeName'] = (el.getAttribute('Type') ?? '').trim();
-            final operand = (el.getAttribute('Operand') ?? '').trim();
-            if (operand.isNotEmpty) attrs['instanceName'] = operand;
-            break;
-          }
         case 'Function':
           {
             elementType = 'block';
-            attrs['typeName'] = (el.getAttribute('Type') ?? '').trim();
+            final abType = (el.getAttribute('Type') ?? '').trim();
+            final aliased = _kL5xFbdTypeAliases[abType] ?? abType;
+            attrs['typeName'] = aliased;
+            abTypeById[localId] = abType;
+            if (_kL5xFbdBestEffortTypes.contains(abType)) {
+              // IR-only breadcrumb: translateFbdBody copies attributes through
+              // and only reads the keys it knows, so an unknown key is
+              // silently ignored (there is no native field to carry it).
+              attrs['abOriginal'] = abType;
+              if (verifyWarned.add(abType)) {
+                warnings.add(ImportWarning(
+                    severity: WarningSeverity.warning,
+                    message: '$ownerLabel: Rockwell $abType mapped best-effort '
+                        'to the IEC $aliased block — behaviour differs '
+                        '(retentive/reset, extra pins); verify.'));
+              }
+            }
+            if (tag == 'Block') {
+              final operand = (el.getAttribute('Operand') ?? '').trim();
+              if (operand.isNotEmpty) attrs['instanceName'] = operand;
+            }
             break;
           }
         case 'AddOnInstruction':
@@ -472,6 +584,9 @@ GraphBody _l5xFbdBody(
             // An AOI's `Name` is a user type name and is NEVER aliased.
             elementType = 'block';
             attrs['typeName'] = (el.getAttribute('Name') ?? '').trim();
+            if (attrs['typeName']!.isNotEmpty) {
+              abTypeById[localId] = attrs['typeName']!; // never aliased
+            }
             final operand = (el.getAttribute('Operand') ?? '').trim();
             if (operand.isNotEmpty) attrs['instanceName'] = operand;
             break;
@@ -542,11 +657,41 @@ GraphBody _l5xFbdBody(
       if (tag != 'Wire' && tag != 'FeedbackWire') {
         continue;
       }
+      final rawFromPin = el.getAttribute('FromParam');
+      final rawToPin = el.getAttribute('ToParam');
+      final fromId = resolveEndpoint(el.getAttribute('FromID'));
+      final toId = resolveEndpoint(el.getAttribute('ToID'));
+
+      // Logix `EnableIn`/`EnableOut` are a rung-condition concept with no pin
+      // on the IEC block an aliased type maps to — and none on an imported AOI
+      // either, where they are INTERNAL vars (see l5x_parser's AOI arm). A
+      // WIRED one is left unaliased and follows the existing unmapped-pin path
+      // (the network stubs with `unresolved-pin`); this heads-up just makes
+      // that a named, diagnosable condition instead of a generic pin stub. An
+      // UNWIRED one never reaches here. The gate is simply "the endpoint is a
+      // block": narrowing it to aliased built-ins would miss the AOI case.
+      for (final e in [
+        MapEntry(abTypeById[fromId], rawFromPin),
+        MapEntry(abTypeById[toId], rawToPin),
+      ]) {
+        final t = e.key;
+        final pin = e.value;
+        if (t == null || pin == null) continue;
+        if (pin != 'EnableIn' && pin != 'EnableOut') continue;
+        if (enableWarned.add('$t|$pin')) {
+          warnings.add(ImportWarning(
+              severity: WarningSeverity.info,
+              message: '$ownerLabel: EnableIn/EnableOut wired on "$t" — the '
+                  'block it maps to has no such pin, so that network is '
+                  'not translated.'));
+        }
+      }
+
       conns.add(IrConnection(
-        fromLocalId: resolveEndpoint(el.getAttribute('FromID')),
-        fromPin: el.getAttribute('FromParam'),
-        toLocalId: resolveEndpoint(el.getAttribute('ToID')),
-        toPin: el.getAttribute('ToParam'),
+        fromLocalId: fromId,
+        fromPin: _aliasL5xFbdPin(abTypeById[fromId], rawFromPin),
+        toLocalId: toId,
+        toPin: _aliasL5xFbdPin(abTypeById[toId], rawToPin),
       ));
     }
   }
