@@ -124,7 +124,8 @@ ImportResult mapImportedProject(ImportedProject ir,
   // name instead of silently falling back to a scalar default. The registry
   // + rename map also feed the LD translator further down so custom-FB calls
   // route to the right definition.
-  final fbRes = mapImportedFbs(ir.pous, structs: structs, dutNames: dutNames, warnings: warnings);
+  final fbRes = mapImportedFbs(ir.pous, structs: structs, dutNames: dutNames,
+      warnings: warnings, dialect: ir.dialect);
   final fbTypeNames = fbRes.renameMap.values.toSet();
 
   // scratch2 knows every struct (including nested ones) and FB definition, so
@@ -186,10 +187,13 @@ ImportResult mapImportedProject(ImportedProject ir,
   var stubbedRungCount = 0;
   final unsupportedLdBlockTypes = <String>{};
   final ldStubReasons = <String, int>{};
-  var translatedFbdNetworkCount = 0;
-  var stubbedFbdNetworkCount = 0;
-  final unsupportedFbdBlockTypes = <String>{};
-  final fbdStubReasons = <String, int>{};
+  // AOI FBD bodies translated by `mapImportedFbs` are FBD networks too — seed
+  // the FBD counters with them so the preview's EXISTING FBD fields cover both
+  // program routines and AOI bodies (no new report fields, no new preview UI).
+  var translatedFbdNetworkCount = fbRes.translatedFbdNetworkCount;
+  var stubbedFbdNetworkCount = fbRes.stubbedFbdNetworkCount;
+  final unsupportedFbdBlockTypes = <String>{...fbRes.unsupportedFbdBlockTypes};
+  final fbdStubReasons = <String, int>{...fbRes.fbdStubReasons};
   var translatedSfcCount = 0;
   var stubbedSfcCount = 0;
   final sfcStubReasons = <String, int>{};

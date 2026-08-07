@@ -166,6 +166,16 @@ class ImportedProject {
   final List<ImportedVar> globalVars;
   final List<ImportedPou> pous;
   final List<ImportWarning> warnings;
+
+  /// Which vendor parser produced this IR. Language mappers use it where a
+  /// dialect-specific rule applies — today only `mapImportedFbs`' FBD-bodied
+  /// AOI arm, which must NOT change the PLCopen path (a PLCopen `functionBlock`
+  /// FBD POU is otherwise indistinguishable from an L5X FBD AOI by
+  /// kind/lang/body type alone). Defaults to `plcOpen`, so every existing
+  /// construction site compiles unchanged.
+  final ImportDialect dialect;
+
   ImportedProject({required this.name, required this.types,
-      required this.globalVars, required this.pous, required this.warnings});
+      required this.globalVars, required this.pous, required this.warnings,
+      this.dialect = ImportDialect.plcOpen});
 }

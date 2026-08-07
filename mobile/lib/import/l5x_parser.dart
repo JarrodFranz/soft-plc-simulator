@@ -63,7 +63,7 @@ ImportedProject parseL5x(String xml) {
 
   return ImportedProject(
       name: name, types: types, globalVars: globalVars, pous: pous,
-      warnings: warnings);
+      warnings: warnings, dialect: ImportDialect.l5x);
 }
 
 /// First direct child element named [local], or null.
@@ -754,8 +754,11 @@ VarScope _usageScope(String? usage) => switch (usage) {
       _ => VarScope.local,
     };
 
-/// Maps `<AddOnInstructionDefinition>`s to functionBlock POUs. The existing
-/// `mapImportedFbs` turns these into FbDefinitions (AOI-typed tags then resolve).
+/// Maps `<AddOnInstructionDefinition>`s to functionBlock POUs. `mapImportedFbs`
+/// turns these into FbDefinitions (AOI-typed tags then resolve): ST logic
+/// becomes the FB's ST source, RLL logic a `NeutralLadderBody` compiled to a
+/// ladder body, FBD logic a `GraphBody` translated to an FBD body. SFC logic
+/// is still interface-only.
 List<ImportedPou> _l5xAois(XmlElement? controller, List<ImportWarning> warnings) {
   final out = <ImportedPou>[];
   if (controller == null) return out;
@@ -775,6 +778,11 @@ List<ImportedPou> _l5xAois(XmlElement? controller, List<ImportWarning> warnings)
       }
       final logicType = logic?.getAttribute('Type');
       final isRll = logicType == 'RLL';
+      final isFbd = logicType == 'FBD';
+      // Rockwell re-evaluates EnableIn on every call, and both graphical
+      // logic languages routinely reference EnableIn/EnableOut, so both keep
+      // them as internal vars. ST/SFC-logic AOIs keep the historic skip.
+      final keepsEnableParams = isRll || isFbd;
 
       final vars = <ImportedVar>[];
       for (final params in _children(aoi, 'Parameters')) {
@@ -782,7 +790,7 @@ List<ImportedPou> _l5xAois(XmlElement? controller, List<ImportWarning> warnings)
           final pn = p.getAttribute('Name') ?? '';
           if (pn.isEmpty) continue;
           if (pn == 'EnableIn' || pn == 'EnableOut') {
-            if (!isRll) continue; // ST/FBD/SFC AOIs: historic skip, unchanged
+            if (!keepsEnableParams) continue; // ST/SFC AOIs: historic skip
             // Rockwell RLL AOI logic commonly does XIC(EnableIn)/OTE(EnableOut).
             // Retained as INTERNAL vars so those references resolve per
             // instance via LdScope instead of falling through to absent
@@ -836,6 +844,11 @@ List<ImportedPou> _l5xAois(XmlElement? controller, List<ImportWarning> warnings)
           }
           body = NeutralLadderBody(rungs: rungs);
           lang = PouLanguage.ld;
+        } else if (isFbd) {
+          // Same sheet parse _l5xRoutines uses; the mapper compiles it via
+          // translateFbdBody into the FB's native FBD body.
+          body = _l5xFbdBody(logic, warnings, 'AOI "$name"');
+          lang = PouLanguage.fbd;
         } else {
           warnings.add(ImportWarning(severity: WarningSeverity.info,
               message: 'AOI "$name" logic is ${logicType ?? '?'} — interface '
