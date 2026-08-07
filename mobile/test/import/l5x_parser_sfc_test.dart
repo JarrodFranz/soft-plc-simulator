@@ -371,6 +371,32 @@ void main() {
           isTrue);
     });
 
+    test(
+        'an annotation reusing a <Leg>\'s ID is caught too, in EITHER order',
+        () {
+      // Same collision as above, but the real element is a <Leg> — a link
+      // endpoint gated exactly like a step or transition (pass 1), not a
+      // node in its own right. Both orders are traced safe: the ID gate
+      // demotes whichever claimant is second, so the chart always ends up
+      // poisoned rather than silently mis-wired.
+      const branch = '<Branch ID="10" BranchType="Selection"><Leg ID="11"/></Branch>';
+      const box = '<TextBox ID="11" X="0" Y="0"/>';
+
+      for (final (label, fixture) in [
+        ('element first', '$branch$box'),
+        ('annotation first', '$box$branch'),
+      ]) {
+        final (body, ws) = _build(_wrap(fixture));
+        expect(_hasInfo(ws, 'duplicate ID'), isTrue,
+            reason: '$label: ${_infos(ws)}');
+        expect(body.nodes.any((n) => n.name == '#unrepresentable'), isTrue,
+            reason: label);
+        final tr = translateSfcBody(body, pouName: 'P');
+        expect(tr.translated, isFalse, reason: label);
+        expect(tr.stubReason, 'complex-topology', reason: label);
+      }
+    });
+
     test('two <SFCContent> containers merge, and a cross-container duplicate is caught', () {
       final (body, ws) = _build(_wrapRoutine('''
         <Routine Name="Seq" Type="SFC">
@@ -1474,6 +1500,13 @@ void main() {
         '<Step ID="1" Operand="A" InitialStep="true">'
             '<Action ID="11" Operand="M"/></Step>',
         'action has no body'
+      ),
+      (
+        'branch flow',
+        '<Step ID="1" Operand="A" InitialStep="true"/>'
+            '<Branch ID="10" BranchType="Selection" BranchFlow="Converge"/>'
+            '<DirectedLink FromID="1" ToID="10"/>',
+        'branch flow mismatch'
       ),
     ];
 

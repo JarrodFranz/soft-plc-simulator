@@ -176,6 +176,11 @@ so the stub is never a mystery.
   every transition condition. A `Preset="0"` — which Logix writes on nearly
   every step — is dropped silently, so the warnings you do see are the real
   ones.
+- **branch flow mismatch** — a `<Branch>`'s `BranchFlow` attribute
+  (`Diverge`/`Converge`) disagrees with what the `<DirectedLink>` topology
+  actually wires up. `BranchFlow` is read but not trusted: emission is
+  derived from the links, so the chart still translates on the links' terms
+  and the mismatch is only an info breadcrumb.
 
 Proven end-to-end (parse → map → translate → execute), including a selection
 branch and a simultaneous fork/join, in
@@ -185,7 +190,9 @@ branch and a simultaneous fork/join, in
 
 - **SFC AOI logic.** Studio 5000 does not permit SFC as an Add-On Instruction
   `Logic` language — AOIs accept Ladder, FBD or Structured Text only — so
-  there is nothing to translate. The importer keeps a defensive
+  there is nothing to translate (Rockwell product restriction, asserted from
+  format knowledge, not verified against a repo artifact; the defensive
+  interface-only path stands either way). The importer keeps a defensive
   interface-only path (parameters + local tags become a real `FbDefinition`,
   with an info warning naming the AOI) should such a file ever appear.
   (RLL and FBD AOI logic execute — see above.)

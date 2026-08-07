@@ -246,7 +246,7 @@ translates cleanly AS THE WRONG LOGIC with zero warnings, the same failure shape
 | `RLL`-Logic AOI | Real, per-instance execution (§4) |
 | `ST`-Logic AOI | Real, ST body carried, `EnableIn`/`EnableOut` historic skip |
 | `FBD`-Logic AOI | Real, per-instance execution via the FBD-bodied `FbDefinition` (this section) |
-| `SFC`-Logic AOI | Not possible in Studio 5000 (AOIs accept Ladder/FBD/ST only); defensive interface-only path kept |
+| `SFC`-Logic AOI | Not possible in Studio 5000 (AOIs accept Ladder/FBD/ST only) - a Rockwell product restriction, asserted from format knowledge and not verified against a repo artifact; the defensive interface-only path stands either way |
 
 Proven end-to-end (parse -> map -> translate -> execute) in
 `mobile/test/import/import_l5x_aoi_fbd_e2e_test.dart` (FBD routine + FBD-Logic AOI) and
@@ -294,7 +294,9 @@ SFC ROUTINES translate for real as of this version (§5) - the whole chart, incl
 simultaneous branches, becomes an executing `SequentialFunctionChart` program, or the whole POU
 stubs with a named reason. SFC-Logic AOIs are a different question and the answer is that they do
 not exist: Studio 5000 does not permit SFC as an AOI `Logic` language (Ladder, FBD or ST only), so
-the importer keeps only a defensive interface-only path for one.
+the importer keeps only a defensive interface-only path for one (a Rockwell product restriction,
+asserted from format knowledge and not verified against a repo artifact; the defensive
+interface-only path stands either way).
 
 ### "My SFC routine imported as a stub - what did I do wrong?"
 Probably nothing. SFC is whole-POU faithful-or-stub, so ONE unmappable thing takes down the chart:
