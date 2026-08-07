@@ -1,0 +1,931 @@
+{
+  "version": "1.0",
+  "notes": "Retrieval units for canonical knowledge under knowledge/. One unit per canonical markdown file. Generated from per-file YAML frontmatter.",
+  "unit_count": 35,
+  "domains": {
+    "app": 7,
+    "industry": 1,
+    "industry/iec61131": 7,
+    "industry/plc-formats": 3,
+    "industry/protocols": 11,
+    "practices": 3,
+    "root": 3
+  },
+  "units": [
+    {
+      "id": "knowledge:app/default-projects",
+      "title": "Default Projects",
+      "path": "knowledge/app/default-projects.md",
+      "domain": "app",
+      "topics": [
+        "default-projects",
+        "seeding",
+        "backfill",
+        "retired-id",
+        "coverage-guard",
+        "integrity-guard",
+        "no-autostart"
+      ],
+      "version": "2026-08",
+      "summary": "The seven-project default catalog and what each showcases, the id-gated backfill ledger that can only add a default and never overwrites or removes one (CL-12), and what the coverage/integrity/no-autostart guard tests actually enforce versus what they silently do not check.",
+      "related": [
+        "knowledge:app/index",
+        "knowledge:app/protocol-hosting",
+        "knowledge:app/tag-model"
+      ],
+      "learnings": [
+        "CL-12"
+      ],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:app/index",
+      "title": "App",
+      "path": "knowledge/app/index.md",
+      "domain": "app",
+      "topics": [
+        "scan-engine",
+        "tag-model",
+        "simulation",
+        "protocol-hosting",
+        "ui-performance",
+        "default-projects",
+        "architecture"
+      ],
+      "version": "2026-08",
+      "summary": "Domain hub for this app's own architecture and engine semantics - scan tick ordering, the tag/write-gate model, the deterministic simulation engine, in-process protocol hosting, the decoupled UI repaint strategy, and the default-project catalog.",
+      "related": [
+        "knowledge:index",
+        "knowledge:industry/iec61131/index"
+      ],
+      "learnings": [],
+      "priority": "high"
+    },
+    {
+      "id": "knowledge:app/protocol-hosting",
+      "title": "Protocol Hosting",
+      "path": "knowledge/app/protocol-hosting.md",
+      "domain": "app",
+      "topics": [
+        "adr-010",
+        "in-process-hosting",
+        "no-autostart",
+        "hardening",
+        "drop-log-gate",
+        "logging-sources",
+        "port-configuration"
+      ],
+      "version": "2026-08",
+      "summary": "ADR-010's in-process pure-Dart protocol hosting decision, the explicit opt-in-only start lifecycle proven by a real no-autostart guard test, the fragment-bound/fail-loud/budget hardening program shared across all nine hosts, the kLogSource logging rule, and DropLogGate's first-occurrence WARN policy.",
+      "related": [
+        "knowledge:app/index",
+        "knowledge:app/tag-model",
+        "knowledge:industry/protocols/index"
+      ],
+      "learnings": [
+        "CL-14"
+      ],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:app/scan-engine",
+      "title": "Scan Engine",
+      "path": "knowledge/app/scan-engine.md",
+      "domain": "app",
+      "topics": [
+        "scan-tick",
+        "task-scheduler",
+        "executor-runtime",
+        "edge-memory",
+        "watchdog",
+        "project-switch-reset"
+      ],
+      "version": "2026-08",
+      "summary": "The exact per-tick execution order (simulation, signal generators, then due tasks' programs in priority order), how each language executor keys its cross-scan state, edge-memory semantics, watchdog fault behavior, and precisely what resets on a project switch.",
+      "related": [
+        "knowledge:app/index",
+        "knowledge:app/tag-model",
+        "knowledge:app/simulation",
+        "knowledge:industry/iec61131/task-scheduling"
+      ],
+      "learnings": [
+        "CL-1",
+        "CL-2",
+        "CL-3",
+        "CL-4"
+      ],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:app/simulation",
+      "title": "Simulation",
+      "path": "knowledge/app/simulation.md",
+      "domain": "app",
+      "topics": [
+        "sim-rules",
+        "rule-runtime",
+        "determinism",
+        "prng",
+        "noise-model",
+        "valve-curve",
+        "signal-generators"
+      ],
+      "version": "2026-08",
+      "summary": "The eight SimRule behaviors and their per-rule RuleRuntime state, the FNV-1a-seeded xorshift32 PRNG that makes noise/drift/random reproducible from a rule's id (CL-8), valve-curve gain shaping, and the seven SignalGen waveform kinds.",
+      "related": [
+        "knowledge:app/index",
+        "knowledge:app/scan-engine",
+        "knowledge:app/tag-model"
+      ],
+      "learnings": [
+        "CL-8"
+      ],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:app/tag-model",
+      "title": "Tag Model",
+      "path": "knowledge/app/tag-model.md",
+      "domain": "app",
+      "topics": [
+        "tag-resolver",
+        "tag-paths",
+        "write-gate",
+        "forcing",
+        "struct-fields",
+        "function-block-instances",
+        "system-tags",
+        "hmi-layout"
+      ],
+      "version": "2026-08",
+      "summary": "The dotted/indexed tag-path grammar and its recursive Map/List resolver, the two-tier default value model, forcing semantics, and the two write-gate predicates (defaultsExternallyWritable vs isExternallyWritable) every protocol handler must consult independently of a mutated map.",
+      "related": [
+        "knowledge:app/index",
+        "knowledge:app/scan-engine",
+        "knowledge:app/protocol-hosting",
+        "knowledge:industry/iec61131/custom-function-blocks"
+      ],
+      "learnings": [
+        "CL-13",
+        "CL-14"
+      ],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:app/ui-performance",
+      "title": "UI Performance",
+      "path": "knowledge/app/ui-performance.md",
+      "domain": "app",
+      "topics": [
+        "live-tick",
+        "notify-throttle",
+        "repaint",
+        "tag-historian",
+        "trend-chart",
+        "canvaskit"
+      ],
+      "version": "2026-08",
+      "summary": "How live-value UI repaint is decoupled from the scan loop through a throttled LiveTick pulse and a leaf-only listener pattern, why the scan loop never setState's the whole shell, and the memory-only tick-driven TagHistorian ring buffer behind multi-pen trend charts.",
+      "related": [
+        "knowledge:app/index",
+        "knowledge:app/scan-engine"
+      ],
+      "learnings": [],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:gaps",
+      "title": "Knowledge Gaps Register",
+      "path": "knowledge/gaps.md",
+      "domain": "root",
+      "topics": [
+        "gaps",
+        "open-questions",
+        "coverage",
+        "backlog"
+      ],
+      "version": "2026-08",
+      "summary": "The open-question and known-missing-coverage register for knowledge/, listing what is not yet documented or not yet implemented and, for each, the concrete next step that would close it.",
+      "related": [
+        "knowledge:index"
+      ],
+      "learnings": [],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:governance",
+      "title": "Knowledge Base Governance",
+      "path": "knowledge/governance.md",
+      "domain": "root",
+      "topics": [
+        "governance",
+        "process",
+        "maintenance",
+        "conventions"
+      ],
+      "version": "2026-08",
+      "summary": "The authority on how knowledge/ is structured, placed into, versioned, and kept from drifting, including the learning-loop pipeline from a session finding to a cited canonical update.",
+      "related": [
+        "knowledge:index"
+      ],
+      "learnings": [],
+      "priority": "high"
+    },
+    {
+      "id": "knowledge:index",
+      "title": "Knowledge Base Index",
+      "path": "knowledge/index.md",
+      "domain": "root",
+      "topics": [
+        "navigation",
+        "index",
+        "knowledge-base",
+        "domains"
+      ],
+      "version": "2026-08",
+      "summary": "Top-level navigation hub for knowledge/, linking every canonical file across the industry, app, and practices domains, and defining how knowledge/ relates to docs/, docs/superpowers/, learning/, and DECISIONS.md.",
+      "related": [
+        "knowledge:governance"
+      ],
+      "learnings": [],
+      "priority": "high"
+    },
+    {
+      "id": "knowledge:industry/iec61131/custom-function-blocks",
+      "title": "Custom Function Blocks",
+      "path": "knowledge/industry/iec61131/custom-function-blocks.md",
+      "domain": "industry/iec61131",
+      "topics": [
+        "function-blocks",
+        "fb",
+        "iec-61131-3",
+        "instance-scoping",
+        "nesting",
+        "ld-scope",
+        "aoi"
+      ],
+      "version": "2026-08",
+      "summary": "Documents IEC 61131-3 custom function blocks alongside this engine's exact instance-execution model - the ST-bodied/ladder-bodied body discriminator, the shared LdScope/StScope root-segment rewrite rule, the max-call-depth guard (_kMaxFbCallDepth = 16), and the Rockwell EnableIn re-assertion mechanism.",
+      "related": [
+        "knowledge:industry/iec61131/index",
+        "knowledge:industry/iec61131/ladder-diagram",
+        "knowledge:industry/iec61131/function-block-diagram",
+        "knowledge:industry/iec61131/structured-text"
+      ],
+      "learnings": [],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:industry/iec61131/function-block-diagram",
+      "title": "Function Block Diagram",
+      "path": "knowledge/industry/iec61131/function-block-diagram.md",
+      "domain": "industry/iec61131",
+      "topics": [
+        "function-block-diagram",
+        "fbd",
+        "iec-61131-3",
+        "networks",
+        "dataflow",
+        "pid",
+        "timers",
+        "counters"
+      ],
+      "version": "2026-08",
+      "summary": "Documents IEC 61131-3 FBD's network/dataflow model alongside this engine's exact executor semantics - ascending-index same-scan network chaining, per-block pin resolution, the CTD-has-no-preload gotcha that contrasts with ladder, the PID anti-windup algorithm, and undocumented cycle-handling behavior.",
+      "related": [
+        "knowledge:industry/iec61131/index",
+        "knowledge:industry/iec61131/ladder-diagram",
+        "knowledge:industry/iec61131/custom-function-blocks",
+        "knowledge:industry/plc-formats/plcopen-tc6-xml"
+      ],
+      "learnings": [
+        "CL-1",
+        "CL-2"
+      ],
+      "priority": "high"
+    },
+    {
+      "id": "knowledge:industry/iec61131/index",
+      "title": "IEC 61131-3 Languages",
+      "path": "knowledge/industry/iec61131/index.md",
+      "domain": "industry/iec61131",
+      "topics": [
+        "iec-61131-3",
+        "structured-text",
+        "ladder-diagram",
+        "function-block-diagram",
+        "sequential-function-chart",
+        "task-scheduling",
+        "function-blocks"
+      ],
+      "version": "2026-08",
+      "summary": "Domain hub for IEC 61131-3's four programming languages, task scheduling, and custom function blocks, each documented as portable standard concepts plus this repo's engine-verified executable subset and gotchas.",
+      "related": [
+        "knowledge:index",
+        "knowledge:industry/plc-formats/index",
+        "knowledge:industry/protocols/index"
+      ],
+      "learnings": [
+        "CL-1",
+        "CL-2",
+        "CL-3",
+        "CL-4",
+        "CL-18"
+      ],
+      "priority": "high"
+    },
+    {
+      "id": "knowledge:industry/iec61131/ladder-diagram",
+      "title": "Ladder Diagram",
+      "path": "knowledge/industry/iec61131/ladder-diagram.md",
+      "domain": "industry/iec61131",
+      "topics": [
+        "ladder-diagram",
+        "ld",
+        "iec-61131-3",
+        "rung",
+        "power-flow",
+        "timers",
+        "counters",
+        "seal-in"
+      ],
+      "version": "2026-08",
+      "summary": "Documents IEC 61131-3 Ladder Diagram's rung/power-flow model alongside this engine's exact node-and-wire executor semantics - contact/coil modifiers, which blocks are power-flow vs data blocks, the seal-in idiom's same-scan ordering dependency, and the CTD first-scan preload that LD has and FBD lacks.",
+      "related": [
+        "knowledge:industry/iec61131/index",
+        "knowledge:industry/iec61131/function-block-diagram",
+        "knowledge:industry/iec61131/custom-function-blocks",
+        "knowledge:industry/plc-formats/rockwell-l5x"
+      ],
+      "learnings": [
+        "CL-1",
+        "CL-18"
+      ],
+      "priority": "high"
+    },
+    {
+      "id": "knowledge:industry/iec61131/sequential-function-chart",
+      "title": "Sequential Function Chart",
+      "path": "knowledge/industry/iec61131/sequential-function-chart.md",
+      "domain": "industry/iec61131",
+      "topics": [
+        "sequential-function-chart",
+        "sfc",
+        "iec-61131-3",
+        "step",
+        "transition",
+        "step-t",
+        "divergence",
+        "convergence"
+      ],
+      "version": "2026-08",
+      "summary": "Documents IEC 61131-3 SFC's step/transition/token model alongside this engine's exact multi-token executor semantics - the active-step-set architecture, list-order-as-priority alternative divergence, true AND-semantics parallel fork/join, and STEP_T's scan-dtMs-not-task-period accumulation (CL-4).",
+      "related": [
+        "knowledge:industry/iec61131/index",
+        "knowledge:industry/iec61131/structured-text",
+        "knowledge:industry/iec61131/task-scheduling"
+      ],
+      "learnings": [
+        "CL-4"
+      ],
+      "priority": "high"
+    },
+    {
+      "id": "knowledge:industry/iec61131/structured-text",
+      "title": "Structured Text",
+      "path": "knowledge/industry/iec61131/structured-text.md",
+      "domain": "industry/iec61131",
+      "topics": [
+        "structured-text",
+        "st",
+        "iec-61131-3",
+        "expression-grammar",
+        "statements",
+        "scan-order"
+      ],
+      "version": "2026-08",
+      "summary": "Documents IEC 61131-3 Structured Text as a portable language plus this engine's exact executable subset (assignment and IF/ELSIF/ELSE only, no loops, no FB-call syntax, strict expression grammar with silent-null error propagation), verified directly against the ST/expression parsers.",
+      "related": [
+        "knowledge:industry/iec61131/index",
+        "knowledge:industry/iec61131/function-block-diagram",
+        "knowledge:industry/iec61131/ladder-diagram"
+      ],
+      "learnings": [],
+      "priority": "high"
+    },
+    {
+      "id": "knowledge:industry/iec61131/task-scheduling",
+      "title": "Task Scheduling",
+      "path": "knowledge/industry/iec61131/task-scheduling.md",
+      "domain": "industry/iec61131",
+      "topics": [
+        "task-scheduling",
+        "iec-61131-3",
+        "startup-task",
+        "event-task",
+        "periodic-task",
+        "continuous-task",
+        "watchdog",
+        "system-tag"
+      ],
+      "version": "2026-08",
+      "summary": "Documents IEC 61131-3's four-task-type priority model alongside this engine's exact scheduling algorithm - fixed priority order, per-type due predicates, the watchdog fault-stops-the-tick behavior, and the Continuous-task starvation mechanism (CL-3) with its exact code path.",
+      "related": [
+        "knowledge:industry/iec61131/index",
+        "knowledge:industry/iec61131/sequential-function-chart"
+      ],
+      "learnings": [
+        "CL-3",
+        "CL-4"
+      ],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:industry/index",
+      "title": "Industry",
+      "path": "knowledge/industry/index.md",
+      "domain": "industry",
+      "topics": [
+        "industry",
+        "protocols",
+        "plc-formats",
+        "iec61131",
+        "portable-knowledge",
+        "index"
+      ],
+      "version": "2026-08",
+      "summary": "Domain hub for portable industrial-automation knowledge - protocol wire formats, vendor PLC project/exchange file formats, and IEC 61131-3 language semantics - true independent of this app's implementation.",
+      "related": [
+        "knowledge:index",
+        "knowledge:industry/protocols/index",
+        "knowledge:industry/plc-formats/index"
+      ],
+      "learnings": [],
+      "priority": "high"
+    },
+    {
+      "id": "knowledge:industry/plc-formats/index",
+      "title": "PLC Project File Formats",
+      "path": "knowledge/industry/plc-formats/index.md",
+      "domain": "industry/plc-formats",
+      "topics": [
+        "plc-formats",
+        "plcopen",
+        "tc6",
+        "xml",
+        "rockwell",
+        "l5x",
+        "project-exchange",
+        "import"
+      ],
+      "version": "2026-08",
+      "summary": "Domain hub for vendor PLC project-exchange file formats this app imports - PLCopen TC6 XML and Rockwell L5X - each documented as a portable schema plus this app's exact import support matrix.",
+      "related": [
+        "knowledge:index",
+        "knowledge:industry/iec61131/index",
+        "knowledge:industry/protocols/index"
+      ],
+      "learnings": [
+        "CL-17"
+      ],
+      "priority": "high"
+    },
+    {
+      "id": "knowledge:industry/plc-formats/plcopen-tc6-xml",
+      "title": "PLCopen TC6 XML",
+      "path": "knowledge/industry/plc-formats/plcopen-tc6-xml.md",
+      "domain": "industry/plc-formats",
+      "topics": [
+        "plcopen",
+        "tc6",
+        "xml",
+        "project-exchange-format",
+        "iec-61131-3",
+        "import"
+      ],
+      "version": "2026-08",
+      "summary": "Documents the PLCopen TC6 XML project-exchange schema's structure and dialect variance alongside this app's exact import support matrix - dialect-agnostic descendant parsing, the authoritative elementary-type table, and the corrected finding that FBD/SFC bodies translate for real today, not as an empty stub as the shipped feature doc still claims.",
+      "related": [
+        "knowledge:industry/plc-formats/index",
+        "knowledge:industry/plc-formats/rockwell-l5x",
+        "knowledge:industry/iec61131/ladder-diagram",
+        "knowledge:industry/iec61131/function-block-diagram",
+        "knowledge:industry/iec61131/sequential-function-chart"
+      ],
+      "learnings": [
+        "CL-17"
+      ],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:industry/plc-formats/rockwell-l5x",
+      "title": "Rockwell L5X",
+      "path": "knowledge/industry/plc-formats/rockwell-l5x.md",
+      "domain": "industry/plc-formats",
+      "topics": [
+        "rockwell",
+        "l5x",
+        "rslogix5000",
+        "studio-5000",
+        "aoi",
+        "rll",
+        "add-on-instruction",
+        "import"
+      ],
+      "version": "2026-08",
+      "summary": "Documents the Rockwell L5X (RSLogix5000Content) project-exchange schema's structure alongside this app's exact import support matrix - the RLL compile instruction set, real shipped AOI/RLL-Logic-AOI execution, and the confirmed still-unshipped state of L5X FBD and SFC routine translation.",
+      "related": [
+        "knowledge:industry/plc-formats/index",
+        "knowledge:industry/plc-formats/plcopen-tc6-xml",
+        "knowledge:industry/iec61131/ladder-diagram",
+        "knowledge:industry/iec61131/custom-function-blocks",
+        "knowledge:industry/iec61131/function-block-diagram"
+      ],
+      "learnings": [
+        "CL-17"
+      ],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:industry/protocols/bacnet-ip",
+      "title": "BACnet/IP",
+      "path": "knowledge/industry/protocols/bacnet-ip.md",
+      "domain": "industry/protocols",
+      "topics": [
+        "bacnet",
+        "bacnet-ip",
+        "bvll",
+        "npdu",
+        "apdu",
+        "annex-j",
+        "readpropertymultiple",
+        "big-endian"
+      ],
+      "version": "2026-08",
+      "summary": "BACnet/IP (Annex J) wire format across BVLL/NPDU/APDU layers, the object/property model, ReadPropertyMultiple's per-property error semantics, and how an in-app pure-Dart device implements and E2E-proves it against a real bacpypes3 client, including a real client-library substitution story.",
+      "related": [
+        "knowledge:industry/protocols/index",
+        "knowledge:industry/protocols/endianness-and-framing"
+      ],
+      "learnings": [],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:industry/protocols/dnp3",
+      "title": "DNP3",
+      "path": "knowledge/industry/protocols/dnp3.md",
+      "domain": "industry/protocols",
+      "topics": [
+        "dnp3",
+        "ieee1815",
+        "outstation",
+        "crc16-dnp",
+        "unsolicited",
+        "select-operate",
+        "event-classes"
+      ],
+      "version": "2026-08",
+      "summary": "DNP3 (IEEE 1815) link/transport/application-layer wire format, Class 0/1/2/3 polling and event reporting, SELECT/OPERATE control, and how an in-app pure-Dart outstation implements and E2E-proves it against a real Rust dnp3-crate master, including solicited and unsolicited event delivery.",
+      "related": [
+        "knowledge:industry/protocols/index",
+        "knowledge:industry/protocols/endianness-and-framing"
+      ],
+      "learnings": [],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:industry/protocols/endianness-and-framing",
+      "title": "Endianness and Framing Across Protocols",
+      "path": "knowledge/industry/protocols/endianness-and-framing.md",
+      "domain": "industry/protocols",
+      "topics": [
+        "endianness",
+        "byte-order",
+        "framing",
+        "comparison",
+        "cross-protocol",
+        "big-endian",
+        "little-endian"
+      ],
+      "version": "2026-08",
+      "summary": "A single cross-protocol comparison table (byte order, framing/delimiting, transport+port, session model, E2E client) for all nine industrial protocols in this domain, anchored by the rule that byte-order handling must never be pattern-matched from one protocol codec onto another.",
+      "related": [
+        "knowledge:industry/protocols/index",
+        "knowledge:industry/protocols/modbus",
+        "knowledge:industry/protocols/opc-ua",
+        "knowledge:industry/protocols/ethernet-ip-cip",
+        "knowledge:industry/protocols/s7comm",
+        "knowledge:industry/protocols/fins",
+        "knowledge:industry/protocols/slmp",
+        "knowledge:industry/protocols/dnp3",
+        "knowledge:industry/protocols/bacnet-ip",
+        "knowledge:industry/protocols/mqtt-sparkplug"
+      ],
+      "learnings": [
+        "CL-5",
+        "CL-6",
+        "CL-7"
+      ],
+      "priority": "high"
+    },
+    {
+      "id": "knowledge:industry/protocols/ethernet-ip-cip",
+      "title": "EtherNet/IP + CIP",
+      "path": "knowledge/industry/protocols/ethernet-ip-cip.md",
+      "domain": "industry/protocols",
+      "topics": [
+        "ethernet-ip",
+        "cip",
+        "enip",
+        "epath",
+        "forward-open",
+        "symbol-object",
+        "little-endian"
+      ],
+      "version": "2026-08",
+      "summary": "EtherNet/IP encapsulation + CIP explicit-messaging wire format, EPATH symbolic addressing, the Forward Open connection-id allocation rule, and how an in-app pure-Dart server implements and E2E-proves both unconnected and connected messaging against a real pycomm3 LogixDriver.",
+      "related": [
+        "knowledge:industry/protocols/index",
+        "knowledge:industry/protocols/endianness-and-framing",
+        "knowledge:industry/protocols/opc-ua"
+      ],
+      "learnings": [
+        "CL-7"
+      ],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:industry/protocols/fins",
+      "title": "Omron FINS",
+      "path": "knowledge/industry/protocols/fins.md",
+      "domain": "industry/protocols",
+      "topics": [
+        "fins",
+        "omron",
+        "udp",
+        "big-endian",
+        "word-swap",
+        "memory-area"
+      ],
+      "version": "2026-08",
+      "summary": "Omron FINS wire format over UDP, memory-area + word-offset addressing, the low-word-first 32-bit word-order gotcha settled by a real client, and how an in-app pure-Dart server implements and E2E-proves it against a real fins Python client.",
+      "related": [
+        "knowledge:industry/protocols/index",
+        "knowledge:industry/protocols/endianness-and-framing",
+        "knowledge:industry/protocols/s7comm"
+      ],
+      "learnings": [
+        "CL-7"
+      ],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:industry/protocols/index",
+      "title": "Industrial Protocols",
+      "path": "knowledge/industry/protocols/index.md",
+      "domain": "industry/protocols",
+      "topics": [
+        "protocols",
+        "index",
+        "modbus",
+        "opc-ua",
+        "ethernet-ip",
+        "s7comm",
+        "fins",
+        "slmp",
+        "dnp3",
+        "bacnet",
+        "mqtt",
+        "sparkplug"
+      ],
+      "version": "2026-08",
+      "summary": "Domain hub for the nine industrial protocols covered in this knowledge base, each documented from its wire format through its real-client E2E proof, plus the cross-protocol endianness/framing comparison.",
+      "related": [
+        "knowledge:industry/index",
+        "knowledge:industry/protocols/endianness-and-framing"
+      ],
+      "learnings": [
+        "CL-5",
+        "CL-6",
+        "CL-7",
+        "CL-14",
+        "CL-15"
+      ],
+      "priority": "high"
+    },
+    {
+      "id": "knowledge:industry/protocols/modbus",
+      "title": "Modbus",
+      "path": "knowledge/industry/protocols/modbus.md",
+      "domain": "industry/protocols",
+      "topics": [
+        "modbus",
+        "modbus-tcp",
+        "modbus-rtu",
+        "mbap",
+        "crc16",
+        "big-endian",
+        "fieldbus"
+      ],
+      "version": "2026-08",
+      "summary": "Modbus TCP and RTU-over-TCP wire format, function codes, big-endian register packing, and how an in-app pure-Dart server implements and E2E-proves both framings against a real tokio-modbus client.",
+      "related": [
+        "knowledge:industry/protocols/index",
+        "knowledge:industry/protocols/endianness-and-framing",
+        "knowledge:industry/protocols/ethernet-ip-cip"
+      ],
+      "learnings": [
+        "CL-6",
+        "CL-14"
+      ],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:industry/protocols/mqtt-sparkplug",
+      "title": "MQTT + Sparkplug B",
+      "path": "knowledge/industry/protocols/mqtt-sparkplug.md",
+      "domain": "industry/protocols",
+      "topics": [
+        "mqtt",
+        "sparkplug-b",
+        "protobuf",
+        "publisher",
+        "bdseq",
+        "ndeath",
+        "report-by-exception",
+        "qos"
+      ],
+      "version": "2026-08",
+      "summary": "MQTT 3.1.1 control-packet wire format, the Sparkplug B protobuf payload convention, the birth/death (bdSeq) sequencing contract, and how an in-app pure-Dart publisher implements and E2E-proves both JSON and Sparkplug B against a real embedded broker + subscriber, including the intentional-disconnect NDEATH gap that a bare MQTT Will structurally cannot cover.",
+      "related": [
+        "knowledge:industry/protocols/index",
+        "knowledge:industry/protocols/endianness-and-framing"
+      ],
+      "learnings": [],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:industry/protocols/opc-ua",
+      "title": "OPC UA",
+      "path": "knowledge/industry/protocols/opc-ua.md",
+      "domain": "industry/protocols",
+      "topics": [
+        "opc-ua",
+        "opc.tcp",
+        "secure-channel",
+        "basic256sha256",
+        "subscriptions",
+        "address-space",
+        "little-endian"
+      ],
+      "version": "2026-08",
+      "summary": "OPC UA binary transport wire format, the OpenSecureChannel/session handshake, address-space Browse/Read/Write/Subscribe services, and how an in-app pure-Dart server implements and E2E-proves both None and Basic256Sha256 security against a real Rust opcua-crate client.",
+      "related": [
+        "knowledge:industry/protocols/index",
+        "knowledge:industry/protocols/endianness-and-framing",
+        "knowledge:industry/protocols/modbus"
+      ],
+      "learnings": [
+        "CL-15"
+      ],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:industry/protocols/s7comm",
+      "title": "S7comm",
+      "path": "knowledge/industry/protocols/s7comm.md",
+      "domain": "industry/protocols",
+      "topics": [
+        "s7comm",
+        "tpkt",
+        "cotp",
+        "rfc1006",
+        "iso8073",
+        "big-endian",
+        "area-byte-offset"
+      ],
+      "version": "2026-08",
+      "summary": "S7comm over TPKT/COTP wire format, memory-area + byte-offset addressing, PDU-size negotiation, and how an in-app pure-Dart server implements and E2E-proves it against a real python-snap7 client, including two wire details a build-parse round-trip structurally could not settle.",
+      "related": [
+        "knowledge:industry/protocols/index",
+        "knowledge:industry/protocols/endianness-and-framing",
+        "knowledge:industry/protocols/fins"
+      ],
+      "learnings": [
+        "CL-7"
+      ],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:industry/protocols/slmp",
+      "title": "SLMP (MC Protocol)",
+      "path": "knowledge/industry/protocols/slmp.md",
+      "domain": "industry/protocols",
+      "topics": [
+        "slmp",
+        "mc-protocol",
+        "mitsubishi",
+        "3e-frame",
+        "little-endian",
+        "mixed-endian",
+        "device-code"
+      ],
+      "version": "2026-08",
+      "summary": "Mitsubishi SLMP 3E binary wire format, its mixed-endian subheader/body split, device + device-number addressing, the low-word-first 32-bit order, and how an in-app pure-Dart server implements and E2E-proves it against a real pymcprotocol client.",
+      "related": [
+        "knowledge:industry/protocols/index",
+        "knowledge:industry/protocols/endianness-and-framing",
+        "knowledge:industry/protocols/fins"
+      ],
+      "learnings": [
+        "CL-5"
+      ],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:practices/development-process",
+      "title": "Development Process",
+      "path": "knowledge/practices/development-process.md",
+      "domain": "practices",
+      "topics": [
+        "spec",
+        "plan",
+        "code-review",
+        "two-tier-review",
+        "deferred-work",
+        "refactor-safety",
+        "snapshot-testing",
+        "whole-branch-review"
+      ],
+      "version": "2026-08",
+      "summary": "The spec -> plan -> per-task implement/review -> whole-branch review -> fix wave -> browser verify -> PR pipeline used for every workstream on this project, why the two review tiers catch different classes of defect, the docs/DEFERRED.md convention for recording conscious scope cuts, and the byte-identical snapshot technique for proving a refactor moved data without changing it.",
+      "related": [
+        "knowledge:practices/index",
+        "knowledge:practices/verification"
+      ],
+      "learnings": [],
+      "priority": "normal"
+    },
+    {
+      "id": "knowledge:practices/index",
+      "title": "Practices",
+      "path": "knowledge/practices/index.md",
+      "domain": "practices",
+      "topics": [
+        "verification",
+        "testing",
+        "development-process",
+        "code-review",
+        "playwright",
+        "e2e"
+      ],
+      "version": "2026-08",
+      "summary": "Domain hub for the development and verification practices proven on this project - how work gets specified, implemented, reviewed and verified end to end, and how a canvas-rendered Flutter app and eight in-app protocol hosts get proven correct with real clients.",
+      "related": [
+        "knowledge:index",
+        "knowledge:app/index"
+      ],
+      "learnings": [
+        "CL-9",
+        "CL-10",
+        "CL-11",
+        "CL-16"
+      ],
+      "priority": "high"
+    },
+    {
+      "id": "knowledge:practices/verification",
+      "title": "Verification Methods",
+      "path": "knowledge/practices/verification.md",
+      "domain": "practices",
+      "topics": [
+        "playwright",
+        "headless-browser",
+        "flutter-web",
+        "canvaskit",
+        "e2e",
+        "widget-test",
+        "fake-async",
+        "privileged-port",
+        "computer-use",
+        "desktop-verify",
+        "coordinate-clicks"
+      ],
+      "version": "2026-08",
+      "summary": "The two verification methods proven on this project - headless Playwright against a no-DOM Flutter-web CanvasKit app (screenshot+console+network, coordinate clicks, viewport set, single-listener-on-port check) and per-protocol E2E lanes that prove each in-app host against a real third-party client - plus the widget-test fake-async pitfall and privileged-port classification that both depend on.",
+      "related": [
+        "knowledge:practices/index",
+        "knowledge:practices/development-process",
+        "knowledge:app/protocol-hosting",
+        "knowledge:app/ui-performance"
+      ],
+      "learnings": [
+        "CL-9",
+        "CL-10",
+        "CL-11",
+        "CL-16"
+      ],
+      "priority": "normal"
+    }
+  ]
+}

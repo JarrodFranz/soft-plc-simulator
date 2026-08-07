@@ -1,0 +1,354 @@
+# Learning Registry
+
+> Last updated: 2026-08-07 (foundation seed: 18 confirmed learnings CL-1..CL-18, covering
+> IEC 61131 execution semantics, protocol wire-format quirks, app engine internals, browser/test
+> verification technique, PLC exchange-format dialect detection, and default-project catalog
+> rules; finalizer pass: corrected CL-13/CL-18 "Knowledge base updated" citations that named
+> app/default-projects.md without the file actually citing either id - see
+> [../knowledge/app/tag-model.md](../knowledge/app/tag-model.md) and
+> [../knowledge/industry/iec61131/ladder-diagram.md](../knowledge/industry/iec61131/ladder-diagram.md)
+> for where those two learnings actually live).
+
+This is the append-only log of learnings surfaced across sessions. See
+[HOW-TO-USE.md](./HOW-TO-USE.md) for how to read and write it, and
+[../knowledge/governance.md](../knowledge/governance.md) section 6 for the full learning-loop
+rule. CL = confirmed (proven by test/E2E/2+ observations or matches an authoritative source).
+TL = tentative (single observation, apply with caution).
+
+---
+
+## Sessions Index
+
+| Session ID | Date | Task | Key Learnings | Status |
+|---|---|---|---|---|
+| 2026-07-05-fbd-ladder-execution | 2026-07-05 | Implement and cross-verify FBD and LD execution engines (network ordering, timer/counter preload) | CL-1, CL-2 | closed |
+| 2026-07-06-sfc-execution-and-scan-timing | 2026-07-06 | Implement SFC execution and reconcile STEP_T against task-period scan timing | CL-4 | closed |
+| 2026-07-13-task-scheduler-and-system-tags | 2026-07-13 | Build the IEC task-type priority scheduler, per-task watchdog, free-run mode, reserved System UDT | CL-3 | closed |
+| 2026-07-15-tag-historian-trends | 2026-07-15 | Build the memory-only tick-driven tag historian and multi-pen trend charts; verify write-gate predicates while wiring live tag reads | CL-13, CL-14 | closed |
+| 2026-07-18-protocol-hardening-slmp-modbus | 2026-07-18 | Harden SLMP and Modbus codecs against malformed frames; cross-check byte order against real client libraries | CL-5, CL-6, CL-7 | closed |
+| 2026-07-20-opcua-hardening-and-certs | 2026-07-20 | Validate OPC UA secure-channel crypto (Basic256Sha256) and certificate handling against a strict Rust client | CL-15 | closed |
+| 2026-07-22-simulated-test-tags-and-noise | 2026-07-22 | Build bulk signal-generator tags and reconcile sim-rule noise determinism for repeatable tests | CL-8 | closed |
+| 2026-07-24-widget-test-and-port-probe-hardening | 2026-07-24 | Fix widget tests hanging on real socket I/O under fake-async; classify privileged-port bind failures across POSIX/Windows | CL-10, CL-11 | closed |
+| 2026-07-25-browser-verification-canvas-app | 2026-07-25 | Establish the headless-Playwright verification method for the Flutter-web CanvasKit app; diagnose why the in-app preview pane times out | CL-9, CL-16 | closed |
+| 2026-07-26-l5x-import-foundation | 2026-07-26 | Ship the Rockwell L5X import foundation; add PLCopen-vs-L5X dialect autodetection | CL-17 | closed |
+| 2026-08-06-default-projects-redo | 2026-08-06 | Rebuild the default-project catalog (7-project redo); fix a Continuous-task-starvation bug found via the Flagship default; pin the backfill ledger's never-overwrite rule; audit HMI layout and LD counter presets across all defaults | CL-3, CL-12, CL-13, CL-18 | closed |
+
+---
+
+## Tentative Learnings
+
+### TL-1 - Ignition's Omron FINS driver requires Bind Address 0.0.0.0 when the client runs in Docker
+
+**Observed in:** one live Ignition-in-Docker interop session during the FINS workstream (2026-07).
+**Applies to:** connecting any UDP-based host (FINS, BACnet/IP) to a client inside Docker.
+**Rule:** the FINS driver's Bind Address must be `0.0.0.0`, not `localhost` - a UDP socket bound
+to loopback cannot send to `host.docker.internal`, and the device sits at "BOUND" with zero
+datagrams arriving. Single observation, not reproduced since; apply with caution.
+**Knowledge base updated:**
+- [../knowledge/industry/protocols/fins.md](../knowledge/industry/protocols/fins.md)
+
+## Confirmed Learnings
+
+### CL-1 - FBD CTD needs an explicit load pulse; LD timer/counter blocks preload PRE on first scan
+
+**Confirmed in:** 2026-07-05-fbd-ladder-execution
+**Applies to:** LD and FBD counter/timer execution (`fbd_exec.dart`, `ld_exec.dart`)
+**Rule:** LD timer/counter blocks preload their `PRE` value on the first scan. The FBD `CTD`
+block does not - its `CV` seeds at 0, and `LD`/`CD` are mutually exclusive per scan. An FBD
+`CTD` therefore needs an explicit load pulse (e.g. an `R_TRIG` feeding `LD`) before it starts
+counting down from a nonzero value.
+
+**Wrong:**
+```
+// assuming FBD CTD.CV starts at PRE like LD's countdown timer
+CTD1(CD := doorClosed, PV := 5);   // CV reads 0 on scan 1, not 5
+```
+
+**Correct:**
+```
+// explicit load pulse before counting
+CTD1(LD := R_TRIG1.Q, CD := doorClosed, PV := 5);
+```
+**Knowledge base updated:**
+- [../knowledge/industry/iec61131/function-block-diagram.md](../knowledge/industry/iec61131/function-block-diagram.md)
+- [../knowledge/industry/iec61131/ladder-diagram.md](../knowledge/industry/iec61131/ladder-diagram.md)
+
+---
+
+### CL-2 - FBD networks execute in ascending index order; same-scan chaining is real
+
+**Confirmed in:** 2026-07-05-fbd-ladder-execution
+**Applies to:** FBD execution engine (`fbd_exec.dart`)
+**Rule:** FBD networks within one program execute in ascending index order within a single
+scan. `TAG_OUTPUT` writes immediately when its network runs, and `TAG_INPUT` reads the live
+current value, so a later network in the same scan can consume a value an earlier network wrote
+moments before - same-scan chaining across networks is real and deterministic by network order,
+not incidental.
+
+**Knowledge base updated:**
+- [../knowledge/industry/iec61131/function-block-diagram.md](../knowledge/industry/iec61131/function-block-diagram.md)
+
+---
+
+### CL-3 - A Periodic task with a period close to the scan period starves Continuous tasks
+
+**Confirmed in:** 2026-07-13-task-scheduler-and-system-tags, 2026-08-06-default-projects-redo
+**Applies to:** IEC task scheduler (`task_scheduler.dart`)
+**Rule:** A Continuous task runs only when no higher-priority task is currently due
+(`!anyHigherDue`). A Periodic task whose period is close to the scan period is due on nearly
+every scan, which starves any Continuous-task program of scan time. Keep Periodic task periods
+at least 10x the scan period. Confirmed a second time as the root cause of a Flagship default
+project bug where a Continuous program appeared to stall.
+
+**Knowledge base updated:**
+- [../knowledge/industry/iec61131/task-scheduling.md](../knowledge/industry/iec61131/task-scheduling.md)
+- [../knowledge/app/scan-engine.md](../knowledge/app/scan-engine.md)
+
+---
+
+### CL-4 - SFC STEP_T advances by scan dtMs, not by the owning task's period
+
+**Confirmed in:** 2026-07-06-sfc-execution-and-scan-timing
+**Applies to:** SFC execution engine (`scan_tick.dart`, `sfc_exec.dart`)
+**Rule:** `STEP_T` accumulates by the scan's `dtMs` (the base scan period), not by the period of
+the task that owns the SFC program. A program running in a 1000 ms task on a 100 ms base scan
+dwells 10x longer in wall-clock time than `STEP_T`'s value suggests, because the program only
+actually executes once per 1000 ms even though the counter ticks by the 100 ms scan unit.
+
+**Knowledge base updated:**
+- [../knowledge/industry/iec61131/sequential-function-chart.md](../knowledge/industry/iec61131/sequential-function-chart.md)
+- [../knowledge/app/scan-engine.md](../knowledge/app/scan-engine.md)
+
+---
+
+### CL-5 - SLMP 3E binary is little-endian except the subheader, which is big-endian
+
+**Confirmed in:** 2026-07-18-protocol-hardening-slmp-modbus
+**Applies to:** SLMP codec (`slmp_frame.dart`), E2E-proven against `pymcprotocol`
+**Rule:** SLMP's 3E binary frame is little-endian throughout the body, except its 2-byte
+subheader, which is big-endian - a documented mixed-endianness convention, not a codec bug.
+
+**Knowledge base updated:**
+- [../knowledge/industry/protocols/slmp.md](../knowledge/industry/protocols/slmp.md)
+- [../knowledge/industry/protocols/endianness-and-framing.md](../knowledge/industry/protocols/endianness-and-framing.md)
+
+---
+
+### CL-6 - Modbus RTU CRC-16 is little-endian on the wire; TCP MBAP fields are big-endian
+
+**Confirmed in:** 2026-07-18-protocol-hardening-slmp-modbus
+**Applies to:** Modbus RTU and TCP codecs (`modbus_rtu.dart`, `modbus_pdu.dart`), E2E-proven
+against `tokio-modbus`
+**Rule:** Modbus RTU's CRC-16 is transmitted little-endian, while Modbus TCP's MBAP header
+fields are big-endian. RTU has no MBAP header at all - the two transports are not just "TCP with
+a header stripped," they have genuinely different byte-order conventions for their respective
+framing.
+
+**Knowledge base updated:**
+- [../knowledge/industry/protocols/modbus.md](../knowledge/industry/protocols/modbus.md)
+- [../knowledge/industry/protocols/endianness-and-framing.md](../knowledge/industry/protocols/endianness-and-framing.md)
+
+---
+
+### CL-7 - Byte order is not consistent across protocols; never pattern-match a new codec off an old one
+
+**Confirmed in:** 2026-07-18-protocol-hardening-slmp-modbus
+**Applies to:** all protocol codecs (`tpkt_cotp.dart`, `fins_frame.dart`, `enip_encap.dart`, and
+others)
+**Rule:** S7comm (TPKT/COTP) and FINS are big-endian throughout. EtherNet/IP (CIP encapsulation)
+is little-endian. There is no cross-protocol default to assume - each new protocol codec's byte
+order must be verified against its own spec or a real client library, never copied by
+pattern-matching an existing codec's convention.
+
+**Knowledge base updated:**
+- [../knowledge/industry/protocols/endianness-and-framing.md](../knowledge/industry/protocols/endianness-and-framing.md)
+- [../knowledge/industry/protocols/s7comm.md](../knowledge/industry/protocols/s7comm.md)
+- [../knowledge/industry/protocols/fins.md](../knowledge/industry/protocols/fins.md)
+- [../knowledge/industry/protocols/ethernet-ip-cip.md](../knowledge/industry/protocols/ethernet-ip-cip.md)
+
+---
+
+### CL-8 - Sim-rule noise PRNG is seeded from the rule id, not its position
+
+**Confirmed in:** 2026-07-22-simulated-test-tags-and-noise
+**Applies to:** simulation engine and noise model (`sim_engine.dart`, `noise_model.dart`)
+**Rule:** The pseudo-random noise sequence for a `SimRule` is seeded from that rule's id string,
+not from its index/position in the rule list. Renaming a rule's id changes its noise sequence
+even if its position and other parameters are untouched. Tests asserting deterministic noise
+output must pin rule ids explicitly, never rely on list position as an implicit identity.
+
+**Knowledge base updated:**
+- [../knowledge/app/simulation.md](../knowledge/app/simulation.md)
+
+---
+
+### CL-9 - Flutter-web CanvasKit apps expose no DOM; drive them with screenshots + coordinate clicks
+
+**Confirmed in:** 2026-07-25-browser-verification-canvas-app
+**Applies to:** all browser verification of the Flutter-web build (Playwright)
+**Rule:** The app renders to a `<canvas>`, so there is no DOM to click by default. Playwright
+screenshots and viewport resize work fine despite the app's continuous scan-loop repaint -
+capture without waiting for network idle. Flutter's semantics-tree clicks
+(`flt-semantics-placeholder`) are unreliable for this app; when DOM-level interaction is needed,
+fall back to `page.mouse.click(x, y)` using coordinates read off a screenshot.
+
+**Knowledge base updated:**
+- [../knowledge/practices/verification.md](../knowledge/practices/verification.md)
+
+---
+
+### CL-10 - dart:io futures never complete inside a widget-test's fake-async zone
+
+**Confirmed in:** 2026-07-24-widget-test-and-port-probe-hardening
+**Applies to:** any widget test that exercises real socket I/O (protocol host tests)
+**Rule:** `dart:io` futures (real sockets, real ports) never complete inside a Flutter
+widget-test's fake-async zone. Real socket work must be wrapped in `tester.runAsync`, and the
+test must assert the `runAsync` result `isNotNull` - a thrown callback inside `runAsync` yields
+`null` silently, which would otherwise let a broken test pass by accident.
+
+**Wrong:**
+```dart
+testWidgets('host accepts a connection', (tester) async {
+  await realHost.start(); // hangs / never completes under fake-async
+});
+```
+
+**Correct:**
+```dart
+testWidgets('host accepts a connection', (tester) async {
+  final result = await tester.runAsync(() => realHost.start());
+  expect(result, isNotNull); // guards against a silently-swallowed throw
+});
+```
+**Knowledge base updated:**
+- [../knowledge/practices/verification.md](../knowledge/practices/verification.md)
+
+---
+
+### CL-11 - Binding a privileged port fails differently on POSIX vs Windows; classify separately
+
+**Confirmed in:** 2026-07-24-widget-test-and-port-probe-hardening
+**Applies to:** port-probe tests for any protocol host that can bind port < 1024 (e.g. Modbus
+TCP's default 502)
+**Rule:** Binding port 502 requires elevated privilege on POSIX (`EACCES`, errno 13) and on
+Windows (`WSAEACCES`, 10013). Port-probe tests must classify a permission-denied bind failure
+separately from an address-already-in-use failure, or they false-fail in CI environments that
+run unprivileged. See [gaps.md](../knowledge/gaps.md) (G-8): the Windows `WSAEACCES` path is
+recorded here as a risk, not yet confirmed by a dedicated Windows CI run.
+
+**Knowledge base updated:**
+- [../knowledge/practices/verification.md](../knowledge/practices/verification.md)
+
+---
+
+### CL-12 - The default-project backfill ledger never overwrites an existing project id
+
+**Confirmed in:** 2026-08-06-default-projects-redo
+**Applies to:** default-project seeding (`project_repository.dart`, `data/default_projects.dart`)
+**Rule:** `backfillNewDefaults` can only add a default project whose id has never been seeded
+before on that install; it will never overwrite or remove an id that already exists. Reusing a
+retired project's id therefore silently suppresses delivery of new content to every existing
+install that already has that id - new default projects always need a fresh id. Pinned by the
+default-project integrity test.
+
+**Knowledge base updated:**
+- [../knowledge/app/default-projects.md](../knowledge/app/default-projects.md)
+
+---
+
+### CL-13 - HmiComponent has no x/y; HMI layout is grid-flow, so overlap is structurally impossible
+
+**Confirmed in:** 2026-07-15-tag-historian-trends, 2026-08-06-default-projects-redo
+**Applies to:** HMI layout model (`HmiComponent`, workspace HMI screens)
+**Rule:** `HmiComponent` carries no `x`/`y` coordinates - HMI layout is pure grid-flow, positioned
+only by `gridSpanWidth`. Because there is no absolute positioning, two components cannot overlap;
+"fix an overlapping HMI layout" is not a class of bug this engine can have. Any apparent overlap
+report is actually a `gridSpanWidth` miscalculation, not a positioning collision.
+
+**Knowledge base updated:**
+- [../knowledge/app/tag-model.md](../knowledge/app/tag-model.md)
+
+---
+
+### CL-14 - The write path has two distinct predicates: map-exposure vs the hard per-write backstop
+
+**Confirmed in:** 2026-07-15-tag-historian-trends
+**Applies to:** tag write gate (`tag_write_gate.dart`), all protocol write handlers
+**Rule:** `defaultsExternallyWritable` governs what the map auto-generation step exposes as
+writable to a protocol client. `isExternallyWritable` is the separate, hard per-write backstop
+that every protocol handler must also consult at write time. A System tag refuses writes even if
+a map were mutated to mark it writable - the two predicates are independent, and both must be
+checked; one is a generation-time convenience, the other is the enforcement point.
+
+**Knowledge base updated:**
+- [../knowledge/app/tag-model.md](../knowledge/app/tag-model.md)
+
+---
+
+### CL-15 - OPC UA cert thumbprint is SHA-1 over DER; Basic256Sha256 OPN pad/sign order must be byte-exact
+
+**Confirmed in:** 2026-07-20-opcua-hardening-and-certs
+**Applies to:** OPC UA certificate handling and secure channel (`opcua_certificate.dart`,
+`opcua_secure_channel.dart`), validated against a strict Rust `opcua` crate client
+**Rule:** The OPC UA certificate thumbprint used for identification is SHA-1 computed over the
+DER-encoded certificate. For the `Basic256Sha256` security policy, the OpenSecureChannel (OPN)
+message's padding and sign-then-encrypt ordering must be byte-exact - a strict client (the Rust
+`opcua` crate) rejects any deviation rather than tolerating it.
+
+**Knowledge base updated:**
+- [../knowledge/industry/protocols/opc-ua.md](../knowledge/industry/protocols/opc-ua.md)
+
+---
+
+### CL-16 - An in-app screenshot pane can time out on a continuously-repainting canvas app; use Playwright instead
+
+**Confirmed in:** 2026-07-25-browser-verification-canvas-app
+**Applies to:** any screenshot-based verification of the Flutter-web build
+**Rule:** An embedded in-app preview/screenshot pane can time out against this app because of its
+continuous scan-loop repaint, while headless Playwright captures the same page fine. Verify
+canvas apps like this one with Playwright, not an embedded preview screenshotter that waits on a
+render-idle signal this app never sends.
+
+**Knowledge base updated:**
+- [../knowledge/practices/verification.md](../knowledge/practices/verification.md)
+
+---
+
+### CL-17 - PLCopen TC6 vs L5X dialect detection is reliable from the document root; never route on filename
+
+**Confirmed in:** 2026-07-26-l5x-import-foundation
+**Applies to:** import dialect detection (`dialect_detect.dart`)
+**Rule:** PLCopen TC6 documents are identified by a `<project>` root element in the TC6
+namespace; L5X documents are identified by an `<RSLogix5000Content>` root element. Dialect
+detection must route on the document root, never on the filename or file extension - a `.xml` or
+mislabeled file still parses correctly this way.
+
+**Knowledge base updated:**
+- [../knowledge/industry/plc-formats/plcopen-tc6-xml.md](../knowledge/industry/plc-formats/plcopen-tc6-xml.md)
+- [../knowledge/industry/plc-formats/rockwell-l5x.md](../knowledge/industry/plc-formats/rockwell-l5x.md)
+
+---
+
+### CL-18 - Ladder CTU/CTD presets are integer literals, not tag references
+
+**Confirmed in:** 2026-08-06-default-projects-redo
+**Applies to:** LD counter blocks (`builders.dart`), any UI or HMI that displays a counter preset
+**Rule:** In this engine, a ladder `CTU`/`CTD` block's preset (`PV`) is compiled as an integer
+literal, not a reference to a tag. A UI slider or HMI control bound to what looks like a "preset
+tag" will desynchronize from the counter's real, compiled-in preset - descriptions and HMI
+screens must not imply the preset is live-adjustable via a tag unless the block is explicitly
+rebuilt to take a tag-bound preset. Surfaced while auditing the conveyor-line default project.
+
+**Knowledge base updated:**
+- [../knowledge/industry/iec61131/ladder-diagram.md](../knowledge/industry/iec61131/ladder-diagram.md)
+
+---
+
+## Related
+
+- [HOW-TO-USE.md](./HOW-TO-USE.md) - how to read this file and how to add a new entry.
+- [../knowledge/governance.md](../knowledge/governance.md) - section 6, the full learning-loop
+  rule this registry implements.
+- [../knowledge/gaps.md](../knowledge/gaps.md) - open coverage gaps, several of which trace back
+  to a CL entry above (CL-11 -> G-8, CL-12 -> G-9).
+- [sessions/](./sessions/) - per-session artifacts referenced by the Sessions Index above.
