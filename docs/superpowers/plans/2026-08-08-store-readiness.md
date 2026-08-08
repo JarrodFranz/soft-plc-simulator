@@ -6,6 +6,11 @@
 
 **Branch base:** `main` @ `70c3ea6`.
 
+## Changelog
+
+- 2026-08-08 — initial plan.
+- 2026-08-08 — applied plan-review fixes (verdict FIX FIRST). **C1:** wrapped the suspend/detached `debugLifecycleOp` awaits that stop a live host (L1/L2/L8/L9/L10/L12) in `tester.runAsync` (CL-10 — a real `dart:io` close never resolves in the fake-async zone); left bare the non-host-stopping cases (L3/L4/L5/L6/L7/L11). **I2:** added the two missing imports (`project_repository.dart`, `softplc_settings_dialog.dart`) to the S1-S5 append. **I3:** T4 Step 2 now opens a **draft PR to `main`** (fires `pull_request`) instead of a bare feature-branch push that fires no run. **m4:** named the `hmi_haptics_test.dart:151-153` dialog site in the grep-and-fix step. **m5:** added a "verify against `create_project_flush_autosave_test.dart`" note to `_armDirtyEdit`. The review's "Verified correct" / "Adjudications" items (closure table, MQTT special-case, flush, resume-lock, guard tests, all five resolutions) were sound and left unchanged.
+
 ---
 
 ## Goal
@@ -526,6 +531,12 @@ Future<(WorkspaceShellState, ProjectRepository)> _boot(
 
 // Flip Start_PB via the Tag Inspector, arming (not elapsing) the autosave
 // debounce — the proven create_project_flush_autosave_test.dart pattern.
+// BEFORE IMPLEMENTING: verify these fixture specifics against that test at
+// desktop size — that the default project has a `Start_PB` tag, that its value
+// renders as the string 'false ' in the Tag Inspector card, and that tapping
+// the value pill arms `_autosaveTimer` (marks dirty). If the default project
+// changed, swap in whatever boolean tag/label create_project_flush_autosave_
+// test.dart currently drives; L4/L5's repo-readback assertion depends on it.
 Future<void> _armDirtyEdit(WidgetTester tester) async {
   final card = find
       .ancestor(of: find.text('Start_PB'), matching: find.byType(Card))
@@ -552,7 +563,9 @@ void main() {
     expect(state.scanCount, greaterThan(before), reason: 'scan ticking pre-suspend');
 
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
-    await state.debugLifecycleOp; // retained future
+    // _onSuspend stops the live OPC UA host (real dart:io socket close), which
+    // never resolves in the fake-async zone — drive it under runAsync (CL-10).
+    await tester.runAsync(() => state.debugLifecycleOp);
     final frozenAt = state.scanCount;
     await tester.pump(const Duration(seconds: 2));
     expect(state.scanCount, frozenAt, reason: 'scan timer must be cancelled while suspended');
@@ -566,7 +579,8 @@ void main() {
     final (state, _) = await _boot(tester);
     await tester.runAsync(() => state.debugOpcUaHost.start(() => state.debugActiveProject));
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
-    await state.debugLifecycleOp;
+    // Suspend stops the live host -> runAsync (CL-10), like the resume await below.
+    await tester.runAsync(() => state.debugLifecycleOp);
     expect(state.debugOpcUaHost.status.name, 'stopped');
 
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
@@ -664,7 +678,7 @@ void main() {
     // Hold OPC UA's port 4840 so its resume rebind throws while others succeed.
     await tester.runAsync(() => state.debugOpcUaHost.start(() => state.debugActiveProject));
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
-    await state.debugLifecycleOp;
+    await tester.runAsync(() => state.debugLifecycleOp); // suspend stops a live host (CL-10)
     final blocker = await tester.runAsync(() => ServerSocketBinder.bind(4840));
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     await tester.runAsync(() => state.debugLifecycleOp);
@@ -682,7 +696,7 @@ void main() {
         state.debugMqttHost.connect(() => state.debugActiveProject, password: 'secret'));
     // Whether it reaches running/connecting, capture semantics count it.
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
-    await state.debugLifecycleOp;
+    await tester.runAsync(() => state.debugLifecycleOp); // suspend disconnects live MQTT (CL-10)
     expect(state.debugMqttHost.status.name, 'stopped');
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     await tester.runAsync(() => state.debugLifecycleOp);
@@ -703,7 +717,7 @@ void main() {
     await state.applyPauseInBackground(false);
     await tester.runAsync(() => state.debugOpcUaHost.start(() => state.debugActiveProject));
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.detached);
-    await state.debugLifecycleOp;
+    await tester.runAsync(() => state.debugLifecycleOp); // detached stops a live host (CL-10)
     expect(state.debugOpcUaHost.status.name, 'stopped');
     expect(state.debugResumeHostIds, isEmpty, reason: 'detached records no resume state');
     expect(state.debugLifecycleSuspended, isFalse);
@@ -729,7 +743,7 @@ void main() {
     final (state, _) = await _boot(tester);
     await tester.runAsync(() => state.debugOpcUaHost.start(() => state.debugActiveProject));
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
-    await state.debugLifecycleOp;
+    await tester.runAsync(() => state.debugLifecycleOp); // suspend stops a live host (CL-10)
 
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     // Mid-loop: _resumeInProgress true -> hostsBusy true.
@@ -746,7 +760,14 @@ void main() {
 
 > The test file references two small local test helpers that ship WITH the test: `ServerSocketBinder.bind(port)` (a `dart:io` `ServerSocket.bind('0.0.0.0', port)` wrapper returning a closable) and the shell hooks `debugSetRunning`, `debugLogEntries`. Add `debugSetRunning`/`debugLogEntries` as `@visibleForTesting` in Step 3; define `ServerSocketBinder` at the top of the test file. L8/L12 exercise real binds inside `runAsync`.
 
-Append to `mobile/test/widgets/refresh_rate_pref_test.dart` (S1-S5):
+Append to `mobile/test/widgets/refresh_rate_pref_test.dart` (S1-S5). **First add the imports these cases need** — the file today imports only `material`/`flutter_test`/`shared_preferences`/`workspace_shell` (`:10-13`), and Dart imports are **not** transitive through `workspace_shell.dart`, so `ProjectRepository`, `SoftPlcSettingsResult`, and `SoftPlcSettingsDialog` are all unresolved without these two added imports:
+
+```dart
+import 'package:soft_plc_mobile/data/project_repository.dart';
+import 'package:soft_plc_mobile/screens/softplc_settings_dialog.dart';
+```
+
+Then append the group:
 
 ```dart
   group('pauseInBackground global preference', () {
@@ -1330,7 +1351,7 @@ Add `this.hostsBusy = false,` to the constructor (`:151-167`). In `build()` (`:1
             }),
 ```
 
-Add `import 'package:flutter/foundation.dart';` for `kIsWeb`/`defaultTargetPlatform`. **Every** existing construction of `SoftPlcSettingsResult` and `SoftPlcSettingsDialog` (in `workspace_shell.dart` and any test) must pass the new required fields — grep and fix them so the suite still compiles.
+Add `import 'package:flutter/foundation.dart';` for `kIsWeb`/`defaultTargetPlatform`. **Every** existing construction of `SoftPlcSettingsResult` and `SoftPlcSettingsDialog` must pass the new required fields — grep and fix them so the suite still compiles. Known sites: the `SoftPlcSettingsDialog(...)` in `workspace_shell.dart:591-594` (`_openSoftPlcSettings`, edited above) and the dialog construction in **`mobile/test/hmi_haptics_test.dart:151-153`** (which today omits the new param). `GatewayScreen.hostsBusy` was defaulted (`= false`) to avoid this churn; if the dialog's `initialPauseInBackground` proves to touch many sites, defaulting it (`= true`) is the equivalent escape hatch — but the two named sites above are the only current ones, so keep it required and fix them.
 
 - [ ] **Step 4: Run — expect PASS.** `cd mobile && flutter test test/lifecycle_pause_test.dart test/widgets/refresh_rate_pref_test.dart test/app_log_test.dart` (the last confirms the `kAllLogSources` pair).
 
@@ -1598,7 +1619,7 @@ jobs:
 
 Notes baked in per §3: `vars.BUILD_PLATFORM_ARTIFACTS` (B3 — `vars` *is* available at job level; `env`/`secrets` are not); step-output keystore gate (`secrets` unavailable in job `if:`); `android-release-signed` vs `android-release-debugsigned` names (B4); `upload-artifact@v4` zips the directory directly, no manual `zip` (M6 — `windows-latest` defaults to PowerShell where `zip` doesn't exist); one CocoaPods retry (m13 — `mobile/ios/Podfile` doesn't exist yet, so the first run hits the flaky cold `pod install`); tag builds retain 90 days, else 14. Keystore written to `$RUNNER_TEMP` (outside the workspace, never archivable).
 
-- [ ] **Step 2: Push the branch and observe an actual run** (`git push` the feature branch; do NOT push to `main`). Verify — **with no secrets configured** — that `gate`, `ios`, `windows` go green and the Android job produces the `android-release-debugsigned` artifact (the `::warning::` is present). Iterate on YAML until green.
+- [ ] **Step 2: Open a DRAFT PR to `main` and observe the check run.** A bare feature-branch push fires **nothing** — the `on:` triggers are `push:[main]`, `pull_request:[main]`, and `workflow_dispatch` (and a `workflow_dispatch` workflow that isn't yet on the default branch isn't UI-dispatchable). Push the feature branch, then `gh pr create --draft --base main` — that fires the `pull_request` event and is the **pre-merge proof**. Do NOT push to / merge into `main`. Verify — **with no secrets configured** — that `gate`, `ios`, `windows` go green and the Android job produces the `android-release-debugsigned` artifact (the `::warning::` is present). Iterate on the YAML (each push updates the same PR's check run) until green.
 
 - [ ] **Step 3: Commit** (the workflow is committed as part of the branch; the run is the proof).
 
