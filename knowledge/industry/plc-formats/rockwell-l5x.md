@@ -4,7 +4,7 @@ title: Rockwell L5X
 domain: industry/plc-formats
 version: "2026-08"
 topics: [rockwell, l5x, rslogix5000, studio-5000, aoi, rll, add-on-instruction, import]
-summary: Documents the Rockwell L5X (RSLogix5000Content) project-exchange schema's structure alongside this app's exact import support matrix - the RLL compile instruction set, real shipped AOI/RLL-Logic-AOI execution, real shipped FBD routine and FBD-Logic-AOI execution, real shipped SFC routine translation with its asserted-and-fixture-pinned <SFCContent> schema and branch-pair synthesis rule, a sheet-merge identity-collision import pitfall, and Rockwell FBD interop specifics (Operand/Function elements, SEL/CTUD name collisions, connector name reuse, OSRI/OSFI mapping).
+summary: Documents the Rockwell L5X (RSLogix5000Content) project-exchange schema's structure alongside this app's exact import support matrix - the RLL compile instruction set, real shipped AOI/RLL-Logic-AOI execution, real shipped FBD routine and FBD-Logic-AOI execution, real shipped SFC routine translation with its asserted-and-fixture-pinned <SFCContent> schema and branch-pair synthesis rule, a sheet-merge identity-collision import pitfall, Rockwell FBD interop specifics (Operand/Function elements, SEL/CTUD name collisions, connector name reuse, OSRI/OSFI mapping), and the branch/leg/link classifier's dominance-over-direction-only-rules and self-referential-with-shape-validation caveat.
 related:
   - knowledge:industry/plc-formats/index
   - knowledge:industry/plc-formats/plcopen-tc6-xml
@@ -12,7 +12,7 @@ related:
   - knowledge:industry/iec61131/custom-function-blocks
   - knowledge:industry/iec61131/function-block-diagram
   - knowledge:industry/iec61131/sequential-function-chart
-learnings: [CL-17, CL-19, CL-22]
+learnings: [CL-17, CL-19, CL-22, CL-24]
 ---
 
 # Rockwell L5X
@@ -215,6 +215,18 @@ set, dropped when both are clear, and a side with exactly one bit set is a defec
 named cause. Every paired branch legitimately MIXES both link forms - trunk links must name the
 `<Branch>` id while leg links name `<Leg>` ids - so a "mixed convention" rule would stub the common
 case, which is why there is no such rule.
+
+**The classifier generalizes past L5X's own two link forms (CL-24).** Because both endpoint rules
+resolve from LOCAL evidence alone - a leg's own id direction, or a neighbour node's own kind - the
+same one classifier absorbs the paired-branch encoding above and, per the ASSERTED note below, a
+separate Diverge/Converge element encoding too, without a mode switch. It strictly dominates a
+naive direction-only rule, which agrees on every trunk link but silently misreads a leg-head link
+expressed through the branch id as a convergence outlet. Its safety argument - "the neighbour's
+kind determines the link's role" - is self-referential with the routine's own shape validation: it
+is sound only because that validator independently rejects the chart shapes where the
+kind-inference would be ambiguous. Any future relaxation of the shape validator (for example, to
+accept a genuinely third encoding) needs its own correctness check of the classifier, not an
+assumption that "kind determines role" still holds once the validator's guarantees change.
 
 **Never silent.** Any unmappable element (`<Stop>`, `<SbrRet>`, `<JSR>`, an unknown tag), any
 structurally broken branch, any dangling link and any malformed/duplicate `ID` sets a routine-level

@@ -9,7 +9,7 @@ related:
   - knowledge:practices/index
   - knowledge:practices/verification
   - knowledge:industry/plc-formats/rockwell-l5x
-learnings: [CL-20]
+learnings: [CL-20, CL-23]
 ---
 
 # Development Process
@@ -190,6 +190,22 @@ The fix is structural, not case-specific: build the match index over the BORN (p
 ONCE before the loop starts, and retarget from that frozen index - never re-scan live/mutated state
 mid-loop. This shape can recur in any retarget/rename/dedupe loop, not just import code; watch for
 it whenever a loop's match condition reads a field the same loop also writes.
+
+**An identity gate must cover every dereferenceable element kind, not just the kinds it was
+written for (CL-23).** A duplicate-id gate is only as safe as its scope. If one element kind is
+left out of the gate - because it wasn't the kind the author expected duplicates on - but that
+SAME kind is still dereferenced by a later resolution pass (a link, a reference, anything that
+looks an element up by id), a duplicate id on the excluded kind silently overwrites the earlier
+registration during resolution: no error, no stub, just a dropped or misrouted reference. Found in
+the L5X SFC importer's element-id gate (`l5x_parser.dart`), originally scoped to
+steps/transitions/branches and missing an element kind that resolution could still target. This is
+the same anti-last-write-wins discipline as CL-19's sheet-merge fix (see
+[../industry/plc-formats/rockwell-l5x.md](../industry/plc-formats/rockwell-l5x.md) §5), generalized
+one level further: it is not enough for the gate to cover the merge step that indexes by id - it
+must cover every element kind that later code can dereference by that same id. The safe scope rule
+is "gate anything that CAN be referenced; skip only what can never be an endpoint," decided by
+asking whether resolution ever dereferences that kind, not by how likely a real export is to
+produce a collision on it.
 
 ---
 

@@ -3,15 +3,15 @@ id: knowledge:practices/verification
 title: Verification Methods
 domain: practices
 version: "2026-08"
-topics: [playwright, headless-browser, flutter-web, canvaskit, e2e, widget-test, fake-async, privileged-port, computer-use, desktop-verify, coordinate-clicks, mutation-testing]
-summary: The two verification methods proven on this project - headless Playwright against a no-DOM Flutter-web CanvasKit app (screenshot+console+network, coordinate clicks, viewport set, single-listener-on-port check) and per-protocol E2E lanes that prove each in-app host against a real third-party client - plus the widget-test fake-async pitfall, privileged-port classification, and mutation-proving forwarded runtime parameters that these depend on.
+topics: [playwright, headless-browser, flutter-web, canvaskit, e2e, widget-test, fake-async, privileged-port, computer-use, desktop-verify, coordinate-clicks, mutation-testing, contested-concurrency, poison-node-guard]
+summary: The two verification methods proven on this project - headless Playwright against a no-DOM Flutter-web CanvasKit app (screenshot+console+network, coordinate clicks, viewport set, single-listener-on-port check) and per-protocol E2E lanes that prove each in-app host against a real third-party client - plus the widget-test fake-async pitfall, privileged-port classification, mutation-proving forwarded runtime parameters, contesting concurrency/priority semantics under test, and guarding a coupling-dependent implementation trick with an invariant test in the depended-upon component's own file.
 related:
   - knowledge:practices/index
   - knowledge:practices/development-process
   - knowledge:app/protocol-hosting
   - knowledge:app/ui-performance
   - knowledge:industry/plc-formats/rockwell-l5x
-learnings: [CL-9, CL-10, CL-11, CL-16, CL-21]
+learnings: [CL-9, CL-10, CL-11, CL-16, CL-21, CL-25, CL-26]
 ---
 
 # Verification Methods
@@ -323,6 +323,52 @@ manually delete the forward in the source and confirm that exact test fails. A t
 run against the dropped-forward mutant is not proof the forward is covered, regardless of how green
 the rest of the suite is.
 
+**A parallel case: concurrency/priority semantics must be CONTESTED to be proven, not just
+exercised (CL-25).** The same "green suite, uncovered property" trap applies to tests of
+first-true-wins selection or AND-join concurrency: a selection test where only one condition is
+ever true passes identically whether "first true wins" is actually implemented or has regressed to
+"any true wins" - nothing in the assertion distinguishes the two. A parallel-join test whose legs
+always arrive on the same scan passes identically whether the join requires ALL legs (AND) or just
+ANY leg (OR). Found on the L5X SFC import workstream's Task 4 review: staggering condition truth
+across scans and contesting priorities (multiple simultaneously-true conditions, legs arriving on
+different scans) is what gives the test the power to fail under a regressed implementation -
+confirmed by mutation-testing the fix, where a `consumed`-neutered mutation and an `every`->`any`
+mutation were both caught only once the tests were contested.
+
+---
+
+## 8. Guarding a coupling-dependent implementation trick with an invariant test in the depended-upon component's own file
+
+**When an implementation choice creates an invisible coupling to another component's internal
+statement order (or any other undocumented invariant), guard it with a test that lives in the
+OTHER component's own test file, plus a comment at the coupled site naming the dependency**
+(CL-26).
+
+The L5X SFC importer's "poison node" is the concrete instance. Rather than adding a new rejection
+path to `translateSfcBody` for every new way an SFC chart can be malformed, `l5x_parser.dart`
+synthesizes a step carrying a self-edge - a value that trips the validator's EXISTING,
+unconditional step-to-step edge scan (see
+[../industry/plc-formats/rockwell-l5x.md](../industry/plc-formats/rockwell-l5x.md) §5). This gives
+a whole-unit visible stub for any unmappable element, dangling link, or malformed id, with zero
+changes to the validator. The trade-off is a coupling neither file's own code makes visible: the
+trick only works because the edge scan runs unconditionally, ahead of any other check that might
+otherwise short-circuit first. A later refactor of `translateSfcBody`'s statement order could
+silently break the poison-node trick, and neither the parser's own tests nor a casual read of the
+validator would catch it.
+
+The fix pattern: add a dialect-neutral invariant test IN THE VALIDATOR'S OWN test file (here,
+`sfc_translate_test.dart`) that asserts the property the poison node depends on directly - not "does
+an L5X import stub correctly" (which lives in the parser's tests and wouldn't fail if the
+validator's internals changed for an unrelated reason), but "does `_build`'s step-to-step scan
+still run unconditionally and first." Pair it with a one-line comment at the coupled site in the
+producer (`l5x_parser.dart`) naming exactly what invariant it relies on. Both halves matter: the
+test catches a regression on the validator side before it ships; the comment tells the next person
+touching the producer why the trick works at all.
+
+This generalizes past poison nodes specifically: any time one component's correctness leans on an
+internal detail of another component that isn't part of that component's own public contract, the
+guard belongs in the depended-upon component's own test file, not only the dependent's.
+
 ---
 
 ## What this means practically
@@ -363,6 +409,18 @@ You wouldn't, from a green suite alone - an optional-with-default parameter make
 compile and pass silently (§7, CL-21). Write a scan-level test against the real production call
 chain, asserting on state only correct if the forward happened, then manually delete the forward
 and confirm that specific test fails.
+
+### "My concurrency/priority test is green but I'm not sure it actually proves the ordering rule."
+It probably doesn't, unless the scenario contests the rule - a first-true-wins test where only one
+condition is ever true, or a parallel-join test whose legs always arrive together, passes under a
+regressed implementation too (§7, CL-25). Stagger arrivals and contest priorities, then confirm
+with mutation testing.
+
+### "I want to make a validator reject new bad input without touching the validator - is that safe?"
+Only if you guard the coupling. Routing unrepresentable input through an existing rejection path
+(a "poison node") avoids validator changes, but ties you to that validator's internal statement
+order - guard it with a dialect-neutral invariant test in the VALIDATOR's own test file, plus a
+comment at the coupled site (§8, CL-26).
 
 ---
 

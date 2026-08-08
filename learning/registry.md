@@ -35,6 +35,7 @@ TL = tentative (single observation, apply with caution).
 | 2026-07-26-l5x-import-foundation | 2026-07-26 | Ship the Rockwell L5X import foundation; add PLCopen-vs-L5X dialect autodetection | CL-17 | closed |
 | 2026-08-06-default-projects-redo | 2026-08-06 | Rebuild the default-project catalog (7-project redo); fix a Continuous-task-starvation bug found via the Flagship default; pin the backfill ledger's never-overwrite rule; audit HMI layout and LD counter presets across all defaults | CL-3, CL-12, CL-13, CL-18 | closed |
 | 2026-08-07-l5x-fbd-import | 2026-08-07 | Ship L5X FBD routine + FBD-Logic AOI import (PR #20); whole-branch review found and fixed an identity-collision merge bug, a retarget-steal bug, and mutation-uncovered forwarding gaps; alias Rockwell FBD mnemonics/pins to IEC | CL-19, CL-20, CL-21, CL-22 | closed |
+| 2026-08-08-l5x-sfc-import | 2026-08-08 | Ship L5X SFC routine import (PR #21); plan review found an identity-gate scope gap covering a dereferenceable-but-unguarded element kind, confirmed the branch/leg/link classifier's dominance and self-referential safety argument, hardened concurrency/priority tests to be contested rather than uncontested, and pinned the poison-node validator-coupling risk with a dialect-neutral guard test | CL-23, CL-24, CL-25, CL-26 | closed |
 
 ---
 
@@ -462,6 +463,113 @@ dropped.
 
 **Knowledge base updated:**
 - [../knowledge/industry/plc-formats/rockwell-l5x.md](../knowledge/industry/plc-formats/rockwell-l5x.md)
+
+---
+
+### CL-23 - An identity gate must cover every dereferenceable element kind, not just the ones it was written for
+
+**Confirmed in:** 2026-08-08-l5x-sfc-import (plan review C1 and Task 1's fix to `l5x_parser.dart`;
+proven with both-document-orders tests)
+**Applies to:** any id-indexed import/merge step that gates malformed identity before later
+resolution dereferences it (`l5x_parser.dart`'s SFC element-id gate, and by extension every
+id-indexed merge step in the codebase - see CL-19)
+**Rule:** When one element kind both BYPASSES an identity gate (because the gate was scoped only
+to the kinds the author expected to collide, e.g. steps/transitions/branches) and IS still
+dereferenced by a later resolution pass (because a link or reference can legitimately target it),
+a duplicate id on that bypassed kind silently deletes the earlier registration during resolution -
+no error, no stub, just a dropped or misrouted reference. The safe scope rule is not "gate the
+kinds I expect duplicates on" but "gate anything that CAN be referenced; skip only what can never
+be an endpoint" - decided by asking whether resolution ever dereferences that kind, not by how
+likely a real export is to produce a collision on it.
+
+**Wrong:**
+```dart
+// gates only the kinds the author expected duplicates on
+if (element is Step || element is Transition || element is Branch) {
+  checkDuplicateId(element);
+}
+```
+
+**Correct:**
+```dart
+// gates every kind that resolution can dereference, including annotation-adjacent ones
+if (isDereferenceable(element)) {  // anything a link/reference can target
+  checkDuplicateId(element);
+}
+```
+**Knowledge base updated:**
+- [../knowledge/practices/development-process.md](../knowledge/practices/development-process.md)
+
+---
+
+### CL-24 - A flat vendor encoding maps onto a paired-connector IR via a LOCAL-evidence classifier that dominates direction-only rules
+
+**Confirmed in:** 2026-08-08-l5x-sfc-import (`l5x_parser.dart` branch synthesis, spec §3,
+equivalence tests over both encodings)
+**Applies to:** any vendor exchange-format import that flattens a paired-node IR concept
+(divergence/convergence, producer/consumer) into a single element (L5X `<Branch>`/`<Leg>`/
+`<DirectedLink>`)
+**Rule:** A flat vendor encoding can be mapped onto a paired-connector IR without a mode switch by
+classifying each link endpoint from LOCAL evidence only - leg ids classified by direction (out of
+a leg feeds the divergence, into a leg drains the convergence), and links naming the container id
+classified by the OTHER endpoint's node kind (selection diverges into transitions and converges
+from a step; simultaneous is the mirror). This one classifier strictly dominates a direction-only
+rule, which agrees on every trunk link but silently misreads a leg-head link expressed through the
+branch id as a convergence outlet - a wrong chart that still passes every shape check. The caveat:
+the classifier's safety argument ("kind determines role") is self-referential with the routine's
+own shape validation - it is sound only because that validator independently rejects the chart
+shapes where the kind-inference would be ambiguous. Any relaxation of the shape validator (for
+example, to accept a genuinely third encoding) needs its own correctness check of the classifier,
+not an assumption that "kind determines role" still holds once the validator's guarantees change.
+
+**Knowledge base updated:**
+- [../knowledge/industry/plc-formats/rockwell-l5x.md](../knowledge/industry/plc-formats/rockwell-l5x.md) §5
+
+---
+
+### CL-25 - Concurrency/priority tests must contest the semantics under test, not just exercise it uncontested
+
+**Confirmed in:** 2026-08-08-l5x-sfc-import (Task 4 review and fix; mutation-verified: a
+`consumed`-neutered mutation and an `every`->`any` mutation were both caught only after the tests
+were contested)
+**Applies to:** any test of first-true-wins selection or AND-join concurrency semantics
+(`sfc_exec.dart`'s selection-divergence priority and simultaneous-branch join)
+**Rule:** A test of concurrency or priority semantics proves nothing about the ordering/priority
+rule itself unless the scenario actually CONTESTS it. A first-true-wins selection test where only
+one condition is ever true passes identically whether "first true wins" is really implemented or
+has regressed to "any true wins" - nothing in the assertion distinguishes the two. A parallel-join
+test whose legs always arrive on the same scan passes identically whether the join requires ALL
+legs (AND) or just ANY leg (OR). Staggering condition truth across scans and contesting priorities
+(multiple simultaneously-true conditions, legs arriving on different scans) is what gives the test
+the power to fail under a regressed implementation - confirm this with mutation testing, not by
+reading the assertions.
+
+**Knowledge base updated:**
+- [../knowledge/practices/verification.md](../knowledge/practices/verification.md) §7 (extends the
+  CL-21 mutation-testing theme)
+
+---
+
+### CL-26 - A poison node can route unrepresentable input through an existing validator's cheapest rejection path; guard the coupling with a dialect-neutral test in the validator's own file
+
+**Confirmed in:** 2026-08-08-l5x-sfc-import (spec §4; Task 3's `sfc_translate_test.dart` guard)
+**Applies to:** any import/translate step that needs to make an unrepresentable input visibly fail
+without modifying the downstream validator (`l5x_parser.dart`'s SFC poison node - a step carrying
+a self-edge - routed through `translateSfcBody`'s unconditional step-to-step edge scan)
+**Rule:** Rather than adding a new rejection path to a validator for every new way upstream input
+can be malformed, a "poison node" can synthesize a value that trips an EXISTING, cheap rejection
+path already in that validator - here, a step with a self-edge trips the same step-to-step scan
+that would catch a real malformed chart, giving a whole-unit visible stub with zero validator
+changes. The trade-off: this couples the poison-node producer to the validator's internal
+statement order (the scan must run, and must run before any other check that might short-circuit
+first) - a coupling invisible from either side's own code. Guard it with a dialect-neutral
+invariant test living IN THE VALIDATOR'S OWN test file (not the producer's), asserting the
+property the poison node depends on directly, plus a one-line comment at the coupled site in the
+producer naming the dependency. Without both, a later refactor of the validator's statement order
+can silently break the poison-node trick with no test anywhere near the change catching it.
+
+**Knowledge base updated:**
+- [../knowledge/practices/verification.md](../knowledge/practices/verification.md) §8
 
 ---
 

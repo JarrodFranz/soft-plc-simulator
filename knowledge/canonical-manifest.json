@@ -533,7 +533,7 @@
         "import"
       ],
       "version": "2026-08",
-      "summary": "Documents the Rockwell L5X (RSLogix5000Content) project-exchange schema's structure alongside this app's exact import support matrix - the RLL compile instruction set, real shipped AOI/RLL-Logic-AOI execution, real shipped FBD routine and FBD-Logic-AOI execution, real shipped SFC routine translation with its asserted-and-fixture-pinned <SFCContent> schema and branch-pair synthesis rule, a sheet-merge identity-collision import pitfall, and Rockwell FBD interop specifics (Operand/Function elements, SEL/CTUD name collisions, connector name reuse, OSRI/OSFI mapping).",
+      "summary": "Documents the Rockwell L5X (RSLogix5000Content) project-exchange schema's structure alongside this app's exact import support matrix - the RLL compile instruction set, real shipped AOI/RLL-Logic-AOI execution, real shipped FBD routine and FBD-Logic-AOI execution, real shipped SFC routine translation with its asserted-and-fixture-pinned <SFCContent> schema and branch-pair synthesis rule, a sheet-merge identity-collision import pitfall, Rockwell FBD interop specifics (Operand/Function elements, SEL/CTUD name collisions, connector name reuse, OSRI/OSFI mapping), and the branch/leg/link classifier's dominance-over-direction-only-rules and self-referential-with-shape-validation caveat.",
       "related": [
         "knowledge:industry/plc-formats/index",
         "knowledge:industry/plc-formats/plcopen-tc6-xml",
@@ -545,7 +545,8 @@
       "learnings": [
         "CL-17",
         "CL-19",
-        "CL-22"
+        "CL-22",
+        "CL-24"
       ],
       "priority": "normal"
     },
@@ -869,7 +870,8 @@
         "knowledge:industry/plc-formats/rockwell-l5x"
       ],
       "learnings": [
-        "CL-20"
+        "CL-20",
+        "CL-23"
       ],
       "priority": "normal"
     },
@@ -917,10 +919,12 @@
         "computer-use",
         "desktop-verify",
         "coordinate-clicks",
-        "mutation-testing"
+        "mutation-testing",
+        "contested-concurrency",
+        "poison-node-guard"
       ],
       "version": "2026-08",
-      "summary": "The two verification methods proven on this project - headless Playwright against a no-DOM Flutter-web CanvasKit app (screenshot+console+network, coordinate clicks, viewport set, single-listener-on-port check) and per-protocol E2E lanes that prove each in-app host against a real third-party client - plus the widget-test fake-async pitfall, privileged-port classification, and mutation-proving forwarded runtime parameters that these depend on.",
+      "summary": "The two verification methods proven on this project - headless Playwright against a no-DOM Flutter-web CanvasKit app (screenshot+console+network, coordinate clicks, viewport set, single-listener-on-port check) and per-protocol E2E lanes that prove each in-app host against a real third-party client - plus the widget-test fake-async pitfall, privileged-port classification, mutation-proving forwarded runtime parameters, contesting concurrency/priority semantics under test, and guarding a coupling-dependent implementation trick with an invariant test in the depended-upon component's own file.",
       "related": [
         "knowledge:practices/index",
         "knowledge:practices/development-process",
@@ -933,7 +937,9 @@
         "CL-10",
         "CL-11",
         "CL-16",
-        "CL-21"
+        "CL-21",
+        "CL-25",
+        "CL-26"
       ],
       "priority": "normal"
     }
