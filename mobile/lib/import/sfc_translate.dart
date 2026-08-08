@@ -47,6 +47,10 @@ SfcTranslation translateSfcBody(SfcBody body, {required String pouName}) {
   // A direct step->step edge means a transition is missing from the source
   // — a structural error, not something we can represent faithfully as a
   // partial chart. Whole-POU stub rather than silently drop the path.
+  //
+  // Import builders (l5x_parser's SFC poison node) depend on this scan
+  // preceding every warning emission below — see
+  // docs/superpowers/specs/2026-08-07-l5x-sfc-import-design.md §4.
   for (final e in body.edges) {
     if (byId[e.fromLocalId]?.kind == SfcNodeKind.step &&
         byId[e.toLocalId]?.kind == SfcNodeKind.step) {

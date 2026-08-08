@@ -533,13 +533,14 @@
         "import"
       ],
       "version": "2026-08",
-      "summary": "Documents the Rockwell L5X (RSLogix5000Content) project-exchange schema's structure alongside this app's exact import support matrix - the RLL compile instruction set, real shipped AOI/RLL-Logic-AOI execution, real shipped FBD routine and FBD-Logic-AOI execution, the confirmed still-unshipped state of L5X SFC routine translation, a sheet-merge identity-collision import pitfall, and Rockwell FBD interop specifics (Operand/Function elements, SEL/CTUD name collisions, connector name reuse, OSRI/OSFI mapping).",
+      "summary": "Documents the Rockwell L5X (RSLogix5000Content) project-exchange schema's structure alongside this app's exact import support matrix - the RLL compile instruction set, real shipped AOI/RLL-Logic-AOI execution, real shipped FBD routine and FBD-Logic-AOI execution, real shipped SFC routine translation with its asserted-and-fixture-pinned <SFCContent> schema and branch-pair synthesis rule, a sheet-merge identity-collision import pitfall, and Rockwell FBD interop specifics (Operand/Function elements, SEL/CTUD name collisions, connector name reuse, OSRI/OSFI mapping).",
       "related": [
         "knowledge:industry/plc-formats/index",
         "knowledge:industry/plc-formats/plcopen-tc6-xml",
         "knowledge:industry/iec61131/ladder-diagram",
         "knowledge:industry/iec61131/custom-function-blocks",
-        "knowledge:industry/iec61131/function-block-diagram"
+        "knowledge:industry/iec61131/function-block-diagram",
+        "knowledge:industry/iec61131/sequential-function-chart"
       ],
       "learnings": [
         "CL-17",

@@ -123,16 +123,79 @@ case. Only the `Logic` routine runs. Proven end-to-end (parse → map →
 translate → execute) in
 `mobile/test/import/import_l5x_aoi_fbd_e2e_test.dart`.
 
+## SFC routines translate
+
+A `<Routine Type="SFC">`'s `<SFCContent>` parses into the neutral SFC IR and
+runs through the **same** whole-POU translator PLCopen SFC input goes through
+(`translateSfcBody`), producing a real, executing `SequentialFunctionChart`
+program. Translation is **faithful-or-stub for the whole chart**: structure and
+transition conditions either all resolve or the entire POU stays a stub (a
+half-translated sequence executes wrong logic, which is worse than not
+executing). Step **actions** degrade individually, so one unsupported action
+never costs the chart.
+
+| L5X source | Native mapping |
+| --- | --- |
+| `<Step Operand InitialStep X Y>` | `SfcStep` (name, `isInitial`, position) |
+| `<Action Qualifier="N">` inside a `<Step>` | that step's `actionSt`, in document order |
+| a `<Step>` with a direct `<Body><STContent>` and no `<Action>` | one implicit `N` action |
+| `<Transition><Condition><STContent>` | `conditionSt` (a single trailing `;` is stripped) |
+| `<Branch BranchType="Selection">` + `<Leg>`s | a divergence/convergence connector pair → multiple `single` transitions from one step (first-true-wins) |
+| `<Branch BranchType="Simultaneous">` + `<Leg>`s | a divergence/convergence connector pair → `parallelFork` / `parallelJoin` |
+| `<DirectedLink FromID ToID>` | a chart edge; a link naming a `<Leg>` resolves to that branch's divergence or convergence by direction |
+| a loop-back link to an earlier element | an ordinary edge (Logix has no jump element) |
+| `<TextBox>` / `<Attachment>` | dropped, counted, one info warning per routine |
+
+**Nesting.** A branch whose leg contains a step which then opens a second
+branch — the ordinary way real charts nest — translates. Only
+*connector-adjacent* branches (a leg head or tail that is itself a `<Branch>`,
+with no step or transition between the two connectors) are unrepresentable.
+
+**Stubbed (whole POU)**, with the `sfcStubReasons` key: an unmappable element
+(`<Stop>`, `<SbrRet>`, `<JSR>`, an unknown tag), a structurally broken branch
+(unrecognized `BranchType`, a leg head or tail of the wrong kind, more than one
+trunk in or out, a branch no link touches, connector-adjacent nesting), a
+dangling `<DirectedLink>`, a malformed or duplicate element `ID`, or a
+step wired directly to a step (`complex-topology`); a transition with no
+condition (`unresolved-condition`); a chart with no steps (`no-initial`).
+Every one of these also emits an info breadcrumb naming the offending element,
+so the stub is never a mystery.
+
+**Degraded (chart still translates)**, each with an info warning:
+- **non-`N` action qualifiers** (`S`, `R`, `P`, `L`, `D`, `SD`, `DS`, `SL`) —
+  the action is skipped.
+- **`IsBoolean="true"` actions** — skipped. Logix holds the named BOOL true
+  while the step is active and clears it on deactivation; the native action
+  model has no deactivation hook, so assigning `TRUE` would leave the bit
+  latched forever.
+- **`<Action>` with an empty or absent body** — skipped.
+- **step timing** (`Preset`, `LimitHigh`, `LimitLow`, and their `*UsesExpr`
+  companions) — dropped, because `SfcStep` has no timer. Recover a dropped
+  `Preset="5000"` by hand as `STEP_T >= 5000` on the step's outgoing
+  transition; `STEP_T` (elapsed time in the active step, ms) is available in
+  every transition condition. A `Preset="0"` — which Logix writes on nearly
+  every step — is dropped silently, so the warnings you do see are the real
+  ones.
+- **branch flow mismatch** — a `<Branch>`'s `BranchFlow` attribute
+  (`Diverge`/`Converge`) disagrees with what the `<DirectedLink>` topology
+  actually wires up. `BranchFlow` is read but not trusted: emission is
+  derived from the links, so the chart still translates on the links' terms
+  and the mismatch is only an info breadcrumb.
+
+Proven end-to-end (parse → map → translate → execute), including a selection
+branch and a simultaneous fork/join, in
+`mobile/test/import/import_l5x_sfc_e2e_test.dart`.
+
 ## What's captured but not yet translated
 
-- **SFC routines** are captured as a whole-POU stub (same shape as the
-  PLCopen importer's graphical-POU stub) with a warning naming the routine.
-  Re-importing once the L5X SFC translator ships will turn these into real
-  programs. (FBD routines now translate — see above.)
-- **SFC AOI logic** (an AOI whose `Logic` routine is SFC) imports the AOI's
-  *interface* (parameters + local tags) as a real `FbDefinition`, but the
-  logic itself is not translated — a warning names the AOI and its logic
-  language. (RLL and FBD AOI logic now execute — see above.)
+- **SFC AOI logic.** Studio 5000 does not permit SFC as an Add-On Instruction
+  `Logic` language — AOIs accept Ladder, FBD or Structured Text only — so
+  there is nothing to translate (Rockwell product restriction, asserted from
+  format knowledge, not verified against a repo artifact; the defensive
+  interface-only path stands either way). The importer keeps a defensive
+  interface-only path (parameters + local tags become a real `FbDefinition`,
+  with an info warning naming the AOI) should such a file ever appear.
+  (RLL and FBD AOI logic execute — see above.)
 
 ## Autodetect (no format picker)
 
@@ -163,8 +226,21 @@ Tracked in `docs/DEFERRED.md`'s **L5X import** section:
   `Prescan`/`Postscan`/`EnableInFalse` are ignored.
 - **AOI-in-AOI forward references** — the callee must precede the caller in
   the file.
-- **L5X SFC routine translation** — sub-project 5. (FBD routine translation
-  shipped in sub-project 4 — see "FBD routines translate" above.)
+- **Real-corpus SFC validation** — the `<SFCContent>` schema this importer
+  targets is asserted from Rockwell-format domain knowledge and pinned only by
+  synthetic fixtures; no SFC-bearing `.L5X` exists in the local corpus. The
+  highest-value follow-up.
+- **`<Stop>` elements** — stub the POU today. Mapping one onto a terminal step
+  needs a real export showing how Logix wires and resets it.
+- **Step `Preset`/`LimitHigh`/`LimitLow`** — dropped with a warning;
+  auto-synthesizing `STEP_T >= <preset>` would silently rewrite a transition
+  the user did not author.
+- **`IsBoolean` actions** — skipped; they need a set-on-activate /
+  reset-on-deactivate action model `SfcStep` does not have.
+- **Connector-adjacent / chained branches** — a leg head or tail that is itself
+  a `<Branch>` stubs. (Step-separated nesting already translates.)
+- **Recursive `<SFCContent>` walk** — a `<Branch>` nested *inside* a `<Leg>`
+  element is unregistered, so a link naming it stubs the POU visibly.
 - **AB FBD block synthesis** — unmapped Rockwell FBD blocks (`SCL`, `PIDE`,
   `MOV`, `MOD`, `ESEL`, …) stub their network rather than synthesizing onto a
   native equivalent.

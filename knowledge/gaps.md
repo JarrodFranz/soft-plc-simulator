@@ -37,8 +37,6 @@ visible.
 
 | # | Gap | What would close it |
 |---|---|---|
-| G-1 | L5X import supports RLL (ladder) and ST routines; FBD routine import was designed (`docs/superpowers/specs/2026-08-04-l5x-fbd-import-design.md`) but not shipped | Implement the FBD L5X import path per that spec, then document actual (not designed) behavior in [industry/plc-formats/rockwell-l5x.md](industry/plc-formats/rockwell-l5x.md) |
-| G-2 | L5X SFC routines are not covered by the importer at all (no design doc, no implementation) | Scope an SFC-routine L5X import design, then document the wire format's SFC representation in [industry/plc-formats/rockwell-l5x.md](industry/plc-formats/rockwell-l5x.md) |
 | G-3 | The default-project integrity guard test (`mobile/test/defaults/default_projects_integrity_test.dart`) only validates root-level project structure, not nested/child structure below it | Extend the integrity guard to walk nested structure, then update [app/default-projects.md](app/default-projects.md) with the widened guarantee |
 | G-4 | Several IEC 61131 building blocks exist in the LD engine but are not exercised by any default/showcase project: comparisons `GE`/`LE`/`NE`, math blocks `MUL`/`DIV`, timer `TP`, and counters `CTD`/`CTUD` | Add or extend a default project (likely the conveyor-line default) to exercise these blocks, then cite it as the worked example in [industry/iec61131/ladder-diagram.md](industry/iec61131/ladder-diagram.md) |
 | G-5 | The `Event` task type exists in the task scheduler UI (`newTaskType == 'Event'` branch in `mobile/lib/screens/workspace_shell.dart`) but no default project uses one | Add an Event-task example to a default project, then document its trigger semantics in [industry/iec61131/task-scheduling.md](industry/iec61131/task-scheduling.md) with a worked citation |
@@ -51,11 +49,10 @@ visible.
 
 ## Closed gaps
 
-_None yet. When a gap above is closed, move its row here with the closing reference._
-
 | # | Gap | Closed by |
 |---|---|---|
-| - | - | - |
+| G-1 | L5X import supports RLL (ladder) and ST routines; FBD routine import was designed (`docs/superpowers/specs/2026-08-04-l5x-fbd-import-design.md`) but not shipped | **Shipped** (2026-08-04, L5X sub-project 4): `<Routine Type="FBD">` translates through the shared `translateFbdBody`. Documented in [industry/plc-formats/rockwell-l5x.md](industry/plc-formats/rockwell-l5x.md) §5. |
+| G-2 | L5X SFC routines are not covered by the importer at all (no design doc, no implementation) | **Shipped** (2026-08-07, L5X sub-project 5): `<Routine Type="SFC">` translates through the shared `translateSfcBody`. Documented in [industry/plc-formats/rockwell-l5x.md](industry/plc-formats/rockwell-l5x.md) §5. |
 
 ---
 
@@ -66,5 +63,6 @@ _None yet. When a gap above is closed, move its row here with the closing refere
 - [governance.md](./governance.md) - section 10 explains why closed gaps are moved, not deleted.
 - [../learning/registry.md](../learning/registry.md) - several gaps here trace back to CL-N
   entries (CL-11, CL-12) that recorded the underlying risk or rule.
-- `docs/DEFERRED.md` - the canonical deferred-*implementation*-work list; several gaps above
-  (G-1, G-2, G-9) have a matching implementation-side entry there.
+- `docs/DEFERRED.md` - the canonical deferred-*implementation*-work list; G-9 above has a
+  matching implementation-side entry there (G-1's and G-2's closures are likewise tracked there,
+  under "L5X FBD routine translation" and "L5X SFC routine translation" respectively).

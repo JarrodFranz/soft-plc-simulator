@@ -4,13 +4,14 @@ title: Rockwell L5X
 domain: industry/plc-formats
 version: "2026-08"
 topics: [rockwell, l5x, rslogix5000, studio-5000, aoi, rll, add-on-instruction, import]
-summary: Documents the Rockwell L5X (RSLogix5000Content) project-exchange schema's structure alongside this app's exact import support matrix - the RLL compile instruction set, real shipped AOI/RLL-Logic-AOI execution, real shipped FBD routine and FBD-Logic-AOI execution, and the confirmed still-unshipped state of L5X SFC routine translation.
+summary: Documents the Rockwell L5X (RSLogix5000Content) project-exchange schema's structure alongside this app's exact import support matrix - the RLL compile instruction set, real shipped AOI/RLL-Logic-AOI execution, real shipped FBD routine and FBD-Logic-AOI execution, real shipped SFC routine translation with its asserted-and-fixture-pinned <SFCContent> schema and branch-pair synthesis rule, a sheet-merge identity-collision import pitfall, and Rockwell FBD interop specifics (Operand/Function elements, SEL/CTUD name collisions, connector name reuse, OSRI/OSFI mapping).
 related:
   - knowledge:industry/plc-formats/index
   - knowledge:industry/plc-formats/plcopen-tc6-xml
   - knowledge:industry/iec61131/ladder-diagram
   - knowledge:industry/iec61131/custom-function-blocks
   - knowledge:industry/iec61131/function-block-diagram
+  - knowledge:industry/iec61131/sequential-function-chart
 learnings: [CL-17, CL-19, CL-22]
 ---
 
@@ -22,10 +23,11 @@ learnings: [CL-17, CL-19, CL-22]
 > (`mobile/lib/import/l5x_parser.dart`), RLL compiler (`mobile/lib/import/rll_compile.dart`),
 > FBD translator (`mobile/lib/import/fbd_translate.dart`, shared with the PLCopen path), and FB
 > mapper (`mobile/lib/import/fb_import.dart`).
-> **Read this before:** importing a Studio 5000 L5X export, extending RLL or FBD translation, or
-> checking whether L5X SFC support has shipped (it has not, as of this version - verify against
-> source before assuming otherwise, since this is exactly the kind of claim that goes stale
-> fastest).
+> **Read this before:** importing a Studio 5000 L5X export, extending RLL, FBD or SFC
+> translation, or checking which L5X body kinds execute for real (all four - ST, RLL, FBD and
+> SFC - do, as of this version; §5's `<SFCContent>` structure is asserted from format knowledge
+> and pinned by synthetic fixtures rather than by a real corpus export, so treat the SCHEMA, not
+> the support status, as the thing to verify against a real file).
 
 ---
 
@@ -124,11 +126,11 @@ convention lists dependencies first, so this is rare in practice).
 
 ---
 
-## 5. FBD ships, SFC does not
+## 5. FBD and SFC both ship
 
-**FBD routine and FBD-Logic AOI translation are real and shipped, reusing the same per-network
-translator PLCopen input goes through (see [plcopen-tc6-xml.md](./plcopen-tc6-xml.md) §7). SFC
-translation is still not reachable from L5X input.**
+**FBD routine, FBD-Logic AOI and SFC routine translation are all real and shipped, each reusing
+the same translator PLCopen input goes through (see [plcopen-tc6-xml.md](./plcopen-tc6-xml.md)
+§7). Every L5X body kind - ST, RLL, FBD, SFC - now produces real executing logic.**
 
 A `<Routine Type="FBD">`'s `<FBDContent><Sheet>` elements parse into the neutral `GraphBody` IR
 (`_l5xFbdBody` in `l5x_parser.dart`): every `<Sheet>` merges into one body in ascending `<Sheet
@@ -186,25 +188,70 @@ general three-way body-precedence model this plugs into. `EnableIn`/`EnableOut` 
 internal vars for FBD-Logic AOIs exactly as for RLL-Logic AOIs (§4), and `EnableIn` is
 re-asserted `true` before every call.
 
-SFC stays unshipped, unchanged from before: the L5X parser's `SFC` routine-type case still
-constructs a **permanently empty** graph structure regardless of the routine's actual SFC content,
-attaches a warning naming the routine, and stops - there is no L5X-specific SFC content reader.
-The same is true one level down: an AOI whose `Logic` routine is SFC-typed still imports its
-*interface* only, with a warning naming the AOI.
+A `<Routine Type="SFC">`'s `<SFCContent>` parses into the neutral `SfcBody` IR (`_l5xSfcBody` in
+`l5x_parser.dart`) and runs through the same `translateSfcBody` the PLCopen path uses, whole-POU
+faithful-or-stub. Steps carry their nested `<Action Qualifier="N">` children (association is by XML
+NESTING, not by a link - the opposite of PLCopen's sibling `<actionBlock>`), transitions carry an
+inline ST `<Condition>`, and `<DirectedLink FromID ToID>` is a flat routine-wide edge list rather
+than PLCopen's per-target `connectionPointIn`.
+
+**Branch-pair synthesis is the crux.** L5X models a branch as ONE `<Branch BranchType>` element
+carrying `<Leg>` children; the neutral IR, IEC 61131-3 and `sfc_exec` all model it as TWO connector
+nodes, an opening divergence and a closing convergence. The importer therefore synthesizes the pair
+and derives its wiring from link topology alone, through one unified endpoint rule with no mode
+switch:
+
+- a link naming a `<Leg>` resolves BY DIRECTION - out of a leg means the divergence feeds that
+  leg's head, into a leg means that leg's tail feeds the convergence;
+- a link naming the `<Branch>` resolves BY THE OTHER ENDPOINT'S KIND - selection diverges into
+  TRANSITIONS and converges out to a STEP, simultaneous is the mirror, so the neighbour's kind
+  alone says whether the link is a trunk role or a leg role.
+
+The kind rule matters: the naive direction rule agrees on every trunk link but reads a leg-head
+link expressed through the branch id as a convergence outlet, wiring conv -> T1, a silently wrong
+chart that still passes every shape check. Emission is then a total function of four booleans (is
+each of divIn/divOut/convIn/convOut non-empty): a side is emitted whenever either of its bits is
+set, dropped when both are clear, and a side with exactly one bit set is a defect with its own
+named cause. Every paired branch legitimately MIXES both link forms - trunk links must name the
+`<Branch>` id while leg links name `<Leg>` ids - so a "mixed convention" rule would stub the common
+case, which is why there is no such rule.
+
+**Never silent.** Any unmappable element (`<Stop>`, `<SbrRet>`, `<JSR>`, an unknown tag), any
+structurally broken branch, any dangling link and any malformed/duplicate `ID` sets a routine-level
+flag that appends a POISON NODE - a step carrying a self-edge. `translateSfcBody`'s step-to-step
+edge scan is unconditional over the edge list and sits above every warning-emitting statement, so a
+poisoned body always stubs `complex-topology` with exactly one warning and no stray infos, with
+ZERO changes to the translator (it carries one coupling comment naming the dependency, and a
+dialect-neutral test in `sfc_translate_test.dart` fails if `_build` is ever reordered). A raw
+`ID` is accepted only when non-negative and within range, which is what keeps a `<Step ID="-1">`
+out of the same namespace as the synthetic negative ids branch connectors and the poison node draw
+from - without that gate the step's id collides with the first branch's divergence and the chart
+translates cleanly AS THE WRONG LOGIC with zero warnings, the same failure shape as CL-19 above.
+
+> **ASSERTED, NOT CORPUS-VERIFIED.** The `<SFCContent>` element set and attribute names above are
+> stated from Rockwell-format domain knowledge; this repo contains no SFC-bearing L5X (no corpus
+> file, no vendored schema manual). They are pinned by synthetic, schema-faithful fixtures in
+> `mobile/test/import/l5x_parser_sfc_test.dart`, exactly the precedent the FBD sub-project set for
+> `<FBDContent>`. The branch rules above are written to absorb BOTH plausible encodings of
+> `<Branch>` (paired element, or separate Diverge/Converge elements) without a mode switch, but a
+> THIRD encoding would invalidate them. Acquiring one real SFC export and running it through
+> `corpus_import_test.dart` is the tracked near-term follow-up (`docs/DEFERRED.md`).
 
 | L5X body kind | Support |
 |---|---|
 | `RLL` routine | Real, per-rung compile (§3) |
 | `ST` routine | Real, verbatim text carry |
 | `FBD` routine | Real, per-network translate via the shared `translateFbdBody` (this section) |
-| `SFC` routine | **Whole-POU stub, always empty** - parser has no L5X SFC content reader |
+| `SFC` routine | Real, whole-POU translate via the shared `translateSfcBody` (this section) |
 | `RLL`-Logic AOI | Real, per-instance execution (§4) |
 | `ST`-Logic AOI | Real, ST body carried, `EnableIn`/`EnableOut` historic skip |
 | `FBD`-Logic AOI | Real, per-instance execution via the FBD-bodied `FbDefinition` (this section) |
-| `SFC`-Logic AOI | Interface-only import, logic not translated |
+| `SFC`-Logic AOI | Not possible in Studio 5000 (AOIs accept Ladder/FBD/ST only) - a Rockwell product restriction, asserted from format knowledge and not verified against a repo artifact; the defensive interface-only path stands either way |
 
-Proven end-to-end (parse -> map -> translate -> execute), including both the routine and AOI
-paths, in `mobile/test/import/import_l5x_aoi_fbd_e2e_test.dart`.
+Proven end-to-end (parse -> map -> translate -> execute) in
+`mobile/test/import/import_l5x_aoi_fbd_e2e_test.dart` (FBD routine + FBD-Logic AOI) and
+`mobile/test/import/import_l5x_sfc_e2e_test.dart` (SFC routine, selection branch and
+simultaneous fork/join).
 
 ---
 
@@ -243,9 +290,20 @@ Yes - as of this version, an L5X `FBD` routine parses and translates through the
 faithful-or-stub degradation, not a sign FBD import is unshipped.
 
 ### "My AOI's RLL logic runs, and now its FBD logic runs too - what about SFC?"
-RLL-Logic and FBD-Logic AOI execution are both real and shipped (§4, §5). SFC-Logic AOIs are still
-interface-only - their `Logic` routine imports as parameters + local tags on the `FbDefinition`,
-but the logic itself is not translated (§5).
+SFC ROUTINES translate for real as of this version (§5) - the whole chart, including selection and
+simultaneous branches, becomes an executing `SequentialFunctionChart` program, or the whole POU
+stubs with a named reason. SFC-Logic AOIs are a different question and the answer is that they do
+not exist: Studio 5000 does not permit SFC as an AOI `Logic` language (Ladder, FBD or ST only), so
+the importer keeps only a defensive interface-only path for one (a Rockwell product restriction,
+asserted from format knowledge and not verified against a repo artifact; the defensive
+interface-only path stands either way).
+
+### "My SFC routine imported as a stub - what did I do wrong?"
+Probably nothing. SFC is whole-POU faithful-or-stub, so ONE unmappable thing takes down the chart:
+a `<Stop>` element, a structurally broken branch, a dangling `<DirectedLink>`, a duplicate or
+malformed element `ID`, or a transition with no condition. Every one of them also emits an
+info-severity breadcrumb naming the offending element and id, so read the info warnings, not just
+the two loud ones (§5).
 
 ### "Why did my multi-dimensional array tag collapse to one dimension?"
 By design - only the first dimension token imports; the rest are dropped, with an info warning on
@@ -259,8 +317,9 @@ already registered from earlier in the file; a forward reference to a later-defi
 
 ## Related
 
-- [plcopen-tc6-xml.md](./plcopen-tc6-xml.md) - the other supported dialect; contrast the remaining SFC support gap directly with §7 there, and see the shared type-normalization table and the `translateFbdBody` translator both dialects now share.
+- [plcopen-tc6-xml.md](./plcopen-tc6-xml.md) - the other supported dialect; both now translate ST/RLL-or-LD/FBD/SFC for real, and share the `translateFbdBody`/`translateSfcBody` translators plus the type-normalization table.
 - [../iec61131/ladder-diagram.md](../iec61131/ladder-diagram.md) - the native rung model RLL compiles into.
 - [../iec61131/custom-function-blocks.md](../iec61131/custom-function-blocks.md) - the general FB instance-execution model AOIs plug into, including the `EnableIn` re-assertion mechanism and the ladder/FBD body precedence.
 - [../iec61131/function-block-diagram.md](../iec61131/function-block-diagram.md) - the native network model L5X FBD now targets.
+- [../iec61131/sequential-function-chart.md](../iec61131/sequential-function-chart.md) - the native chart model L5X SFC now targets.
 - [index.md](./index.md) - domain hub.

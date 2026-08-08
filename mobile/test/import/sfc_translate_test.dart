@@ -220,4 +220,35 @@ void main() {
     expect(tr.translated, isFalse);
     expect(tr.stubReason, 'complex-topology');
   });
+
+  test('a step self-edge stubs complex-topology with exactly ONE warning and '
+      'zero infos', () {
+    // DIALECT-NEUTRAL INVARIANT, deliberately living here rather than in an
+    // L5X test file: the property belongs to the translator. Import builders
+    // (l5x_parser's SFC poison node) depend on the step->step edge scan
+    // preceding every warning emission in _build — reorder _build and this
+    // test fails in the file the reordering happened in.
+    //
+    // The body below WOULD emit two info warnings if the scan did not pre-empt
+    // them: a non-N action (per-action degrade) and no step marked initial.
+    final body = SfcBody(nodes: [
+      _step(1, 'Idle'), // deliberately NOT initial
+      _trans(2, SfcCondInline('Go')),
+      _step(3, 'Run'),
+      _step(-9, '#unrepresentable'), // the poison node's shape
+    ], edges: [
+      _e(1, 2), _e(2, 3), _e(-9, -9),
+    ], actions: [
+      SfcActionAssoc(
+          stepLocalId: 1, qualifier: 'S', source: SfcActInline('Motor := TRUE;')),
+    ]);
+
+    final tr = translateSfcBody(body, pouName: 'P');
+    expect(tr.translated, isFalse);
+    expect(tr.stubReason, 'complex-topology');
+    expect(tr.warnings, hasLength(1));
+    expect(tr.warnings.single.severity, WarningSeverity.warning);
+    expect(tr.warnings.single.message,
+        contains('step directly wired to step (missing transition)'));
+  });
 }

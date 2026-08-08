@@ -48,7 +48,7 @@ actually runs as once it lands.
 | Topic | Canonical file | What it covers |
 |---|---|---|
 | PLCopen TC6 XML | [plcopen-tc6-xml.md](./plcopen-tc6-xml.md) | TC6 document structure, descendant-based dialect-tolerant parsing, DUT/type-normalization tables, and the corrected finding that FBD/SFC bodies translate for real today (not an empty stub, contra the shipped feature doc) |
-| Rockwell L5X | [rockwell-l5x.md](./rockwell-l5x.md) | L5X document structure, the RLL compile instruction set, real shipped AOI/RLL-Logic-AOI and FBD-routine/FBD-Logic-AOI per-instance execution, and the confirmed still-unshipped state of L5X SFC routine translation |
+| Rockwell L5X | [rockwell-l5x.md](./rockwell-l5x.md) | L5X document structure, the RLL compile instruction set, real shipped AOI/RLL-Logic-AOI, FBD-routine/FBD-Logic-AOI and SFC-routine per-instance/whole-POU execution, and the asserted-and-fixture-pinned `<SFCContent>` schema pending real-corpus validation |
 
 ---
 
