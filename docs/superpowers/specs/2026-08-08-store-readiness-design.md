@@ -15,6 +15,20 @@ supersedes Part B). See §9.
 ## Changelog
 
 - 2026-08-08 — initial design.
+- 2026-08-08 — applied design-review fixes (verdict NEEDS UPDATES). §2 reworked
+  around the verified host reality — **8 uniform start/stop hosts + MQTT
+  special** (connect/disconnect, password lives only in un-persisted
+  `GatewayScreen` state, so resume does **not** reconnect); `_LifecycleHost`
+  now carries start/stop **closures**. The suspend flush is now a real
+  awaited `flushPendingAutosaveNow()` (B2). The manual-toggle race is resolved
+  by the **binding R2 ruling**: a shell-owned `_resumeInProgress` lock surfaced
+  as one `hostsBusy` bool wrapping the Gateway card body in a single
+  `AbsorbPointer` — `onManualHostToggle`, `_resumeGeneration`, and guard G8 are
+  **deleted**. CI job gate switched to `vars.` (B3); the "unsigned"→"debug-signed"
+  contradiction corrected everywhere with conditional artifact names (B4).
+  R1 hidden-suspend mitigation **rejected** (M8), R3 Android on-device proof made
+  mandatory in T6, plus M5/M6/M7/M9/M10 and minors m11-m17. Execution graph:
+  T1/T2/T3 now parallel, §4 (T2) lands as its own PR.
 
 ---
 
@@ -91,7 +105,7 @@ checklists that make the first submission a mechanical exercise.
 | N1 | **Stay 0.x.** Bump to `0.9.0+2` for the first submission. | Beta signal to reviewers and users. `+2` because `+1` was never published; build numbers must increase monotonically per store, and starting at 2 leaves no ambiguity about which build is the first uploaded one. |
 | N2 | **Keep the name and bundle id** (`Soft PLC Simulator`, `com.jarrodfranz.softplcsimulator`). | Bundle ids are effectively immutable after first publish; the current one is already correct and applied everywhere. |
 | N3 | **iOS builds via cloud CI**, never locally. | The dev machine is Windows. GitHub Actions `macos-latest` is the only iOS toolchain in reach. |
-| N4 | **Every signing-secret-dependent step degrades gracefully.** CI signs when secrets are configured and produces an unsigned artifact when they are not; Gradle signs when `key.properties` exists and falls back to the debug key when it does not. | There are no store accounts yet. A red CI on a fresh clone would be a permanent false alarm; a build that *cannot* run without secrets would block all local release smoke-testing. |
+| N4 | **Every signing-secret-dependent step degrades gracefully.** CI signs with the upload key when secrets are configured and produces a **debug-signed (not store-uploadable)** artifact when they are not; Gradle signs when `key.properties` exists and falls back to the debug key when it does not. "Debug-signed" ≠ "unsigned" — see B4 (§3): a debug-signed AAB is Play-rejected and its per-run key is not upgrade-compatible, so that artifact is sideload/smoke only. | There are no store accounts yet. A red CI on a fresh clone would be a permanent false alarm; a build that *cannot* run without secrets would block all local release smoke-testing. |
 | N5 | **Backgrounding is a user setting, defaulting to PAUSE.** | Cleanly closing sockets on background is the honest behaviour: iOS suspends the process regardless, so leaving hosts "running" just means clients see a half-open TCP connection that never FINs. The OFF position preserves today's behaviour for users who want Android to keep hosting. |
 | N6 | **A host the user stopped manually must never restart on foreground.** | The resume set is captured *from live host status at suspend time*, so a manually-stopped host is not in it. See §2.4 for the resume-race handling. |
 | N7 | **The permissions can never silently regress.** A guard test greps the built platform config files. | This spec exists because a permission was silently missing for a month across two specs. A test is the only thing that makes that structurally impossible to repeat. |
@@ -232,10 +246,15 @@ Replace the `buildTypes { … }` block and add `signingConfigs`:
     signingConfigs {
         if (hasReleaseKeystore) {
             create("release") {
-                keyAlias = keystoreProperties.getProperty("keyAlias")
-                keyPassword = keystoreProperties.getProperty("keyPassword")
-                storeFile = keystoreProperties.getProperty("storeFile")?.let { file(it) }
-                storePassword = keystoreProperties.getProperty("storePassword")
+                // require(...) per property (m12): a half-filled key.properties
+                // otherwise yields a null storeFile and a deep, opaque AGP 9
+                // failure at assemble time. Fail loudly here with the missing key.
+                fun req(k: String): String = keystoreProperties.getProperty(k)
+                    ?: error("key.properties present but missing '$k' — fill it in or delete the file to fall back to debug signing.")
+                keyAlias = req("keyAlias")
+                keyPassword = req("keyPassword")
+                storeFile = file(req("storeFile"))
+                storePassword = req("storePassword")
             }
         }
     }
@@ -245,8 +264,9 @@ Replace the `buildTypes { … }` block and add `signingConfigs`:
             signingConfig = if (hasReleaseKeystore) {
                 signingConfigs.getByName("release")
             } else {
-                // Unsigned-for-store fallback: debug keys keep
-                // `flutter build apk --release` working without secrets.
+                // Debug-signed fallback (NOT unsigned, NOT store-uploadable):
+                // debug keys keep `flutter build apk --release` working without
+                // secrets for sideload/smoke. A store AAB requires key.properties.
                 signingConfigs.getByName("debug")
             }
         }
@@ -277,13 +297,18 @@ storeFile=C:/path/to/upload-keystore.jks
 contains `*.jks` but **not** `key.properties` or `*.keystore`. Add both to the
 root "Secrets - NEVER commit these" block as defence-in-depth (a keystore
 dropped anywhere in the tree, not just under `mobile/android/`, must be
-ignored), plus an explicit negation so the example template stays tracked:
+ignored):
 
 ```gitignore
 *.keystore
 key.properties
-!**/key.properties.example
 ```
+
+**No `!**/key.properties.example` negation (m11).** It would be dead: the
+gitignore pattern is the bare filename `key.properties`, which never matches
+`key.properties.example` in the first place (gitignore matches full path
+segments, not prefixes), so the example file is already tracked with nothing to
+un-ignore. Adding the negation just implies a conflict that does not exist.
 
 ### §1.5 Version bump and staleness fixes
 
@@ -348,18 +373,40 @@ Verified against `mobile/lib/screens/workspace_shell.dart`:
 | `_executeScan()` | `:833` | `dtMs` derived from `_sinceLast`, **clamped to 1000 ms** at `:838` |
 | `_startRunSession()` | `:822` | resets `_scan` runtime + the `_uptime`/`_sinceLast` stopwatches |
 | `_uptime`, `_sinceLast` | `:189-190` | `Stopwatch`es; `_uptime` feeds `System.Uptime` at `:902` |
-| The nine hosts | `:135-143` | `late final`, owned by the shell, passed into `GatewayScreen` |
+| The nine hosts | `:135-143` | `late final`, owned by the shell, passed into `GatewayScreen`; 8 listening + MQTT (see above) |
 | `dispose()` | `:279-294` | cancels all timers, disposes all nine hosts |
 | Settings keys | `:63,:72` | `ui_refresh_hz`, `haptics_enabled` |
 | `applyRefreshHz` / `applyHapticsEnabled` | `:561`, `:537` | `@visibleForTesting`, best-effort persist |
-| `_flushPendingAutosave()` | `:1103-1108` | cancels the debounce and runs the write now; **already** calls `_flushActiveEditor()` (`:1096`) first |
+| `_flushPendingAutosave()` | `:1103-1108` | `void`; calls `_flushActiveEditor()` (`:1096`) then `unawaited(_runAutosave())` — **fire-and-forget, does not complete** (see B2 / §2.2) |
+| `_runAutosave()` | `:1049` | `Future<void>` — the actual persist |
 | Settings load | `:328-338` | inside `_boot()`, reusing the `prefs` handle |
 
-Host API (uniform across all nine, verified): `ChangeNotifier`, a
-`<Name>HostStatus get status` getter over an enum containing `running`,
-`Future<void> start(PlcProject Function() projectProvider)`, `Future<void> stop()`.
-`GatewayScreen` drives them through eighteen one-line private helpers
-(`gateway_screen.dart:573-644`), e.g. `_startHosting` → `widget.host.start(() => widget.currentProject)`.
+**Host API: 8 uniform + MQTT special (verified).** The eight *listening* hosts
+(OPC UA, Modbus, DNP3, EtherNet/IP, S7, FINS, SLMP, BACnet) share one shape —
+`ChangeNotifier`, a `<Name>HostStatus get status` getter over an enum whose
+running member is `running`, `Future<void> start(PlcProject Function() projectProvider)`,
+`Future<void> stop()`. **MQTT is different and must not be forced into that
+mould:**
+
+- `MqttHost.connect(PlcProject Function() projectProvider, {required String password})`
+  (`mqtt_host.dart:348`) — not `start`, and it takes a **broker password**.
+- `MqttHost.disconnect()` (`:965`) — not `stop`.
+- `enum MqttHostStatus { stopped, connecting, running, error }`
+  (`:130`) — it has a **`connecting`** member the other eight lack.
+- **The password lives only in un-persisted UI state.** `GatewayScreen._mqttPassword`
+  (`:193`) is a plain `String` fed from a `TextField` (`:5374`), reset to `''`
+  on every project change (`:348`), and **never persisted** anywhere. The shell
+  does not have it, and `GatewayScreen` may be unmounted while the app is
+  backgrounded. **The shell therefore cannot reconnect MQTT after a lifecycle
+  stop** — this is the crux of §2.4's MQTT handling.
+
+`GatewayScreen` drives the ten controls through **sixteen** uniform one-line
+`_(start|stop)*Hosting` helpers for the eight listening hosts
+(`gateway_screen.dart:572-646`, e.g. `_startHosting` →
+`widget.host.start(() => widget.currentProject)`) **plus** `_connectMqtt`
+(`:647`) / `_disconnectMqtt` (`:651`). MQTT's helpers do not match a
+`*Hosting` pattern — a fact that mattered to the deleted guard G8 and no longer
+matters under the R2 ruling (§2.4).
 
 ### §2.1 The state machine
 
@@ -376,6 +423,27 @@ Host API (uniform across all nine, verified): `ChangeNotifier`, a
 | `paused` | mobile only — the OS has backgrounded the app | **Suspend** (§2.2), if the setting is on and the platform is mobile |
 | `detached` | engine teardown, no view attached | **Unconditional clean stop** of all nine hosts, regardless of the setting. No resume state is recorded — there is nothing to resume into. Best-effort and bounded; `dispose()` remains the real teardown. |
 
+**Why this exact set, and why `hidden` is flush-only (M8).** Flutter does **not**
+walk these states one-way; it traverses `hidden` in **both** directions on
+every app-switch and every transient interruption
+(`resumed ↔ inactive ↔ hidden ↔ paused`). Suspending on `hidden` would
+therefore stop and restart every host on *every* app-switch — the thrash the
+`inactive` row already warns about, one state deeper. The chosen mapping
+(`resumed` = resume, `inactive` = no-op, `hidden` = flush-only, `paused` =
+suspend, `detached` = unconditional stop) is the correct one; it is recorded
+here so it is not "optimised" into a hidden-suspend later. Two consequences to
+document rather than fix:
+
+- The **flush also runs on the foreground path** (`hidden` on the way back up).
+  That is benign and idempotent — with nothing pending it is a no-op, which
+  case L4 asserts.
+- On **Android, `detached` followed by re-attach to a new `Activity`** (e.g. a
+  config-change teardown the OS did not route through `dispose`) returns with
+  the hosts stopped and **no resume banner** (no suspend recorded ⇒ nothing to
+  resume). This is logged under `kLogSourceLifecycle` and documented in
+  `docs/mobile-packaging.md` as a known, rare edge; the user restarts hosts
+  from the Gateway.
+
 **Platform gate (binding).** Suspend/resume applies only when
 `defaultTargetPlatform` is `TargetPlatform.android` or `TargetPlatform.iOS`
 **and** `!kIsWeb`. On Windows/macOS/Linux a minimised or unfocused window
@@ -387,63 +455,140 @@ disabled with an explanatory subtitle on those platforms (§2.5).
 
 ```dart
 /// True between a lifecycle suspend and its matching resume. Consulted by
-/// [_startScanLoop]'s free-run re-arm guard so a suspend genuinely stops the
-/// chain rather than letting it re-arm itself.
+/// [_startScanLoop]'s free-run re-arm guard (§2.2 step 5) so a suspend
+/// genuinely stops the chain rather than letting it re-arm itself.
 bool _lifecycleSuspended = false;
 
-/// Hosts that were `running` at suspend time and are therefore eligible to be
+/// Hosts that were running at suspend time and are therefore eligible to be
 /// restarted on resume. A host the user stopped manually beforehand is not in
-/// this set, so it stays stopped (N6).
+/// this set, so it stays stopped (N6). Ids per the table below.
 final Set<String> _resumeHostIds = <String>{};
 
-/// Bumped by every suspend, every `detached`, and every MANUAL host toggle on
-/// the Gateway screen. The resume loop captures it and aborts the remainder of
-/// its restarts if it changes mid-flight (§2.4).
-int _resumeGeneration = 0;
+/// Guards against overlapping suspends: `hidden` then `paused` arrive
+/// back-to-back, and each dispatches an async `_onSuspend`. Set at handler
+/// entry (§2.2 step 1), cleared in a `finally`.
+bool _suspendInFlight = false;
+
+/// True while the resume restart loop is in flight. Surfaced to GatewayScreen
+/// as `hostsBusy` so its protocol-card body is wrapped in a single
+/// AbsorbPointer — the user cannot toggle a host mid-resume, which ELIMINATES
+/// the manual-toggle race rather than detecting it (R2 ruling, §2.4). Always
+/// cleared in a `finally`.
+bool _resumeInProgress = false;
 ```
 
-Hosts are addressed by a stable string id (`'opcua'`, `'modbus'`, `'mqtt'`,
-`'dnp3'`, `'enip'`, `'s7'`, `'fins'`, `'slmp'`, `'bacnet'`) through one private
-table so the nine-way fan-out is written once:
+Hosts are addressed by a stable string id (`'opcua'`, `'modbus'`, `'dnp3'`,
+`'enip'`, `'s7'`, `'fins'`, `'slmp'`, `'bacnet'`, and `'mqtt'`) through one
+private table so the fan-out is written once. Each entry carries **start/stop
+closures**, not a `start`/`stop` method reference — this is what lets MQTT
+(`connect`/`disconnect`, different signature) sit in the same list with no
+call-site special-casing:
 
 ```dart
-/// (id, displayName, isRunning, start, stop) for each host — the single place
-/// the nine hosts are enumerated for lifecycle purposes.
-List<_LifecycleHost> get _lifecycleHosts => [ … ];
+/// A host as the lifecycle machine sees it: a stable id, a display name, a
+/// live "is it running?" probe, and start/stop CLOSURES. The eight listening
+/// hosts wrap start()/stop(); MQTT wraps connect(..., password: …)/disconnect()
+/// -- see the `mqtt` entry, whose `start` closure is deliberately a no-op that
+/// records a warning, because the shell has no broker password to reconnect
+/// with (§2.4).
+class _LifecycleHost {
+  final String id;
+  final String displayName;
+  final bool Function() isRunning;      // status == running (MQTT: running || connecting)
+  final Future<void> Function() start;  // resume path
+  final Future<void> Function() stop;   // suspend path
+  const _LifecycleHost(...);
+}
+
+List<_LifecycleHost> get _lifecycleHosts => [
+  _LifecycleHost('opcua', 'OPC UA',
+      () => _opcuaHost.status == OpcUaHostStatus.running,
+      () => _opcuaHost.start(() => _activeProject),
+      () => _opcuaHost.stop()),
+  // … the other seven listening hosts, identically shaped …
+  _LifecycleHost('mqtt', 'MQTT',
+      () => _mqttHost.status == MqttHostStatus.running
+          || _mqttHost.status == MqttHostStatus.connecting,
+      () async => _logger.warn(kLogSourceLifecycle,
+          'MQTT was disconnected on background; not auto-reconnected '
+          '(broker password is not stored). Reconnect from the Gateway.'),
+      () => _mqttHost.disconnect()),
+];
 ```
 
 ### §2.2 Suspend sequence
 
-Triggered on `hidden` (flush only) and `paused` (full suspend). Ordered,
-idempotent, and individually failure-tolerant — the OS gives a backgrounding app
-a short, unspecified budget and may kill it mid-sequence.
+`didChangeAppLifecycleState(state)` is a **synchronous `void`** — it cannot
+`await`. So the handler does the minimum synchronously and dispatches the rest
+to a `Future<void> _onSuspend({required bool flushOnly})`, whose returned future
+the handler **retains** (a field) so tests can await it; production fire-and-
+forgets it but the *flush inside it is itself awaited before any host is
+touched* (B2). Ordered, idempotent, individually failure-tolerant — the OS
+gives a backgrounding app a short, unspecified budget and may kill it
+mid-sequence.
 
-1. **Flush pending writes — ALWAYS, regardless of the setting.** Call the
-   existing `_flushPendingAutosave()` (`workspace_shell.dart:1103-1108`) —
-   which already drains the ST editor's 350 ms debounce buffer via
-   `_flushActiveEditor()` and then cancels the 800 ms `_autosaveTimer` and runs
-   the write immediately. **Reuse it; do not open-code the sequence.** Without
-   this, an edit made in the last 800 ms before backgrounding is lost whenever
-   iOS reclaims the process — a **data-loss bug that exists today** and that
-   this step fixes independently of the pause feature. It is not gated on the
-   setting because it is a durability measure, not automation control.
-2. Return here if the setting is off, the platform is not mobile, or
-   `_lifecycleSuspended` is already true.
-3. `_lifecycleSuspended = true;` and `_resumeGeneration++`.
-4. Capture `_resumeHostIds` from **live status**: every host whose
-   `status` is its enum's `running`.
-5. Cancel `_scanTimer` and `_supervisorTimer`. **`isRunning` is deliberately
-   left untouched** — it is the user's Run/Pause *intent* and must be exactly
-   what it was when they return. `_startScanLoop()`'s free-run `arm()` guard and
-   its fixed-mode `Timer.periodic` body each gain `&& !_lifecycleSuspended`.
-6. `_uptime.stop();` — `System.Uptime` should mean "time the PLC was actually
+1. **Re-entrancy guard at the very entry.** If a suspend is already in flight
+   (`_suspendInFlight`), return immediately. This is the **first** statement, not
+   a mid-sequence check — `hidden` then `paused` arrive back-to-back and must not
+   run two overlapping suspends. Set `_suspendInFlight = true` and clear it in a
+   `finally`.
+2. **Flush pending writes — ALWAYS, regardless of the setting, and AWAITED.**
+   `await flushPendingAutosaveNow()` (the new method, §2.2a) as the **first
+   real action**, before any host is stopped. The existing
+   `_flushPendingAutosave()` (`workspace_shell.dart:1103-1108`) is `void` and
+   ends in `unawaited(_runAutosave())` — it *schedules* the write and returns;
+   iOS can freeze the process before it lands, so on its own it **does not fix
+   the data-loss bug**. Awaiting the real future does. Not gated on the setting
+   — it is a durability measure, not automation control.
+3. If `flushOnly` is true (the `hidden` path), or the setting is off, or the
+   platform is not mobile, **stop here** — the flush was the whole job.
+4. `_lifecycleSuspended = true;`
+5. Capture `_resumeHostIds` from the `_lifecycleHosts` table's live
+   `isRunning()` probe (MQTT counts as capturable when `running` **or**
+   `connecting`). A host the user already stopped is not captured (N6).
+6. Halt the scan loop. Cancel `_scanTimer` and `_supervisorTimer`, and set
+   `_lifecycleSuspended` (already done in step 4) so the loop cannot re-arm
+   itself. **`isRunning` is deliberately left untouched** — it is the user's
+   Run/Pause *intent* and must be exactly what it was on return. The three
+   guards in `_startScanLoop()` change as (M10) — quoting the current source:
+   - free-run inner early-return `if (!isRunning || _faulted) {` (`:439`)
+     becomes `if (!isRunning || _faulted || _lifecycleSuspended) {`
+   - free-run outer re-arm `if (isRunning && !_faulted) {` (`:448`) becomes
+     `if (isRunning && !_faulted && !_lifecycleSuspended) {`
+   - the fixed-mode `Timer.periodic` body `if (isRunning && !_faulted) {`
+     (`:452`) becomes `if (isRunning && !_faulted && !_lifecycleSuspended) {`
+7. `_uptime.stop();` — `System.Uptime` means "time the PLC was actually
    scanning", not wall-clock including a suspended night. `Stopwatch` preserves
    elapsed across stop/start, so nothing is lost.
-7. Stop the hosts in `_resumeHostIds`, each in its own `try`/`catch`, awaited
+8. Stop the captured hosts via their `stop` **closures** (listening hosts →
+   `stop()`, MQTT → `disconnect()`), each in its own `try`/`catch`, awaited
    together under a bounded overall timeout (**2 s**) so a wedged socket cannot
    consume the whole background budget. Timeout is logged, not thrown.
-8. Log one `INFO` line under `kLogSourceLifecycle` naming the count and the
-   ids, e.g. `Backgrounded: scan paused, 3 host(s) stopped (opcua, modbus, mqtt).`
+9. Log one `INFO` line under `kLogSourceLifecycle` naming the count and ids,
+   e.g. `Backgrounded: scan paused, 3 host(s) stopped (opcua, modbus, mqtt).`
+
+### §2.2a `flushPendingAutosaveNow()` (the B2 fix)
+
+A new method on `WorkspaceShellState`, alongside the existing
+`_flushPendingAutosave()`:
+
+```dart
+/// Like [_flushPendingAutosave], but RETURNS the autosave future so a caller
+/// can await the write actually landing (the lifecycle suspend path must, so
+/// an edit made in the last 800ms before iOS freezes the process is durable).
+/// The void [_flushPendingAutosave] is kept for the fire-and-forget callers
+/// (project switch/close) that don't need to block on completion.
+@visibleForTesting
+Future<void> flushPendingAutosaveNow() async {
+  _flushActiveEditor();
+  if (_autosaveTimer == null || !_autosaveTimer!.isActive) return;
+  _autosaveTimer!.cancel();
+  await _runAutosave();
+}
+```
+
+The existing `_flushPendingAutosave()` is refactored to
+`unawaited(flushPendingAutosaveNow())` so the two cannot drift.
 
 **The historian is deliberately untouched.** `TagHistorian` is a memory-only,
 tick-driven ring buffer; with no ticks arriving it simply records no samples, so
@@ -470,41 +615,87 @@ Triggered on `resumed`.
    delivered before the first frame of the restored view, and
    `ScaffoldMessenger.of(context)` needs a laid-out scaffold.
 
-### §2.4 Restart, and the interaction with the Gateway's manual toggles (N6)
+### §2.4 Restart, and the manual-toggle race (N6) — the R2 ruling
 
-The restart loop is **sequential, not parallel**: nine simultaneous binds
-(one of which loads and parses an RSA-2048 certificate in `OpcUaHost.start()`)
-on a phone that just woke up is a needless thundering herd, and sequential
-execution gives a deterministic log order for support.
+**The race, and why the resume LOCK (not a generation counter) is the fix.**
+The window is: the shell is part-way through restarting the captured hosts when
+the user taps a host's start/stop on the Gateway. A generation counter *detects*
+that (bump on manual toggle, re-check each iteration) but then **over-reacts** —
+one tap silently aborts the restart of *every remaining* host — and it costs a
+one-line addition to sixteen near-identical helpers plus two more for MQTT, two
+of which the old source-grep guard (G8) could not even see (`_connectMqtt`/
+`_disconnectMqtt` don't match `*Hosting`). Per the binding R2 ruling this whole
+approach is **replaced**:
 
-Before starting each host `H`:
+> **The shell owns `_resumeInProgress`, surfaces it to `GatewayScreen` as a
+> single `bool hostsBusy`, and `GatewayScreen` wraps its protocol-card body in
+> ONE `AbsorbPointer(absorbing: hostsBusy, …)` with a "Resuming…" affordance.**
+> While the resume loop runs, **no toggle is possible** — the race is
+> *eliminated*, not detected. `onManualHostToggle`, `_resumeGeneration`, and
+> guard G8 are **deleted**.
 
-- **Abort the whole remainder** if `_resumeGeneration != generationCapturedAtResumeStart`.
-- **Skip `H`** if `H.status != stopped` (someone already started it, or it never
-  stopped).
-- Otherwise `await H.start(() => _activeProject)` in a `try`/`catch`; a failure
-  (port taken by another app, permission denied) leaves `H` stopped, is logged,
-  and is named in the resume banner. It does **not** abort the remaining hosts.
+- **Churn:** ~10 lines across 2 files — one `bool` constructor param + one
+  `AbsorbPointer` wrap in `gateway_screen.dart`; one flag + its `setState`
+  toggles in `workspace_shell.dart` — versus 18 hand-edits.
+- **Testability:** pump the shell, drive `paused → resumed`, assert the Gateway
+  toggles are non-interactive during the loop and interactive after
+  (`AbsorbPointer.absorbing` via the widget tree). Deterministic, no source-grep.
+- **Defence in depth:** the per-host **"skip `H` if `H.isRunning()` /
+  `H.status != stopped`"** check below is *kept* — belt to the AbsorbPointer's
+  braces, and it also covers the MQTT-already-connecting case.
 
-**Bumping the generation on a manual toggle.** `GatewayScreen` gains one
-optional callback parameter:
+**The restart loop** (`Future<void> _resumeRestartHosts()`), MANDATORY hard
+bounds so a wedged bind can never leave the Gateway permanently frozen:
 
 ```dart
-/// Invoked whenever the USER starts or stops a host from this screen. The
-/// shell uses it to abandon an in-flight lifecycle resume (§2.4 of the
-/// store-readiness spec): a host the user is touching right now must win over
-/// a restart decision made before the app was backgrounded.
-final VoidCallback? onManualHostToggle;
+_resumeInProgress = true;
+setState(() {});                     // Gateway rebuilds with hostsBusy = true
+try {
+  for (final h in _lifecycleHosts) {
+    if (!_resumeHostIds.contains(h.id)) continue;     // wasn't running at suspend
+    if (h.isRunning()) continue;                       // already up — skip (defence)
+    try {
+      await h.start().timeout(const Duration(seconds: 2));   // per-host bound
+    } catch (e) {
+      // port taken / permission denied / MQTT no-op-warn — logged, NAMED in the
+      // resume banner, does NOT abort the remaining hosts.
+      _restartFailures.add(h.displayName);
+      _logger.warn(kLogSourceLifecycle, '…');
+    }
+  }
+} finally {
+  _resumeInProgress = false;
+  if (mounted) setState(() {});      // Gateway re-enabled, ALWAYS
+}
 ```
 
-called as the first statement of each of the eighteen
-`_start*Hosting`/`_stop*Hosting` helpers at `gateway_screen.dart:573-644`. The
-shell passes `onManualHostToggle: () => _resumeGeneration++`.
+plus an **overall 5 s** bound (`.timeout` around the whole loop, or a deadline
+check per iteration) so eight slow-but-not-wedged binds cannot compound past the
+budget. Sequential, not parallel: eight simultaneous binds — one of which loads
+and parses an RSA-2048 certificate in `OpcUaHost.start()` — on a just-woken
+phone is a needless thundering herd, and sequential order gives deterministic
+support logs.
 
-Eighteen hand-edited call sites is exactly the kind of change where one gets
-missed, so §6 specifies a **source-grep guard test** that reads
-`gateway_screen.dart` and asserts every method matching
-`_(start|stop)\w*Hosting\(` contains `widget.onManualHostToggle?.call()`.
+**MQTT never reconnects here.** Its `start` closure is the no-op warning from
+§2.1 (the shell has no broker password — §2.0/B1), so if MQTT was connected at
+suspend it is captured, disconnected on suspend, and on resume produces the
+WARN and a banner line telling the user to reconnect from the Gateway (§2.6). It
+never counts as a restart failure — it is an expected, explained non-reconnect.
+
+**`GatewayScreen` change (the whole R2 surface).** One new field, one wrap:
+
+```dart
+/// True while the shell is mid-resume restarting hosts (store-readiness §2.4).
+/// The protocol-card body is wrapped in AbsorbPointer(absorbing: hostsBusy) so
+/// the user cannot toggle a host during the restart loop — the manual-toggle
+/// race is eliminated at the source. A brief (<1s) disabled flicker on
+/// foreground when hosts restart is accepted; it affects the Gateway screen
+/// only. `onManualHostToggle`/generation-counter approaches are NOT used.
+final bool hostsBusy;
+```
+
+The sixteen `*Hosting` helpers and `_connectMqtt`/`_disconnectMqtt` are **left
+exactly as they are** — no per-helper edits at all.
 
 ### §2.5 The setting: persistence, dialog, and copy
 
@@ -528,25 +719,27 @@ Loaded in `_boot()` beside the other two (`:328-338`, same best-effort
 exact shape of the existing `applyHapticsEnabled` (`:537-551`): mounted-guarded
 `setState`, then a best-effort `prefs.setBool`.
 
-**Dialog** — `softplc_settings_dialog.dart`:
+**Dialog** — `softplc_settings_dialog.dart` (M9).
 `SoftPlcSettingsResult` gains `final bool pauseInBackground;`;
-`SoftPlcSettingsDialog` gains `initialPauseInBackground`; a third
-`SwitchListTile` is appended below the haptics one. Copy (exact):
+`SoftPlcSettingsDialog` gains `initialPauseInBackground`. The dialog has
+**one** `SwitchListTile` today (haptics), so the new one is the **second**, not
+"third", appended below it. The file already carries a landscape-height comment
+warning that a tall dialog pushes controls below the fold, so the subtitle is
+kept to **≤ 2 lines** — the full per-platform reality lives in
+`docs/mobile-packaging.md`, not the dialog. Copy (exact):
 
 ```
 title:    Pause automation when app is in background
 subtitle (mobile, enabled):
-          On: the scan loop pauses and all protocol hosts close their sockets
-          cleanly when you leave the app, then resume when you come back.
-          Off: the OS decides — iOS suspends the app anyway; Android keeps
-          hosting while the app is alive.
+          On: hosts close cleanly and the scan pauses when you leave the app,
+          then resume on return. Off: the OS decides (iOS suspends anyway).
 subtitle (desktop/web, switch disabled):
-          Mobile only. A minimised or unfocused desktop window keeps scanning
-          and hosting.
+          Mobile only — a desktop window keeps scanning and hosting.
 ```
 
-The per-platform reality is stated *in the dialog*, not only in the docs —
-this is the one place a user will look when a client drops on lock-screen.
+The per-platform reality is stated *in the dialog* in brief — this is the one
+place a user looks when a client drops on lock-screen — with the full detail in
+the packaging doc.
 
 `_openSoftPlcSettings` (`:588-601`) awaits `applyPauseInBackground(result.pauseInBackground)`
 alongside the two existing applies.
@@ -564,8 +757,14 @@ outcome:
 - Partial failure (`duration: 6s`, action `View logs` opening the Logs screen
   filtered to `Lifecycle`):
   `Resumed. 2 of 3 protocol host(s) restarted — Modbus TCP failed (port 502 in use). See Logs.`
-- Nothing was running at suspend time: **no snackbar at all** (there is nothing
-  to report and an unconditional toast on every app-switch would be noise).
+- **MQTT was connected at suspend** (its non-reconnect is *not* a failure, but
+  the user must be told): append
+  `MQTT was disconnected — reconnect from the Gateway (broker password isn't stored).`
+  to whichever line above applies. MQTT is excluded from the "N of M restarted"
+  count entirely, since it is never a restart candidate.
+- Nothing was running at suspend time (and MQTT was not connected): **no
+  snackbar at all** (nothing to report; an unconditional toast on every
+  app-switch would be noise).
 
 ### §2.7 Logging
 
@@ -578,8 +777,9 @@ const String kLogSourceLifecycle = 'Lifecycle';
 ```
 
 Levels: `INFO` for each suspend and resume summary; `WARN` for a host that
-failed to stop within the timeout or failed to rebind on resume; `DEBUG` for
-the per-host stop/start transitions and the aborted-generation case.
+failed to stop within the timeout, failed to rebind on resume, or MQTT's
+expected non-reconnect; `DEBUG` for the per-host stop/start transitions and the
+`detached`-without-suspend re-attach case (§2.1 M8).
 
 ---
 
@@ -595,13 +795,24 @@ repositories**, so the iOS job costs nothing today. If the repo is ever flipped
 to private, macOS minutes bill at **10× the Linux multiplier** against the free
 allowance and the iOS job becomes the dominant cost. The workflow therefore
 gates the two expensive jobs (`ios`, `windows`) so a private-repo future can
-throttle them by editing one `if:` rather than restructuring:
+throttle them by editing one setting rather than restructuring.
+
+**Use a repository variable, NOT `env:` (B3).** The `env` context is **not
+available** in a job-level `if:` (`jobs.<id>.if` is evaluated before the job's
+environment exists), so an `env:`-based gate silently never skips. Use a
+repo/environment **variable** — `vars` *is* available at job level:
 
 ```yaml
-env:
-  # Set to 'false' to skip the expensive macOS/Windows runners (e.g. if this
-  # repo ever becomes private, where macOS bills at a 10x minute multiplier).
-  BUILD_PLATFORM_ARTIFACTS: 'true'
+# In repo settings -> Secrets and variables -> Actions -> Variables, optionally
+# set BUILD_PLATFORM_ARTIFACTS = 'false' to skip the macOS/Windows runners (e.g.
+# if this repo ever becomes private, where macOS bills at a 10x minute
+# multiplier). Absent / anything-but-'false' => the jobs run.
+jobs:
+  ios:
+    if: ${{ vars.BUILD_PLATFORM_ARTIFACTS != 'false' }}
+    # …
+  windows:
+    if: ${{ vars.BUILD_PLATFORM_ARTIFACTS != 'false' }}
 ```
 
 **Triggers**
@@ -628,15 +839,21 @@ concurrency:
 
 **Jobs**
 
-| Job | Runner | Needs | Steps | Artifact |
+| Job | Runner | Needs | Steps | Artifact (`upload-artifact@v4` archives the dir/files) |
 |---|---|---|---|---|
 | `gate` | `ubuntu-latest` | — | `flutter pub get`; `flutter analyze` (fails on any issue — the repo's standing "no analyze warnings" rule); `flutter test` | — |
-| `android` | `ubuntu-latest` | `gate` | Java 17; decode keystore **if secrets present**; write `key.properties` **if present**; `flutter build appbundle --release`; `flutter build apk --release` | `android-release` (`.aab` + `.apk`) |
-| `ios` | `macos-latest` | `gate` | `flutter build ios --release --no-codesign`; zip `build/ios/iphoneos/Runner.app` | `ios-release-unsigned` |
-| `windows` | `windows-latest` | `gate` | `flutter build windows --release`; zip `build/windows/x64/runner/Release` | `windows-release` |
+| `android` | `ubuntu-latest` | `gate` | Java 17; detect keystore; write `key.properties` **if secrets present**; `flutter build appbundle --release`; `flutter build apk --release` | `android-release-signed` **or** `android-release-debugsigned` (name chosen by the detect step — see B4) — the `.aab` + `.apk` paths |
+| `ios` | `macos-latest` | `gate` | `flutter build ios --release --no-codesign` | `ios-release-unsigned-noninstallable` — `build/ios/iphoneos/Runner.app` (see m13) |
+| `windows` | `windows-latest` | `gate` | `flutter build windows --release` | `windows-release` — the `build/windows/x64/runner/Release` **directory** |
 
 All jobs `defaults: run: working-directory: mobile` (every `flutter` command in
 this repo runs from `mobile/`).
+
+**No manual `zip` steps (M6).** `actions/upload-artifact@v4` zips whatever path
+(file or directory) it is given; a hand-rolled `zip`/`Compress-Archive` is
+redundant and, on `windows-latest` (which defaults to **PowerShell**, where
+`zip` does not exist), actively wrong. Point `upload-artifact` at the build
+output directory directly on all three platform jobs.
 
 **The signed-if-secrets pattern (the footgun).** `secrets` is **not** available
 in a job-level `if:`, so the gate must be a step-level output. Exact shape:
@@ -649,9 +866,11 @@ in a job-level `if:`, so the gate must be a step-level output. Exact shape:
         run: |
           if [ -n "$KEYSTORE_B64" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "artifact=android-release-signed" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No ANDROID_KEYSTORE_BASE64 secret — building with the debug key (unsigned for store upload)."
+            echo "artifact=android-release-debugsigned" >> "$GITHUB_OUTPUT"
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret — building DEBUG-SIGNED. This artifact is for sideload/smoke only and CANNOT be uploaded to Play (debug key; a fresh key each run is not upgrade-compatible)."
           fi
 
       - name: Write keystore and key.properties
@@ -677,10 +896,29 @@ SHIPPING.md as **user-owned**: `ANDROID_KEYSTORE_BASE64`,
 `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
 `permissions: contents: read` at workflow level.
 
-**iOS is intentionally unsigned.** `--no-codesign` needs no Apple account, no
-certificate, and no provisioning profile; the artifact is a simulator/ad-hoc-shaped
-`Runner.app` that proves the iOS toolchain compiles this source tree. Adding
+**"debug-signed", not "unsigned" (B4).** The no-secrets fallback produces a
+build signed with the **debug** key (§1.4's `signingConfigs.getByName("debug")`)
+— it is *signed*, just not with an upload key. That distinction is load-bearing:
+a debug-signed AAB is **rejected by Play**, and because CI has no persistent
+keystore it would sign each run with a *different* debug key (not
+upgrade-compatible). So the no-secrets Android artifact is explicitly for
+**sideload / on-device smoke only, never store upload** — which is exactly what
+the `android-release-debugsigned` artifact name and the `::warning::` above
+communicate. Wherever "unsigned" appeared for the Android fallback, read
+"debug-signed (not store-uploadable)". (iOS `--no-codesign` genuinely *is*
+unsigned — different case, below.)
+
+**iOS is intentionally unsigned and non-installable (m13).** `--no-codesign`
+needs no Apple account, certificate, or provisioning profile. The resulting
+`Runner.app` is **not installable anywhere** (no signature, no provisioning) —
+its only value is proving the iOS toolchain **compiles this source tree** (the
+job's green/red is the signal). It is uploaded under a name that says so
+(`ios-release-unsigned-noninstallable`) so nobody downloads it expecting to run
+it; dropping the upload entirely is a defensible alternative. Adding real
 codesigning is a later, secret-gated step exactly like Android's.
+**Budget a CocoaPods retry:** `mobile/ios/Podfile` does **not** exist in the
+repo, so the first CI run hits the first-run `pod install` path — flaky on cold
+runners; wrap the iOS build in a one-retry step.
 
 **Retention.** `retention-days: 14` on `pull_request` and branch pushes;
 `retention-days: 90` when `startsWith(github.ref, 'refs/tags/v')` — the tag
@@ -708,6 +946,15 @@ same items (`MenuItemButton` with the check-circle/folder leading icon and the
 all**, so the mismatched-scrim problem ceases to exist rather than being
 papered over. Same `onChanged` → `_switchActiveProject(selected)` behaviour.
 
+**`MenuAnchor` does not inherit the old width/colour (m15).** `DropdownButton`'s
+`isExpanded: true` (full-width) and `dropdownColor: 0xFF1E293B` do **not** carry
+over — a bare `MenuAnchor` panel is content-width and theme-surface-coloured.
+Reproduce both explicitly via `MenuStyle(backgroundColor:
+WidgetStatePropertyAll(Color(0xFF1E293B)), minimumSize:
+WidgetStatePropertyAll(Size(<anchor width>, 0)))`, sizing the panel to the
+anchor's measured width (a `LayoutBuilder` around the anchor, or the
+`MenuAnchor` builder's constraints) so the menu still spans the header.
+
 Existing widget tests that tap the dropdown by type must be updated to tap the
 anchor; the *behaviour* under test (switching projects) is unchanged.
 
@@ -720,13 +967,17 @@ Verified: this tab has its **own nested `Scaffold`** with its own
 The change is therefore contained to this tab.
 
 Replace the nested `Scaffold` + `FloatingActionButton.extended` with a `Column`:
-the `ListView` in an `Expanded`, and below it a pinned action surface —
+the list area in an `Expanded`, and below it a pinned action surface —
 `SafeArea(top: false, child: Container(padding: EdgeInsets.all(12), color: 0xFF1E293B, child: SizedBox(width: double.infinity, child: FilledButton.icon(icon: add, label: 'Add DUT'))))`.
 Drop the ListView's 96 px trailing padding back to a plain
 `EdgeInsets.all(16)` — nothing floats over the list any more, so the last card is
 clear at **any** scroll position, which is exactly what the deferral asked for.
-The empty-state `Center(Text(...))` case keeps the same bottom bar (an empty
-list is precisely when the user needs the Add button most).
+**The empty-state `Center(Text(...))` branch must also sit inside the
+`Expanded` (m14):** in a `Column`, a bare `Center` has no bounded height and the
+bottom bar would be pushed off-screen or throw an unbounded-height error. Wrap
+whichever branch renders (list *or* empty-state) in the single `Expanded`, with
+the bottom bar always below it — the empty state is precisely when the user most
+needs the Add button visible.
 
 ### §4.3 `PannableCanvas` pointer-signal gap
 
@@ -740,19 +991,43 @@ its intrinsic size, so a viewport larger than the content has dead zones where
 the capture never fires, `pre` stays null, and the wheel falls through to
 `InteractiveViewer`'s own zoom.
 
-**Fix:** make the capture region cover the viewport. Wrap the inner `Listener`'s
-subtree in a `LayoutBuilder` + `ConstrainedBox(minWidth: viewport.maxWidth,
-minHeight: viewport.maxHeight)` (the `PannableCanvas`'s own outer constraints,
-read once at the top of `build`). When the content is larger than the viewport
-nothing changes; when it is smaller, the capture layer now spans the whole
-visible area and the `pre == null` branch becomes unreachable in practice. Keep
-the branch (and its comment) as a defensive no-op.
+**The naive fix is wrong at zoom < 1 (M5).** The capture `Listener` lives
+**inside** the `InteractiveViewer`, so its constraints are in the child's
+**canvas** coordinate space, while the viewport size (`_viewport`, already
+captured by the outer `LayoutBuilder` at `pannable_canvas.dart:302`) is in
+**screen pixels**. Sizing the capture layer to raw `_viewport` therefore
+under-covers whenever the content is zoomed out: at the default `minScale = 0.4`
+one screen pixel is 2.5 canvas units, so a viewport-sized capture layer still
+leaves a dead ring and the `pre == null` fall-through persists.
 
-**Known side effect to verify, not hide:** enlarging the child changes
-`InteractiveViewer`'s pan extent when content < viewport (the child now
-*is* viewport-sized). `editor_canvas_pan_test.dart` must stay green, and the
-task adds one case asserting a wheel notch over empty canvas space **pans**
-rather than zooming.
+**Fix:** size the min-constraints in **canvas units** by dividing the viewport
+by the current scale — `_controller.value.getMaxScaleOnAxis()` (the same call
+`_zoomAt` already uses at `:237`) — and rebuild when the controller changes so
+the coverage tracks live zoom:
+
+```dart
+// Reuse the OUTER LayoutBuilder's _viewport (screen px); convert to canvas
+// units by the live scale so the capture layer covers the viewport at ANY zoom.
+// Do NOT add an inner LayoutBuilder: under constrained:false its maxWidth/Height
+// are unbounded (infinity) and ConstrainedBox(minWidth: infinity) throws.
+final scale = _controller.value.getMaxScaleOnAxis();
+final coverW = _viewport.width  / scale;
+final coverH = _viewport.height / scale;
+// ConstrainedBox(minWidth: coverW, minHeight: coverH) around the capture child,
+// rebuilt via an AnimatedBuilder/ListenableBuilder on _controller.
+```
+
+If tracking live zoom proves fiddly, the fallback the review accepts is to
+**state the limitation honestly** — the gap closes for scale ≥ 1 only — and keep
+the `pre == null` branch live rather than claiming it is unreachable. Either
+way, **never** introduce an inner `LayoutBuilder` (unbounded under
+`constrained: false`).
+
+**Known side effect to verify, not hide:** enlarging the capture child changes
+`InteractiveViewer`'s pan extent when content < viewport. This touches **every**
+canvas editor (LD, FBD, SFC, HMI), not just the one that reported the bug.
+`editor_canvas_pan_test.dart` must stay green, and the task adds one case
+asserting a wheel notch over empty canvas space **pans** rather than zooming.
 
 ### §4.4 FBD lane wheel vs. tall networks
 
@@ -821,10 +1096,12 @@ notices the files does not re-litigate it.
 ## §6 — Testing
 
 New file **`mobile/test/platform_config_guard_test.dart`** — the N7 regression
-wall. `flutter test` runs with CWD = the package root (`mobile/`), so paths are
-relative to it (the same assumption `opcua_cert_store_test.dart` already makes).
-Each assertion carries a `reason:` naming *what breaks* if it fails, so a future
-failure explains itself.
+wall. `flutter test` runs with CWD = the package root (`mobile/`), reading
+sources by package-relative path. The precedent is **`app_log_test.dart:208`**
+(`File('lib/models/app_log.dart').readAsStringSync()`), the exact pattern this
+guard extends — *not* `opcua_cert_store_test.dart`, which uses `systemTemp` and
+makes no CWD assumption. Each assertion carries a `reason:` naming *what breaks*
+if it fails, so a future failure explains itself.
 
 | # | Assertion | File read |
 |---|---|---|
@@ -832,10 +1109,15 @@ failure explains itself.
 | G2 | Contains `<key>NSLocalNetworkUsageDescription</key>` and the `<string>` that follows it is ≥ 40 chars and mentions `local network` | `ios/Runner/Info.plist` |
 | G3 | Contains both `com.apple.security.network.server` and `com.apple.security.network.client`, each followed by `<true/>` | `macos/Runner/Release.entitlements` **and** `DebugProfile.entitlements` (parameterised over both) |
 | G4 | Contains `rootProject.file("key.properties")` and `signingConfigs.getByName("release")`; does **not** contain the literal `// TODO: Add your own signing config` | `android/app/build.gradle.kts` |
-| G5 | `key.properties`, `*.jks`/`**/*.jks`, `*.keystore`/`**/*.keystore` are each covered by at least one of the two gitignores | root `.gitignore`, `android/.gitignore` |
+| G5 | `key.properties`, `*.jks`/`**/*.jks`, `*.keystore`/`**/*.keystore` are each covered by at least one of the two gitignores. **The root gitignore is `../.gitignore` relative to the package root** (it lives at the *repo* root, outside the Flutter package) — read it via that path and `reason:` it explicitly, since a run from the repo root instead of `mobile/` would resolve `.gitignore` to the wrong file. | `../.gitignore` (repo root), `android/.gitignore` |
 | G6 | Neither contains the string `A new Flutter project.` | `web/manifest.json`, `web/index.html` |
 | G7 | `version:` parses as `0.9.0+2` or higher (semver + build both monotonic) | `pubspec.yaml` |
-| G8 | Every method matching `_(start\|stop)\w*Hosting\(` contains `onManualHostToggle` (§2.4's eighteen call sites) | `lib/screens/gateway_screen.dart` |
+
+**G8 is deleted.** Under the R2 ruling there is no `onManualHostToggle` and no
+per-helper edit to guard; the AbsorbPointer behaviour is covered by a *widget*
+test (L12 below), not a source-grep. The MQTT special-casing (§2.0/§2.4) is what
+made a `*Hosting` regex blind in the first place — the ruling removes the need
+for it entirely.
 
 New file **`mobile/test/lifecycle_pause_test.dart`** — lifecycle behaviour, driven
 by `tester.binding.handleAppLifecycleStateChanged(...)` against a pumped
@@ -845,19 +1127,24 @@ by `tester.binding.handleAppLifecycleStateChanged(...)` against a pumped
 is set to `TargetPlatform.android` for the mobile cases and restored in
 `tearDown`.
 
+Each case that involves the async suspend/resume **awaits the retained
+`_onSuspend`/resume future** the handler exposes (not a bare `pump`), so
+completion is deterministic.
+
 | # | Case |
 |---|---|
 | L1 | `paused` with the setting ON → scan timer is not firing (`debugBuildCount`/`scanCount` frozen across a pumped 2 s) and the started host reports `stopped` |
 | L2 | `resumed` after L1 → scan ticks again and the host is `running` |
 | L3 | `inactive` → **nothing** changes (the "notification shade" case) |
-| L4 | `hidden` → the pending autosave is flushed, but scan and hosts are untouched |
-| L5 | Setting OFF → `paused` changes nothing except the autosave flush |
+| L4 | `hidden` with a pending edit → **the autosave write COMPLETES** (assert the repository now holds the edit, via the injected in-memory repo — not merely that `_autosaveTimer` was cancelled); scan and hosts untouched. With **nothing** pending → the flush is a no-op (covers the foreground `hidden`, M8) |
+| L5 | Setting OFF → `paused` **completes the autosave write** (same repo assertion as L4) and changes nothing else |
 | L6 | A host stopped **manually** before `paused` is **not** restarted on `resumed` (N6) |
 | L7 | User has the scan **paused** (`isRunning == false`) before `paused`; on `resumed` it is still paused — the lifecycle never overrides Run/Pause intent |
-| L8 | A restart that throws leaves the other hosts started and produces a `WARN` under `kLogSourceLifecycle` |
-| L9 | `_resumeGeneration` bumped mid-restart aborts the remainder (drive by invoking the callback the shell passes to `GatewayScreen`) |
-| L10 | `detached` stops every running host even with the setting OFF |
-| L11 | `defaultTargetPlatform == windows` → `paused` is a full no-op beyond the flush |
+| L8 | A listening host whose restart throws leaves the other hosts started, is named in the resume banner, and produces a `WARN` under `kLogSourceLifecycle` |
+| L9 | **MQTT special (B1):** MQTT `running` (or `connecting`) at `paused` → it is `disconnect()`ed on suspend, is **not** reconnected on `resumed` (status stays `stopped`), a `WARN` is logged, and the resume banner carries the "reconnect from the Gateway" line. MQTT is excluded from the "N of M restarted" count |
+| L10 | `detached` stops every running host (listening **and** MQTT) even with the setting OFF; no resume state recorded, no banner |
+| L11 | `defaultTargetPlatform == windows` → `paused` is a full no-op beyond the (completed) flush |
+| L12 | **R2 AbsorbPointer:** during the resume restart loop the Gateway protocol-card toggles are non-interactive (`AbsorbPointer.absorbing == true`), and interactive again once the loop's `finally` clears `_resumeInProgress`; a host whose start **wedges** past the 5 s overall bound still leaves the Gateway re-enabled (the `finally` runs) |
 
 New cases in **`mobile/test/widgets/refresh_rate_pref_test.dart`** — the
 existing home of the global-settings apply/persist tests (it already covers
@@ -888,9 +1175,10 @@ the CI `gate` job. No test may be skipped or marked flaky to land this.
 |---|---|---|
 | **Unit/widget** | `cd mobile && flutter test` — full suite green | local + CI |
 | **Static** | `flutter analyze` clean | local + CI |
-| **Android release** | `flutter build apk --release` **twice**: once with no `key.properties` (must succeed, debug-signed) and once with a throwaway local keystore (must succeed, release-signed — verify with `keytool -printcert -jarfile`). Then `flutter build appbundle --release`. Install the APK on a device/emulator and confirm a Modbus client on the LAN connects — **this is the proof the whole spec exists for** | local (Windows) |
+| **Android release** | `flutter build apk --release` **twice**: once with no `key.properties` (must succeed, **debug-signed** — sideload only) and once with a throwaway local keystore (must succeed, upload-key-signed — verify with `keytool -printcert -jarfile`). Then `flutter build appbundle --release`. Then the **mandatory on-device proof (R3)** below | local (Windows) |
+| **Android on-device proof (R3, MANDATORY, Wi-Fi-free)** | `adb install -r` the release APK to a USB device; `adb forward tcp:5020 tcp:502`; from the Windows Python probe lane (`mobile/tool/py/`, the pattern in `tool/enip_e2e.sh`) poll Modbus over the forwarded port. **Without `INTERNET` the bind throws and the host never reaches `running` — the bind IS the proof; the poll confirms data flow.** No Wi-Fi/LAN needed (USB `adb forward`), so it runs on any dev machine | local (Windows) |
 | **Windows desktop** | `flutter build windows --release` + launch; confirm a host still runs while the window is minimised (§2.1's desktop gate) | local |
-| **Web** | The repo's headless-Playwright loop (`scripts/serve-web.sh --build` + screenshots at 1440×900 / 768×1024 / 390×844) for the §4 UX changes — the dropdown, the DUT bottom bar, the FBD lane, and the canvas wheel are all visual/interaction changes and must pass browser verification per CLAUDE.md | local |
+| **Web** | The repo's headless-Playwright loop (`scripts/serve-web.sh --build` + screenshots at 1440×900 / 768×1024 / 390×844) for the §4 UX changes — the dropdown, the DUT bottom bar, the FBD lane, and the canvas wheel. **Plus the SoftPLC Settings dialog with the new toggle at 390×844 and a landscape phone viewport (844×390)** to confirm the second `SwitchListTile` and its ≤2-line subtitle fit without pushing controls below the fold (M9). All must pass browser verification per CLAUDE.md | local |
 | **iOS** | **CI build success is the gate.** `flutter build ios --release --no-codesign` compiling on `macos-latest` is the only iOS signal obtainable without a Mac or an Apple account. It proves the plist and the source tree are valid; it does **not** prove the Local Network prompt appears | CI |
 | **On-device iOS / macOS** | A written checklist in SHIPPING.md: install via Xcode → confirm the Local Network prompt text → connect a SCADA client → background the app and confirm the hosts stop → foreground and confirm the resume banner | **user-owned** |
 | **Store submission** | Entirely user-owned (§10) | user |
@@ -1016,6 +1304,7 @@ New rows, under a new section **"Store readiness (spec 2026-08-08)"**:
 | Google Play / App Store submission | user-owned | Developer accounts ($25 one-off / $99-yr), keystore + certificate generation, provisioning profiles, listing copy, screenshots, uploads. Claude cannot and will not create accounts, hold signing material, or upload. The repo is made ready; submission is the user's. |
 | iOS code-signed CI build | near-term | The CI iOS job is `--no-codesign`. Signing needs an Apple account, a distribution certificate, and a provisioning profile in CI secrets — add the secret-gated step the Android job already models, once an account exists. |
 | iOS multicast entitlement (BACnet broadcast I-Am) | later | `com.apple.developer.networking.multicast` requires an Apple application against a paid account. Without it the BACnet host still binds 47808 and answers directed Who-Is on iOS; only the unsolicited startup broadcast is lost (already best-effort and logged, `bacnet_host.dart:245-255`). |
+| MQTT broker password persisted for lifecycle resume | near-term | Today the broker password lives only in un-persisted `GatewayScreen` state (`_mqttPassword`, reset on project change, never stored), so the shell cannot reconnect MQTT after a lifecycle pause (§2.0/§2.4) — it disconnects on background and tells the user to reconnect from the Gateway. Persisting it to platform **secure storage** (`flutter_secure_storage` — Keychain / Keystore, never plain `SharedPreferences` or project JSON) would let resume reconnect MQTT like the eight listening hosts. New dependency + a security review of where the secret lives; deferred deliberately. |
 | True background execution | later | An Android foreground service (with its persistent notification and Play policy justification) and iOS `BGTaskScheduler` would let hosting survive backgrounding. The lifecycle setting decides whether to *pause cleanly*, not how to *keep running*. Substantial platform-channel work, real store-policy risk. |
 | macOS App Store / notarised DMG | later | Needs an Apple account, hardened runtime review against the entitlements in §1.3, and notarisation. |
 | Linux packaging | later | Flatpak/Snap/AppImage/.deb from `flutter build linux --release` on a Linux host. |
@@ -1028,61 +1317,75 @@ New rows, under a new section **"Store readiness (spec 2026-08-08)"**:
 ## §11 — Risks a reviewer should attack
 
 **R1 — The lifecycle state machine is the only place this spec can produce a
-*worse* app than today.** Everything else is additive config. A wrong transition
-(suspending on `inactive`) closes every socket when a user swipes down the
-notification shade; a missed resume leaves the app silently dead-looking with a
-Run indicator that lies. Attack: is `hidden` really safe to treat as flush-only
-on Android, where some OEM skins deliver `hidden` without a following `paused`?
-If so, the app stays running while backgrounded on those devices — the OFF
-behaviour, which is a *degradation to today*, not a regression, but the banner
-would never fire. Consider whether L4 should also suspend on Android
-specifically.
+*worse* app than today** (mitigation for the `hidden`-suspend idea **rejected**,
+M8). Everything else is additive config. A wrong transition (suspending on
+`inactive`) closes every socket when a user swipes down the notification shade.
+The review examined whether `hidden` should also suspend (some OEM skins were
+posited to deliver `hidden` without a following `paused`) and **rejected it**:
+Flutter traverses `hidden` in **both** directions on every app-switch and every
+transient interruption (`resumed ↔ inactive ↔ hidden ↔ paused`), so suspending
+there would stop and restart all nine hosts on *every* app-switch — the exact
+thrash the design avoids. The chosen set (§2.1) is correct and is now recorded
+as such; the residual on those hypothetical OEMs is that the app keeps hosting
+while backgrounded (the OFF behaviour — a degradation to today, not a
+regression). What remains for the reviewer: confirm the §2.1 mapping against the
+current Flutter `AppLifecycleState` semantics on a real Android build, and that
+the `detached`→re-attach edge (M8) is only logged, never banner-spammed.
 
-**R2 — The manual-toggle race (§2.4) has an 18-call-site fan-out.** The
-generation counter is correct in the abstract, but its correctness depends on a
-one-line addition to each of eighteen near-identical methods in a 5739-line
-file. G8's source-grep is a guard, not a proof — it checks the *string* is
-present, not that it is called before the start/stop rather than after (where
-it would bump the generation the resume loop is about to check anyway, which is
-harmless, versus after an `await`, which would not be). Attack: is a
-`_resumeInProgress` flag that simply disables the Gateway's start/stop buttons
-for the duration of the resume loop (typically < 1 s) a smaller, more obviously
-correct design than a generation counter plus eighteen callbacks? It costs a
-brief disabled-button flicker and touches two files instead of two-plus-eighteen.
+**R2 — RESOLVED by the binding ruling: shell-owned resume lock, not a
+generation counter.** The earlier generation-counter design *detected* the
+manual-toggle race then over-reacted (one tap silently aborted every remaining
+restart) across an 18-call-site fan-out (two of them, MQTT's, invisible to a
+`*Hosting` grep). The ruling (§2.4) replaces it with a shell-owned
+`_resumeInProgress` surfaced as one `hostsBusy` bool and a single
+`AbsorbPointer` around the Gateway card body — the race is *eliminated* (no
+toggle possible mid-resume), the churn is ~10 lines in 2 files, and the test is
+a deterministic widget assertion (L12), not a source-grep. `onManualHostToggle`,
+`_resumeGeneration`, and guard G8 are deleted. **The one thing the reviewer must
+still confirm:** the resume loop's `finally` (plus the 2 s-per-host / 5 s-overall
+bounds) genuinely always clears `_resumeInProgress`, so a wedged bind can never
+leave the Gateway permanently frozen — L12's wedged-host case exists for exactly
+this.
 
-**R3 — CI cannot verify the thing this spec is for.** Every functional change in
-§1 only manifests in a *release build on a real device*: `INTERNET` matters only
-in the release manifest merge, `NSLocalNetworkUsageDescription` only on physical
-iOS hardware, the macOS entitlements only under a sandboxed signed build. The
-guard tests assert *presence of text*, not *effect*. The one real end-to-end
-proof available on this dev machine is the Android release-APK-on-device Modbus
-connection in §7 — if that is skipped, the headline blocker is closed on
-paper only. Attack: is there a cheaper on-device Android proof worth making
-mandatory in the plan (e.g. a scripted `adb install` + loopback Modbus poll)?
+**R3 — CI cannot verify the thing this spec is for; the Android on-device proof
+is now MANDATORY.** Every functional change in §1 only manifests in a *release
+build on a real device*: `INTERNET` matters only in the release manifest merge,
+`NSLocalNetworkUsageDescription` only on physical iOS hardware, the macOS
+entitlements only under a sandboxed signed build. The guard tests assert
+*presence of text*, not *effect*. The one real end-to-end proof reachable on
+this Windows dev machine — the **Wi-Fi-free `adb forward` + Python-probe Modbus
+poll against a release APK** (§7, R3) — is folded into T6's completion criteria
+**verbatim and non-optional**: without `INTERNET` the bind throws and the host
+never reaches `running`, so the bind itself is the proof. iOS's Local Network
+prompt stays unprovable here and remains a user-owned on-device checklist, never
+a CI green.
 
-Lesser risks worth a look: the §4.3 `ConstrainedBox` change alters
-`InteractiveViewer`'s pan extent for small content across **every** canvas editor
-(LD, FBD, SFC, HMI), not just the one that reported the bug; the §1.4 Gradle
+Lesser risks worth a look: the §4.3 canvas-capture change (now scale-corrected,
+M5) alters `InteractiveViewer`'s pan extent for small content across **every**
+canvas editor (LD, FBD, SFC, HMI), not just the one that reported the bug — and
+its live-zoom coverage is the fiddliest single piece of §4; the §1.4 Gradle
 block runs on AGP 9.0.1 / Gradle 9.1.0 / Kotlin 2.3.20, where
-`signingConfigs { create("release") { … } }` inside a conditional is valid but
-less-travelled than the doc-standard unconditional form; and the `0.9.0+2` bump
-is irreversible upward per store once uploaded.
+`signingConfigs { create("release") { … } }` inside a conditional plus the
+`require(...)` guards (m12) is valid but less-travelled than the doc-standard
+unconditional form; and the `0.9.0+2` bump is irreversible upward per store once
+uploaded.
 
 ---
 
 ## §12 — Execution shape (for the plan)
 
-Six tasks. T1 is the blocker-closer and should land first and alone; T3 is the
-risky one.
+Six tasks. **T1, T2, and T3 are now independent and run in parallel** (the R2
+ruling dissolved T3's old dependency on T1 — there is no guard G8 to home in the
+config file; T3's lifecycle tests live in their own files). T3 is the risky one.
 
 | # | Task | Model · Effort | Depends on | Notes |
 |---|---|---|---|---|
-| T1 | **Platform config + signing scaffold + guard tests** — §1.1-§1.4, §1.5's version/manifest/index edits, `key.properties.example`, root `.gitignore`, `platform_config_guard_test.dart` G1-G7 | sonnet · medium | — | Mechanical and exactly specified; the whole value is in getting the literal strings right, which the guard test then pins. Closes the headline blocker on its own. |
-| T2 | **UX polish** — §4.1-§4.4, the four DEFERRED rows, plus browser verification at all three viewports | sonnet · medium | — | Independent of everything else; can run in parallel with T1. Four small, well-localised edits with existing tests to keep green. |
-| T3 | **App lifecycle** — §2 in full: the observer, the state machine, suspend/resume, the setting + dialog + persistence, the resume banner, `kLogSourceLifecycle`, the `GatewayScreen` callback (+ G8), `lifecycle_pause_test.dart` L1-L11, `refresh_rate_pref_test.dart` S1-S5 | **opus · high** | T1 (for G8's home in the guard file) | The risky one. Touches a 3487-line shell's timer core and a 5739-line screen's eighteen toggles; eleven behavioural cases; R1 and R2 both live here. Should be reviewed as its own PR. |
-| T4 | **CI workflow** — §3, `.github/workflows/ci.yml`, verified by an actual run on the branch | sonnet · medium | T1 (Android job needs the signing block), T3 (gate must pass the new tests) | Iterative by nature — expect two or three pushes to get the runner matrix and the secret-detection step right. Verify the `gate`, `ios`, and `windows` jobs go green with **no** secrets configured. |
-| T5 | **Docs** — §8: SHIPPING.md overhaul incl. the §8.2 asset checklist, new `docs/mobile-packaging.md`, PROJECT_BRIEF fix, bacnet/trends notes, DEFERRED rows (close 4, add 9), the §9 supersession banners | sonnet · medium | T1-T4 | Written last so it documents what actually shipped, including the re-derived test count. |
-| T6 | **Knowledge base + final verification** — §8.1's `CL-` entry + `canonical-manifest.json`, then the §7 matrix end to end: full suite, analyze, Android release build **both ways**, on-device Modbus smoke, Windows build, browser verification | sonnet · medium | T1-T5 | The verification-before-completion gate. No "done" claim before the Android-on-device Modbus connection is observed (R3). |
+| T1 | **Platform config + signing scaffold + guard tests** — §1.1-§1.4, §1.5's version/manifest/index edits, `key.properties.example`, root `.gitignore`, `platform_config_guard_test.dart` **G1-G7** (G8 deleted) | sonnet · medium | — | Mechanical and exactly specified; the whole value is in getting the literal strings right, which the guard test then pins. Closes the headline blocker on its own. Parallel with T2/T3. |
+| T2 | **UX polish** — §4.1-§4.4, the four DEFERRED rows, plus browser verification at all three viewports. **Lands as its OWN PR** (m16): it is an unrelated PR #18 follow-up, not part of store readiness, and should be reviewable/mergeable on its own | sonnet · medium | — | Independent of everything else; parallel with T1/T3. Four small, well-localised edits with existing tests to keep green. §4.3 (canvas M5) is the fiddliest. |
+| T3 | **App lifecycle** — §2 in full: the `WidgetsBindingObserver`, the state machine (§2.1, incl. the M8 rejected-`hidden`-suspend rationale), the `_LifecycleHost` closure table (8 uniform + MQTT special), the awaited `flushPendingAutosaveNow()` (B2), suspend/resume, the shell-owned `_resumeInProgress` + `hostsBusy`/`AbsorbPointer` (R2 ruling), the resume banner incl. the MQTT line, `kLogSourceLifecycle`, `lifecycle_pause_test.dart` **L1-L12**, `refresh_rate_pref_test.dart` S1-S5 | **opus · high** | — (parallel) | The risky one. Touches the 3487-line shell's timer core and adds one `hostsBusy` param + one `AbsorbPointer` to the 5739-line Gateway (no per-helper edits). Twelve behavioural cases; R1/R2 both live here. Its own PR. |
+| T4 | **CI workflow** — §3, `.github/workflows/ci.yml`: `vars.`-gated platform jobs (B3), debug-signed-vs-signed conditional artifact names (B4), no manual zip (M6), CocoaPods-retry iOS step (m13), verified by an actual run on the branch | sonnet · medium | T1 (Android job needs the signing block), T3 (gate must pass the new tests) | Iterative by nature — expect two or three pushes to get the runner matrix and the secret-detection step right. Verify `gate`, `ios`, `windows` go green with **no** secrets configured, and that the Android artifact is named `…-debugsigned` in that case. |
+| T5 | **Docs** — §8: SHIPPING.md overhaul incl. the §8.2 asset checklist, new `docs/mobile-packaging.md` (incl. the full pause-setting per-platform copy, the M8 `detached` edge, the §5 registrant decision), PROJECT_BRIEF fix, bacnet/trends notes, DEFERRED rows (close 4, add the §10 rows incl. MQTT secure-storage), the §9 supersession banners | sonnet · medium | T1-T4 | Written after the code so it documents what actually shipped. |
+| T6 | **Knowledge base + final verification** — §8.1's `CL-` entry + `canonical-manifest.json`; then the §7 matrix end to end: full suite, analyze, Android release build **both ways**, the **mandatory Wi-Fi-free `adb forward` + Python-probe Modbus proof (R3)**, Windows build, browser verification incl. the settings dialog at 390×844 + landscape. **Completion criteria carry the concrete numbers so T5 doesn't guess: the re-derived `flutter test` count and version `0.9.0+2`** (m17) | sonnet · medium | T1-T5 | The verification-before-completion gate. No "done" claim before the R3 on-device bind/poll is observed. |
 
 T1 and T2 are independent and should be dispatched in parallel. T3 is a solo
 run. T4 needs T1 and T3 landed. T5 and T6 are sequential closers.
